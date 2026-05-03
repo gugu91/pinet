@@ -6,7 +6,7 @@ const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 const DEFAULT_RESERVE_TOKENS = 16_384;
 const DEFAULT_COOLDOWN_MS = 60_000;
 const DEFAULT_MAX_PREPARED_AGE_MS = 30 * 60_000;
-const DEFAULT_BUILTIN_SKIP_MARGIN_PERCENT = 5;
+const DEFAULT_BUILTIN_SKIP_MARGIN_PERCENT = 0;
 
 export interface ModelLike {
   provider?: string;
@@ -371,10 +371,50 @@ function findMatchingProfile(
   key: string,
 ): ResolvedProfile | undefined {
   const normalized = key.toLowerCase();
-  for (const profile of Object.values(profiles)) {
-    if (profile.matches.some((pattern) => globMatch(pattern, normalized))) return profile;
-  }
-  return undefined;
+  let best: { profile: ResolvedProfile; rank: ProfileMatchRank } | undefined;
+
+  Object.values(profiles).forEach((profile, profileIndex) => {
+    profile.matches.forEach((pattern, patternIndex) => {
+      if (!globMatch(pattern, normalized)) return;
+      const rank = profileMatchRank(pattern, profileIndex, patternIndex);
+      if (!best || compareProfileMatchRank(rank, best.rank) > 0) {
+        best = { profile, rank };
+      }
+    });
+  });
+
+  return best?.profile;
+}
+
+interface ProfileMatchRank {
+  exact: boolean;
+  literalLength: number;
+  wildcardCount: number;
+  profileIndex: number;
+  patternIndex: number;
+}
+
+function profileMatchRank(
+  pattern: string,
+  profileIndex: number,
+  patternIndex: number,
+): ProfileMatchRank {
+  const wildcardCount = [...pattern].filter((char) => char === "*" || char === "?").length;
+  return {
+    exact: wildcardCount === 0,
+    literalLength: pattern.replaceAll("*", "").replaceAll("?", "").length,
+    wildcardCount,
+    profileIndex,
+    patternIndex,
+  };
+}
+
+function compareProfileMatchRank(left: ProfileMatchRank, right: ProfileMatchRank): number {
+  if (left.exact !== right.exact) return left.exact ? 1 : -1;
+  if (left.literalLength !== right.literalLength) return left.literalLength - right.literalLength;
+  if (left.wildcardCount !== right.wildcardCount) return right.wildcardCount - left.wildcardCount;
+  if (left.profileIndex !== right.profileIndex) return right.profileIndex - left.profileIndex;
+  return right.patternIndex - left.patternIndex;
 }
 
 function normalizeMatches(match: string | string[] | undefined): string[] {

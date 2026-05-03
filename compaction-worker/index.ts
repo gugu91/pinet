@@ -481,6 +481,7 @@ export default function compactionWorkerExtension(pi: ExtensionAPI) {
     runtime.activeAbort = undefined;
     runtime.inFlight = undefined;
     runtime.prepared = undefined;
+    runtime.lastCompactAtMs = undefined;
     updateStatus(ctx, loadPolicy(ctx), runtime);
   });
 
@@ -490,6 +491,7 @@ export default function compactionWorkerExtension(pi: ExtensionAPI) {
     runtime.activeAbort = undefined;
     runtime.inFlight = undefined;
     runtime.prepared = undefined;
+    runtime.lastCompactAtMs = undefined;
     updateStatus(ctx, loadPolicy(ctx), runtime);
   });
 

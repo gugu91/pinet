@@ -51,6 +51,42 @@ describe("compaction-worker policy resolution", () => {
     expect(policy.keepRecentTokens).toBe(33_000);
     expect(policy.summaryModels).toEqual(["google/gemini-2.5-flash"]);
   });
+
+  it("prefers exact and more specific profile matches over broad globs", () => {
+    const base = resolveBaseConfig({
+      enabled: true,
+      profiles: {
+        broad: {
+          match: "anthropic/*",
+          reserveTokens: 10_000,
+        },
+        opus: {
+          match: "anthropic/claude-opus-*",
+          reserveTokens: 60_000,
+        },
+        exact: {
+          match: "anthropic/claude-opus-4",
+          reserveTokens: 90_000,
+        },
+      },
+    });
+
+    const exactPolicy = resolveEffectivePolicy(base, {
+      provider: "anthropic",
+      id: "claude-opus-4",
+      contextWindow: 1_000_000,
+    });
+    const specificGlobPolicy = resolveEffectivePolicy(base, {
+      provider: "anthropic",
+      id: "claude-opus-4-1",
+      contextWindow: 1_000_000,
+    });
+
+    expect(exactPolicy.matchedProfile).toBe("exact");
+    expect(exactPolicy.reserveTokens).toBe(90_000);
+    expect(specificGlobPolicy.matchedProfile).toBe("opus");
+    expect(specificGlobPolicy.reserveTokens).toBe(60_000);
+  });
 });
 
 describe("compaction-worker runtime decisions", () => {
@@ -89,6 +125,49 @@ describe("compaction-worker runtime decisions", () => {
         nowMs: 100,
       }),
     ).toEqual({ action: "compact", reason: "trigger-threshold-live", usePrepared: false });
+  });
+
+  it("does not suppress large-context custom reserve triggers by default", () => {
+    const largeContextPolicy = resolveEffectivePolicy(
+      resolveBaseConfig({
+        enabled: true,
+        reserveTokens: 65_536,
+        builtinReserveTokens: 16_384,
+      }),
+      { provider: "anthropic", id: "claude-opus-4", contextWindow: 1_000_000 },
+    );
+
+    expect(largeContextPolicy.builtinSkipMarginPercent).toBe(0);
+    expect(largeContextPolicy.triggerAtTokens).toBe(934_464);
+    expect(
+      decideRuntimeAction({
+        usage: { tokens: 934_464, contextWindow: 1_000_000 },
+        policy: largeContextPolicy,
+        prepared: undefined,
+        inFlight: false,
+        nowMs: 100,
+      }),
+    ).toEqual({ action: "compact", reason: "trigger-threshold-live", usePrepared: false });
+  });
+
+  it("applies cooldown only when the current runtime supplies a recent compaction time", () => {
+    const input = {
+      usage: { tokens: 220, contextWindow: 1_000 },
+      policy,
+      prepared: undefined,
+      inFlight: false,
+      nowMs: 100,
+    };
+
+    expect(decideRuntimeAction({ ...input, lastCompactAtMs: 95 })).toEqual({
+      action: "none",
+      reason: "cooldown",
+    });
+    expect(decideRuntimeAction(input)).toEqual({
+      action: "compact",
+      reason: "trigger-threshold-live",
+      usePrepared: false,
+    });
   });
 
   it("triggers live compaction at the trigger threshold without a ready summary", () => {

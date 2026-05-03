@@ -39,6 +39,13 @@ Add settings under `compaction-worker` in `.pi/settings.json` or `~/.pi/agent/se
 
 Use `/compaction-worker-status` to inspect the active model, matched profile, thresholds, and prepared-summary state.
 
+Profile matching is deterministic: exact model matches win over globs, more specific globs win over broader globs, and declaration order is only used as the final tie-breaker.
+
+Additional guardrail knobs are available when you need to coordinate with Pi's built-in compaction threshold:
+
+- `builtinReserveTokens` (default `16384`) mirrors the host built-in reserve used to detect the built-in threshold.
+- `builtinSkipMarginPercent` (default `0`) can reserve a small percentage band before that built-in threshold where this worker stands down and lets Pi's built-in compaction path win. Keep this at `0` unless you explicitly want that handoff band.
+
 ## Boundaries
 
 This is an extension-side proactive policy. Pi core still owns built-in auto-compaction and overflow recovery thresholds. If a prepared summary is stale, divergent, expired, or incompatible with the current model/profile, the extension generates a live summary or falls back to Pi default compaction.
