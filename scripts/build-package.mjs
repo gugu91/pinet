@@ -73,6 +73,13 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "compaction-worker": {
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
 };
 
 const config = packageConfigs[packageName];

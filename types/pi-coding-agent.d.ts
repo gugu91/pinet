@@ -35,7 +35,29 @@ declare module "@earendil-works/pi-coding-agent" {
     getEntries(): SessionEntry[];
     getBranch(): SessionEntry[];
     getLeafId(): string | undefined;
+    getSessionId?(): string | undefined;
     getSessionFile(): string | undefined;
+  }
+
+  export interface ModelRegistry {
+    find(provider: string, id: string): any | undefined;
+    getApiKeyAndHeaders(model: any): Promise<{
+      ok: boolean;
+      apiKey?: string;
+      headers?: Record<string, string>;
+      error?: string;
+    }>;
+  }
+
+  export interface ContextUsage {
+    tokens: number;
+    contextWindow?: number;
+  }
+
+  export interface CompactOptions {
+    customInstructions?: string;
+    onComplete?: (result: CompactionResult) => void;
+    onError?: (error: Error) => void;
   }
 
   export interface ExtensionContext {
@@ -44,6 +66,10 @@ declare module "@earendil-works/pi-coding-agent" {
     isIdle?: () => boolean;
     ui: ExtensionUI;
     sessionManager: SessionManager;
+    model?: { provider?: string; id?: string; contextWindow?: number };
+    modelRegistry: ModelRegistry;
+    getContextUsage(): ContextUsage | undefined;
+    compact(options?: CompactOptions): void;
   }
 
   export interface ToolUpdate {
@@ -73,6 +99,78 @@ declare module "@earendil-works/pi-coding-agent" {
     description?: string;
     handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
   }
+
+  export interface CompactionSettings {
+    enabled: boolean;
+    reserveTokens: number;
+    keepRecentTokens: number;
+  }
+
+  export interface FileOperations {
+    read: Set<string>;
+    written: Set<string>;
+    edited: Set<string>;
+  }
+
+  export interface CompactionPreparation {
+    firstKeptEntryId: string;
+    messagesToSummarize: any[];
+    turnPrefixMessages: any[];
+    isSplitTurn: boolean;
+    tokensBefore: number;
+    previousSummary?: string;
+    fileOps: FileOperations;
+    settings: CompactionSettings;
+  }
+
+  export interface CompactionResult<T = unknown> {
+    summary: string;
+    firstKeptEntryId: string;
+    tokensBefore: number;
+    details?: T;
+  }
+
+  export interface SessionBeforeCompactEvent {
+    type: "session_before_compact";
+    preparation: CompactionPreparation;
+    branchEntries: SessionEntry[];
+    customInstructions?: string;
+    signal: AbortSignal;
+  }
+
+  export interface SessionContext {
+    messages: any[];
+    thinkingLevel?: string;
+    model?: { provider: string; modelId: string } | null;
+  }
+
+  export interface CutPointResult {
+    firstKeptEntryIndex: number;
+    turnStartIndex: number;
+    isSplitTurn: boolean;
+  }
+
+  export function buildSessionContext(
+    entries: SessionEntry[],
+    leafId?: string | null,
+  ): SessionContext;
+
+  export function findCutPoint(
+    entries: SessionEntry[],
+    startIndex: number,
+    endIndex: number,
+    keepRecentTokens: number,
+  ): CutPointResult;
+
+  export function compact(
+    preparation: CompactionPreparation,
+    model: any,
+    apiKey: string,
+    headers?: Record<string, string>,
+    customInstructions?: string,
+    signal?: AbortSignal,
+    thinkingLevel?: any,
+  ): Promise<CompactionResult>;
 
   export interface ExtensionAPI {
     on(event: string, handler: (event: any, ctx: ExtensionContext) => any): void;

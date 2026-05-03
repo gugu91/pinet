@@ -1,0 +1,42 @@
+{
+  "name": "@gugu910/pi-compaction-worker",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Opt-in Pi extension for model-aware custom compaction with prepare/commit thresholds",
+  "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gugu91/extensions.git",
+    "directory": "compaction-worker"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "dist/"
+  ],
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "node ../scripts/build-package.mjs",
+    "prepack": "pnpm run build",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {}
+}

@@ -66,6 +66,8 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  compaction-worker: {}
+
   imessage-bridge:
     dependencies:
       "@gugu910/pi-transport-core":
