@@ -185,6 +185,9 @@ export function renderBrokerControlPlaneHomeTabView(
       ? snapshot.anomalies.map((anomaly) => `• ${anomaly}`)
       : ["• Healthy ✅"];
   const maintenanceLines = snapshot.maintenanceAnomalies.map((anomaly) => `• ${anomaly}`);
+  const snoozeLine = snapshot.ralphSnooze?.active
+    ? `active until ${snapshot.ralphSnooze.until ?? "unknown"}${snapshot.ralphSnooze.reason ? ` — ${snapshot.ralphSnooze.reason}` : ""}`
+    : `off${snapshot.ralphSnooze ? ` · ${snapshot.ralphSnooze.emptyCycleCount} empty cycles` : ""}`;
   const cycleLines = snapshot.recentCycles.map(
     (cycle) =>
       `• *${cycle.startedAt}* — ${cycle.duration} · ${cycle.agentCount} agents · backlog ${cycle.backlogCount} · ghosts ${cycle.ghostCount} · stuck ${cycle.stuckCount} · follow-up ${cycle.followUpDelivered ? "yes" : "no"}\n  ${cycle.anomalySummary}`,
@@ -207,6 +210,7 @@ export function renderBrokerControlPlaneHomeTabView(
         `*Workers*\n${snapshot.workingWorkers} working · ${snapshot.idleWorkers} idle`,
         `*Backlog*\n${snapshot.pendingBacklogCount} pending · ${snapshot.assignedBacklogCount} assigned`,
         `*RALPH nudges*\n${snapshot.nudgesThisCycle} nudges · ${snapshot.idleDrainCandidates} idle drains`,
+        `*RALPH snooze*\n${snoozeLine}`,
         `*Maintenance*\n${snapshot.reapedAgents} reaped · ${snapshot.repairedThreadClaims} repaired claims`,
       ],
     }),

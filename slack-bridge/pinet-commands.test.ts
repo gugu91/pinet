@@ -62,6 +62,30 @@ function createDeps(overrides: Partial<PinetCommandsDeps> = {}): PinetCommandsDe
     slackScopeDiagnostics: () => slackScopeDiagnostics,
     settings: () => settings,
     lastBrokerMaintenance: () => null,
+    ralphSnoozeStatus: () => ({
+      active: false,
+      until: null,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+      emptyCycleCount: 0,
+    }),
+    snoozeRalphLoop: ({ durationMs, reason }) => ({
+      active: true,
+      until: "2026-04-02T14:30:00.000Z",
+      remainingMs: durationMs,
+      reason: reason ?? null,
+      source: "manual",
+      emptyCycleCount: 0,
+    }),
+    clearRalphSnooze: () => ({
+      active: false,
+      until: null,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+      emptyCycleCount: 0,
+    }),
     getBrokerControlPlaneHomeTabViewerIds: () => [],
     lastBrokerControlPlaneHomeTabRefreshAt: () => null,
     lastBrokerControlPlaneHomeTabError: () => null,
@@ -141,6 +165,40 @@ describe("registerPinetCommands", () => {
     expect(notify).toHaveBeenCalledWith("Usage: /pinet reload <agent-name-or-id>", "warning");
   });
 
+  it("snoozes and clears broker RALPH maintenance from the unified command", async () => {
+    const snoozeRalphLoop = vi.fn(({ durationMs, reason }) => ({
+      active: true,
+      until: "2026-04-02T14:30:00.000Z",
+      remainingMs: durationMs,
+      reason,
+      source: "manual" as const,
+      emptyCycleCount: 0,
+    }));
+    const clearRalphSnooze = vi.fn(() => ({
+      active: false,
+      until: null,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+      emptyCycleCount: 0,
+    }));
+    const commands = registerCommands(
+      createDeps({ runtimeMode: () => "broker", snoozeRalphLoop, clearRalphSnooze }),
+    );
+    const { ctx, notify } = createContext();
+
+    await commands.get("pinet")?.handler("snooze 30m no work available", ctx);
+    await commands.get("pinet")?.handler("snooze off", ctx);
+
+    expect(snoozeRalphLoop).toHaveBeenCalledWith({
+      durationMs: 30 * 60_000,
+      reason: "no work available",
+    });
+    expect(clearRalphSnooze).toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("RALPH snooze: active"), "info");
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("RALPH snooze: off"), "info");
+  });
+
   it("runs free from the unified command and rejects removed skin action", async () => {
     const signalAgentFree = vi.fn(async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }));
     const commands = registerCommands(createDeps({ signalAgentFree }));
@@ -170,6 +228,7 @@ describe("formatPinetCommandHelp", () => {
     expect(help).toContain("/pinet reload <agent>");
     expect(help).toContain("/pinet exit <agent>");
     expect(help).toContain("/pinet free");
+    expect(help).toContain("/pinet snooze [duration|off|status]");
     expect(help).not.toContain("/pinet skin <theme>");
   });
 });

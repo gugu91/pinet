@@ -130,6 +130,8 @@ Behavior and precedence:
     "logLevel": "actions",
     "autoFollow": true,
     "ralphLoopIntervalMs": 300000,
+    "ralphSnoozeAfterEmptyCycles": 0,
+    "ralphSnoozeDurationMs": 1800000,
     "meshSecretPath": "/Users/alice/.config/pi/pinet.secret",
     "suggestedPrompts": [{ "title": "Status", "message": "What are you working on?" }],
     "security": {
@@ -146,26 +148,28 @@ Slack access is now **default-deny** unless you configure one of these explicitl
 - `allowedUsers` / `SLACK_ALLOWED_USERS` — allow only specific Slack user IDs
 - `allowAllWorkspaceUsers: true` / `SLACK_ALLOW_ALL_WORKSPACE_USERS=true` — explicit workspace-wide opt-in
 
-| Key                            | Required | Description                                                                                                         |
-| ------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------- |
-| `botToken`                     | **yes**  | Bot User OAuth Token (`xoxb-...`)                                                                                   |
-| `appToken`                     | **yes**  | App-Level Token for Socket Mode (`xapp-...`)                                                                        |
-| `allowedUsers`                 | no       | Slack user IDs that can interact; when unset, access is denied unless `allowAllWorkspaceUsers` is true              |
-| `allowAllWorkspaceUsers`       | no       | Explicit opt-in for workspace-wide Slack access when you do not want a user allowlist                               |
-| `defaultChannel`               | no       | Default channel for the `slack` dispatcher `post_channel` action                                                    |
-| `logChannel`                   | no       | Channel for broker activity logs                                                                                    |
-| `logLevel`                     | no       | `"errors"`, `"actions"` (default), or `"verbose"`                                                                   |
-| `runtimeMode`                  | no       | Explicit startup mode: `"off"`, `"single"`, `"broker"`, or `"follower"`                                             |
-| `autoConnect`                  | no       | Legacy compatibility alias for `runtimeMode: "single"`                                                              |
-| `autoFollow`                   | no       | Legacy compatibility alias for follower startup when a broker socket exists                                         |
-| `ralphLoopIntervalMs`          | no       | Broker RALPH maintenance cadence in milliseconds; defaults to `300000` (5 minutes), valid range `1000`-`2147483647` |
-| `skinTheme`                    | no       | Pinet presentation skin selected at broker startup/reload (`default`, `foundation`, `cosmere`, or free-form)        |
-| `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                   |
-| `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file             |
-| `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                  |
-| `security.readOnly`            | no       | Runtime-block write-capable tools for Slack-triggered turns, including core tools like `bash`, `edit`, and `write`  |
-| `security.requireConfirmation` | no       | Runtime-require Slack approval before matching tools execute; core tools need a specific Slack thread context       |
-| `security.blockedTools`        | no       | Runtime-block matching tools for Slack-triggered turns, including core tools                                        |
+| Key                            | Required | Description                                                                                                           |
+| ------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `botToken`                     | **yes**  | Bot User OAuth Token (`xoxb-...`)                                                                                     |
+| `appToken`                     | **yes**  | App-Level Token for Socket Mode (`xapp-...`)                                                                          |
+| `allowedUsers`                 | no       | Slack user IDs that can interact; when unset, access is denied unless `allowAllWorkspaceUsers` is true                |
+| `allowAllWorkspaceUsers`       | no       | Explicit opt-in for workspace-wide Slack access when you do not want a user allowlist                                 |
+| `defaultChannel`               | no       | Default channel for the `slack` dispatcher `post_channel` action                                                      |
+| `logChannel`                   | no       | Channel for broker activity logs                                                                                      |
+| `logLevel`                     | no       | `"errors"`, `"actions"` (default), or `"verbose"`                                                                     |
+| `runtimeMode`                  | no       | Explicit startup mode: `"off"`, `"single"`, `"broker"`, or `"follower"`                                               |
+| `autoConnect`                  | no       | Legacy compatibility alias for `runtimeMode: "single"`                                                                |
+| `autoFollow`                   | no       | Legacy compatibility alias for follower startup when a broker socket exists                                           |
+| `ralphLoopIntervalMs`          | no       | Broker RALPH maintenance cadence in milliseconds; defaults to `300000` (5 minutes), valid range `1000`-`2147483647`   |
+| `ralphSnoozeAfterEmptyCycles`  | no       | Broker RALPH auto-snooze trigger after N empty cycles; defaults to `0` (disabled), valid range `0`-`100`              |
+| `ralphSnoozeDurationMs`        | no       | Broker RALPH auto-snooze duration in milliseconds; defaults to `1800000` (30 minutes), valid range `60000`-`86400000` |
+| `skinTheme`                    | no       | Pinet presentation skin selected at broker startup/reload (`default`, `foundation`, `cosmere`, or free-form)          |
+| `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                     |
+| `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file               |
+| `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                    |
+| `security.readOnly`            | no       | Runtime-block write-capable tools for Slack-triggered turns, including core tools like `bash`, `edit`, and `write`    |
+| `security.requireConfirmation` | no       | Runtime-require Slack approval before matching tools execute; core tools need a specific Slack thread context         |
+| `security.blockedTools`        | no       | Runtime-block matching tools for Slack-triggered turns, including core tools                                          |
 
 ## Scope carrier model (compatibility-first)
 
@@ -452,11 +456,11 @@ Only broker prompt content is replaceable. Broker runtime/tool restrictions rema
 
 ### Multi-agent tools
 
-| Tool    | Description                                                                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pinet` | Pinet dispatcher with token-efficient `action`-based routing (`help`, `send`, `read`, `free`, `schedule`, `agents`, `lanes`, `ports`, `reload`, `exit`) |
+| Tool    | Description                                                                                                                                                       |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pinet` | Pinet dispatcher with token-efficient `action`-based routing (`help`, `send`, `read`, `free`, `snooze`, `schedule`, `agents`, `lanes`, `ports`, `reload`, `exit`) |
 
-Use the dispatcher for Pinet tool actions: `pinet action=send`, `pinet action=read`, `pinet action=free`, `pinet action=schedule`, `pinet action=agents`, `pinet action=lanes`, `pinet action=ports`, `pinet action=reload`, and `pinet action=exit`. Use slash commands for UI lifecycle transitions: `/pinet start`, `/pinet follow`, and `/pinet unfollow`. Dedicated direct Pinet tools (`pinet_message`, `pinet_read`, `pinet_agents`, `pinet_free`, `pinet_schedule`) are no longer registered. Legacy `pinet_*` guardrail patterns still match dispatcher action names, and legacy send policies such as `pinet_send` or `pinet_message` also cover `pinet action=send`, so existing security configs fail closed during migration.
+Use the dispatcher for Pinet tool actions: `pinet action=send`, `pinet action=read`, `pinet action=free`, `pinet action=snooze`, `pinet action=schedule`, `pinet action=agents`, `pinet action=lanes`, `pinet action=ports`, `pinet action=reload`, and `pinet action=exit`. Use slash commands for UI lifecycle transitions: `/pinet start`, `/pinet follow`, and `/pinet unfollow`. Dedicated direct Pinet tools (`pinet_message`, `pinet_read`, `pinet_agents`, `pinet_free`, `pinet_schedule`) are no longer registered. Legacy `pinet_*` guardrail patterns still match dispatcher action names, and legacy send policies such as `pinet_send` or `pinet_message` also cover `pinet action=send`, so existing security configs fail closed during migration.
 
 Dispatcher content defaults to terse CLI-style confirmations/summaries for noisy reads, sends, and agent lists. In default CLI mode, bulky read/agent payloads are also compacted in `data.details` so tool renderers do not surface full message bodies or agent metadata by accident. Pass `args.format="json"` (or `args.f` / `args["-f"]`) for the dispatcher envelope in content with full structured `data.details`, or `args.full=true` / `args["--full"]=true` for verbose text with full structured `data.details`.
 
@@ -470,18 +474,21 @@ Durable local port leases are stored in SQLite and can be managed with `pinet ac
 
 Broker-mode ghost cleanup is deliberately conservative. The broker stores follower PIDs in the agent registry, but it only sends real process signals for ghosts that registered with broker-managed launch metadata (`PINET_BROKER_MANAGED=1`) and still verify as Pi follower processes. Reaping sends `SIGTERM` first and schedules a bounded `SIGKILL` only if the same verified broker-managed process remains; unmarked or mismatched PIDs are never killed.
 
+RALPH snooze quiets non-urgent empty maintenance cycles without disabling human-triggered routing. Use `/pinet snooze 30m no work available` or `pinet action=snooze args.op=set args.duration=30m` to quiet the broker manually, `/pinet snooze off` or `op=clear` to wake it, and `/pinet status` / Home tab to inspect snooze state. An empty cycle means no active live workers, no active tracked assignments, no visible RALPH anomalies, no pending backlog, no assigned backlog from broker maintenance, no maintenance anomalies, no pending task-assignment report, and no tracked task progress change. If active work, anomalies, or task progress appears during snooze, RALPH wakes and reports normally. Auto-snooze is opt-in via `ralphSnoozeAfterEmptyCycles`; the default is disabled.
+
 ### Pinet command surface
 
 Use `/pinet <action> [args]` for mesh lifecycle and broker operations.
 
-| Command                 | Description                  |
-| ----------------------- | ---------------------------- |
-| `/pinet start`          | Start as the mesh broker     |
-| `/pinet follow`         | Connect as a follower worker |
-| `/pinet unfollow`       | Disconnect from the broker   |
-| `/pinet reload <agent>` | Ask another agent to reload  |
-| `/pinet exit <agent>`   | Ask another agent to exit    |
-| `/pinet free`           | Mark this agent as idle      |
+| Command                               | Description                                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| `/pinet start`                        | Start as the mesh broker                                                      |
+| `/pinet follow`                       | Connect as a follower worker                                                  |
+| `/pinet unfollow`                     | Disconnect from the broker                                                    |
+| `/pinet reload <agent>`               | Ask another agent to reload                                                   |
+| `/pinet exit <agent>`                 | Ask another agent to exit                                                     |
+| `/pinet free`                         | Mark this agent as idle                                                       |
+| `/pinet snooze [duration/off/status]` | Quiet empty RALPH cycles while preserving human-triggered wake/route behavior |
 
 ### Pinet skins
 

@@ -143,6 +143,30 @@ function createDeps(overrides: Partial<RegisterPinetToolsDeps> = {}): RegisterPi
     }),
     listPortLeases: async () => [],
     expirePortLeases: async () => [],
+    ralphSnoozeStatus: () => ({
+      active: false,
+      until: null,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+      emptyCycleCount: 0,
+    }),
+    snoozeRalphLoop: ({ durationMs, reason }) => ({
+      active: true,
+      until: "2026-05-01T00:30:00.000Z",
+      remainingMs: durationMs,
+      reason: reason ?? null,
+      source: "manual",
+      emptyCycleCount: 0,
+    }),
+    clearRalphSnooze: () => ({
+      active: false,
+      until: null,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+      emptyCycleCount: 0,
+    }),
   };
 
   return { ...defaults, ...overrides };
@@ -182,7 +206,7 @@ describe("registerPinetTools", () => {
     expect(pinet?.promptSnippet).toContain('args.format="json"');
     expect(pinet?.promptSnippet).toContain("fill context quickly");
     expect(JSON.stringify(pinet?.parameters)).toContain(
-      "help, send, read, free, schedule, agents, lanes, ports, reload, or exit",
+      "help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit",
     );
   });
 
@@ -213,6 +237,43 @@ describe("registerPinetTools", () => {
       command: "/exit",
       target: "Golden Chalk Rabbit",
     });
+  });
+
+  it("sets and clears broker RALPH snooze through the dispatcher", async () => {
+    const snoozeRalphLoop = vi.fn(({ durationMs, reason }) => ({
+      active: true,
+      until: "2026-05-01T00:30:00.000Z",
+      remainingMs: durationMs,
+      reason,
+      source: "manual" as const,
+      emptyCycleCount: 0,
+    }));
+    const clearRalphSnooze = vi.fn(() => ({
+      active: false,
+      until: null,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+      emptyCycleCount: 0,
+    }));
+    const tools = registerWithDeps(createDeps({ snoozeRalphLoop, clearRalphSnooze }));
+
+    const setResult = (await tools.get("pinet")?.execute("tool-call-1", {
+      action: "snooze",
+      args: { op: "set", duration: "30m", reason: "empty cycles" },
+    })) as { details: { data: { details: { active: boolean; reason: string } } } };
+    const clearResult = (await tools.get("pinet")?.execute("tool-call-2", {
+      action: "snooze",
+      args: { op: "clear" },
+    })) as { details: { data: { details: { active: boolean } } } };
+
+    expect(snoozeRalphLoop).toHaveBeenCalledWith({
+      durationMs: 30 * 60_000,
+      reason: "empty cycles",
+    });
+    expect(setResult.details.data.details).toMatchObject({ active: true, reason: "empty cycles" });
+    expect(clearRalphSnooze).toHaveBeenCalled();
+    expect(clearResult.details.data.details).toMatchObject({ active: false });
   });
 
   it("rejects the removed dispatcher skin action with compact CLI text by default", async () => {

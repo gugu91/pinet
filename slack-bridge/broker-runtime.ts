@@ -42,7 +42,11 @@ import {
 import type { BrokerControlPlaneDashboardSnapshot } from "./broker/control-plane-dashboard.js";
 import {
   type RalphLoopDeps,
+  type RalphSnoozeStatus,
+  clearRalphLoopSnooze,
   createRalphLoopState,
+  getRalphLoopSnoozeStatus,
+  setRalphLoopSnooze,
   startRalphLoop,
   stopRalphLoop,
 } from "./ralph-loop.js";
@@ -157,6 +161,9 @@ export interface BrokerRuntime {
   getBroker: () => Broker | null;
   getSelfId: () => string | null;
   getLastMaintenance: () => BrokerMaintenanceResult | null;
+  getRalphSnoozeStatus: () => RalphSnoozeStatus;
+  snoozeRalphLoop: (input: { durationMs: number; reason?: string | null }) => RalphSnoozeStatus;
+  clearRalphSnooze: () => RalphSnoozeStatus;
   heartbeatTimerActive: () => boolean;
   maintenanceTimerActive: () => boolean;
   isConnected: () => boolean;
@@ -770,6 +777,23 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
 
     getLastMaintenance(): BrokerMaintenanceResult | null {
       return lastBrokerMaintenance;
+    },
+
+    getRalphSnoozeStatus(): RalphSnoozeStatus {
+      return getRalphLoopSnoozeStatus(ralphLoopState);
+    },
+
+    snoozeRalphLoop(input): RalphSnoozeStatus {
+      return setRalphLoopSnooze(ralphLoopState, {
+        durationMs: input.durationMs,
+        reason: input.reason,
+        source: "manual",
+      });
+    },
+
+    clearRalphSnooze(): RalphSnoozeStatus {
+      clearRalphLoopSnooze(ralphLoopState);
+      return getRalphLoopSnoozeStatus(ralphLoopState);
     },
 
     heartbeatTimerActive(): boolean {

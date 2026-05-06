@@ -48,6 +48,12 @@ import {
   DEFAULT_RALPH_LOOP_INTERVAL_MS,
   MAX_RALPH_LOOP_INTERVAL_MS,
   resolveRalphLoopIntervalMs,
+  DEFAULT_RALPH_SNOOZE_AFTER_EMPTY_CYCLES,
+  DEFAULT_RALPH_SNOOZE_DURATION_MS,
+  MAX_RALPH_SNOOZE_AFTER_EMPTY_CYCLES,
+  MAX_RALPH_SNOOZE_DURATION_MS,
+  resolveRalphSnoozeAfterEmptyCycles,
+  resolveRalphSnoozeDurationMs,
   DEFAULT_RALPH_LOOP_FOLLOW_UP_COOLDOWN_MS,
   DEFAULT_RALPH_LOOP_STUCK_WORKING_THRESHOLD_MS,
   isRalphNudgeEntry,
@@ -2370,6 +2376,33 @@ describe("RALPH loop defaults", () => {
     expect(
       resolveRalphLoopIntervalMs({ ralphLoopIntervalMs: MAX_RALPH_LOOP_INTERVAL_MS + 1 }),
     ).toBe(DEFAULT_RALPH_LOOP_INTERVAL_MS);
+  });
+
+  it("defaults RALPH snooze auto-entry to disabled with a thirty-minute duration", () => {
+    expect(DEFAULT_RALPH_SNOOZE_AFTER_EMPTY_CYCLES).toBe(0);
+    expect(resolveRalphSnoozeAfterEmptyCycles({})).toBe(0);
+    expect(DEFAULT_RALPH_SNOOZE_DURATION_MS).toBe(30 * 60_000);
+    expect(resolveRalphSnoozeDurationMs({})).toBe(DEFAULT_RALPH_SNOOZE_DURATION_MS);
+  });
+
+  it("accepts bounded configured RALPH snooze settings", () => {
+    expect(resolveRalphSnoozeAfterEmptyCycles({ ralphSnoozeAfterEmptyCycles: 3 })).toBe(3);
+    expect(resolveRalphSnoozeDurationMs({ ralphSnoozeDurationMs: 10 * 60_000 })).toBe(10 * 60_000);
+  });
+
+  it("falls back for invalid RALPH snooze settings", () => {
+    expect(resolveRalphSnoozeAfterEmptyCycles({ ralphSnoozeAfterEmptyCycles: -1 })).toBe(0);
+    expect(
+      resolveRalphSnoozeAfterEmptyCycles({
+        ralphSnoozeAfterEmptyCycles: MAX_RALPH_SNOOZE_AFTER_EMPTY_CYCLES + 1,
+      }),
+    ).toBe(DEFAULT_RALPH_SNOOZE_AFTER_EMPTY_CYCLES);
+    expect(resolveRalphSnoozeDurationMs({ ralphSnoozeDurationMs: 0 })).toBe(
+      DEFAULT_RALPH_SNOOZE_DURATION_MS,
+    );
+    expect(
+      resolveRalphSnoozeDurationMs({ ralphSnoozeDurationMs: MAX_RALPH_SNOOZE_DURATION_MS + 1 }),
+    ).toBe(DEFAULT_RALPH_SNOOZE_DURATION_MS);
   });
 });
 
