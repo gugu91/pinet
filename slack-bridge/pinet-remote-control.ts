@@ -56,6 +56,10 @@ export function createPinetRemoteControl(deps: PinetRemoteControlDeps): PinetRem
     ctx.ui.notify(`Pinet remote control requested: /${command}`, "warning");
     void (async () => {
       try {
+        if (command === "interrupt") {
+          return;
+        }
+
         if (command === "reload") {
           await deps.reloadPinetRuntime(ctx);
           return;

@@ -1684,6 +1684,196 @@ describe("SlackAdapter — reaction triggers", () => {
     });
   });
 
+  it("routes octagonal-sign reactions as explicit interrupt controls for the thread owner", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({
+          messages: [
+            {
+              ts: "111.333",
+              thread_ts: "111.222",
+              text: "Stop the active run",
+              user: "U_TARGET",
+            },
+          ],
+        });
+      }
+
+      if (url.endsWith("/users.info")) {
+        if (parsedBody.user === "U_REACTOR") {
+          return mockSlackResponse({ user: { real_name: "Alice" } });
+        }
+        if (parsedBody.user === "U_TARGET") {
+          return mockSlackResponse({ user: { real_name: "Bob" } });
+        }
+      }
+
+      if (url.endsWith("/reactions.add")) {
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "octagonal_sign",
+      item_user: "U_TARGET",
+      item: {
+        type: "message",
+        channel: "C123",
+        ts: "111.333",
+      },
+      event_ts: "999.000",
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "slack",
+        threadId: "111.222",
+        channel: "C123",
+        userId: "U_REACTOR",
+        text: '{"type":"pinet:control","action":"interrupt"}',
+        metadata: expect.objectContaining({
+          type: "pinet:control",
+          action: "interrupt",
+          kind: "pinet_control",
+          command: "interrupt",
+          slackReactionControl: true,
+          reactionTrigger: true,
+          reactionName: "octagonal_sign",
+          reactionAction: "interrupt",
+          referencedExternalId: "C123:111.333",
+        }),
+      }),
+    );
+  });
+
+  it("does not route interrupt controls when Slack cannot identify the reacted message thread", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({ messages: [] });
+      }
+      if (url.endsWith("/reactions.add")) {
+        return mockSlackResponse();
+      }
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "octagonal_sign",
+      item_user: "U_TARGET",
+      item: { type: "message", channel: "C123", ts: "222.333" },
+      event_ts: "999.222",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    const reactionBody = JSON.parse(
+      String(
+        fetchMock.mock.calls.find(([url]) => String(url).endsWith("/reactions.add"))?.[1]?.body ??
+          "{}",
+      ),
+    ) as Record<string, unknown>;
+    expect(reactionBody).toEqual({ channel: "C123", timestamp: "222.333", name: "x" });
+  });
+
+  it("routes custom interrupt reactions even when nonessential author lookup would fail", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({
+          messages: [{ ts: "222.333", thread_ts: "222.222", text: "Busy work", user: "U_TARGET" }],
+        });
+      }
+
+      if (url.endsWith("/users.info")) {
+        if (parsedBody.user === "U_REACTOR") {
+          return mockSlackResponse({ user: { real_name: "Alice" } });
+        }
+        throw new Error("author lookup should not be required for interrupt controls");
+      }
+
+      if (url.endsWith("/reactions.add")) {
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      reactionCommands: { rotating_light: "interrupt" },
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "rotating_light",
+      item_user: "U_TARGET",
+      item: { type: "message", channel: "C123", ts: "222.333" },
+      event_ts: "999.222",
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "222.222",
+        text: '{"type":"pinet:control","action":"interrupt"}',
+        metadata: expect.objectContaining({
+          reactionName: "rotating_light",
+          reactionAction: "interrupt",
+          slackReactionControl: true,
+        }),
+      }),
+    );
+  });
+
   it("routes arrow-up steering reactions even when Slack cannot fetch the reacted message", async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

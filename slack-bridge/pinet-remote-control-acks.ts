@@ -1,6 +1,7 @@
 import type { PinetControlCommand } from "./helpers.js";
 
 interface PinetRemoteControlAckBuckets {
+  interrupt: Set<number>;
   reload: Set<number>;
   exit: Set<number>;
 }
@@ -23,6 +24,7 @@ export interface PinetRemoteControlAcks {
 
 function createAckBuckets(): PinetRemoteControlAckBuckets {
   return {
+    interrupt: new Set<number>(),
     reload: new Set<number>(),
     exit: new Set<number>(),
   };
@@ -35,8 +37,10 @@ export function createPinetRemoteControlAcks(
   const pendingFollowerControlInboxIds = createAckBuckets();
 
   function resetPendingRemoteControlAcks(): void {
+    pendingBrokerControlInboxIds.interrupt.clear();
     pendingBrokerControlInboxIds.reload.clear();
     pendingBrokerControlInboxIds.exit.clear();
+    pendingFollowerControlInboxIds.interrupt.clear();
     pendingFollowerControlInboxIds.reload.clear();
     pendingFollowerControlInboxIds.exit.clear();
   }

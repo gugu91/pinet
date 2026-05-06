@@ -295,10 +295,6 @@ function parseJsonMetadata(value: string | null): Record<string, unknown> {
   }
 }
 
-function isArrowUpReactionName(value: string | null): boolean {
-  return value === "arrow_up" || value === "⬆" || value === "⬆️";
-}
-
 function appendMetadataAudit(
   metadata: Record<string, unknown>,
   key: string,
@@ -3140,8 +3136,12 @@ export class BrokerDB implements BrokerDBInterface {
     const metadata = message.metadata;
     if (!metadata) return;
 
+    if (metadata.reactionTrigger !== true) return;
+
+    const reactionAction = getStringMetadataValue(metadata, ["reactionAction", "reaction_action"]);
+    if (reactionAction !== "steer") return;
+
     const reactionName = getStringMetadataValue(metadata, ["reactionName", "reaction_name"]);
-    if (!isArrowUpReactionName(reactionName)) return;
 
     const referencedSource =
       getStringMetadataValue(metadata, ["referencedSource", "referenced_source"]) ?? message.source;
@@ -3166,15 +3166,61 @@ export class BrokerDB implements BrokerDBInterface {
         : null);
     if (!externalId) return;
 
-    this.reclassifyMessageByExternalId(referencedSource, externalId, "steering", {
-      reason: "slack_reaction_arrow_up",
-      reactionName,
-      reactorUserId: getStringMetadataValue(metadata, ["reactorUserId", "reactor_user_id"]),
-      reactorName: getStringMetadataValue(metadata, ["reactorName", "reactor_name"]),
-      reactionEventTs: getStringMetadataValue(metadata, ["reactionEventTs", "reaction_event_ts"]),
-      referencedThreadId: message.threadId,
-      referencedMessageTs,
-    });
+    const reclassified = this.reclassifyMessageByExternalId(
+      referencedSource,
+      externalId,
+      "steering",
+      {
+        reason: "slack_reaction_arrow_up",
+        reactionName,
+        reactorUserId: getStringMetadataValue(metadata, ["reactorUserId", "reactor_user_id"]),
+        reactorName: getStringMetadataValue(metadata, ["reactorName", "reactor_name"]),
+        reactionEventTs: getStringMetadataValue(metadata, ["reactionEventTs", "reaction_event_ts"]),
+        referencedThreadId: message.threadId,
+        referencedMessageTs,
+      },
+    );
+    if (reclassified) {
+      this.redeliverReclassifiedReactionMessage(reclassified);
+    }
+  }
+
+  private redeliverReclassifiedReactionMessage(message: BrokerMessage): void {
+    const db = this.getDb();
+    const targetAgentIds = new Set<string>();
+    const ownerAgent = this.getThread(message.threadId)?.ownerAgent;
+    if (ownerAgent) {
+      targetAgentIds.add(ownerAgent);
+    } else {
+      const existingRecipients = db
+        .prepare("SELECT DISTINCT agent_id FROM inbox WHERE message_id = ?")
+        .all(message.id) as Array<{ agent_id: string }>;
+
+      for (const row of existingRecipients) {
+        if (row.agent_id) {
+          targetAgentIds.add(row.agent_id);
+        }
+      }
+    }
+
+    if (targetAgentIds.size === 0) return;
+
+    const now = new Date().toISOString();
+    const insertInbox = db.prepare(
+      `INSERT INTO inbox (agent_id, message_id, delivered, created_at)
+       SELECT ?, ?, 0, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM inbox WHERE agent_id = ? AND message_id = ?
+       )`,
+    );
+    const reopenInbox = db.prepare(
+      "UPDATE inbox SET delivered = 0, read_at = NULL WHERE agent_id = ? AND message_id = ?",
+    );
+
+    for (const agentId of targetAgentIds) {
+      insertInbox.run(agentId, message.id, now, agentId, message.id);
+      reopenInbox.run(agentId, message.id);
+    }
   }
 
   reclassifyMessageByExternalId(

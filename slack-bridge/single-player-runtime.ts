@@ -80,6 +80,20 @@ export interface SinglePlayerRuntimeDeps {
   claimOwnedThread: (threadTs: string, channelId: string, source?: string) => void;
 }
 
+type SinglePlayerControlContext = ExtensionContext & {
+  abort?: () => void;
+};
+
+function interruptSinglePlayerTurn(ctx: ExtensionContext): void {
+  if (ctx.isIdle?.() ?? true) return;
+
+  try {
+    (ctx as SinglePlayerControlContext).abort?.();
+  } catch {
+    /* best effort — interrupt controls must not crash reaction handling */
+  }
+}
+
 export interface SinglePlayerRuntime {
   connect: (ctx: ExtensionContext) => Promise<void>;
   disconnect: () => Promise<void>;
@@ -271,14 +285,18 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
     }
 
     try {
+      const isInterruptReaction = command.action === "interrupt";
       const reactedMessage = await deps.fetchSlackMessageByTs(item.channel, item.ts);
       if (!reactedMessage) {
-        throw new Error(`Unable to fetch reacted message ${item.ts} in channel ${item.channel}`);
+        const reason = isInterruptReaction
+          ? "identify Slack thread for interrupt reaction"
+          : "fetch reacted message";
+        throw new Error(`Unable to ${reason} ${item.ts} in channel ${item.channel}`);
       }
 
       const threadTs =
-        (reactedMessage.thread_ts as string | undefined) ??
-        (reactedMessage.ts as string | undefined) ??
+        (reactedMessage?.thread_ts as string | undefined) ??
+        (reactedMessage?.ts as string | undefined) ??
         item.ts;
 
       const threads = deps.getThreads();
@@ -286,7 +304,7 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         threads.set(threadTs, {
           channelId: item.channel,
           threadTs,
-          userId: (reactedMessage.user as string | undefined) ?? user,
+          userId: (reactedMessage?.user as string | undefined) ?? user,
           source: "slack",
         });
       }
@@ -296,19 +314,29 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         return;
       }
 
-      const reactorName = await deps.resolveUser(user);
+      const reactorName = isInterruptReaction
+        ? await deps.resolveUser(user).catch(() => user)
+        : await deps.resolveUser(user);
       if (shuttingDown) return;
+
+      if (isInterruptReaction) {
+        interruptSinglePlayerTurn(ctx);
+        ctx.ui.notify(`${reactorName} requested an interrupt with :${reactionName}:`, "warning");
+        await deps.addReaction(item.channel, item.ts, "white_check_mark");
+        return;
+      }
+
       const reactedMessageAuthorId =
-        (reactedMessage.user as string | undefined) ?? (evt.item_user as string | undefined);
+        (reactedMessage?.user as string | undefined) ?? (evt.item_user as string | undefined);
       const reactedMessageAuthor = reactedMessageAuthorId
         ? await deps.resolveUser(reactedMessageAuthorId)
-        : (reactedMessage.bot_id as string | undefined)
+        : (reactedMessage?.bot_id as string | undefined)
           ? "bot"
           : "unknown";
       if (shuttingDown) return;
 
       const reactedMessageText =
-        typeof reactedMessage.text === "string" && reactedMessage.text.trim().length > 0
+        typeof reactedMessage?.text === "string" && reactedMessage.text.trim().length > 0
           ? reactedMessage.text
           : "(no text)";
       const reactionMessage = buildReactionTriggerMessage({
