@@ -88,10 +88,20 @@ describe("loadBrokerPrompt", () => {
   });
 
   it("loads configured packaged prompt presets", async () => {
-    const result = await loadBrokerPrompt({ ...loaderOptions(), configuredPrompt: "tmux" });
+    const tmuxResult = await loadBrokerPrompt({ ...loaderOptions(), configuredPrompt: "tmux" });
+    const defaultResult = await loadBrokerPrompt({
+      ...loaderOptions(),
+      configuredPrompt: "default",
+    });
 
-    expect(result.source).toBe("configured");
-    expect(result.content).toContain("FRESH TMUX WORKERS");
+    expect(tmuxResult.source).toBe("configured");
+    expect(tmuxResult.content).toContain("FRESH TMUX WORKERS");
+    expect(defaultResult.source).toBe("configured");
+    expect(defaultResult.content).toContain(
+      "Use tmux only for broker-managed follower lifecycle operations",
+    );
+    expect(defaultResult.content).toContain("start fresh repo-scoped Pinet follower capacity");
+    expect(defaultResult.content).toContain("report ambiguous cases as cleanup candidates");
   });
 
   it("warns and falls through from an invalid configured prompt", async () => {
