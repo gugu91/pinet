@@ -1170,6 +1170,39 @@ describe("registerSlackTools", () => {
     );
   });
 
+  it("uses the root thread as confirmation context when updating threaded replies", async () => {
+    const { registeredTools, slack, requireToolPolicy } = setup();
+    const dispatcher = registeredTools.get("slack")!;
+    requireToolPolicy.mockImplementation((toolName, threadTs) => {
+      if (toolName === "slack:update" && threadTs !== "1712345678.000100") {
+        throw new Error(`confirmation checked against wrong thread: ${String(threadTs)}`);
+      }
+    });
+
+    const response = await dispatcher.execute("tool-update-threaded-reply", {
+      action: "update",
+      args: {
+        channel: "#deployments",
+        thread_ts: "1712345678.000100",
+        ts: "1712345678.000200",
+        text: "Threaded reply updated",
+      },
+    });
+    const envelope = response.details as SlackDispatcherEnvelope;
+
+    expect(envelope.status).toBe("succeeded");
+    expect(slack).toHaveBeenCalledWith("chat.update", "xoxb-initial", {
+      channel: "resolved:#deployments",
+      ts: "1712345678.000200",
+      text: "Threaded reply updated",
+    });
+    expect(requireToolPolicy).toHaveBeenCalledWith(
+      "slack:update",
+      "1712345678.000100",
+      "channel=#deployments | thread_ts=1712345678.000100 | ts=1712345678.000200 | text=Threaded reply updated | blocks=0",
+    );
+  });
+
   it("documents Slack update dispatcher schema and validates required payload", async () => {
     const { registeredTools, slack } = setup();
     const dispatcher = registeredTools.get("slack")!;
@@ -1182,10 +1215,13 @@ describe("registerSlackTools", () => {
     expect(helpEnvelope.data).toMatchObject({
       action: "update",
       guardrail_tool: "slack:update",
-      examples: [expect.objectContaining({ action: "update" })],
     });
+    expect((helpEnvelope.data as { examples: unknown[] }).examples).toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: "update" })]),
+    );
     expect(JSON.stringify(helpEnvelope.data)).toContain("chat.update");
     expect(JSON.stringify(helpEnvelope.data)).toContain("channel");
+    expect(JSON.stringify(helpEnvelope.data)).toContain("thread_ts");
     expect(JSON.stringify(helpEnvelope.data)).toContain("ts");
 
     const missingPayload = await dispatcher.execute("tool-update-missing-payload", {

@@ -175,6 +175,15 @@ const SLACK_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
       action: "update",
       args: { channel: "#deployments", ts: "1712345678.000200", text: "Deploy complete" },
     },
+    {
+      action: "update",
+      args: {
+        channel: "#deployments",
+        thread_ts: "1712345678.000100",
+        ts: "1712345678.000200",
+        text: "Threaded reply updated",
+      },
+    },
   ],
   read_channel: [{ action: "read_channel", args: { channel: "#deployments", limit: 20 } }],
   confirm_action: [
@@ -2432,6 +2441,12 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     parameters: Type.Object({
       channel: Type.String({ description: "Channel name or ID containing the message to update" }),
       ts: Type.String({ description: "Message timestamp (ts) of the Slack message to update" }),
+      thread_ts: Type.Optional(
+        Type.String({
+          description:
+            "Root thread timestamp to use for confirmation context when updating a threaded reply. chat.update still targets ts.",
+        }),
+      ),
       text: Type.Optional(Type.String({ description: "Updated message text (Slack markdown)" })),
       blocks: Type.Optional(
         Type.Array(Type.Record(Type.String(), Type.Unknown()), {
@@ -2443,6 +2458,10 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       const channelInput = typeof params.channel === "string" ? params.channel.trim() : "";
       const ts = typeof params.ts === "string" ? params.ts.trim() : "";
       const text = typeof params.text === "string" ? params.text : undefined;
+      const threadTs =
+        typeof params.thread_ts === "string" && params.thread_ts.trim().length > 0
+          ? params.thread_ts.trim()
+          : undefined;
       const blocks =
         params.blocks === undefined ? undefined : normalizeSlackBlocksInput(params.blocks);
 
@@ -2456,11 +2475,14 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         throw new Error("Provide text or blocks to update the Slack message.");
       }
 
-      requireToolPolicy(
-        id,
-        ts,
-        `channel=${channelInput} | ts=${ts} | text=${text ?? ""} | blocks=${summarizeSlackBlocksForPolicy(blocks)}`,
-      );
+      const policyAction = [
+        `channel=${channelInput}`,
+        ...(threadTs ? [`thread_ts=${threadTs}`] : []),
+        `ts=${ts}`,
+        `text=${text ?? ""}`,
+        `blocks=${summarizeSlackBlocksForPolicy(blocks)}`,
+      ].join(" | ");
+      requireToolPolicy(id, threadTs ?? ts, policyAction);
 
       const channelId = await resolveChannel(channelInput);
       const body: Record<string, unknown> = {
@@ -2481,6 +2503,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         details: {
           channel: channelId,
           ts: updatedTs,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
           blocksCount: blocks?.length ?? 0,
         },
       };
