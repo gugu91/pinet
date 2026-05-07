@@ -57,8 +57,15 @@ function stripControlChars(value: string): string {
     .trim();
 }
 
+function escapeSlackMrkdwn(value: string): string {
+  return stripControlChars(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function escapeCodeSpan(value: string): string {
-  return stripControlChars(value).replace(/`/g, "'");
+  return escapeSlackMrkdwn(value).replace(/`/g, "'");
 }
 
 function plainText(
@@ -221,7 +228,7 @@ function formatAgentListLine(agent: OathgateAgentSummary): string {
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
-  return `• \`${escapeCodeSpan(agent.copyText)}\` — ${context || agent.role}`;
+  return `• \`${escapeCodeSpan(agent.copyText)}\` — ${escapeSlackMrkdwn(context || agent.role)}`;
 }
 
 export function buildOathgateModalView(input: {
@@ -259,13 +266,13 @@ export function buildOathgateModalView(input: {
       text: mrkdwnText(visibleAgents.slice(0, 12).map(formatAgentListLine).join("\n")),
     });
     if (input.agents.length > 12) {
+      const overflowText =
+        input.agents.length > visibleAgents.length
+          ? `Showing 12 of ${input.agents.length} agents in the copy list and the first ${visibleAgents.length} in the picker; narrow the mesh view and retry to see more.`
+          : `Showing 12 of ${input.agents.length} agents in the copy list; use the picker for the rest.`;
       blocks.push({
         type: "context",
-        elements: [
-          mrkdwnText(
-            `Showing 12 of ${input.agents.length} agents in the copy list; use the picker for the rest.`,
-          ),
-        ],
+        elements: [mrkdwnText(overflowText)],
       });
     }
   } else {

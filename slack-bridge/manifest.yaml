@@ -14,6 +14,11 @@ features:
   assistant_view:
     assistant_description: Pi coding agent
     suggested_prompts: []
+  slash_commands:
+    - command: /oathgate
+      description: Browse visible Pinet agents and copy an agent name into chat
+      usage_hint: ""
+      should_escape: false
 oauth_config:
   scopes:
     bot:
@@ -23,6 +28,7 @@ oauth_config:
       - channels:history
       - channels:read
       - chat:write
+      - commands
       - files:read
       - files:write
       - bookmarks:read
