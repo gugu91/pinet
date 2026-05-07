@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { parseScheduledWakeupDelay } from "@gugu910/pi-pinet-core/scheduled-wakeups";
 import {
   generateAgentName,
   agentOwnsThread,
@@ -17,6 +18,7 @@ import {
   type SlackScopeDiagnostics,
 } from "./slack-scope-diagnostics.js";
 import type { SlackBridgeRuntimeMode } from "./runtime-mode.js";
+import type { RalphSnoozeStatus } from "./ralph-loop.js";
 
 export interface PinetCommandsDeps {
   // State accessors
@@ -47,6 +49,9 @@ export interface PinetCommandsDeps {
     repairedThreadClaims: number;
     anomalies: string[];
   } | null;
+  ralphSnoozeStatus?: () => RalphSnoozeStatus | null;
+  snoozeRalphLoop?: (input: { durationMs: number; reason?: string | null }) => RalphSnoozeStatus;
+  clearRalphSnooze?: () => RalphSnoozeStatus;
   getBrokerControlPlaneHomeTabViewerIds: () => string[];
   lastBrokerControlPlaneHomeTabRefreshAt: () => string | null;
   lastBrokerControlPlaneHomeTabError: () => string | null;
@@ -79,7 +84,8 @@ export type PinetCommandAction =
   | "free"
   | "status"
   | "logs"
-  | "rename";
+  | "rename"
+  | "snooze";
 
 interface ParsedPinetCommandAction {
   action: PinetCommandAction;
@@ -97,6 +103,7 @@ const PINET_PRIMARY_COMMANDS: Array<{
   { action: "reload", args: "<agent>", description: "Ask another agent to reload" },
   { action: "exit", args: "<agent>", description: "Ask another agent to exit" },
   { action: "free", args: "", description: "Mark this agent as idle" },
+  { action: "snooze", args: "[duration|off|status]", description: "Quiet empty RALPH cycles" },
 ];
 
 const PINET_SECONDARY_COMMANDS: Array<{
@@ -195,6 +202,9 @@ function normalizePinetCommandAction(rawAction: string): PinetCommandAction | nu
       return "logs";
     case "rename":
       return "rename";
+    case "snooze":
+    case "quiet":
+      return "snooze";
     case "help":
       return null;
     default:
@@ -237,13 +247,16 @@ export async function runPinetCommandAction(
     case "rename":
       runPinetRename(deps, args, ctx);
       return;
+    case "snooze":
+      runPinetSnooze(deps, args, ctx);
+      return;
   }
 }
 
 export function registerPinetCommands(pi: ExtensionAPI, deps: PinetCommandsDeps): void {
   pi.registerCommand("pinet", {
     description:
-      "Unified Pinet command surface: start, follow, unfollow, reload, exit, free, status, logs, rename",
+      "Unified Pinet command surface: start, follow, unfollow, reload, exit, free, snooze, status, logs, rename",
     handler: async (args, ctx) => {
       const parsed = parsePinetCommandAction(args);
       if (!parsed) {
@@ -378,6 +391,36 @@ async function runPinetExit(
   }
 }
 
+function formatDurationMs(ms: number): string {
+  if (ms <= 0) return "0s";
+  const totalSeconds = Math.ceil(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [
+    hours > 0 ? `${hours}h` : null,
+    minutes > 0 ? `${minutes}m` : null,
+    seconds > 0 && hours === 0 ? `${seconds}s` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.join(" ") || "0s";
+}
+
+function formatRalphSnoozeStatus(status: RalphSnoozeStatus | null): string {
+  if (!status) {
+    return "RALPH snooze: unavailable outside broker mode";
+  }
+  if (!status.active) {
+    return `RALPH snooze: off (${status.emptyCycleCount} empty cycle${status.emptyCycleCount === 1 ? "" : "s"})`;
+  }
+  return [
+    `RALPH snooze: active for ${formatDurationMs(status.remainingMs)}`,
+    `Until: ${status.until ?? "unknown"}`,
+    `Source: ${status.source ?? "unknown"}`,
+    `Reason: ${status.reason ?? "none"}`,
+    `Empty cycles: ${status.emptyCycleCount}`,
+  ].join("\n");
+}
+
 async function runPinetFree(deps: PinetCommandsDeps, ctx: ExtensionContext): Promise<void> {
   if (!deps.pinetEnabled()) {
     ctx.ui.notify("Pinet mesh runtime is not active. Use /pinet start or /pinet follow.", "info");
@@ -398,6 +441,50 @@ async function runPinetFree(deps: PinetCommandsDeps, ctx: ExtensionContext): Pro
   } catch (err) {
     ctx.ui.notify(`Pinet free failed: ${errorMsg(err)}`, "error");
   }
+}
+
+function runPinetSnooze(deps: PinetCommandsDeps, args: string, ctx: ExtensionContext): void {
+  if (deps.runtimeMode() !== "broker") {
+    ctx.ui.notify("RALPH snooze is only available while running as the Pinet broker.", "warning");
+    return;
+  }
+
+  const trimmed = args.trim();
+  const normalized = trimmed.toLowerCase();
+  if (!trimmed || normalized === "status") {
+    ctx.ui.notify(formatRalphSnoozeStatus(deps.ralphSnoozeStatus?.() ?? null), "info");
+    return;
+  }
+
+  if (["off", "clear", "wake", "resume", "cancel"].includes(normalized)) {
+    if (!deps.clearRalphSnooze) {
+      ctx.ui.notify("RALPH snooze is unavailable in this runtime.", "warning");
+      return;
+    }
+    ctx.ui.notify(formatRalphSnoozeStatus(deps.clearRalphSnooze()), "info");
+    return;
+  }
+
+  const [durationToken = "", ...reasonParts] = trimmed.split(/\s+/);
+  const durationMs = parseScheduledWakeupDelay(durationToken);
+  if (durationMs == null) {
+    ctx.ui.notify(
+      "Usage: /pinet snooze <duration|off|status> [reason]. Example: /pinet snooze 30m no work available",
+      "warning",
+    );
+    return;
+  }
+
+  if (!deps.snoozeRalphLoop) {
+    ctx.ui.notify("RALPH snooze is unavailable in this runtime.", "warning");
+    return;
+  }
+
+  const status = deps.snoozeRalphLoop({
+    durationMs,
+    reason: reasonParts.join(" ").trim() || "manual command",
+  });
+  ctx.ui.notify(formatRalphSnoozeStatus(status), "info");
 }
 
 function runPinetStatus(deps: PinetCommandsDeps, ctx: ExtensionContext): void {
@@ -433,6 +520,8 @@ function runPinetStatus(deps: PinetCommandsDeps, ctx: ExtensionContext): void {
           ...(lbm.anomalies.length > 0 ? [`Health: ${lbm.anomalies.join("; ")}`] : []),
         ]
       : [];
+  const ralphSnoozeInfo =
+    mode === "broker" ? [formatRalphSnoozeStatus(deps.ralphSnoozeStatus?.() ?? null)] : [];
   const brokerHomeTabInfo =
     mode === "broker"
       ? [
@@ -463,6 +552,7 @@ function runPinetStatus(deps: PinetCommandsDeps, ctx: ExtensionContext): void {
       activityLogInfo,
       slackToolHealthInfo,
       ...brokerHealthInfo,
+      ...ralphSnoozeInfo,
       ...brokerHomeTabInfo,
     ].join("\n"),
     "info",

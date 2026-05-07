@@ -521,6 +521,7 @@ export default function (pi: ExtensionAPI) {
     heartbeatTimerActive: () => brokerRuntime.heartbeatTimerActive(),
     maintenanceTimerActive: () => brokerRuntime.maintenanceTimerActive(),
     getLastMaintenance: () => brokerRuntime.getLastMaintenance(),
+    getRalphSnoozeStatus: () => brokerRuntime.getRalphSnoozeStatus(),
   });
   const { buildCurrentBrokerControlPlaneDashboardSnapshot } = pinetControlPlaneDashboard;
 
@@ -1199,6 +1200,10 @@ export default function (pi: ExtensionAPI) {
       getPortLease,
       listPortLeases,
       expirePortLeases,
+      ralphSnoozeStatus: () =>
+        currentRuntimeMode === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
+      snoozeRalphLoop: (input) => brokerRuntime.snoozeRalphLoop(input),
+      clearRalphSnooze: () => brokerRuntime.clearRalphSnooze(),
     },
     iMessageTools: {
       pinetEnabled: () => pinetEnabled,
@@ -1417,6 +1422,10 @@ export default function (pi: ExtensionAPI) {
       slackScopeDiagnostics: () => slackScopeDiagnostics,
       settings: () => settings,
       lastBrokerMaintenance: () => brokerRuntime.getLastMaintenance(),
+      ralphSnoozeStatus: () =>
+        currentRuntimeMode === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
+      snoozeRalphLoop: (input) => brokerRuntime.snoozeRalphLoop(input),
+      clearRalphSnooze: () => brokerRuntime.clearRalphSnooze(),
       getBrokerControlPlaneHomeTabViewerIds,
       lastBrokerControlPlaneHomeTabRefreshAt: () => brokerRuntime.getLastHomeTabRefreshAt(),
       lastBrokerControlPlaneHomeTabError: () => brokerRuntime.getLastHomeTabError(),

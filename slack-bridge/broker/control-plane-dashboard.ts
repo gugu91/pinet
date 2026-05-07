@@ -38,6 +38,13 @@ export interface BrokerControlPlaneDashboardSnapshot {
   cycleStartedAt: string;
   cycleDurationMs: number;
   currentBranch: string | null;
+  ralphSnooze?: {
+    active: boolean;
+    until: string | null;
+    reason: string | null;
+    source: string | null;
+    emptyCycleCount: number;
+  } | null;
   totalAgents: number;
   liveAgents: number;
   brokerCount: number;
@@ -95,6 +102,13 @@ export interface BuildBrokerControlPlaneDashboardSnapshotInput {
   cycleDurationMs: number;
   currentBranch: string | null;
   homedir?: string;
+  snooze?: {
+    active: boolean;
+    until: string | null;
+    reason: string | null;
+    source: string | null;
+    emptyCycleCount: number;
+  } | null;
 }
 
 function formatDuration(ms: number | null | undefined): string {
@@ -284,6 +298,15 @@ export function buildBrokerControlPlaneDashboardSnapshot(
     cycleStartedAt: input.cycleStartedAt,
     cycleDurationMs: input.cycleDurationMs,
     currentBranch: input.currentBranch,
+    ralphSnooze: input.snooze
+      ? {
+          active: input.snooze.active,
+          until: input.snooze.until,
+          reason: input.snooze.reason,
+          source: input.snooze.source,
+          emptyCycleCount: input.snooze.emptyCycleCount,
+        }
+      : null,
     totalAgents: displays.length,
     liveAgents,
     brokerCount,

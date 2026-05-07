@@ -15,6 +15,8 @@ import {
   shouldDeliverRalphLoopFollowUp,
   filterAgentsForMeshVisibility,
   resolveRalphLoopIntervalMs,
+  resolveRalphSnoozeAfterEmptyCycles,
+  resolveRalphSnoozeDurationMs,
   DEFAULT_RALPH_LOOP_NUDGE_COOLDOWN_MS,
   DEFAULT_RALPH_LOOP_FOLLOW_UP_COOLDOWN_MS,
   DEFAULT_RALPH_LOOP_STUCK_WORKING_THRESHOLD_MS,
@@ -37,6 +39,17 @@ import type { TaskAssignmentInfo } from "./broker/types.js";
 
 // ─── State ───────────────────────────────────────────────
 
+export type RalphSnoozeSource = "manual" | "auto";
+
+export interface RalphSnoozeStatus {
+  active: boolean;
+  until: string | null;
+  remainingMs: number;
+  reason: string | null;
+  source: RalphSnoozeSource | null;
+  emptyCycleCount: number;
+}
+
 export interface RalphLoopState {
   timer: ReturnType<typeof setInterval> | null;
   running: boolean;
@@ -50,6 +63,10 @@ export interface RalphLoopState {
   followUpSignature: string;
   taskAssignmentReportSignature: string;
   pendingTaskAssignmentReport: { message: string; signature: string } | null;
+  snoozeUntilMs: number;
+  snoozeReason: string | null;
+  snoozeSource: RalphSnoozeSource | null;
+  snoozeEmptyCycleCount: number;
 }
 
 export function createRalphLoopState(): RalphLoopState {
@@ -66,6 +83,10 @@ export function createRalphLoopState(): RalphLoopState {
     followUpSignature: "",
     taskAssignmentReportSignature: "",
     pendingTaskAssignmentReport: null,
+    snoozeUntilMs: 0,
+    snoozeReason: null,
+    snoozeSource: null,
+    snoozeEmptyCycleCount: 0,
   };
 }
 
@@ -85,6 +106,61 @@ export function resetRalphLoopState(state: RalphLoopState): void {
   state.followUpSignature = "";
   state.taskAssignmentReportSignature = "";
   state.pendingTaskAssignmentReport = null;
+  clearRalphLoopSnooze(state);
+}
+
+export function getRalphLoopSnoozeStatus(
+  state: Pick<
+    RalphLoopState,
+    "snoozeUntilMs" | "snoozeReason" | "snoozeSource" | "snoozeEmptyCycleCount"
+  >,
+  now = Date.now(),
+): RalphSnoozeStatus {
+  const remainingMs = Math.max(0, state.snoozeUntilMs - now);
+  return {
+    active: remainingMs > 0,
+    until: remainingMs > 0 ? new Date(state.snoozeUntilMs).toISOString() : null,
+    remainingMs,
+    reason: remainingMs > 0 ? state.snoozeReason : null,
+    source: remainingMs > 0 ? state.snoozeSource : null,
+    emptyCycleCount: state.snoozeEmptyCycleCount,
+  };
+}
+
+export function setRalphLoopSnooze(
+  state: Pick<
+    RalphLoopState,
+    "snoozeUntilMs" | "snoozeReason" | "snoozeSource" | "snoozeEmptyCycleCount"
+  >,
+  input: { durationMs: number; reason?: string | null; source?: RalphSnoozeSource; now?: number },
+): RalphSnoozeStatus {
+  const now = input.now ?? Date.now();
+  state.snoozeUntilMs = now + Math.max(0, Math.trunc(input.durationMs));
+  state.snoozeReason = input.reason?.trim() || null;
+  state.snoozeSource = input.source ?? "manual";
+  return getRalphLoopSnoozeStatus(state, now);
+}
+
+export function clearRalphLoopSnooze(
+  state: Pick<
+    RalphLoopState,
+    "snoozeUntilMs" | "snoozeReason" | "snoozeSource" | "snoozeEmptyCycleCount"
+  >,
+): void {
+  state.snoozeUntilMs = 0;
+  state.snoozeReason = null;
+  state.snoozeSource = null;
+  state.snoozeEmptyCycleCount = 0;
+}
+
+function isActiveTrackedAssignment(
+  assignment: Pick<ResolvedTaskAssignment, "status" | "issueState">,
+): boolean {
+  return (
+    assignment.issueState !== "CLOSED" &&
+    assignment.status !== "pr_merged" &&
+    assignment.status !== "pr_closed"
+  );
 }
 
 function formatTrackedAssignmentIssueList(issueNumbers: readonly number[]): string {
@@ -319,6 +395,7 @@ export async function runRalphLoopCycle(
       workloads.map((workload) => [workload.id, { emoji: workload.emoji, name: workload.name }]),
     );
     let projectedAssignments: ResolvedTaskAssignment[] = [];
+    let taskProgressChanged = false;
     const rawTrackedAssignments = db.listTaskAssignments();
     const trackedAssignmentSourceIds = [
       ...new Set(
@@ -344,6 +421,7 @@ export async function runRalphLoopCycle(
         process.cwd(),
       );
       const changedAssignments = resolvedAssignments.filter(hasTaskAssignmentStatusChange);
+      taskProgressChanged = changedAssignments.length > 0;
       projectedAssignments = resolvedAssignments.map((assignment) => {
         if (hasTaskAssignmentStatusChange(assignment)) {
           db.updateTaskAssignmentProgress(
@@ -415,6 +493,70 @@ export async function runRalphLoopCycle(
         cycleStartedAt,
       );
     }
+
+    const activeWorkingAgentIds = workloads
+      .filter(
+        (workload) =>
+          workload.id !== selfId &&
+          workload.status === "working" &&
+          !visibleEvaluation.ghostAgentIds.includes(workload.id),
+      )
+      .map((workload) => workload.id);
+    const activeTrackedAssignmentCount =
+      projectedAssignments.filter(isActiveTrackedAssignment).length;
+    const activeWorkCount = activeWorkingAgentIds.length + activeTrackedAssignmentCount;
+    const snoozeSettings = deps.getSettings?.() ?? {};
+    const snoozeStatusBefore = getRalphLoopSnoozeStatus(state, now);
+    const emptyCycle =
+      activeWorkCount === 0 &&
+      !hasOutstandingAnomalies &&
+      pendingBacklogCount === 0 &&
+      (lastMaintenance?.assignedBacklogCount ?? 0) === 0 &&
+      (lastMaintenance?.anomalies.length ?? 0) === 0 &&
+      state.pendingTaskAssignmentReport == null &&
+      !taskProgressChanged;
+    const shouldWakeSnooze = snoozeStatusBefore.active && !emptyCycle;
+    if (shouldWakeSnooze) {
+      clearRalphLoopSnooze(state);
+      deps.logActivity({
+        kind: "ralph_event",
+        level: "actions",
+        title: "RALPH snooze ended",
+        summary: "RALPH woke because work, anomalies, or task progress appeared.",
+        fields: [
+          { label: "Backlog", value: pendingBacklogCount },
+          { label: "Anomalies", value: visibleEvaluation.anomalies.length },
+          { label: "Active work", value: activeWorkCount },
+          { label: "Cycle", value: cycleStartedAt },
+        ],
+        tone: "info",
+      });
+    }
+
+    if (emptyCycle) {
+      state.snoozeEmptyCycleCount += 1;
+    } else {
+      state.snoozeEmptyCycleCount = 0;
+    }
+
+    let snoozeStartedThisCycle = false;
+    const autoSnoozeAfterEmptyCycles = resolveRalphSnoozeAfterEmptyCycles(snoozeSettings);
+    if (
+      emptyCycle &&
+      !getRalphLoopSnoozeStatus(state, now).active &&
+      autoSnoozeAfterEmptyCycles > 0 &&
+      state.snoozeEmptyCycleCount >= autoSnoozeAfterEmptyCycles
+    ) {
+      setRalphLoopSnooze(state, {
+        durationMs: resolveRalphSnoozeDurationMs(snoozeSettings),
+        reason: `${state.snoozeEmptyCycleCount} empty RALPH cycles`,
+        source: "auto",
+        now,
+      });
+      snoozeStartedThisCycle = true;
+    }
+    const snoozeStatus = getRalphLoopSnoozeStatus(state, now);
+    const quietEmptyCycle = snoozeStatus.active && emptyCycle;
 
     const shouldWarn =
       ghostRewrite.newGhostIds.length > 0 ||
@@ -488,6 +630,21 @@ export async function runRalphLoopCycle(
         ],
         tone: "success",
       });
+    } else if (quietEmptyCycle) {
+      if (snoozeStartedThisCycle) {
+        deps.logActivity({
+          kind: "ralph_event",
+          level: "actions",
+          title: "RALPH snoozed",
+          summary: `RALPH will stay quiet until ${snoozeStatus.until ?? "the snooze expires"} after ${state.snoozeEmptyCycleCount} empty cycle${state.snoozeEmptyCycleCount === 1 ? "" : "s"}.`,
+          fields: [
+            { label: "Source", value: snoozeStatus.source ?? "unknown" },
+            { label: "Reason", value: snoozeStatus.reason ?? "none" },
+            { label: "Cycle", value: cycleStartedAt },
+          ],
+          tone: "info",
+        });
+      }
     } else {
       deps.logActivity({
         kind: "ralph_cycle",
@@ -565,6 +722,7 @@ export async function runRalphLoopCycle(
       cycleDurationMs: Date.now() - cycleStartMs,
       currentBranch,
       homedir: os.homedir(),
+      snooze: snoozeStatus,
     };
     const controlPlaneSnapshot = deps.buildControlPlaneDashboardSnapshot(controlPlaneInput);
     deps.setLastHomeTabSnapshot(controlPlaneSnapshot);

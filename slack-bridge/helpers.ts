@@ -34,6 +34,8 @@ export interface SlackBridgeSettings {
   autoConnect?: boolean;
   autoFollow?: boolean;
   ralphLoopIntervalMs?: number;
+  ralphSnoozeAfterEmptyCycles?: number;
+  ralphSnoozeDurationMs?: number;
   skinTheme?: string;
   agentName?: string;
   agentEmoji?: string;
@@ -1354,6 +1356,11 @@ export const DEFAULT_RALPH_LOOP_FOLLOW_UP_COOLDOWN_MS = 60_000;
 export const DEFAULT_RALPH_LOOP_STUCK_WORKING_THRESHOLD_MS = 5 * 60_000;
 export const MIN_RALPH_LOOP_INTERVAL_MS = 1_000;
 export const MAX_RALPH_LOOP_INTERVAL_MS = 2_147_483_647;
+export const DEFAULT_RALPH_SNOOZE_DURATION_MS = 30 * 60_000;
+export const MIN_RALPH_SNOOZE_DURATION_MS = 60_000;
+export const MAX_RALPH_SNOOZE_DURATION_MS = 24 * 60 * 60_000;
+export const DEFAULT_RALPH_SNOOZE_AFTER_EMPTY_CYCLES = 0;
+export const MAX_RALPH_SNOOZE_AFTER_EMPTY_CYCLES = 100;
 
 export function resolveRalphLoopIntervalMs(settings: SlackBridgeSettings = {}): number {
   const configured = settings.ralphLoopIntervalMs;
@@ -1367,6 +1374,34 @@ export function resolveRalphLoopIntervalMs(settings: SlackBridgeSettings = {}): 
   }
 
   return intervalMs;
+}
+
+export function resolveRalphSnoozeDurationMs(settings: SlackBridgeSettings = {}): number {
+  const configured = settings.ralphSnoozeDurationMs;
+  if (!Number.isFinite(configured) || configured == null) {
+    return DEFAULT_RALPH_SNOOZE_DURATION_MS;
+  }
+
+  const durationMs = Math.trunc(configured);
+  if (durationMs < MIN_RALPH_SNOOZE_DURATION_MS || durationMs > MAX_RALPH_SNOOZE_DURATION_MS) {
+    return DEFAULT_RALPH_SNOOZE_DURATION_MS;
+  }
+
+  return durationMs;
+}
+
+export function resolveRalphSnoozeAfterEmptyCycles(settings: SlackBridgeSettings = {}): number {
+  const configured = settings.ralphSnoozeAfterEmptyCycles;
+  if (!Number.isFinite(configured) || configured == null) {
+    return DEFAULT_RALPH_SNOOZE_AFTER_EMPTY_CYCLES;
+  }
+
+  const cycles = Math.trunc(configured);
+  if (cycles < 0 || cycles > MAX_RALPH_SNOOZE_AFTER_EMPTY_CYCLES) {
+    return DEFAULT_RALPH_SNOOZE_AFTER_EMPTY_CYCLES;
+  }
+
+  return cycles;
 }
 
 export interface RalphLoopAgentWorkload extends AgentVisibilityInput {

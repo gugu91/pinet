@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
   applyTrackedAssignmentIdleReplyStalls,
   buildTrackedAssignmentReplyNudgeMessage,
+  clearRalphLoopSnooze,
   createRalphLoopState,
+  getRalphLoopSnoozeStatus,
   hydrateRalphLoopReportedGhosts,
+  runRalphLoopCycle,
+  setRalphLoopSnooze,
   startRalphLoop,
   stopRalphLoop,
   type RalphLoopDeps,
@@ -97,6 +104,226 @@ describe("startRalphLoop", () => {
       stopRalphLoop(state);
       setIntervalSpy.mockRestore();
     }
+  });
+});
+
+describe("RALPH snooze state", () => {
+  it("sets, reports, and clears manual snooze state", () => {
+    const state = createRalphLoopState();
+
+    const active = setRalphLoopSnooze(state, {
+      durationMs: 30 * 60_000,
+      reason: "no work available",
+      now: 1_000,
+    });
+
+    expect(active).toMatchObject({
+      active: true,
+      until: new Date(1_000 + 30 * 60_000).toISOString(),
+      remainingMs: 30 * 60_000,
+      reason: "no work available",
+      source: "manual",
+    });
+    expect(getRalphLoopSnoozeStatus(state, 1_000 + 30 * 60_000 + 1)).toMatchObject({
+      active: false,
+      remainingMs: 0,
+      reason: null,
+      source: null,
+    });
+
+    clearRalphLoopSnooze(state);
+
+    expect(getRalphLoopSnoozeStatus(state, 1_000)).toMatchObject({ active: false });
+  });
+});
+
+describe("runRalphLoopCycle snooze", () => {
+  it("auto-snoozes after configured empty cycles and quiets later empty cycle logs", async () => {
+    const state = createRalphLoopState();
+    const logActivity = vi.fn();
+    const records: unknown[] = [];
+    const db = {
+      getRecentRalphCycles: () => [],
+      getAllAgents: () => [],
+      getPendingInboxCount: () => 0,
+      getOwnedThreadCount: () => 0,
+      getBacklogCount: () => 0,
+      listTaskAssignmentsAwaitingFirstReply: () => [],
+      listTaskAssignments: () => [],
+      getMessagesByIds: () => [],
+      listPinetLanes: () => [],
+      recordRalphCycle: (record: unknown) => {
+        records.push(record);
+      },
+    };
+    const deps = createLoopDeps({
+      getBrokerDb: () => db as never,
+      getBrokerAgentId: () => "broker-1",
+      getLastMaintenance: () => ({
+        pendingBacklogCount: 0,
+        assignedBacklogCount: 0,
+        reapedAgentIds: [],
+        nudgedAgentIds: [],
+        repairedThreadClaims: 0,
+        anomalies: [],
+      }),
+      getSettings: () => ({
+        ralphSnoozeAfterEmptyCycles: 2,
+        ralphSnoozeDurationMs: 10 * 60_000,
+      }),
+      logActivity,
+    });
+    const ctx = { isIdle: () => true, ui: { notify: vi.fn() } } as unknown as ExtensionContext;
+
+    const originalCwd = process.cwd();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ralph-snooze-test-"));
+    try {
+      process.chdir(tempDir);
+      await runRalphLoopCycle(ctx, state, deps);
+      await runRalphLoopCycle(ctx, state, deps);
+      await runRalphLoopCycle(ctx, state, deps);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+
+    expect(state.snoozeEmptyCycleCount).toBe(3);
+    expect(getRalphLoopSnoozeStatus(state).active).toBe(true);
+    expect(records).toHaveLength(3);
+    expect(logActivity.mock.calls.map(([entry]) => entry.title)).toEqual([
+      "RALPH cycle",
+      "RALPH snoozed",
+    ]);
+  });
+
+  it("wakes a manual snooze when a live worker is active", async () => {
+    const state = createRalphLoopState();
+    setRalphLoopSnooze(state, { durationMs: 10 * 60_000, now: Date.now() });
+    state.snoozeEmptyCycleCount = 4;
+    const logActivity = vi.fn();
+    const now = new Date().toISOString();
+    const db = {
+      getRecentRalphCycles: () => [],
+      getAllAgents: () => [
+        {
+          id: "worker-1",
+          name: "Busy Spren",
+          emoji: "😱",
+          pid: 1234,
+          connectedAt: now,
+          lastSeen: now,
+          lastHeartbeat: now,
+          lastActivity: now,
+          metadata: null,
+          status: "working",
+        },
+      ],
+      getPendingInboxCount: () => 0,
+      getOwnedThreadCount: () => 0,
+      getBacklogCount: () => 0,
+      listTaskAssignmentsAwaitingFirstReply: () => [],
+      listTaskAssignments: () => [],
+      getMessagesByIds: () => [],
+      listPinetLanes: () => [],
+      recordRalphCycle: vi.fn(),
+    };
+    const deps = createLoopDeps({
+      getBrokerDb: () => db as never,
+      getBrokerAgentId: () => "broker-1",
+      getLastMaintenance: () => ({
+        pendingBacklogCount: 0,
+        assignedBacklogCount: 0,
+        reapedAgentIds: [],
+        nudgedAgentIds: [],
+        repairedThreadClaims: 0,
+        anomalies: [],
+      }),
+      getSettings: () => ({ ralphSnoozeAfterEmptyCycles: 1 }),
+      logActivity,
+    });
+    const ctx = { isIdle: () => true, ui: { notify: vi.fn() } } as unknown as ExtensionContext;
+
+    const originalCwd = process.cwd();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ralph-snooze-test-"));
+    try {
+      process.chdir(tempDir);
+      await runRalphLoopCycle(ctx, state, deps);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+
+    expect(getRalphLoopSnoozeStatus(state).active).toBe(false);
+    expect(state.snoozeEmptyCycleCount).toBe(0);
+    expect(logActivity.mock.calls.map(([entry]) => entry.title)).toContain("RALPH snooze ended");
+  });
+
+  it("does not auto-snooze while a tracked assignment remains active", async () => {
+    const state = createRalphLoopState();
+    state.taskAssignmentReportSignature = [
+      "RALPH LOOP — WORKER STATUS:",
+      "- worker-1: #732 → no commits, no PR ⚠️",
+    ].join("\n");
+    const logActivity = vi.fn();
+    const records: unknown[] = [];
+    const now = new Date().toISOString();
+    const db = {
+      getRecentRalphCycles: () => [],
+      getAllAgents: () => [],
+      getPendingInboxCount: () => 0,
+      getOwnedThreadCount: () => 0,
+      getBacklogCount: () => 0,
+      listTaskAssignmentsAwaitingFirstReply: () => [],
+      listTaskAssignments: () => [
+        {
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 732,
+          branch: null,
+          prNumber: null,
+          status: "assigned",
+          threadId: "a2a:test",
+          sourceMessageId: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      getMessagesByIds: () => [],
+      listPinetLanes: () => [],
+      recordRalphCycle: (record: unknown) => {
+        records.push(record);
+      },
+    };
+    const deps = createLoopDeps({
+      getBrokerDb: () => db as never,
+      getBrokerAgentId: () => "broker-1",
+      getLastMaintenance: () => ({
+        pendingBacklogCount: 0,
+        assignedBacklogCount: 0,
+        reapedAgentIds: [],
+        nudgedAgentIds: [],
+        repairedThreadClaims: 0,
+        anomalies: [],
+      }),
+      getSettings: () => ({ ralphSnoozeAfterEmptyCycles: 1 }),
+      logActivity,
+    });
+    const ctx = { isIdle: () => true, ui: { notify: vi.fn() } } as unknown as ExtensionContext;
+
+    const originalCwd = process.cwd();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ralph-snooze-test-"));
+    try {
+      process.chdir(tempDir);
+      await runRalphLoopCycle(ctx, state, deps);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+
+    expect(getRalphLoopSnoozeStatus(state).active).toBe(false);
+    expect(state.snoozeEmptyCycleCount).toBe(0);
+    expect(records).toHaveLength(1);
+    expect(logActivity.mock.calls.map(([entry]) => entry.title)).toEqual(["RALPH cycle"]);
   });
 });
 

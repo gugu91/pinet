@@ -54,6 +54,7 @@ export const WRITE_TOOLS = new Set([
   "slack:modal_update",
   "pinet:schedule",
   "pinet:send",
+  "pinet:snooze",
   "pinet:free",
   "pinet:ports",
   "pinet:reload",

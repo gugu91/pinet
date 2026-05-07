@@ -10,7 +10,10 @@ import {
   normalizePinetOutputOptions,
   type PinetOutputOptions,
 } from "@gugu910/pi-pinet-core/output-options";
-import { resolveScheduledWakeupFireAt } from "@gugu910/pi-pinet-core/scheduled-wakeups";
+import {
+  parseScheduledWakeupDelay,
+  resolveScheduledWakeupFireAt,
+} from "@gugu910/pi-pinet-core/scheduled-wakeups";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
@@ -23,6 +26,7 @@ import {
 import { isBroadcastChannelTarget } from "./broker/agent-messaging.js";
 import { DEFAULT_HEARTBEAT_TIMEOUT_MS } from "./broker/socket-server.js";
 import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
+import type { RalphSnoozeStatus } from "./ralph-loop.js";
 import type {
   PortLeaseAcquireInput,
   PortLeaseInfo,
@@ -95,6 +99,9 @@ export interface RegisterPinetToolsDeps {
   getPortLease: (leaseId: string) => Promise<PortLeaseInfo | null>;
   listPortLeases: (options: PortLeaseListOptions) => Promise<PortLeaseInfo[]>;
   expirePortLeases: () => Promise<PortLeaseInfo[]>;
+  ralphSnoozeStatus?: () => RalphSnoozeStatus | null;
+  snoozeRalphLoop?: (input: { durationMs: number; reason?: string | null }) => RalphSnoozeStatus;
+  clearRalphSnooze?: () => RalphSnoozeStatus;
 }
 
 interface PinetAgentsRoutingHint {
@@ -109,6 +116,7 @@ type PinetDispatcherAction =
   | "send"
   | "read"
   | "free"
+  | "snooze"
   | "schedule"
   | "agents"
   | "lanes"
@@ -159,6 +167,10 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
     { action: "read", args: { unread_only: false, mark_read: false, full: true } },
   ],
   free: [{ action: "free", args: { note: "Wrapped up <issue>" } }],
+  snooze: [
+    { action: "snooze", args: { op: "set", duration: "30m", reason: "no work available" } },
+    { action: "snooze", args: { op: "clear" } },
+  ],
   schedule: [{ action: "schedule", args: { delay: "30m", message: "Check queue state" } }],
   agents: [{ action: "agents", args: { repo: "<repo>", role: "worker", full: true } }],
   ports: [
@@ -226,6 +238,7 @@ function normalizeDispatcherAction(value: unknown): PinetDispatcherAction {
     "send",
     "read",
     "free",
+    "snooze",
     "schedule",
     "agents",
     "lanes",
@@ -274,6 +287,8 @@ function classifyPinetError(message: string): PinetDispatcherError {
     message.includes("thread_id must be") ||
     message.includes("message is required") ||
     message.includes("target is required") ||
+    message.includes("duration is required") ||
+    message.includes("op must be") ||
     message.includes("lease_id") ||
     message.includes("ttl_ms") ||
     message.includes("purpose") ||
@@ -643,6 +658,68 @@ function runPinetFreeAction(
         queuedInboxCount: result.queuedInboxCount,
       },
     };
+  })();
+}
+
+function formatRalphSnoozeResult(status: RalphSnoozeStatus | null): string {
+  if (!status) {
+    return "RALPH snooze unavailable outside broker mode.";
+  }
+  if (!status.active) {
+    return `RALPH snooze off (${status.emptyCycleCount} empty cycle${status.emptyCycleCount === 1 ? "" : "s"}).`;
+  }
+  return `RALPH snoozed until ${status.until ?? "unknown"}${status.reason ? ` (${status.reason})` : ""}.`;
+}
+
+function runPinetSnoozeAction(
+  params: Record<string, unknown>,
+  deps: RegisterPinetToolsDeps,
+  toolName: string,
+): Promise<PinetToolResult> {
+  return (async () => {
+    const op = typeof params.op === "string" ? params.op.trim().toLowerCase() : "status";
+    const duration = typeof params.duration === "string" ? params.duration.trim() : "";
+    const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+
+    deps.requireToolPolicy(
+      toolName,
+      undefined,
+      `op=${op} | duration=${duration} | reason=${reason}`,
+    );
+
+    if (deps.brokerRole() !== "broker") {
+      throw new Error("RALPH snooze is only available while running as the Pinet broker.");
+    }
+
+    if (op === "status") {
+      const status = deps.ralphSnoozeStatus?.() ?? null;
+      return {
+        content: [{ type: "text", text: formatRalphSnoozeResult(status) }],
+        details: status,
+      };
+    }
+
+    if (["clear", "off", "wake", "resume", "cancel"].includes(op)) {
+      const status = deps.clearRalphSnooze?.();
+      if (!status) throw new Error("RALPH snooze is unavailable in this runtime.");
+      return {
+        content: [{ type: "text", text: formatRalphSnoozeResult(status) }],
+        details: status,
+      };
+    }
+
+    if (!["set", "start", "on", "snooze"].includes(op)) {
+      throw new Error("op must be status, set, or clear");
+    }
+
+    const durationMs = parseScheduledWakeupDelay(duration);
+    if (durationMs == null) {
+      throw new Error("duration is required for op=set; use values like 5m, 30s, 1h30m, or 1d");
+    }
+
+    const status = deps.snoozeRalphLoop?.({ durationMs, reason: reason || "tool action" });
+    if (!status) throw new Error("RALPH snooze is unavailable in this runtime.");
+    return { content: [{ type: "text", text: formatRalphSnoozeResult(status) }], details: status };
   })();
 }
 
@@ -1276,6 +1353,21 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
   });
 
   registerAction({
+    name: "snooze",
+    description:
+      "Broker-only: inspect, set, or clear RALPH snooze so empty maintenance cycles stay quiet while urgent work still routes normally.",
+    parameters: Type.Object({
+      op: Type.Optional(Type.String({ description: "Operation: status, set, or clear" })),
+      duration: Type.Optional(
+        Type.String({ description: "For op=set, relative duration like 30m" }),
+      ),
+      reason: Type.Optional(Type.String({ description: "Optional snooze reason" })),
+      ...PINET_OUTPUT_OPTION_PARAMETERS,
+    }),
+    execute: (_id, params, _output) => runPinetSnoozeAction(params, deps, "pinet:snooze"),
+  });
+
+  registerAction({
     name: "reload",
     description: "Ask another connected Pinet agent to reload itself.",
     parameters: Type.Object({
@@ -1450,11 +1542,11 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     label: "Pinet Dispatcher",
     description: "Dispatch Pinet operations by action with compact help and schema discovery.",
     promptSnippet:
-      'Use this compact dispatcher for Pinet actions: send, read, free, schedule, agents, lanes, ports, reload, exit, and help. Use /pinet start, /pinet follow, and /pinet unfollow for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
+      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, and help. Use /pinet start, /pinet follow, and /pinet unfollow for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
     parameters: Type.Object({
       action: Type.String({
         description:
-          "Action name: help, send, read, free, schedule, agents, lanes, ports, reload, or exit.",
+          "Action name: help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit.",
       }),
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {

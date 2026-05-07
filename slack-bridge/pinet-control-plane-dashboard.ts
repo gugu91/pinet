@@ -10,6 +10,7 @@ import {
 import { DEFAULT_HEARTBEAT_TIMEOUT_MS } from "./broker/socket-server.js";
 import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
 import type { BrokerMaintenanceResult } from "./broker/maintenance.js";
+import type { RalphSnoozeStatus } from "./ralph-loop.js";
 import type { PinetLaneInfo, TaskAssignmentInfo } from "./broker/types.js";
 import {
   buildBrokerControlPlaneDashboardSnapshot,
@@ -49,6 +50,7 @@ export interface PinetControlPlaneDashboardDeps {
   heartbeatTimerActive: () => boolean;
   maintenanceTimerActive: () => boolean;
   getLastMaintenance: () => BrokerMaintenanceResult | null;
+  getRalphSnoozeStatus?: () => RalphSnoozeStatus | null;
 }
 
 export interface PinetControlPlaneDashboard {
@@ -144,6 +146,7 @@ export function createPinetControlPlaneDashboard(
       cycleDurationMs: 0,
       currentBranch,
       homedir: os.homedir(),
+      snooze: deps.getRalphSnoozeStatus?.() ?? null,
     });
   }
 
