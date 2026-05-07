@@ -254,8 +254,10 @@ migration.
   channel ID. When `channel` is omitted, it first resolves a provided
   `thread_ts` to a tracked thread channel, then falls back to `defaultChannel`
   from settings. `update` edits an existing message and requires the exact
-  `channel` plus message `ts`. `slack_send` is intentionally narrower and
-  resolves the current tracked assistant thread/DM context.
+  `channel` plus message `ts`; include the root `thread_ts` as the approval
+  context when guardrails require `slack:update` confirmation for a threaded
+  reply. `slack_send` is intentionally narrower and resolves the current
+  tracked assistant thread/DM context.
 - **Rich messages use Block Kit JSON.** Pass `blocks` directly to
   `slack_send`, `post_channel`, or `update`; keep `text` as the notification/fallback.
   Block Kit builder tools are not registered by this package. Load the bundled

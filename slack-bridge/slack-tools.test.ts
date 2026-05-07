@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerSlackTools, type SlackPinetDeliveryInput } from "./slack-tools.js";
+import { createThreadConfirmationPolicy } from "./thread-confirmations.js";
 import type { InboxMessage } from "./helpers.js";
 import type { SlackResult } from "./slack-api.js";
 
@@ -39,7 +40,19 @@ function unwrapSlackDispatcherResponse(response: ToolResponse): ToolResponse {
 }
 
 describe("registerSlackTools", () => {
-  function setup() {
+  function setup(
+    options: {
+      requireToolPolicy?: (toolName: string, threadTs: string | undefined, action: string) => void;
+      registerConfirmationRequest?: (
+        threadTs: string,
+        tool: string,
+        action: string,
+      ) => {
+        status: "created" | "refreshed" | "conflict";
+        conflict?: { toolPattern: string; action: string };
+      };
+    } = {},
+  ) {
     const tools = new Map<string, ToolDefinition>();
     const pi = {
       registerTool: vi.fn((definition: ToolDefinition) => {
@@ -233,7 +246,14 @@ describe("registerSlackTools", () => {
       null;
     const noteThreadReply = vi.fn();
     const clearPendingAttention = vi.fn();
-    const requireToolPolicy = vi.fn();
+    const requireToolPolicy = vi.fn(
+      options.requireToolPolicy ??
+        ((_toolName: string, _threadTs: string | undefined, _action: string) => {}),
+    );
+    const registerConfirmationRequest = vi.fn(
+      options.registerConfirmationRequest ??
+        ((_threadTs: string, _tool: string, _action: string) => ({ status: "created" as const })),
+    );
     let pinetDeliveryAvailable = false;
     const sendPinetSlackMessage = vi.fn(async (input: SlackPinetDeliveryInput) => ({
       adapter: "slack",
@@ -263,7 +283,7 @@ describe("registerSlackTools", () => {
       resolveChannel: async (nameOrId) => `resolved:${nameOrId}`,
       rememberChannel: () => {},
       requireToolPolicy,
-      registerConfirmationRequest: () => ({ status: "created" }),
+      registerConfirmationRequest,
       getBotUserId: () => "U_BOT",
       pinetDelivery: {
         isAvailable: () => pinetDeliveryAvailable,
@@ -1201,6 +1221,61 @@ describe("registerSlackTools", () => {
       "1712345678.000100",
       "channel=#deployments | thread_ts=1712345678.000100 | ts=1712345678.000200 | text=Threaded reply updated | blocks=0",
     );
+  });
+
+  it("allows confirmation-gated updates to threaded replies after approval in the root thread", async () => {
+    const policy = createThreadConfirmationPolicy({
+      getGuardrails: () => ({ requireConfirmation: ["slack:update"] }),
+    });
+    const { registeredTools, slack, setResolveThreadChannel } = setup({
+      requireToolPolicy: policy.requireToolPolicy,
+      registerConfirmationRequest: policy.registerRequest,
+    });
+    setResolveThreadChannel(async () => "C_DEPLOY");
+    const dispatcher = registeredTools.get("slack")!;
+    const updateArgs = {
+      channel: "#deployments",
+      thread_ts: "1712345678.000100",
+      ts: "1712345678.000200",
+      text: "Threaded reply updated",
+    };
+    const actionString =
+      "channel=#deployments | thread_ts=1712345678.000100 | ts=1712345678.000200 | text=Threaded reply updated | blocks=0";
+
+    const blocked = await dispatcher.execute("tool-update-needs-confirm", {
+      action: "update",
+      args: updateArgs,
+    });
+    const blockedEnvelope = blocked.details as SlackDispatcherEnvelope;
+    expect(blockedEnvelope.status).toBe("failed");
+    expect(blockedEnvelope.errors[0]?.message).toContain(
+      'Call slack with action "confirm_action" in thread 1712345678.000100',
+    );
+    expect(slack).not.toHaveBeenCalledWith("chat.update", expect.any(String), expect.any(Object));
+
+    const confirm = await dispatcher.execute("tool-confirm-update", {
+      action: "confirm_action",
+      args: {
+        thread_ts: "1712345678.000100",
+        tool: "slack:update",
+        action: actionString,
+      },
+    });
+    const confirmEnvelope = confirm.details as SlackDispatcherEnvelope;
+    expect(confirmEnvelope.status).toBe("succeeded");
+    expect(policy.consumeReply("1712345678.000100", "yes")).toEqual({ approved: true });
+
+    const approved = await dispatcher.execute("tool-update-approved", {
+      action: "update",
+      args: updateArgs,
+    });
+    const approvedEnvelope = approved.details as SlackDispatcherEnvelope;
+    expect(approvedEnvelope.status).toBe("succeeded");
+    expect(slack).toHaveBeenCalledWith("chat.update", "xoxb-initial", {
+      channel: "resolved:#deployments",
+      ts: "1712345678.000200",
+      text: "Threaded reply updated",
+    });
   });
 
   it("documents Slack update dispatcher schema and validates required payload", async () => {

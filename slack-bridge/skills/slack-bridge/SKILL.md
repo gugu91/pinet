@@ -49,6 +49,8 @@ should use the colon form.
 ## Action quick map
 
 - Thread/channel messaging: `post_channel`, `update`, `read`, `read_channel`, `export`
+  - For guarded `update` calls on threaded replies, pass both the message `ts`
+    to edit and the root `thread_ts` as the confirmation context.
 - Lightweight acknowledgement: `react`
 - Files/snippets: `upload`
 - Time-based follow-up: `schedule`
