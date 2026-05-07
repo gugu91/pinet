@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SlackSocketModeClientConfig } from "./slack-access.js";
 import {

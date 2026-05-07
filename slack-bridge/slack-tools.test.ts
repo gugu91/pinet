@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerSlackTools, type SlackPinetDeliveryInput } from "./slack-tools.js";
 import type { InboxMessage } from "./helpers.js";
 import type { SlackResult } from "./slack-api.js";

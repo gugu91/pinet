@@ -4,16 +4,16 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { StringEnum } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
   getAgentDir,
   truncateHead,
-} from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 import {

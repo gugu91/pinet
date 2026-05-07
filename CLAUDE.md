@@ -108,7 +108,7 @@ Each extension is a workspace package with a `package.json` that declares the
 `pi` manifest and an `index.ts` entry point:
 
 ```typescript
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   // Register tools, commands, event handlers

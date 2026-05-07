@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { TruncationResult } from "@mariozechner/pi-coding-agent";
+import type { TruncationResult } from "@earendil-works/pi-coding-agent";
 
 import { isReadOnlyQuery, type SourceValues } from "./helpers.js";
 

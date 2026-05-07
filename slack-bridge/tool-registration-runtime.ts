@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerIMessageTools, type RegisterIMessageToolsDeps } from "./imessage-tools.js";
 import { registerPinetTools, type RegisterPinetToolsDeps } from "./pinet-tools.js";
 import { registerSlackTools, type RegisterSlackToolsDeps } from "./slack-tools.js";

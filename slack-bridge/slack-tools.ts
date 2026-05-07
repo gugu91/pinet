@@ -1,5 +1,9 @@
 import os from "node:os";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { InboxMessage } from "./helpers.js";
 import type { SlackResult } from "./slack-api.js";
