@@ -141,13 +141,44 @@ describe("compaction-worker runtime decisions", () => {
     expect(largeContextPolicy.triggerAtTokens).toBe(934_464);
     expect(
       decideRuntimeAction({
-        usage: { tokens: 934_464, contextWindow: 1_000_000 },
+        usage: { tokens: 990_000, contextWindow: 1_000_000 },
         policy: largeContextPolicy,
         prepared: undefined,
         inFlight: false,
         nowMs: 100,
       }),
     ).toEqual({ action: "compact", reason: "trigger-threshold-live", usePrepared: false });
+  });
+
+  it("stands down near Pi's built-in threshold only when a positive skip margin is configured", () => {
+    const skipPolicy = resolveEffectivePolicy(
+      resolveBaseConfig({
+        enabled: true,
+        reserveTokens: 65_536,
+        builtinReserveTokens: 16_384,
+        builtinSkipMarginPercent: 2,
+      }),
+      { provider: "anthropic", id: "claude-opus-4", contextWindow: 1_000_000 },
+    );
+
+    expect(
+      decideRuntimeAction({
+        usage: { tokens: 970_000, contextWindow: 1_000_000 },
+        policy: skipPolicy,
+        prepared: undefined,
+        inFlight: false,
+        nowMs: 100,
+      }),
+    ).toEqual({ action: "none", reason: "near-built-in-threshold" });
+    expect(
+      decideRuntimeAction({
+        usage: { tokens: 970_000 },
+        policy: skipPolicy,
+        prepared: undefined,
+        inFlight: false,
+        nowMs: 100,
+      }),
+    ).toEqual({ action: "none", reason: "near-built-in-threshold" });
   });
 
   it("applies cooldown only when the current runtime supplies a recent compaction time", () => {

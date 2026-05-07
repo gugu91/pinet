@@ -82,6 +82,7 @@ export interface EffectivePolicy extends ResolvedRule {
   showStatus: boolean;
   modelKey: string;
   matchedProfile?: string;
+  contextWindowTokens?: number;
   prepareAtTokens?: number;
   triggerAtTokens?: number;
   policyHash: string;
@@ -186,11 +187,13 @@ export function resolveEffectivePolicy(
   const merged = matched
     ? resolveRule(mergeRawRules(base.rawDefault, matched.raw))
     : base.defaultRule;
-  const contextWindow = usage?.contextWindow ?? model?.contextWindow;
-  const prepareAtTokens = resolveThreshold(merged.prepareAt, contextWindow);
-  const explicitTrigger = resolveThreshold(merged.triggerAt, contextWindow);
+  const contextWindowTokens = normalizeOptionalPositiveInt(
+    usage?.contextWindow ?? model?.contextWindow,
+  );
+  const prepareAtTokens = resolveThreshold(merged.prepareAt, contextWindowTokens);
+  const explicitTrigger = resolveThreshold(merged.triggerAt, contextWindowTokens);
   const triggerAtTokens =
-    explicitTrigger ?? resolveReserveThreshold(contextWindow, merged.reserveTokens);
+    explicitTrigger ?? resolveReserveThreshold(contextWindowTokens, merged.reserveTokens);
   const effective: EffectivePolicy = {
     ...merged,
     enabled: base.enabled,
@@ -198,6 +201,7 @@ export function resolveEffectivePolicy(
     showStatus: base.showStatus,
     modelKey: key,
     matchedProfile: matched?.name,
+    contextWindowTokens,
     prepareAtTokens,
     triggerAtTokens,
     policyHash: hashPolicy({
@@ -464,7 +468,9 @@ function resolveReserveThreshold(
 }
 
 function isNearBuiltinThreshold(usage: UsageLike, policy: EffectivePolicy): boolean {
-  const contextWindow = normalizeOptionalPositiveInt(usage.contextWindow);
+  if (policy.builtinSkipMarginPercent <= 0) return false;
+  const contextWindow =
+    normalizeOptionalPositiveInt(usage.contextWindow) ?? policy.contextWindowTokens;
   if (contextWindow === undefined) return false;
   const builtinThreshold = Math.max(0, contextWindow - policy.builtinReserveTokens);
   const marginTokens = Math.floor((contextWindow * policy.builtinSkipMarginPercent) / 100);
