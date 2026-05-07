@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   type RalphLoopAgentWorkload,
   type RalphLoopEvaluationOptions,

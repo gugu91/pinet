@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RegisterIMessageToolsDeps } from "./imessage-tools.js";
 import type { RegisterPinetToolsDeps } from "./pinet-tools.js";
 import type { RegisterSlackToolsDeps } from "./slack-tools.js";

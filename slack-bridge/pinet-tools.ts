@@ -14,7 +14,7 @@ import {
   parseScheduledWakeupDelay,
   resolveScheduledWakeupFireAt,
 } from "@gugu910/pi-pinet-core/scheduled-wakeups";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
   buildAgentDisplayInfo,

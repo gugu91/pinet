@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const AUTO_DRAIN_INTERRUPT_SUPPRESSION_MS = 1_500;
 const AUTO_DRAIN_IDLE_RETRY_MS = 250;

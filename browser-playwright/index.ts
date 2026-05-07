@@ -2,8 +2,8 @@ import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StringEnum, Type } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   assessUrl,
   buildInstallInstructions,

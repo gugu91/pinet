@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGitContextCache, probeGitBranch, probeGitContext } from "./git-metadata.js";
 import {
   type FollowerRuntimeDiagnostic,
