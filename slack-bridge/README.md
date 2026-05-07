@@ -384,12 +384,15 @@ The `canvas_comments_read` dispatcher action is intentionally narrow:
 
 ### Slash commands
 
-| Command           | Description                                                |
-| ----------------- | ---------------------------------------------------------- |
-| `/pinet <action>` | Unified Pinet command surface; run `/pinet help` for usage |
-| `/pinet status`   | Show connection status, threads, and agent identity        |
-| `/pinet rename`   | Change the agent's display name                            |
-| `/pinet logs`     | Show recent broker activity log entries                    |
+| Command           | Description                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `/pinet <action>` | Unified Pinet command surface; run `/pinet help` for usage                                    |
+| `/pinet status`   | Show connection status, threads, and agent identity                                           |
+| `/pinet rename`   | Change the agent's display name                                                               |
+| `/pinet logs`     | Show recent broker activity log entries                                                       |
+| `/oathgate`       | Broker-only safe Pinet agent picker/context browser for copying an agent name into Slack chat |
+
+`/oathgate` opens a compact modal listing visible Pinet agents with safe routing context such as status, repo/branch, relative worktree hint, workload, and active lane reference. It intentionally does not send or route messages from the modal; copy/paste the selected agent name into chat instead. Raw stable ids, absolute local paths, full metadata blobs, and private prompt contents must not appear in the Slack-visible picker.
 
 ## Runtime modes
 

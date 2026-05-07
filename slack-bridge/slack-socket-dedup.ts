@@ -169,6 +169,16 @@ export function extractSlackSocketDedupKey(frame: Record<string, unknown>): stri
     return payload?.event ? extractSlackEventDedupKey(payload.event) : null;
   }
 
+  if (frame.type === "slash_commands") {
+    const payload = frame.payload as Record<string, unknown> | undefined;
+    const triggerId = asNonEmptyString(payload?.trigger_id);
+    const command = asNonEmptyString(payload?.command);
+    const userId = asNonEmptyString(payload?.user_id);
+    return triggerId && command
+      ? ["slash_commands", command, userId ?? "", triggerId].join(":")
+      : null;
+  }
+
   const interactivePayload = extractSlackInteractivePayloadFromEnvelope(frame);
   return interactivePayload ? extractSlackInteractiveDedupKey(interactivePayload) : null;
 }

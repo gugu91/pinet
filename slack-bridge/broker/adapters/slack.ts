@@ -13,6 +13,7 @@ import {
   setSlackSuggestedPrompts,
   SlackSocketModeClient,
   type ParsedAppHomeOpened,
+  type ParsedSlashCommand,
   type ParsedThreadContextChanged,
   type ParsedThreadStarted,
 } from "../../slack-access.js";
@@ -66,6 +67,10 @@ export interface SlackAdapterConfig {
   ) => void;
   /** Best-effort callback for Home tab opens. */
   onAppHomeOpened?: (event: ParsedAppHomeOpened) => Promise<void> | void;
+  /** Build the /oathgate modal view from current broker state. */
+  onOathgateCommand?: (
+    event: ParsedSlashCommand,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
 interface SlackThreadInfo {
@@ -145,6 +150,7 @@ export class SlackAdapter implements MessageAdapter {
       onMemberJoinedChannel: (event) => this.onMemberJoined(event),
       onAppHomeOpened: (event) => this.onAppHomeOpened(event),
       onInteractive: (event) => this.emitInteractiveInbound(event),
+      onSlashCommand: (event) => this.onSlashCommand(event),
       onError: (error) => {
         if (!isAbortError(error)) {
           console.error(`[slack-adapter] Socket Mode: ${errorMsg(error)}`);
@@ -478,6 +484,22 @@ export class SlackAdapter implements MessageAdapter {
       ...(isChannelMention ? { isChannelMention: true } : {}),
       ...(metadata ? { metadata } : {}),
     });
+  }
+
+  private async onSlashCommand(command: ParsedSlashCommand): Promise<void> {
+    if (command.command !== "/oathgate") return;
+    if (!isSlackUserAllowed(this.allowlist, command.userId)) return;
+    if (!this.config.onOathgateCommand) return;
+
+    try {
+      const view = await this.config.onOathgateCommand(command);
+      await this.callSlack("views.open", this.config.botToken, {
+        trigger_id: command.triggerId,
+        view,
+      });
+    } catch (error) {
+      console.error(`[slack-adapter] /oathgate failed: ${errorMsg(error)}`);
+    }
   }
 
   private async emitInteractiveInbound(normalized: {

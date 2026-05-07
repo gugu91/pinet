@@ -77,6 +77,33 @@ describe("parseSocketFrame", () => {
     });
   });
 
+  it("extracts slash command payloads", () => {
+    const frame = JSON.stringify({
+      type: "slash_commands",
+      payload: {
+        command: "/oathgate",
+        text: "",
+        trigger_id: "trigger-1",
+        user_id: "U123",
+        channel_id: "C123",
+        channel_name: "ops",
+        team_id: "T123",
+        response_url: "https://hooks.slack.test/response",
+      },
+    });
+    const result = parseSocketFrame(frame);
+    expect(result?.slashCommand).toEqual({
+      command: "/oathgate",
+      text: "",
+      triggerId: "trigger-1",
+      userId: "U123",
+      channelId: "C123",
+      channelName: "ops",
+      teamId: "T123",
+      responseUrl: "https://hooks.slack.test/response",
+    });
+  });
+
   it("does not extract event from non-events_api types", () => {
     const frame = JSON.stringify({
       type: "hello",
@@ -979,6 +1006,82 @@ describe("SlackAdapter", () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(resolveUserSpy).toHaveBeenCalledTimes(1);
     expect(addReactionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens /oathgate modal from slash command payloads", async () => {
+    const onOathgateCommand = vi.fn(() => ({
+      type: "modal",
+      title: { type: "plain_text", text: "Oathgate" },
+      blocks: [],
+    }));
+    const adapter = new SlackAdapter({
+      ...baseConfig,
+      onOathgateCommand,
+    });
+    const callSlack = vi
+      .spyOn(
+        adapter as unknown as {
+          callSlack: (
+            method: string,
+            token: string,
+            body?: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+        },
+        "callSlack",
+      )
+      .mockResolvedValue({ ok: true });
+
+    const client = new SlackSocketModeClient({
+      slack: vi.fn(async () => ({})),
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      onSlashCommand: (event) =>
+        (
+          adapter as unknown as {
+            onSlashCommand: (input: {
+              command: string;
+              text: string;
+              triggerId: string;
+              userId: string;
+              channelId: string;
+            }) => Promise<void>;
+          }
+        ).onSlashCommand(event),
+    });
+
+    await (
+      client as unknown as {
+        handleFrame: (raw: string) => Promise<void>;
+      }
+    ).handleFrame(
+      JSON.stringify({
+        envelope_id: "env-oathgate",
+        type: "slash_commands",
+        payload: {
+          command: "/oathgate",
+          text: "",
+          trigger_id: "trigger-1",
+          user_id: "U123",
+          channel_id: "C123",
+        },
+      }),
+    );
+
+    expect(onOathgateCommand).toHaveBeenCalledWith({
+      command: "/oathgate",
+      text: "",
+      triggerId: "trigger-1",
+      userId: "U123",
+      channelId: "C123",
+    });
+    expect(callSlack).toHaveBeenCalledWith("views.open", "xoxb-test-token", {
+      trigger_id: "trigger-1",
+      view: {
+        type: "modal",
+        title: { type: "plain_text", text: "Oathgate" },
+        blocks: [],
+      },
+    });
   });
 
   it("emits normalized block action payloads with structured metadata", async () => {

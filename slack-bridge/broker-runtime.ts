@@ -52,6 +52,7 @@ import {
 } from "./ralph-loop.js";
 import { TtlCache } from "./ttl-cache.js";
 import { createBrokerGhostReaper } from "./broker/ghost-reaper.js";
+import { buildOathgateAgentSummaries, buildOathgateModalView } from "./oathgate.js";
 
 export interface BrokerRuntimeConnectResult {
   botUserId: string | null;
@@ -578,6 +579,18 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
         },
         onAppHomeOpened: async ({ userId }) => {
           await deps.onAppHomeOpened(userId, ctx);
+        },
+        onOathgateCommand: () => {
+          const agents = broker.db.getAllAgents().map((agent) => ({
+            ...agent,
+            pendingInboxCount: broker.db.getPendingInboxCount(agent.id),
+            ownedThreadCount: broker.db.getOwnedThreadCount(agent.id),
+          }));
+          const summaries = buildOathgateAgentSummaries({
+            agents,
+            lanes: broker.db.listPinetLanes({ includeDone: false }),
+          });
+          return buildOathgateModalView({ agents: summaries });
         },
       });
       let selfId: string | null = null;

@@ -5,6 +5,7 @@ import {
   normalizeReactionName,
   type ReactionCommandTemplate,
 } from "./reaction-triggers.js";
+import { buildOathgateModalView } from "./oathgate.js";
 import type { SlackInteractiveInboxEvent } from "./slack-block-kit.js";
 import type { SlackToolsThreadContextPort } from "./slack-tools.js";
 import {
@@ -14,6 +15,7 @@ import {
   SlackSocketModeClient,
   type ParsedAppHomeOpened,
   type ParsedThreadContextChanged,
+  type ParsedSlashCommand,
   type ParsedThreadStarted,
   type SlackAccessSet,
   type SlackCall,
@@ -111,6 +113,20 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
       agentAliases: deps.getAgentAliases(),
       agentOwnerToken: deps.getAgentOwnerToken(),
     };
+  }
+
+  async function onSlashCommand(command: ParsedSlashCommand): Promise<void> {
+    if (command.command !== "/oathgate") return;
+    if (!deps.isUserAllowed(command.userId)) return;
+
+    try {
+      await deps.slack("views.open", deps.getBotToken(), {
+        trigger_id: command.triggerId,
+        view: buildOathgateModalView({ agents: [] }),
+      });
+    } catch (error) {
+      console.error(`[slack-bridge] /oathgate fallback failed: ${deps.formatError(error)}`);
+    }
   }
 
   function trackOwnedThread(threadTs: string, channelId: string, source = "slack"): void {
@@ -530,6 +546,7 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         },
         onInteractive: (event: SlackInteractiveInboxEvent) =>
           queueInteractiveInboxEvent(event, ctx),
+        onSlashCommand,
       });
 
       slackSocket = socket;
