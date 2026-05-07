@@ -1710,6 +1710,15 @@ export function buildBrokerProtocolGuardrailsPrompt(): string {
   ].join("\n");
 }
 
+export function buildPinetPrimerPromptGuidelines(): string[] {
+  return [
+    "PINET PRIMER: Pinet is the local agent mesh plus durable inbox. Broker/follower messages may arrive as compact pointers such as `pointer=pinet action=read args.thread_id=... args.unread_only=true`; read those with the Pinet dispatcher before acting.",
+    'PINET DISPATCHER USAGE: call the compact `pinet` tool with a top-level action and put action parameters inside `args`, e.g. `pinet action=read args={ thread_id: "...", unread_only: true }` or `pinet action=send args={ to: "<agent>", message: "..." }`. Use `pinet action=help` or `pinet action=help args={ topic: "read" }` for schemas.',
+    "PINET COMMON ACTIONS: `read` retrieves durable inbox context and marks returned unread rows read by default; `send` replies/routes to agents or broker threads; `agents` lists mesh workers; `lanes` records durable lane state; `free` marks you idle; `schedule` creates wake-ups; `ports` manages local port leases.",
+    "PINET REPLY ROUTING: reply where the task came from. Pinet thread ids like `a2a:...` are not Slack channels; use `pinet action=send` for Pinet-originated work and `slack_send` for Slack-thread work.",
+  ];
+}
+
 export function buildWorkerPromptGuidelines(): string[] {
   return [
     "TASK WORKFLOW: When you receive work, follow these steps:",

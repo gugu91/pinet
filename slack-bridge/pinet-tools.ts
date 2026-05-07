@@ -338,7 +338,7 @@ function formatPinetHelpCliText(data: Record<string, unknown>): string | null {
     : [];
   if (actions.length > 0) {
     const note = typeof data.note === "string" && data.note.trim() ? ` ${data.note.trim()}` : "";
-    return `Pinet actions: ${actions.join(", ")}.${note}`;
+    return `Pinet actions: ${actions.join(", ")}.${note} Pass action-specific parameters in args; use args.topic to inspect one action schema.`;
   }
 
   if (typeof data.action === "string") {
@@ -346,7 +346,7 @@ function formatPinetHelpCliText(data: Record<string, unknown>): string | null {
       typeof data.description === "string" && data.description.trim()
         ? ` — ${data.description.trim()}`
         : "";
-    return `Pinet ${data.action}${description}. Use args.format="json" or args.full=true for schema/details; JSON/full output can fill context quickly.`;
+    return `Pinet ${data.action}${description}. Pass parameters in args; use args.format="json" or args.full=true for schema/details; JSON/full output can fill context quickly.`;
   }
 
   return null;
@@ -1542,7 +1542,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     label: "Pinet Dispatcher",
     description: "Dispatch Pinet operations by action with compact help and schema discovery.",
     promptSnippet:
-      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, and help. Use /pinet start, /pinet follow, and /pinet unfollow for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
+      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, and help. Pass action-specific parameters inside args, e.g. action=read args={thread_id, unread_only}. Pinet inbox pointers use the same shape: pointer=pinet action=read args.thread_id=... args.unread_only=true. Use /pinet start, /pinet follow, and /pinet unfollow for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
     parameters: Type.Object({
       action: Type.String({
         description:
@@ -1551,7 +1551,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {
           description:
-            'Action arguments. Add format="cli"|"json" (or f/"-f") and full=true (or "--full": true) for explicit presentation control. Default cli keeps data.details compact; format="json" or full=true exposes full structured details and can fill context quickly, so use it only when needed.',
+            'Action arguments for the selected Pinet action. Always put action-specific parameters here (for example args.thread_id for read or args.to/args.message for send). Add format="cli"|"json" (or f/"-f") and full=true (or "--full": true) for explicit presentation control. Default cli keeps data.details compact; format="json" or full=true exposes full structured details and can fill context quickly, so use it only when needed.',
         }),
       ),
     }),
@@ -1619,7 +1619,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
               class: "input",
               message: "args must be an object for Pinet action execution.",
               retryable: false,
-              hint: "Pass a JSON object as args.",
+              hint: 'Pass a JSON object as args, e.g. args={ thread_id: "...", unread_only: true }. Use action="help" with args.topic for schemas.',
             },
           ]),
           getOptionalPinetOutputOptions(params.args),

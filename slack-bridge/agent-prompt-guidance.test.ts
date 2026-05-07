@@ -43,6 +43,7 @@ describe("createAgentPromptGuidance", () => {
     expect(result.systemPrompt).toContain("Reaction-triggered requests may appear");
     expect(result.systemPrompt).not.toContain("PINET SKIN (");
     expect(result.systemPrompt).not.toContain("Pinet BROKER");
+    expect(result.systemPrompt).not.toContain("PINET PRIMER:");
     expect(result.systemPrompt).not.toContain("TASK WORKFLOW:");
     expect(result.systemPrompt.indexOf("IDENTITY 1")).toBeLessThan(
       result.systemPrompt.indexOf("COMMUNICATION STYLE:"),
@@ -75,6 +76,9 @@ describe("createAgentPromptGuidance", () => {
 
     const result = await guidance.beforeAgentStart({ systemPrompt: "BASE" });
 
+    expect(result.systemPrompt).toContain("PINET PRIMER:");
+    expect(result.systemPrompt).toContain("pointer=pinet action=read args.thread_id=...");
+    expect(result.systemPrompt).toContain("action parameters inside `args`");
     expect(result.systemPrompt).toContain("You are 🦩 Cobalt Olive Crane, the Pinet BROKER.");
     expect(result.systemPrompt).toContain("CUSTOM MD POLICY");
     expect(result.systemPrompt).toContain("DELEGATE, THEN TRACK.");
@@ -92,6 +96,8 @@ describe("createAgentPromptGuidance", () => {
 
     const result = await guidance.beforeAgentStart({ systemPrompt: "BASE" });
 
+    expect(result.systemPrompt).toContain("PINET PRIMER:");
+    expect(result.systemPrompt).toContain("`read` retrieves durable inbox context");
     expect(result.systemPrompt).toContain(
       "TASK WORKFLOW: When you receive work, follow these steps:",
     );
@@ -119,6 +125,9 @@ describe("createAgentPromptGuidance", () => {
       result.systemPrompt.indexOf("IDENTITY 1"),
     );
     expect(result.systemPrompt.indexOf("IDENTITY 1")).toBeLessThan(
+      result.systemPrompt.indexOf("PINET PRIMER:"),
+    );
+    expect(result.systemPrompt.indexOf("PINET PRIMER:")).toBeLessThan(
       result.systemPrompt.indexOf("LOADED BROKER MD"),
     );
     expect(result.systemPrompt.indexOf("LOADED BROKER MD")).toBeLessThan(

@@ -202,12 +202,16 @@ describe("registerPinetTools", () => {
 
     expect(pinet?.promptSnippet).toContain("Use this compact dispatcher for Pinet actions");
     expect(pinet?.promptSnippet).toContain("lanes, ports, reload");
+    expect(pinet?.promptSnippet).toContain("parameters inside args");
+    expect(pinet?.promptSnippet).toContain("pointer=pinet action=read args.thread_id=...");
     expect(pinet?.promptSnippet).not.toContain("skin");
     expect(pinet?.promptSnippet).toContain('args.format="json"');
     expect(pinet?.promptSnippet).toContain("fill context quickly");
-    expect(JSON.stringify(pinet?.parameters)).toContain(
+    const schemaText = JSON.stringify(pinet?.parameters);
+    expect(schemaText).toContain(
       "help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit",
     );
+    expect(schemaText).toContain("Always put action-specific parameters here");
   });
 
   it("routes reload and exit through the dispatcher remote-control actions", async () => {
@@ -586,6 +590,7 @@ describe("registerPinetTools", () => {
 
     expect(result.content[0]?.text).toContain("Pinet actions:");
     expect(result.content[0]?.text).toContain("send");
+    expect(result.content[0]?.text).toContain("parameters in args");
     expect(result.content[0]?.text).not.toContain('"args_schema"');
     expect(result.details.status).toBe("succeeded");
     expect(result.details.data.note).toContain("Use args.topic");
@@ -600,6 +605,22 @@ describe("registerPinetTools", () => {
         expect.objectContaining({ action: "ports", guardrail_tool: "pinet:ports" }),
       ]),
     );
+  });
+
+  it("points missing action args at the required args object shape", async () => {
+    const tools = registerWithDeps(createDeps());
+
+    const result = (await tools.get("pinet")?.execute("tool-call-missing-args", {
+      action: "read",
+    })) as {
+      content: Array<{ text: string }>;
+      details: { status: string; errors: Array<{ message: string; hint: string }> };
+    };
+
+    expect(result.content[0]?.text).toContain("args must be an object");
+    expect(result.content[0]?.text).toContain("args={ thread_id");
+    expect(result.details.status).toBe("failed");
+    expect(result.details.errors[0]?.hint).toContain("args.topic");
   });
 
   it("preserves explicit JSON output for action-dispatched help", async () => {

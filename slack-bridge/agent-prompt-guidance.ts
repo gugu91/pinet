@@ -1,6 +1,7 @@
 import {
   buildAgentPersonalityGuidelines,
   buildBrokerProtocolGuardrailsPrompt,
+  buildPinetPrimerPromptGuidelines,
   buildPinetSkinPromptGuideline,
   buildWorkerPromptGuidelines,
 } from "./helpers.js";
@@ -50,7 +51,12 @@ export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentP
       guidelines.push(skinGuideline);
     }
 
-    if (deps.getBrokerRole() === "broker") {
+    const brokerRole = deps.getBrokerRole();
+    if (brokerRole) {
+      guidelines.push(...buildPinetPrimerPromptGuidelines());
+    }
+
+    if (brokerRole === "broker") {
       const brokerPrompt = await (
         deps.loadBrokerPrompt ??
         (() =>
@@ -72,7 +78,7 @@ export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentP
       );
       guidelines.push(buildBrokerProtocolGuardrailsPrompt());
       guidelines.push(buildBrokerToolGuardrailsPrompt());
-    } else if (deps.getBrokerRole() === "follower") {
+    } else if (brokerRole === "follower") {
       guidelines.push(...buildWorkerPromptGuidelines());
     }
 
