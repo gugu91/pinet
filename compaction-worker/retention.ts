@@ -1,12 +1,14 @@
 import {
   buildSessionContext,
   findCutPoint,
-  type CompactionPreparation,
-  type CompactionSettings,
   type FileOperations,
+  type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@mariozechner/pi-coding-agent";
 import { extractFileListDetails } from "./helpers.js";
+
+type CompactionPreparation = SessionBeforeCompactEvent["preparation"];
+type CompactionSettings = CompactionPreparation["settings"];
 
 export function buildPreparationFromBranch(
   branchEntries: SessionEntry[],
@@ -136,12 +138,12 @@ function extractFileOpsFromMessage(message: unknown, fileOps: FileOperations): v
 }
 
 function getStringProperty(value: SessionEntry, key: string): string | undefined {
-  const raw = (value as Record<string, unknown>)[key];
+  const raw = (value as unknown as Record<string, unknown>)[key];
   return typeof raw === "string" ? raw : undefined;
 }
 
 function getRecordProperty(value: SessionEntry, key: string): Record<string, unknown> | undefined {
-  const raw = (value as Record<string, unknown>)[key];
+  const raw = (value as unknown as Record<string, unknown>)[key];
   return raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as Record<string, unknown>)
     : undefined;

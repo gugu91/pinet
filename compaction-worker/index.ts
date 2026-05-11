@@ -1,7 +1,6 @@
 import {
   compact as generateCompaction,
   type CompactionResult,
-  type CompactionSettings,
   type ExtensionAPI,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
@@ -34,7 +33,10 @@ interface AuthResult {
   error?: string;
 }
 
-type SummaryModel = unknown;
+type SummaryModel = Parameters<typeof generateCompaction>[1];
+type HookCompactionSettings = SessionBeforeCompactEvent["preparation"]["settings"];
+type SessionBeforeCompactResult = { cancel?: boolean; compaction?: CompactionResult };
+type NotificationLevel = "info" | "warning" | "error";
 
 interface CompatibleModelRegistry {
   find(provider: string, id: string): SummaryModel | undefined;
@@ -49,7 +51,13 @@ interface CompatibleSessionManager {
   getSessionFile(): string | undefined;
 }
 
-interface CompatibleContext extends ExtensionContext {
+interface CompatibleContext {
+  cwd: string;
+  hasUI: boolean;
+  ui: {
+    notify(message: string, level?: NotificationLevel): void;
+    setStatus(id: string, value?: string): void;
+  };
   model?: ModelLike;
   modelRegistry: CompatibleModelRegistry;
   sessionManager: CompatibleSessionManager;
@@ -77,7 +85,7 @@ interface ResolvedSummaryModel {
 }
 
 function asContext(ctx: ExtensionContext): CompatibleContext {
-  return ctx as CompatibleContext;
+  return ctx as unknown as CompatibleContext;
 }
 
 function sessionIdentity(ctx: CompatibleContext): SessionIdentity {
@@ -88,7 +96,7 @@ function sessionIdentity(ctx: CompatibleContext): SessionIdentity {
   };
 }
 
-function compactionSettings(policy: EffectivePolicy): CompactionSettings {
+function compactionSettings(policy: EffectivePolicy): HookCompactionSettings {
   return {
     enabled: true,
     reserveTokens: policy.reserveTokens,
@@ -100,7 +108,7 @@ function notify(
   ctx: CompatibleContext,
   policy: EffectivePolicy,
   message: string,
-  level: string = "info",
+  level: NotificationLevel = "info",
 ): void {
   if (policy.quiet || !ctx.hasUI) return;
   ctx.ui.notify(message, level);
@@ -128,6 +136,17 @@ function updateStatus(
   if (next === runtime.lastStatus) return;
   runtime.lastStatus = next;
   ctx.ui.setStatus(STATUS_ID, next);
+}
+
+function finishSessionBeforeCompact(
+  ctx: CompatibleContext,
+  policy: EffectivePolicy,
+  runtime: WorkerRuntime,
+  previousInFlight: WorkerRuntime["inFlight"],
+): void {
+  if (runtime.inFlight !== "session_before_compact") return;
+  runtime.inFlight = previousInFlight;
+  updateStatus(ctx, policy, runtime);
 }
 
 async function resolveSummaryModel(
@@ -380,89 +399,105 @@ export default function compactionWorkerExtension(pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_before_compact", async (event, rawCtx) => {
+  const onSessionBeforeCompact = pi.on as unknown as (
+    event: "session_before_compact",
+    handler: (
+      event: SessionBeforeCompactEvent,
+      ctx: ExtensionContext,
+    ) => Promise<SessionBeforeCompactResult | undefined>,
+  ) => void;
+
+  onSessionBeforeCompact("session_before_compact", async (event, rawCtx) => {
     const ctx = asContext(rawCtx);
     const policy = loadPolicy(ctx);
     if (!policy.enabled) return undefined;
 
+    const previousInFlight = runtime.inFlight;
     runtime.inFlight = "session_before_compact";
     updateStatus(ctx, policy, runtime);
 
-    const validation = validatePreparedRecord(runtime.prepared, {
-      identity: sessionIdentity(ctx),
-      policy,
-      branchEntries: event.branchEntries,
-      nowMs: Date.now(),
-    });
-
-    const hasExternalInstructions = isExternalCustomInstructions(event.customInstructions);
-
-    if (
-      !hasExternalInstructions &&
-      validation.ok &&
-      runtime.prepared?.summary &&
-      runtime.prepared.firstKeptEntryId
-    ) {
-      const prepared = runtime.prepared;
-      prepared.status = "used";
-      return {
-        compaction: {
-          summary: prepared.summary,
-          firstKeptEntryId: prepared.firstKeptEntryId,
-          tokensBefore: event.preparation.tokensBefore,
-          details: buildDetails(policy, "prepared", prepared.summaryModel, prepared.details),
-        },
-      };
-    }
-
-    if (hasExternalInstructions && runtime.prepared?.status === "ready") {
-      notify(
-        ctx,
-        policy,
-        "Prepared compaction summary bypassed because this compaction supplied custom instructions; generating a live summary.",
-        "info",
-      );
-    } else if (!validation.ok && runtime.prepared?.status === "ready") {
-      runtime.prepared.status = "stale";
-      runtime.prepared.invalidationReason = validation.reason;
-      notify(
-        ctx,
-        policy,
-        `Prepared compaction summary is stale (${validation.reason}); generating a live summary.`,
-        "warning",
-      );
-    }
-
     try {
-      const preparation = prepareWithPolicy(event.branchEntries, event.preparation, policy);
-      if (!preparation) return undefined;
-      const generated = await runCompactionSummary(
-        preparation,
-        ctx,
+      const validation = validatePreparedRecord(runtime.prepared, {
+        identity: sessionIdentity(ctx),
         policy,
-        event.signal,
-        event.customInstructions,
-      );
-      if (!generated) return undefined;
-      return {
-        compaction: {
-          summary: generated.result.summary,
-          firstKeptEntryId: generated.result.firstKeptEntryId,
-          tokensBefore: generated.result.tokensBefore,
-          details: buildDetails(policy, "live", generated.summaryModel, generated.result.details),
-        },
-      };
-    } catch (error) {
-      if (!event.signal.aborted) {
-        const message = error instanceof Error ? error.message : String(error);
+        branchEntries: event.branchEntries,
+        nowMs: Date.now(),
+      });
+
+      const hasExternalInstructions = isExternalCustomInstructions(event.customInstructions);
+
+      if (
+        !hasExternalInstructions &&
+        validation.ok &&
+        runtime.prepared?.summary &&
+        runtime.prepared.firstKeptEntryId
+      ) {
+        const prepared = runtime.prepared;
+        const summary = prepared.summary;
+        const firstKeptEntryId = prepared.firstKeptEntryId;
+        if (!summary || !firstKeptEntryId) return undefined;
+        prepared.status = "used";
+        return {
+          compaction: {
+            summary,
+            firstKeptEntryId,
+            tokensBefore: event.preparation.tokensBefore,
+            details: buildDetails(policy, "prepared", prepared.summaryModel, prepared.details),
+          },
+        };
+      }
+
+      if (hasExternalInstructions && runtime.prepared?.status === "ready") {
         notify(
           ctx,
           policy,
-          `Compaction worker live summary failed: ${message}. Falling back to Pi default compaction.`,
-          "error",
+          "Prepared compaction summary bypassed because this compaction supplied custom instructions; generating a live summary.",
+          "info",
+        );
+      } else if (!validation.ok && runtime.prepared?.status === "ready") {
+        runtime.prepared.status = "stale";
+        runtime.prepared.invalidationReason = validation.reason;
+        notify(
+          ctx,
+          policy,
+          `Prepared compaction summary is stale (${validation.reason}); generating a live summary.`,
+          "warning",
         );
       }
-      return undefined;
+
+      try {
+        const preparation = prepareWithPolicy(event.branchEntries, event.preparation, policy);
+        if (!preparation) return undefined;
+        const generated = await runCompactionSummary(
+          preparation,
+          ctx,
+          policy,
+          event.signal,
+          event.customInstructions,
+        );
+        if (!generated) return undefined;
+        return {
+          compaction: {
+            summary: generated.result.summary,
+            firstKeptEntryId: generated.result.firstKeptEntryId,
+            tokensBefore: generated.result.tokensBefore,
+            details: buildDetails(policy, "live", generated.summaryModel, generated.result.details),
+          },
+        };
+      } catch (error) {
+        if (!event.signal.aborted) {
+          const message = error instanceof Error ? error.message : String(error);
+          notify(
+            ctx,
+            policy,
+            `Compaction worker live summary failed: ${message}. Falling back to Pi default compaction.`,
+            "error",
+          );
+        }
+        return undefined;
+      }
+    } finally {
+      finishSessionBeforeCompact(ctx, policy, runtime, previousInFlight);
     }
   });
 
