@@ -43,6 +43,6 @@
     "test": "vitest run *.test.ts"
   },
   "dependencies": {
-    "@gugu910/pi-transport-core": "workspace:*"
+    "@gugu910/pi-transport-core": "file:../transport-core"
   }
 }

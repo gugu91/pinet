@@ -6,6 +6,10 @@ settings:
 
 importers:
   .:
+    dependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
     devDependencies:
       "@eslint/js":
         specifier: ^9.19.0
@@ -31,9 +35,6 @@ importers:
       turbo:
         specifier: ^2.5.4
         version: 2.9.3
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
       typescript-eslint:
         specifier: ^8.22.0
         version: 8.55.0(eslint@9.39.2(jiti@2.7.0))(typescript@5.9.3)
@@ -44,7 +45,7 @@ importers:
   broker-core:
     dependencies:
       "@gugu910/pi-transport-core":
-        specifier: workspace:*
+        specifier: file:../transport-core
         version: link:../transport-core
 
   browser-playwright:
@@ -69,7 +70,7 @@ importers:
   imessage-bridge:
     dependencies:
       "@gugu910/pi-transport-core":
-        specifier: workspace:*
+        specifier: file:../transport-core
         version: link:../transport-core
 
   neon-psql:
@@ -98,10 +99,10 @@ importers:
   pinet-core:
     dependencies:
       "@gugu910/pi-broker-core":
-        specifier: workspace:*
+        specifier: file:../broker-core
         version: link:../broker-core
       "@gugu910/pi-transport-core":
-        specifier: workspace:*
+        specifier: file:../transport-core
         version: link:../transport-core
 
   slack-api:
@@ -113,16 +114,16 @@ importers:
   slack-bridge:
     dependencies:
       "@gugu910/pi-broker-core":
-        specifier: workspace:*
+        specifier: file:../broker-core
         version: link:../broker-core
       "@gugu910/pi-imessage-bridge":
-        specifier: workspace:*
+        specifier: file:../imessage-bridge
         version: link:../imessage-bridge
       "@gugu910/pi-pinet-core":
-        specifier: workspace:*
+        specifier: file:../pinet-core
         version: link:../pinet-core
       "@gugu910/pi-transport-core":
-        specifier: workspace:*
+        specifier: file:../transport-core
         version: link:../transport-core
       "@sinclair/typebox":
         specifier: ^0.34.49
