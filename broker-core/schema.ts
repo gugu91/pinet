@@ -3166,6 +3166,12 @@ export class BrokerDB implements BrokerDBInterface {
         : null);
     if (!externalId) return;
 
+    const referenced = this.getMessageByExternalId(referencedSource, externalId);
+    if (!referenced) return;
+
+    const targetAgentIds = this.getUnreadReactionEscalationTargets(referenced);
+    if (targetAgentIds.length === 0) return;
+
     const reclassified = this.reclassifyMessageByExternalId(
       referencedSource,
       externalId,
@@ -3181,45 +3187,39 @@ export class BrokerDB implements BrokerDBInterface {
       },
     );
     if (reclassified) {
-      this.redeliverReclassifiedReactionMessage(reclassified);
+      this.redeliverReclassifiedReactionMessage(reclassified, targetAgentIds);
     }
   }
 
-  private redeliverReclassifiedReactionMessage(message: BrokerMessage): void {
+  private getUnreadReactionEscalationTargets(message: BrokerMessage): string[] {
     const db = this.getDb();
-    const targetAgentIds = new Set<string>();
     const ownerAgent = this.getThread(message.threadId)?.ownerAgent;
     if (ownerAgent) {
-      targetAgentIds.add(ownerAgent);
-    } else {
-      const existingRecipients = db
-        .prepare("SELECT DISTINCT agent_id FROM inbox WHERE message_id = ?")
-        .all(message.id) as Array<{ agent_id: string }>;
-
-      for (const row of existingRecipients) {
-        if (row.agent_id) {
-          targetAgentIds.add(row.agent_id);
-        }
-      }
+      const row = db
+        .prepare("SELECT 1 FROM inbox WHERE agent_id = ? AND message_id = ? AND read_at IS NULL")
+        .get(ownerAgent, message.id);
+      return row ? [ownerAgent] : [];
     }
 
-    if (targetAgentIds.size === 0) return;
+    const existingUnreadRecipients = db
+      .prepare("SELECT DISTINCT agent_id FROM inbox WHERE message_id = ? AND read_at IS NULL")
+      .all(message.id) as Array<{ agent_id: string }>;
 
-    const now = new Date().toISOString();
-    const insertInbox = db.prepare(
-      `INSERT INTO inbox (agent_id, message_id, delivered, created_at)
-       SELECT ?, ?, 0, ?
-       WHERE NOT EXISTS (
-         SELECT 1 FROM inbox WHERE agent_id = ? AND message_id = ?
-       )`,
-    );
-    const reopenInbox = db.prepare(
-      "UPDATE inbox SET delivered = 0, read_at = NULL WHERE agent_id = ? AND message_id = ?",
+    return existingUnreadRecipients.map((row) => row.agent_id).filter(Boolean);
+  }
+
+  private redeliverReclassifiedReactionMessage(
+    message: BrokerMessage,
+    targetAgentIds: readonly string[],
+  ): void {
+    if (targetAgentIds.length === 0) return;
+
+    const reopenUnreadInbox = this.getDb().prepare(
+      "UPDATE inbox SET delivered = 0 WHERE agent_id = ? AND message_id = ? AND read_at IS NULL",
     );
 
     for (const agentId of targetAgentIds) {
-      insertInbox.run(agentId, message.id, now, agentId, message.id);
-      reopenInbox.run(agentId, message.id);
+      reopenUnreadInbox.run(agentId, message.id);
     }
   }
 
@@ -3376,6 +3376,11 @@ export class BrokerDB implements BrokerDBInterface {
       .prepare("SELECT id FROM messages WHERE source = ? AND external_id = ?")
       .get(source, externalId) as { id?: number } | undefined;
     return typeof row?.id === "number" ? row.id : null;
+  }
+
+  private getMessageByExternalId(source: string, externalId: string): BrokerMessage | null {
+    const messageId = this.getExistingMessageIdForIdentity(source, externalId);
+    return messageId === null ? null : this.getMessageById(messageId);
   }
 
   private getMessageById(messageId: number): BrokerMessage | null {

@@ -1088,7 +1088,7 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
-  it("redelivers read referenced Slack mail when arrow-up makes it steering", () => {
+  it("does not redeliver read referenced Slack mail when arrow-up would make it steering", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);
     try {
@@ -1126,10 +1126,11 @@ describe("BrokerDB message sync identity", () => {
       });
 
       const read = db.readInbox("agent-a", { markRead: false });
-      const redelivered = read.messages.find((item) => item.message.id === original.id);
-      expect(redelivered?.entry).toMatchObject({ delivered: false, readAt: null });
-      expect(redelivered?.message.metadata).toMatchObject({ pinet_mail_class: "steering" });
-      expect(db.getPendingInboxCount("agent-a")).toBeGreaterThanOrEqual(1);
+      expect(read.messages.find((item) => item.message.id === original.id)).toBeUndefined();
+      expect(db.getMessagesByIds([original.id])[0]?.metadata ?? {}).not.toHaveProperty(
+        "pinet_mail_class",
+      );
+      expect(db.getPendingInboxCount("agent-a")).toBe(1);
     } finally {
       db.close();
     }
@@ -1149,10 +1150,7 @@ describe("BrokerDB message sync identity", () => {
         ["agent-a"],
         { channel: "C222", timestamp: "222.333", userId: "U_TARGET" },
       );
-      const originalInboxId = db.getInbox("agent-a")[0]!.entry.id;
-      db.markDelivered([originalInboxId], "agent-a");
-      db.markRead([originalInboxId], "agent-a");
-      db.updateThread("222.222", { ownerAgent: "agent-b" });
+      db.transferThreadOwnership("222.222", "agent-b");
 
       db.queueMessage("agent-b", {
         source: "slack",
@@ -1201,7 +1199,6 @@ describe("BrokerDB message sync identity", () => {
       );
       const originalInboxId = db.getInbox("agent-a")[0]!.entry.id;
       db.markDelivered([originalInboxId], "agent-a");
-      db.markRead([originalInboxId], "agent-a");
 
       db.queueMessage("agent-a", {
         source: "slack",
