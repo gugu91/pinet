@@ -44,10 +44,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gugu910/pi-broker-core": "workspace:*",
-    "@gugu910/pi-imessage-bridge": "workspace:*",
-    "@gugu910/pi-pinet-core": "workspace:*",
-    "@gugu910/pi-transport-core": "workspace:*",
+    "@gugu910/pi-broker-core": "file:../broker-core",
+    "@gugu910/pi-imessage-bridge": "file:../imessage-bridge",
+    "@gugu910/pi-pinet-core": "file:../pinet-core",
+    "@gugu910/pi-transport-core": "file:../transport-core",
     "@sinclair/typebox": "^0.34.49"
   }
 }
