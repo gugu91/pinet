@@ -1941,6 +1941,32 @@ describe("formatAgentList", () => {
     );
   });
 
+  it("includes pending inbox counts when present", () => {
+    const agents: AgentDisplayInfo[] = [
+      {
+        emoji: "📬",
+        name: "Mailbox Spren",
+        id: "agent-1",
+        status: "idle",
+        metadata: null,
+        pendingInboxCount: 1,
+      },
+      {
+        emoji: "📭",
+        name: "Empty Spren",
+        id: "agent-2",
+        status: "idle",
+        metadata: null,
+        pendingInboxCount: 0,
+      },
+    ];
+
+    const result = formatAgentList(agents, homedir);
+
+    expect(result).toContain("pending inbox: 1 queued item");
+    expect(result).not.toContain("pending inbox: 0");
+  });
+
   it("includes pid when present", () => {
     const agents: AgentDisplayInfo[] = [
       {

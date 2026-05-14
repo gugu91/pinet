@@ -2485,11 +2485,14 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   getPendingInboxCount(agentId: string): number {
-    const db = this.getDb();
-    const row = db
-      .prepare("SELECT COUNT(*) AS count FROM inbox WHERE agent_id = ? AND delivered = 0")
-      .get(agentId) as { count: number };
-    return row.count;
+    return this.withTransaction(() => {
+      this.dropStaleSlackInboxRows(agentId);
+      const db = this.getDb();
+      const row = db
+        .prepare("SELECT COUNT(*) AS count FROM inbox WHERE agent_id = ? AND delivered = 0")
+        .get(agentId) as { count: number };
+      return row.count;
+    });
   }
 
   getOwnedThreadCount(agentId: string): number {

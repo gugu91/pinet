@@ -123,6 +123,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     agentId,
     message,
   }));
+  const getPendingInboxCount = vi.fn((agentId: string) => (agentId === "worker-1" ? 2 : 0));
   const logActivity = vi.fn((_entry: ActivityLogEntry) => undefined);
 
   const db: PinetMeshOpsBrokerDbPort = {
@@ -131,6 +132,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     createThread,
     insertMessage,
     getAllAgents: () => agents,
+    getPendingInboxCount,
     transferThreadOwnership,
     recordTaskAssignment,
     scheduleWakeup,
@@ -159,6 +161,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     insertedMessages,
     recordTaskAssignment,
     scheduleWakeup,
+    getPendingInboxCount,
     logActivity,
   };
 }
@@ -180,6 +183,7 @@ function createFollowerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
       disconnectedAt: null,
       resumableUntil: null,
       outboundCount: 2,
+      pendingInboxCount: 4,
     },
   ]);
   const followerClient: PinetMeshOpsFollowerClientPort = {
@@ -408,6 +412,7 @@ describe("createPinetMeshOps", () => {
           status: "idle",
           name: "Worker One",
           outboundCount: 3,
+          pendingInboxCount: 2,
         }),
         expect.objectContaining({ id: "worker-2", status: "idle", name: "Worker Two" }),
       ]),
@@ -418,6 +423,7 @@ describe("createPinetMeshOps", () => {
         status: "idle",
         name: "Worker Two",
         outboundCount: 2,
+        pendingInboxCount: 4,
       }),
     ]);
     expect(follower.listAgents).toHaveBeenCalledWith(true);

@@ -18,6 +18,7 @@ export interface AgentInfo {
   idleSince?: string | null;
   lastActivity?: string | null;
   outboundCount?: number;
+  pendingInboxCount?: number;
 }
 
 export type ClientAgentInfo = Omit<AgentInfo, "stableId">;

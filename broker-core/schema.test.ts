@@ -963,6 +963,34 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("stamps post-transfer Slack follow-ups with the new thread owner", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("thread-a", "slack", "C123", "agent-a");
+      db.transferThreadOwnership("thread-a", "agent-b");
+
+      db.queueMessage("agent-b", {
+        source: "slack",
+        threadId: "thread-a",
+        channel: "C123",
+        userId: "U1",
+        text: "reply after transfer",
+        timestamp: "124.000",
+      });
+
+      const read = db.readInbox("agent-b", { markRead: false });
+      expect(read.messages).toHaveLength(1);
+      expect(read.messages[0].message.body).toBe("reply after transfer");
+      expect(read.messages[0].message.metadata).toMatchObject({
+        threadAffinityOwnerAgentId: "agent-b",
+      });
+      expect(db.getPendingInboxCount("agent-b")).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("revalidates stale queued Slack rows on read when the owner changes", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);
@@ -977,6 +1005,8 @@ describe("BrokerDB message sync identity", () => {
         timestamp: "123.789",
       });
       db.updateThread("thread-a", { ownerAgent: "agent-b" });
+
+      expect(db.getPendingInboxCount("agent-a")).toBe(0);
 
       const read = db.readInbox("agent-a", { markRead: false });
 

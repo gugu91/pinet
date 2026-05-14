@@ -909,7 +909,10 @@ export class BrokerSocketServer {
     const params = req.params ?? {};
     const includeDisconnected = params.includeDisconnected === true;
     const agents = (includeDisconnected ? this.db.getAllAgents() : this.db.getAgents()).map(
-      toClientAgentInfo,
+      (agent) => ({
+        ...toClientAgentInfo(agent),
+        pendingInboxCount: this.db.getPendingInboxCount(agent.id),
+      }),
     );
     return rpcOk(req.id, agents);
   }

@@ -910,6 +910,7 @@ export interface AgentDisplayInfo {
   idleDuration?: string | null;
   lastActivityAge?: string | null;
   outboundCount?: number | null;
+  pendingInboxCount?: number | null;
   capabilityTags?: string[];
   routingScore?: number;
   routingReasons?: string[];
@@ -929,6 +930,7 @@ export interface AgentVisibilityInput {
   idleSince?: string | null;
   lastActivity?: string | null;
   outboundCount?: number | null;
+  pendingInboxCount?: number | null;
 }
 
 export interface AgentVisibilityOptions {
@@ -1242,6 +1244,7 @@ export function buildAgentDisplayInfo(
     idleDuration: formatAge(idleDurationMs),
     lastActivityAge: formatAge(lastActivityAgeMs),
     outboundCount: agent.outboundCount ?? null,
+    pendingInboxCount: agent.pendingInboxCount ?? null,
     capabilityTags,
   };
 }
@@ -2526,6 +2529,10 @@ export function formatAgentList(agents: AgentDisplayInfo[], homedir: string): st
 
       if (a.outboundCount != null) {
         line += `\n   outbound: ${a.outboundCount} this session`;
+      }
+
+      if (a.pendingInboxCount != null && a.pendingInboxCount > 0) {
+        line += `\n   pending inbox: ${a.pendingInboxCount} queued item${a.pendingInboxCount === 1 ? "" : "s"}`;
       }
 
       const tags = (a.capabilityTags ?? []).slice(0, 6);

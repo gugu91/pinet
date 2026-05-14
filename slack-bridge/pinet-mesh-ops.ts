@@ -21,6 +21,7 @@ export interface PinetMeshOpsAgentRecord {
   disconnectedAt?: string | null;
   resumableUntil?: string | null;
   outboundCount?: number;
+  pendingInboxCount?: number;
 }
 
 export interface PinetMeshOpsRecordedAssignment {
@@ -36,6 +37,7 @@ export interface PinetMeshOpsTransferableThread {
 
 export interface PinetMeshOpsBrokerDbPort extends AgentMessageStorage {
   getAllAgents: () => AgentInfo[];
+  getPendingInboxCount: (agentId: string) => number;
   getThread: (threadId: string) => PinetMeshOpsTransferableThread | null;
   transferThreadOwnership: (
     threadId: string,
@@ -309,6 +311,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       disconnectedAt: agent.disconnectedAt,
       resumableUntil: agent.resumableUntil,
       outboundCount: agent.outboundCount,
+      pendingInboxCount: db.getPendingInboxCount(agent.id),
     }));
   }
 
@@ -330,6 +333,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       disconnectedAt: agent.disconnectedAt,
       resumableUntil: agent.resumableUntil,
       outboundCount: agent.outboundCount,
+      pendingInboxCount: agent.pendingInboxCount,
     }));
   }
 

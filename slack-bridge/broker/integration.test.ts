@@ -432,7 +432,9 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(names).toEqual(["agent-alpha", "agent-beta"]);
     expect(agents.every((agent) => !("stableId" in agent))).toBe(true);
     expect(agents.find((agent) => agent.name === "agent-alpha")?.outboundCount).toBe(1);
+    expect(agents.find((agent) => agent.name === "agent-alpha")?.pendingInboxCount).toBe(0);
     expect(agents.find((agent) => agent.name === "agent-beta")?.outboundCount).toBe(0);
+    expect(agents.find((agent) => agent.name === "agent-beta")?.pendingInboxCount).toBe(1);
 
     client2.disconnect();
   });

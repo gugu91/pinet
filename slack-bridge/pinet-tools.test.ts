@@ -1075,11 +1075,11 @@ describe("registerPinetTools", () => {
     expect(result.details.data.text).toContain("manual supervision");
   });
 
-  it("renders broker pinet agents output with routing hints and outbound counts", async () => {
+  it("renders broker pinet agents output with routing hints, outbound counts, and pending inbox", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
 
-    const listBrokerAgents = vi.fn(() => [makeAgent({ outboundCount: 3 })]);
+    const listBrokerAgents = vi.fn(() => [makeAgent({ outboundCount: 3, pendingInboxCount: 2 })]);
     const deps = createDeps({ listBrokerAgents });
     const tools = registerWithDeps(deps);
 
@@ -1107,6 +1107,7 @@ describe("registerPinetTools", () => {
     );
     expect(result.details.data.text).toContain("Golden Chalk Rabbit");
     expect(result.details.data.text).toContain("outbound: 3 this session");
+    expect(result.details.data.text).toContain("pending inbox: 2 queued items");
     expect(result.details.data.details.hint).toEqual({
       repo: "extensions",
       branch: undefined,

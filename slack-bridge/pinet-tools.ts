@@ -54,6 +54,7 @@ export interface PinetToolsAgentRecord {
   disconnectedAt?: string | null;
   resumableUntil?: string | null;
   outboundCount?: number;
+  pendingInboxCount?: number;
 }
 
 export interface RegisterPinetToolsDeps {
@@ -844,6 +845,9 @@ function buildCompactAgentDetails(
         launchSource: agent.metadata?.launchSource ?? null,
         tmuxSession: agent.metadata?.tmuxSession ?? null,
         routingScore: agent.routingScore ?? null,
+        ...(agent.pendingInboxCount != null && agent.pendingInboxCount > 0
+          ? { pendingInboxCount: agent.pendingInboxCount }
+          : {}),
         capabilityTags: capabilityTags.slice(0, 4),
         capabilityCount: capabilityTags.length,
       };
