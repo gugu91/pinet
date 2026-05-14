@@ -10,6 +10,9 @@ import type { SlackToolsThreadContextPort } from "./slack-tools.js";
 import {
   buildSlackThreadRuntimeScope,
   classifyMessage,
+  getSlackMessageRepliedHydrationTarget,
+  hydrateSlackMessageRepliedEvent,
+  shouldHydrateSlackMessageRepliedEvent,
   resolveSlackThreadOwnerHint,
   SlackSocketModeClient,
   type ParsedAppHomeOpened,
@@ -106,6 +109,10 @@ export interface SinglePlayerRuntime {
 }
 
 type SinglePlayerThreadOwnershipResult = "continue" | "skip" | "shutdown";
+
+function buildSlackInboundMessageDedupKey(channel: string, messageTs: string): string {
+  return `slack-inbound-message:${channel}:${messageTs}`;
+}
 
 export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): SinglePlayerRuntime {
   let slackSocket: SlackSocketModeClient | null = null;
@@ -378,7 +385,31 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
     if (shuttingDown) return;
 
     const threads = deps.getThreads();
-    const classified = classifyMessage(evt, getCurrentBotUserId(), new Set(threads.keys()));
+    let classified = classifyMessage(evt, getCurrentBotUserId(), new Set(threads.keys()));
+    if (
+      !classified.relevant &&
+      shouldHydrateSlackMessageRepliedEvent(evt, (threadTs) => threads.has(threadTs))
+    ) {
+      const hydrationTarget = getSlackMessageRepliedHydrationTarget(evt);
+      if (
+        hydrationTarget &&
+        deps.dedup.has(
+          buildSlackInboundMessageDedupKey(hydrationTarget.channel, hydrationTarget.replyTs),
+        )
+      ) {
+        return;
+      }
+
+      const hydratedEvent = await hydrateSlackMessageRepliedEvent({
+        evt,
+        slack: deps.slack,
+        token: deps.getBotToken(),
+      });
+      if (shuttingDown) return;
+      if (hydratedEvent) {
+        classified = classifyMessage(hydratedEvent, getCurrentBotUserId(), new Set(threads.keys()));
+      }
+    }
     if (!classified.relevant) return;
 
     const { threadTs, channel, userId, text, isDM, isChannelMention, messageTs, metadata } =
@@ -406,6 +437,10 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
       deps.setLastDmChannel(channel);
     }
     deps.persistState();
+
+    const inboundDedupKey = buildSlackInboundMessageDedupKey(channel, messageTs);
+    if (deps.dedup.has(inboundDedupKey)) return;
+    deps.dedup.add(inboundDedupKey);
 
     const confirmationResult = deps.consumeConfirmationReply(threadTs, text);
     const messageText =

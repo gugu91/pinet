@@ -537,6 +537,190 @@ describe("classifyMessage", () => {
     }
   });
 
+  it("accepts message_replied updates with embedded reply bodies in broker-known threads", () => {
+    const isKnownThread = (ts: string) => ts === "500.600";
+    const evt = {
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.701",
+        replies: [
+          { user: "U0", ts: "500.650", text: "older reply" },
+          { user: "U1", ts: "500.701", text: "embedded follow up" },
+        ],
+      },
+    };
+
+    const result = classifyMessage(evt, botId, emptyTracked, isKnownThread);
+
+    expect(result.relevant).toBe(true);
+    if (result.relevant) {
+      expect(result.threadTs).toBe("500.600");
+      expect(result.messageTs).toBe("500.701");
+      expect(result.userId).toBe("U1");
+      expect(result.text).toBe("embedded follow up");
+      expect(result.metadata).toEqual({ slackSubtype: "message_replied" });
+    }
+  });
+
+  it("accepts message_replied updates with block-only embedded reply bodies", () => {
+    const isKnownThread = (ts: string) => ts === "500.600";
+    const evt = {
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.701",
+        replies: [
+          {
+            user: "U1",
+            ts: "500.701",
+            blocks: [
+              {
+                type: "section",
+                text: { type: "mrkdwn", text: "Block follow up" },
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    const result = classifyMessage(evt, botId, emptyTracked, isKnownThread);
+
+    expect(result.relevant).toBe(true);
+    if (result.relevant) {
+      expect(result.threadTs).toBe("500.600");
+      expect(result.messageTs).toBe("500.701");
+      expect(result.userId).toBe("U1");
+      expect(result.text).toBe(
+        "(Slack message had no plain-text body)\n\nSlack message context:\n- Block follow up",
+      );
+    }
+  });
+
+  it("rejects stale embedded replies when latest_reply is missing from the payload", () => {
+    const isKnownThread = (ts: string) => ts === "500.600";
+    const evt = {
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.702",
+        replies: [{ user: "U1", ts: "500.701", text: "stale embedded reply" }],
+      },
+    };
+
+    expect(classifyMessage(evt, botId, emptyTracked, isKnownThread)).toEqual({ relevant: false });
+  });
+
+  it("inherits root channel_type for direct wrapper message_replied payloads", () => {
+    const evt = {
+      type: "message",
+      subtype: "message_replied",
+      user: "U1",
+      text: "direct wrapper reply",
+      channel: "D1",
+      thread_ts: "500.600",
+      ts: "500.701",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "D1",
+        channel_type: "im",
+        thread_ts: "500.600",
+        ts: "500.600",
+      },
+    };
+
+    const result = classifyMessage(evt, botId, emptyTracked);
+
+    expect(result.relevant).toBe(true);
+    if (result.relevant) {
+      expect(result.threadTs).toBe("500.600");
+      expect(result.messageTs).toBe("500.701");
+      expect(result.isDM).toBe(true);
+      expect(result.text).toBe("direct wrapper reply");
+    }
+  });
+
+  it("rejects message_replied updates without an embedded reply body", () => {
+    const isKnownThread = (ts: string) => ts === "500.600";
+    const evt = {
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.701",
+        replies: [{ user: "U1", ts: "500.701" }],
+      },
+    };
+
+    expect(classifyMessage(evt, botId, emptyTracked, isKnownThread)).toEqual({ relevant: false });
+  });
+
+  it("rejects message_replied updates in unknown threads without @mention", () => {
+    const isKnownThread = () => false;
+    const evt = {
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "600.700",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "600.700",
+        ts: "600.700",
+        latest_reply: "600.800",
+        replies: [{ user: "U1", ts: "600.800", text: "random reply" }],
+      },
+    };
+
+    expect(classifyMessage(evt, botId, emptyTracked, isKnownThread)).toEqual({ relevant: false });
+  });
+
   it("rejects thread replies in unknown threads without @mention", () => {
     const isKnownThread = () => false;
     const evt = {
@@ -1368,6 +1552,418 @@ describe("SlackAdapter — allowlist filtering", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("hydrates partial message_replied payloads when latest_reply is not embedded", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/conversations.replies")) {
+        expect(parsedBody).toMatchObject({
+          channel: "C1",
+          ts: "500.600",
+          oldest: "500.702",
+          latest: "500.702",
+        });
+        return mockSlackResponse({
+          messages: [
+            {
+              type: "message",
+              user: "U_ALLOWED",
+              text: "fresh reply from API",
+              channel: "C1",
+              thread_ts: "500.600",
+              ts: "500.702",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/users.info")) {
+        expect(parsedBody.user).toBe("U_ALLOWED");
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      if (url.endsWith("/reactions.add")) {
+        expect(parsedBody).toEqual({ channel: "C1", timestamp: "500.702", name: "eyes" });
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: (threadTs) => threadTs === "500.600",
+      getKnownThread: (threadTs) =>
+        threadTs === "500.600" ? { channelId: "C1", context: null } : null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.702",
+        replies: [{ user: "U_STALE", ts: "500.701", text: "stale embedded reply" }],
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "slack",
+        threadId: "500.600",
+        channel: "C1",
+        userId: "U_ALLOWED",
+        userName: "Alice Example",
+        text: "fresh reply from API",
+        timestamp: "500.702",
+      }),
+    );
+  });
+
+  it("hydrates body-less message_replied events when message already represents the reply", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/conversations.replies")) {
+        expect(parsedBody).toMatchObject({
+          channel: "C1",
+          ts: "800.100",
+          oldest: "800.200",
+          latest: "800.200",
+        });
+        return mockSlackResponse({
+          messages: [
+            {
+              type: "message",
+              user: "U_ALLOWED",
+              text: "reply body from API",
+              channel: "C1",
+              thread_ts: "800.100",
+              ts: "800.200",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/users.info")) {
+        expect(parsedBody.user).toBe("U_ALLOWED");
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      if (url.endsWith("/reactions.add")) {
+        expect(parsedBody).toEqual({ channel: "C1", timestamp: "800.200", name: "eyes" });
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: (threadTs) => threadTs === "800.100",
+      getKnownThread: (threadTs) =>
+        threadTs === "800.100" ? { channelId: "C1", context: null } : null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "800.100",
+      message: {
+        type: "message",
+        user: "U_ALLOWED",
+        channel: "C1",
+        thread_ts: "800.100",
+        ts: "800.200",
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "slack",
+        threadId: "800.100",
+        channel: "C1",
+        userId: "U_ALLOWED",
+        userName: "Alice Example",
+        text: "reply body from API",
+        timestamp: "800.200",
+      }),
+    );
+  });
+
+  it("deduplicates normal threaded messages and matching message_replied updates", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/users.info")) {
+        expect(parsedBody.user).toBe("U_ALLOWED");
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      if (url.endsWith("/reactions.add")) {
+        expect(parsedBody).toEqual({ channel: "C1", timestamp: "900.200", name: "eyes" });
+        return mockSlackResponse();
+      }
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: (threadTs) => threadTs === "900.100",
+      getKnownThread: (threadTs) =>
+        threadTs === "900.100" ? { channelId: "C1", context: null } : null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      user: "U_ALLOWED",
+      text: "copy once",
+      channel: "C1",
+      channel_type: "channel",
+      thread_ts: "900.100",
+      ts: "900.200",
+    });
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "900.100",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "900.100",
+        ts: "900.100",
+        latest_reply: "900.200",
+        replies: [{ user: "U_ALLOWED", ts: "900.200" }],
+      },
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "900.100",
+        channel: "C1",
+        userId: "U_ALLOWED",
+        text: "copy once",
+        timestamp: "900.200",
+      }),
+    );
+  });
+
+  it("does not hydrate embedded-body message_replied updates already known to be irrelevant", async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new Error("embedded irrelevant message_replied should not call Slack APIs");
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: () => false,
+      getKnownThread: () => null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "700.100",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "700.100",
+        ts: "700.100",
+        latest_reply: "700.200",
+        replies: [{ user: "U_ALLOWED", ts: "700.200", text: "random reply" }],
+      },
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not hydrate body-less message_replied updates for unknown channel threads", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      throw new Error(`unexpected Slack API call: ${String(input)}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: () => false,
+      getKnownThread: () => null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "700.100",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "700.100",
+        ts: "700.100",
+        latest_reply: "700.200",
+        replies: [{ user: "U_ALLOWED", ts: "700.200" }],
+      },
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("suppresses hydrated message_replied legacy threaded DMs without durable context", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/conversations.replies")) {
+        expect(parsedBody).toMatchObject({
+          channel: "D1",
+          ts: "1.1",
+          oldest: "1.2",
+          latest: "1.2",
+        });
+        return mockSlackResponse({
+          messages: [
+            {
+              type: "message",
+              user: "U_ALLOWED",
+              text: "legacy reply after restart",
+              channel: "D1",
+              channel_type: "im",
+              thread_ts: "1.1",
+              ts: "1.2",
+            },
+          ],
+        });
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: () => false,
+      getKnownThread: (threadTs) =>
+        threadTs === "1.1" ? { channelId: "D1", context: null } : null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "D1",
+      ts: "1.1",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "D1",
+        channel_type: "im",
+        thread_ts: "1.1",
+        ts: "1.1",
+        latest_reply: "1.2",
+        replies: [{ user: "U_ALLOWED", ts: "1.2" }],
+      },
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    const endpoints = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(endpoints).toEqual(["https://slack.com/api/conversations.replies"]);
+  });
+
   it("rehydrates known Slack thread context into inbound scope after cache eviction", async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -1469,6 +2065,184 @@ describe("SlackAdapter — allowlist filtering", () => {
             compatibilityKey: "default",
           },
         },
+      }),
+    );
+  });
+
+  it("emits inbound mail for message_replied updates in broker-known Slack threads", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/users.info")) {
+        expect(parsedBody.user).toBe("U_ALLOWED");
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      if (url.endsWith("/reactions.add")) {
+        expect(parsedBody).toEqual({ channel: "C1", timestamp: "500.701", name: "eyes" });
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: (threadTs) => threadTs === "500.600",
+      getKnownThread: (threadTs) =>
+        threadTs === "500.600" ? { channelId: "C1", context: null } : null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.701",
+        replies: [{ user: "U_ALLOWED", ts: "500.701", text: "copy" }],
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      source: "slack",
+      threadId: "500.600",
+      channel: "C1",
+      userId: "U_ALLOWED",
+      userName: "Alice Example",
+      text: "copy",
+      timestamp: "500.701",
+      metadata: { slackSubtype: "message_replied" },
+      scope: {
+        workspace: {
+          provider: "slack",
+          source: "compatibility",
+          compatibilityKey: "default",
+          channelId: "C1",
+        },
+        instance: {
+          source: "compatibility",
+          compatibilityKey: "default",
+        },
+      },
+    });
+  });
+
+  it("hydrates message_replied updates from conversations.replies when Slack omits body", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/conversations.replies")) {
+        expect(parsedBody).toMatchObject({
+          channel: "C1",
+          ts: "500.600",
+          oldest: "500.701",
+          latest: "500.701",
+        });
+        return mockSlackResponse({
+          messages: [
+            {
+              type: "message",
+              user: "U_ROOT",
+              text: "thread root",
+              channel: "C1",
+              thread_ts: "500.600",
+              ts: "500.600",
+            },
+            {
+              type: "message",
+              user: "U_ALLOWED",
+              text: "copy from API",
+              channel: "C1",
+              thread_ts: "500.600",
+              ts: "500.701",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/users.info")) {
+        expect(parsedBody.user).toBe("U_ALLOWED");
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      if (url.endsWith("/reactions.add")) {
+        expect(parsedBody).toEqual({ channel: "C1", timestamp: "500.701", name: "eyes" });
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      isKnownThread: (threadTs) => threadTs === "500.600",
+      getKnownThread: (threadTs) =>
+        threadTs === "500.600" ? { channelId: "C1", context: null } : null,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    const adapterPort = adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+    adapterPort.botUserId = "U_BOT";
+
+    await adapterPort.onMessage({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.701",
+        replies: [{ user: "U_ALLOWED", ts: "500.701" }],
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "slack",
+        threadId: "500.600",
+        channel: "C1",
+        userId: "U_ALLOWED",
+        userName: "Alice Example",
+        text: "copy from API",
+        timestamp: "500.701",
+        metadata: { slackSubtype: "message_replied" },
       }),
     );
   });

@@ -357,6 +357,247 @@ describe("single-player-runtime", () => {
     );
   });
 
+  it("hydrates body-less message_replied replies before single-player classification", async () => {
+    const state: TestState = {
+      threads: new Map([
+        [
+          "500.600",
+          {
+            channelId: "C1",
+            threadTs: "500.600",
+            userId: "U_ROOT",
+            source: "slack",
+            owner: "owner:crane",
+          },
+        ],
+      ]),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    const ctx = createContext();
+    const slack = vi.fn(async (method: string, _token: string, body?: Record<string, unknown>) => {
+      if (method === "conversations.replies") {
+        expect(body).toMatchObject({
+          channel: "C1",
+          ts: "500.600",
+          oldest: "500.701",
+          latest: "500.701",
+        });
+        return {
+          ok: true,
+          messages: [
+            {
+              type: "message",
+              user: "U_SENDER",
+              text: "copy from API",
+              channel: "C1",
+              thread_ts: "500.600",
+              ts: "500.701",
+            },
+          ],
+        };
+      }
+      return { ok: true };
+    });
+    const { deps, spies } = createDeps(state, { slack });
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(ctx);
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+    await socketConfig?.onMessage?.({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "500.600",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "500.600",
+        ts: "500.600",
+        latest_reply: "500.701",
+        replies: [{ user: "U_SENDER", ts: "500.701" }],
+      },
+    });
+
+    expect(spies.pushInboxMessage).toHaveBeenCalledWith({
+      channel: "C1",
+      threadTs: "500.600",
+      userId: "U_SENDER",
+      text: "copy from API",
+      timestamp: "500.701",
+      metadata: { slackSubtype: "message_replied" },
+      scope: {
+        workspace: {
+          provider: "slack",
+          source: "compatibility",
+          compatibilityKey: "default",
+          channelId: "C1",
+        },
+        instance: {
+          source: "compatibility",
+          compatibilityKey: "default",
+        },
+      },
+    });
+    expect(spies.addReaction).toHaveBeenCalledWith("C1", "500.701", "eyes");
+  });
+
+  it("hydrates body-less message_replied when message already represents the reply", async () => {
+    const state: TestState = {
+      threads: new Map([
+        [
+          "800.100",
+          {
+            channelId: "C1",
+            threadTs: "800.100",
+            userId: "U_ROOT",
+            source: "slack",
+            owner: "owner:crane",
+          },
+        ],
+      ]),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    const ctx = createContext();
+    const slack = vi.fn(async (method: string, _token: string, body?: Record<string, unknown>) => {
+      if (method === "conversations.replies") {
+        expect(body).toMatchObject({
+          channel: "C1",
+          ts: "800.100",
+          oldest: "800.200",
+          latest: "800.200",
+        });
+        return {
+          ok: true,
+          messages: [
+            {
+              type: "message",
+              user: "U_SENDER",
+              text: "reply body from API",
+              channel: "C1",
+              thread_ts: "800.100",
+              ts: "800.200",
+            },
+          ],
+        };
+      }
+      return { ok: true };
+    });
+    const { deps, spies } = createDeps(state, { slack });
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(ctx);
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+    await socketConfig?.onMessage?.({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "800.100",
+      message: {
+        type: "message",
+        user: "U_SENDER",
+        channel: "C1",
+        thread_ts: "800.100",
+        ts: "800.200",
+      },
+    });
+
+    expect(spies.pushInboxMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C1",
+        threadTs: "800.100",
+        userId: "U_SENDER",
+        text: "reply body from API",
+        timestamp: "800.200",
+        metadata: { slackSubtype: "message_replied" },
+      }),
+    );
+  });
+
+  it("deduplicates normal threaded messages and matching message_replied updates", async () => {
+    const state: TestState = {
+      threads: new Map([
+        [
+          "900.100",
+          {
+            channelId: "C1",
+            threadTs: "900.100",
+            userId: "U_ROOT",
+            source: "slack",
+            owner: "owner:crane",
+          },
+        ],
+      ]),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    const ctx = createContext();
+    const { deps, spies } = createDeps(state);
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(ctx);
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+    await socketConfig?.onMessage?.({
+      type: "message",
+      user: "U_SENDER",
+      text: "copy once",
+      channel: "C1",
+      channel_type: "channel",
+      thread_ts: "900.100",
+      ts: "900.200",
+    });
+    await socketConfig?.onMessage?.({
+      type: "message",
+      subtype: "message_replied",
+      hidden: true,
+      channel: "C1",
+      channel_type: "channel",
+      ts: "900.100",
+      message: {
+        type: "message",
+        user: "U_ROOT",
+        text: "thread root",
+        channel: "C1",
+        thread_ts: "900.100",
+        ts: "900.100",
+        latest_reply: "900.200",
+        replies: [{ user: "U_SENDER", ts: "900.200" }],
+      },
+    });
+
+    expect(spies.slack).not.toHaveBeenCalledWith(
+      "conversations.replies",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(spies.pushInboxMessage).toHaveBeenCalledTimes(1);
+    expect(spies.pushInboxMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C1",
+        threadTs: "900.100",
+        userId: "U_SENDER",
+        text: "copy once",
+        timestamp: "900.200",
+      }),
+    );
+  });
+
   it("preserves file-share metadata on inbound Slack messages", async () => {
     const state: TestState = {
       threads: new Map(),

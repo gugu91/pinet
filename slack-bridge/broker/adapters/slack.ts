@@ -3,6 +3,8 @@ import {
   buildSlackThreadRuntimeScope,
   classifyMessage,
   clearSlackThreadStatus,
+  getSlackMessageRepliedHydrationTarget,
+  hydrateSlackMessageRepliedEvent,
   extractAppHomeOpened,
   extractThreadContextChanged,
   extractThreadStarted,
@@ -11,6 +13,7 @@ import {
   removeSlackReaction,
   resolveSlackUserName,
   setSlackSuggestedPrompts,
+  shouldHydrateSlackMessageRepliedEvent,
   SlackSocketModeClient,
   type ParsedAppHomeOpened,
   type ParsedThreadContextChanged,
@@ -82,6 +85,12 @@ export const SLACK_THREAD_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const SLACK_PENDING_ATTENTION_MAX_THREADS = 1000;
 export const SLACK_PENDING_ATTENTION_TTL_MS = 2 * 60 * 60 * 1000;
 export const SLACK_PENDING_ATTENTION_MAX_MESSAGES_PER_THREAD = 50;
+export const SLACK_INBOUND_MESSAGE_DEDUP_MAX_SIZE = 10_000;
+export const SLACK_INBOUND_MESSAGE_DEDUP_TTL_MS = 10 * 60 * 1000;
+
+function buildSlackInboundMessageDedupKey(channel: string, messageTs: string): string {
+  return `slack-inbound-message:${channel}:${messageTs}`;
+}
 
 export class SlackAdapter implements MessageAdapter {
   readonly name = "slack";
@@ -103,6 +112,10 @@ export class SlackAdapter implements MessageAdapter {
   private readonly processedSocketDeliveries = new TtlSet<string>({
     maxSize: SLACK_SOCKET_DELIVERY_DEDUP_MAX_SIZE,
     ttlMs: SLACK_SOCKET_DELIVERY_DEDUP_TTL_MS,
+  });
+  private readonly processedInboundMessages = new TtlSet<string>({
+    maxSize: SLACK_INBOUND_MESSAGE_DEDUP_MAX_SIZE,
+    ttlMs: SLACK_INBOUND_MESSAGE_DEDUP_TTL_MS,
   });
   private readonly pendingEyes: TtlCache<string, { channel: string; messageTs: string }[]>;
 
@@ -446,22 +459,49 @@ export class SlackAdapter implements MessageAdapter {
   private async onMessage(evt: Record<string, unknown>): Promise<void> {
     if (this.shuttingDown) return;
 
-    const classified = classifyMessage(
+    let classified = classifyMessage(
       evt,
       this.botUserId,
       this.getTrackedThreadIds(),
       this.config.isKnownThread,
     );
+    if (
+      !classified.relevant &&
+      shouldHydrateSlackMessageRepliedEvent(evt, (threadTs) =>
+        Boolean(this.threads.get(threadTs) || this.config.isKnownThread?.(threadTs)),
+      )
+    ) {
+      const hydrationTarget = getSlackMessageRepliedHydrationTarget(evt);
+      if (
+        hydrationTarget &&
+        this.processedInboundMessages.has(
+          buildSlackInboundMessageDedupKey(hydrationTarget.channel, hydrationTarget.replyTs),
+        )
+      ) {
+        return;
+      }
+
+      const hydratedEvent = await hydrateSlackMessageRepliedEvent({
+        evt,
+        slack: this.callSlack.bind(this),
+        token: this.config.botToken,
+      });
+      if (this.shuttingDown) return;
+      if (hydratedEvent) {
+        classified = classifyMessage(
+          hydratedEvent,
+          this.botUserId,
+          this.getTrackedThreadIds(),
+          this.config.isKnownThread,
+        );
+      }
+    }
     if (!classified.relevant) return;
 
     const { threadTs, channel, userId, text, isDM, isChannelMention, messageTs, metadata } =
       classified;
 
-    if (
-      isDM &&
-      typeof evt.thread_ts === "string" &&
-      this.shouldSuppressLegacyThreadedDm(threadTs)
-    ) {
+    if (isDM && messageTs !== threadTs && this.shouldSuppressLegacyThreadedDm(threadTs)) {
       return;
     }
 
@@ -474,6 +514,10 @@ export class SlackAdapter implements MessageAdapter {
     }
 
     if (!isSlackUserAllowed(this.allowlist, userId)) return;
+
+    const inboundDedupKey = buildSlackInboundMessageDedupKey(channel, messageTs);
+    if (this.processedInboundMessages.has(inboundDedupKey)) return;
+    this.processedInboundMessages.add(inboundDedupKey);
 
     void this.addReaction(channel, messageTs, "eyes");
     const pending = this.pendingEyes.get(threadTs) ?? [];

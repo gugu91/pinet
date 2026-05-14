@@ -215,6 +215,249 @@ export type MessageClassification =
       metadata?: Record<string, unknown>;
     };
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export function hasSlackMessageBody(evt: Record<string, unknown> | null): boolean {
+  if (!evt) return false;
+  const text = asNonEmptyString(evt.text);
+  if (text && text.trim().length > 0) return true;
+  return buildSlackInboundMessageText("", evt).trim().length > 0;
+}
+
+export function selectLatestThreadReply(
+  rootMessage: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const replies = Array.isArray(rootMessage?.replies)
+    ? rootMessage.replies.filter(
+        (reply): reply is Record<string, unknown> =>
+          typeof reply === "object" && reply !== null && !Array.isArray(reply),
+      )
+    : [];
+  if (replies.length === 0) return null;
+
+  const latestReplyTs = asNonEmptyString(rootMessage?.latest_reply);
+  if (latestReplyTs) {
+    return replies.find((reply) => reply.ts === latestReplyTs) ?? null;
+  }
+
+  return replies[replies.length - 1] ?? null;
+}
+
+function normalizeMessageRepliedEvent(
+  evt: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const rootMessage = asRecord(evt.message);
+  const channel = asNonEmptyString(evt.channel) ?? asNonEmptyString(rootMessage?.channel);
+  const channelType =
+    asNonEmptyString(evt.channel_type) ?? asNonEmptyString(rootMessage?.channel_type);
+
+  if (rootMessage) {
+    const rootThreadTs =
+      asNonEmptyString(rootMessage.thread_ts) ??
+      asNonEmptyString(rootMessage.ts) ??
+      asNonEmptyString(evt.thread_ts);
+
+    // Some Slack transports provide the actual reply as `message` even though
+    // the wrapper subtype is `message_replied`. Keep that shape first.
+    if (
+      asNonEmptyString(rootMessage.thread_ts) &&
+      rootMessage.thread_ts !== rootMessage.ts &&
+      asNonEmptyString(rootMessage.user) &&
+      asNonEmptyString(rootMessage.ts) &&
+      hasSlackMessageBody(rootMessage)
+    ) {
+      return {
+        ...rootMessage,
+        type: "message",
+        subtype: "message_replied",
+        ...(channel ? { channel } : {}),
+        ...(channelType ? { channel_type: channelType } : {}),
+      };
+    }
+
+    const latestReply = selectLatestThreadReply(rootMessage);
+    if (latestReply && rootThreadTs) {
+      const replyEvent: Record<string, unknown> = {
+        ...latestReply,
+        type: "message",
+        subtype: "message_replied",
+        thread_ts: rootThreadTs,
+        ...(channel ? { channel } : {}),
+        ...(channelType ? { channel_type: channelType } : {}),
+      };
+
+      if (
+        asNonEmptyString(replyEvent.user) &&
+        asNonEmptyString(replyEvent.ts) &&
+        hasSlackMessageBody(replyEvent)
+      ) {
+        return replyEvent;
+      }
+    }
+  }
+
+  // Fallback for adapters that put the reply fields directly on the wrapper.
+  if (
+    asNonEmptyString(evt.thread_ts) &&
+    asNonEmptyString(evt.user) &&
+    asNonEmptyString(evt.ts) &&
+    hasSlackMessageBody(evt)
+  ) {
+    return {
+      ...evt,
+      type: "message",
+      subtype: "message_replied",
+      ...(channel ? { channel } : {}),
+      ...(channelType ? { channel_type: channelType } : {}),
+    };
+  }
+
+  return null;
+}
+
+export function messageRepliedEventHasUsableBody(evt: Record<string, unknown>): boolean {
+  if (evt.subtype !== "message_replied") return false;
+
+  const rootMessage = asRecord(evt.message);
+  if (
+    rootMessage &&
+    asNonEmptyString(rootMessage.thread_ts) &&
+    rootMessage.thread_ts !== rootMessage.ts
+  ) {
+    return hasSlackMessageBody(rootMessage);
+  }
+
+  const latestReply = selectLatestThreadReply(rootMessage);
+  return hasSlackMessageBody(latestReply) || hasSlackMessageBody(evt);
+}
+
+export function getSlackMessageRepliedThreadTs(evt: Record<string, unknown>): string | null {
+  if (evt.subtype !== "message_replied") return null;
+  const rootMessage = asRecord(evt.message);
+  return (
+    asNonEmptyString(rootMessage?.thread_ts) ??
+    asNonEmptyString(rootMessage?.ts) ??
+    asNonEmptyString(evt.thread_ts) ??
+    asNonEmptyString(evt.ts)
+  );
+}
+
+export interface SlackMessageRepliedHydrationTarget {
+  channel: string;
+  threadTs: string;
+  replyTs: string;
+}
+
+export function shouldHydrateSlackMessageRepliedEvent(
+  evt: Record<string, unknown>,
+  isKnownThread: (threadTs: string) => boolean,
+): boolean {
+  if (evt.subtype !== "message_replied" || messageRepliedEventHasUsableBody(evt)) return false;
+
+  const threadTs = getSlackMessageRepliedThreadTs(evt);
+  if (threadTs && isKnownThread(threadTs)) return true;
+
+  const rootMessage = asRecord(evt.message);
+  const channelType =
+    asNonEmptyString(evt.channel_type) ?? asNonEmptyString(rootMessage?.channel_type);
+  return channelType === "im";
+}
+
+export function getSlackMessageRepliedHydrationTarget(
+  evt: Record<string, unknown>,
+): SlackMessageRepliedHydrationTarget | null {
+  if (evt.subtype !== "message_replied") return null;
+
+  const rootMessage = asRecord(evt.message);
+  const channel = asNonEmptyString(evt.channel) ?? asNonEmptyString(rootMessage?.channel);
+  const threadTs =
+    asNonEmptyString(rootMessage?.thread_ts) ??
+    asNonEmptyString(rootMessage?.ts) ??
+    asNonEmptyString(evt.thread_ts);
+  if (!channel || !threadTs) return null;
+
+  const latestReply = selectLatestThreadReply(rootMessage);
+  const rootMessageIsReply =
+    asNonEmptyString(rootMessage?.thread_ts) && rootMessage?.thread_ts !== rootMessage?.ts;
+  const replyTs =
+    (rootMessageIsReply ? asNonEmptyString(rootMessage?.ts) : null) ??
+    asNonEmptyString(rootMessage?.latest_reply) ??
+    asNonEmptyString(latestReply?.ts) ??
+    asNonEmptyString(evt.ts);
+  if (!replyTs || replyTs === threadTs) return null;
+
+  return { channel, threadTs, replyTs };
+}
+
+function describeSlackHydrationError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function hydrateSlackMessageRepliedEvent(input: {
+  evt: Record<string, unknown>;
+  slack: SlackCall;
+  token: string;
+}): Promise<Record<string, unknown> | null> {
+  const { evt, slack, token } = input;
+  const target = getSlackMessageRepliedHydrationTarget(evt);
+  if (!target) return null;
+
+  const { channel, threadTs, replyTs } = target;
+  const rootMessage = asRecord(evt.message);
+
+  try {
+    const response = await slack("conversations.replies", token, {
+      channel,
+      ts: threadTs,
+      oldest: replyTs,
+      latest: replyTs,
+      inclusive: true,
+      limit: 1,
+    });
+    const messages = (response.messages as Record<string, unknown>[]) ?? [];
+    const fetchedReply = messages.find((message) => message.ts === replyTs) ?? null;
+    if (!fetchedReply) return null;
+
+    const channelType =
+      asNonEmptyString(evt.channel_type) ??
+      asNonEmptyString(rootMessage?.channel_type) ??
+      asNonEmptyString(fetchedReply.channel_type);
+
+    return {
+      ...fetchedReply,
+      type: "message",
+      subtype: "message_replied",
+      channel,
+      thread_ts: threadTs,
+      ...(channelType ? { channel_type: channelType } : {}),
+    };
+  } catch (error) {
+    console.warn(
+      `[slack-access] failed to hydrate message_replied reply channel=${channel} thread_ts=${threadTs} reply_ts=${replyTs}: ${describeSlackHydrationError(error)}`,
+    );
+    return null;
+  }
+}
+
+function normalizeSlackMessageEvent(evt: Record<string, unknown>): Record<string, unknown> | null {
+  const subtype = asNonEmptyString(evt.subtype);
+  if (subtype === "message_replied") {
+    return normalizeMessageRepliedEvent(evt);
+  }
+  if (subtype === null || subtype === "file_share") {
+    return evt;
+  }
+  return null;
+}
+
 /**
  * Classify an incoming Slack message event. Determines whether the
  * message is relevant (DM, known thread, or bot mention) and
@@ -226,15 +469,15 @@ export function classifyMessage(
   trackedThreadIds: Set<string>,
   isKnownThread?: (threadTs: string) => boolean,
 ): MessageClassification {
-  const subtype = typeof evt.subtype === "string" ? evt.subtype : undefined;
-  const allowsSubtype = subtype === undefined || subtype === "file_share";
-  if (!allowsSubtype || evt.bot_id) return { relevant: false };
+  const normalizedEvent = normalizeSlackMessageEvent(evt);
+  if (!normalizedEvent || normalizedEvent.bot_id) return { relevant: false };
 
-  const text = (evt.text as string) ?? "";
-  const user = evt.user as string;
-  const threadTs = evt.thread_ts as string | undefined;
-  const channel = evt.channel as string;
-  const channelType = evt.channel_type as string | undefined;
+  const subtype = asNonEmptyString(normalizedEvent.subtype) ?? undefined;
+  const text = asNonEmptyString(normalizedEvent.text) ?? "";
+  const user = normalizedEvent.user as string;
+  const threadTs = normalizedEvent.thread_ts as string | undefined;
+  const channel = normalizedEvent.channel as string;
+  const channelType = normalizedEvent.channel_type as string | undefined;
 
   const isKnown = !!threadTs && (isKnownThread?.(threadTs) ?? trackedThreadIds.has(threadTs));
   const isDM = channelType === "im";
@@ -242,10 +485,10 @@ export function classifyMessage(
 
   if (!isKnown && !isDM && !isMention) return { relevant: false };
 
-  const effectiveTs = threadTs ?? (evt.ts as string);
+  const effectiveTs = threadTs ?? (normalizedEvent.ts as string);
   const isChannelMention = isMention && !isDM && !isKnown;
   const cleanText = isChannelMention && botUserId ? stripBotMention(text, botUserId) : text;
-  const slackFiles = extractSlackMessageFileMetadata(evt.files);
+  const slackFiles = extractSlackMessageFileMetadata(normalizedEvent.files);
   const metadata: Record<string, unknown> = {
     ...(subtype ? { slackSubtype: subtype } : {}),
     ...(slackFiles.length > 0 ? { slackFiles } : {}),
@@ -256,10 +499,10 @@ export function classifyMessage(
     threadTs: effectiveTs,
     channel,
     userId: user,
-    text: buildSlackInboundMessageText(cleanText, evt),
+    text: buildSlackInboundMessageText(cleanText, normalizedEvent),
     isDM,
     isChannelMention,
-    messageTs: (evt.ts as string) ?? effectiveTs,
+    messageTs: (normalizedEvent.ts as string) ?? effectiveTs,
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
 }
