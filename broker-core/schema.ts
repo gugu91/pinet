@@ -295,10 +295,6 @@ function parseJsonMetadata(value: string | null): Record<string, unknown> {
   }
 }
 
-function isArrowUpReactionName(value: string | null): boolean {
-  return value === "arrow_up" || value === "⬆" || value === "⬆️";
-}
-
 function appendMetadataAudit(
   metadata: Record<string, unknown>,
   key: string,
@@ -3143,8 +3139,12 @@ export class BrokerDB implements BrokerDBInterface {
     const metadata = message.metadata;
     if (!metadata) return;
 
+    if (metadata.reactionTrigger !== true) return;
+
+    const reactionAction = getStringMetadataValue(metadata, ["reactionAction", "reaction_action"]);
+    if (reactionAction !== "steer") return;
+
     const reactionName = getStringMetadataValue(metadata, ["reactionName", "reaction_name"]);
-    if (!isArrowUpReactionName(reactionName)) return;
 
     const referencedSource =
       getStringMetadataValue(metadata, ["referencedSource", "referenced_source"]) ?? message.source;
@@ -3169,15 +3169,61 @@ export class BrokerDB implements BrokerDBInterface {
         : null);
     if (!externalId) return;
 
-    this.reclassifyMessageByExternalId(referencedSource, externalId, "steering", {
-      reason: "slack_reaction_arrow_up",
-      reactionName,
-      reactorUserId: getStringMetadataValue(metadata, ["reactorUserId", "reactor_user_id"]),
-      reactorName: getStringMetadataValue(metadata, ["reactorName", "reactor_name"]),
-      reactionEventTs: getStringMetadataValue(metadata, ["reactionEventTs", "reaction_event_ts"]),
-      referencedThreadId: message.threadId,
-      referencedMessageTs,
-    });
+    const referenced = this.getMessageByExternalId(referencedSource, externalId);
+    if (!referenced) return;
+
+    const targetAgentIds = this.getUnreadReactionEscalationTargets(referenced);
+    if (targetAgentIds.length === 0) return;
+
+    const reclassified = this.reclassifyMessageByExternalId(
+      referencedSource,
+      externalId,
+      "steering",
+      {
+        reason: "slack_reaction_arrow_up",
+        reactionName,
+        reactorUserId: getStringMetadataValue(metadata, ["reactorUserId", "reactor_user_id"]),
+        reactorName: getStringMetadataValue(metadata, ["reactorName", "reactor_name"]),
+        reactionEventTs: getStringMetadataValue(metadata, ["reactionEventTs", "reaction_event_ts"]),
+        referencedThreadId: message.threadId,
+        referencedMessageTs,
+      },
+    );
+    if (reclassified) {
+      this.redeliverReclassifiedReactionMessage(reclassified, targetAgentIds);
+    }
+  }
+
+  private getUnreadReactionEscalationTargets(message: BrokerMessage): string[] {
+    const db = this.getDb();
+    const ownerAgent = this.getThread(message.threadId)?.ownerAgent;
+    if (ownerAgent) {
+      const row = db
+        .prepare("SELECT 1 FROM inbox WHERE agent_id = ? AND message_id = ? AND read_at IS NULL")
+        .get(ownerAgent, message.id);
+      return row ? [ownerAgent] : [];
+    }
+
+    const existingUnreadRecipients = db
+      .prepare("SELECT DISTINCT agent_id FROM inbox WHERE message_id = ? AND read_at IS NULL")
+      .all(message.id) as Array<{ agent_id: string }>;
+
+    return existingUnreadRecipients.map((row) => row.agent_id).filter(Boolean);
+  }
+
+  private redeliverReclassifiedReactionMessage(
+    message: BrokerMessage,
+    targetAgentIds: readonly string[],
+  ): void {
+    if (targetAgentIds.length === 0) return;
+
+    const reopenUnreadInbox = this.getDb().prepare(
+      "UPDATE inbox SET delivered = 0 WHERE agent_id = ? AND message_id = ? AND read_at IS NULL",
+    );
+
+    for (const agentId of targetAgentIds) {
+      reopenUnreadInbox.run(agentId, message.id);
+    }
   }
 
   reclassifyMessageByExternalId(
@@ -3333,6 +3379,11 @@ export class BrokerDB implements BrokerDBInterface {
       .prepare("SELECT id FROM messages WHERE source = ? AND external_id = ?")
       .get(source, externalId) as { id?: number } | undefined;
     return typeof row?.id === "number" ? row.id : null;
+  }
+
+  private getMessageByExternalId(source: string, externalId: string): BrokerMessage | null {
+    const messageId = this.getExistingMessageIdForIdentity(source, externalId);
+    return messageId === null ? null : this.getMessageById(messageId);
   }
 
   private getMessageById(messageId: number): BrokerMessage | null {

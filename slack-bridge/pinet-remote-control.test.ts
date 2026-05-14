@@ -113,6 +113,23 @@ describe("createPinetRemoteControl", () => {
     );
   });
 
+  it("flushes deferred acks and aborts busy work for interrupt without reloading or exiting", async () => {
+    const { deps, flushDeferredRemoteControlAcks, reloadPinetRuntime } = createDeps();
+    const shutdown = vi.fn();
+    const pinetRemoteControl = createPinetRemoteControl(deps);
+    const { ctx, notify, abort } = createCtx({ idle: false, shutdown });
+
+    pinetRemoteControl.requestRemoteControl("interrupt", ctx);
+    pinetRemoteControl.runRemoteControl("interrupt", ctx);
+    await settleRemoteControl();
+
+    expect(flushDeferredRemoteControlAcks).toHaveBeenCalledWith("interrupt");
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(reloadPinetRuntime).not.toHaveBeenCalled();
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith("Pinet remote control requested: /interrupt", "warning");
+  });
+
   it("flushes deferred acks, aborts busy work, and reloads the runtime", async () => {
     const { deps, flushDeferredRemoteControlAcks, reloadPinetRuntime } = createDeps();
     const pinetRemoteControl = createPinetRemoteControl(deps);

@@ -14,6 +14,8 @@ describe("normalizeReactionName", () => {
     expect(normalizeReactionName("memo")).toBe("memo");
     expect(normalizeReactionName("⬆️")).toBe("arrow_up");
     expect(normalizeReactionName(":arrow_up:")).toBe("arrow_up");
+    expect(normalizeReactionName("🛑")).toBe("octagonal_sign");
+    expect(normalizeReactionName(":octagonal_sign:")).toBe("octagonal_sign");
   });
 
   it("throws for unsupported raw emoji input", () => {
@@ -27,6 +29,7 @@ describe("resolveReactionCommands", () => {
     expect(commands.get("memo")?.action).toBe("summarize");
     expect(commands.get("bug")?.action).toBe("file-issue");
     expect(commands.get("arrow_up")?.action).toBe("steer");
+    expect(commands.get("octagonal_sign")?.action).toBe("interrupt");
   });
 
   it("merges custom settings keyed by emoji or alias", () => {
@@ -44,6 +47,7 @@ describe("formatReactionDisplay", () => {
   it("includes both the emoji and Slack reaction name when known", () => {
     expect(formatReactionDisplay("eyes")).toBe("👀 (:eyes:)");
     expect(formatReactionDisplay("arrow_up")).toBe("⬆️ (:arrow_up:)");
+    expect(formatReactionDisplay("octagonal_sign")).toBe("🛑 (:octagonal_sign:)");
   });
 });
 

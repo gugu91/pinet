@@ -868,6 +868,7 @@ describe("formatPinetInboxMessages", () => {
 
 describe("Pinet control helpers", () => {
   it("parses supported control commands", () => {
+    expect(parsePinetControlCommand("interrupt")).toBe("interrupt");
     expect(parsePinetControlCommand("reload")).toBe("reload");
     expect(parsePinetControlCommand("exit")).toBe("exit");
     expect(parsePinetControlCommand("noop")).toBeNull();
@@ -877,6 +878,7 @@ describe("Pinet control helpers", () => {
     expect(getPinetControlCommandFromText('{"type":"pinet:control","action":"reload"}')).toBe(
       "reload",
     );
+    expect(getPinetControlCommandFromText("/interrupt")).toBe("interrupt");
     expect(getPinetControlCommandFromText("/reload")).toBe("reload");
     expect(getPinetControlCommandFromText(" /exit ")).toBe("exit");
     expect(getPinetControlCommandFromText('{"type":"pinet:control","action":"noop"}')).toBe(null);
@@ -890,6 +892,9 @@ describe("Pinet control helpers", () => {
       action: "reload",
     });
     expect(buildPinetControlMessage("reload")).toBe('{"type":"pinet:control","action":"reload"}');
+    expect(buildPinetControlMessage("interrupt")).toBe(
+      '{"type":"pinet:control","action":"interrupt"}',
+    );
   });
 
   it("normalizes outgoing control messages to the structured envelope", () => {
@@ -948,6 +953,48 @@ describe("Pinet control helpers", () => {
         threadId: "a2a:sender:target",
         body: '{"type":"pinet:control","action":"noop"}',
         metadata: { a2a: true },
+      }),
+    ).toBeNull();
+  });
+
+  it("extracts interrupt controls from explicit Slack reaction metadata only", () => {
+    expect(
+      extractPinetControlCommand({
+        threadId: "123.456",
+        body: '{"type":"pinet:control","action":"interrupt"}',
+        metadata: {
+          type: "pinet:control",
+          action: "interrupt",
+          reactionName: "octagonal_sign",
+          reactionAction: "interrupt",
+          slackReactionControl: true,
+        },
+      }),
+    ).toBe("interrupt");
+    expect(
+      extractPinetControlCommand({
+        threadId: "123.456",
+        body: '{"type":"pinet:control","action":"interrupt"}',
+        metadata: {
+          type: "pinet:control",
+          action: "interrupt",
+          reactionName: "rotating_light",
+          reactionAction: "interrupt",
+          slackReactionControl: true,
+        },
+      }),
+    ).toBe("interrupt");
+    expect(
+      extractPinetControlCommand({
+        threadId: "123.456",
+        body: '{"type":"pinet:control","action":"exit"}',
+        metadata: {
+          type: "pinet:control",
+          action: "exit",
+          reactionName: "octagonal_sign",
+          reactionAction: "interrupt",
+          slackReactionControl: true,
+        },
       }),
     ).toBeNull();
   });
@@ -1025,6 +1072,20 @@ describe("Pinet control helpers", () => {
       status: "queued",
       scheduledCommand: "exit",
       ackDisposition: "on_start",
+    });
+  });
+
+  it("treats an interrupt as covered when a stronger command is already running", () => {
+    expect(
+      queuePinetRemoteControl({ currentCommand: "reload", queuedCommand: null }, "interrupt"),
+    ).toMatchObject({
+      currentCommand: "reload",
+      queuedCommand: null,
+      accepted: true,
+      shouldStartNow: false,
+      status: "covered",
+      scheduledCommand: "reload",
+      ackDisposition: "immediate",
     });
   });
 

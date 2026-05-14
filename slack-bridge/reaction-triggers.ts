@@ -33,6 +33,8 @@ const REACTION_ALIASES: Record<string, string> = {
   "⬆️": "arrow_up",
   "⬆": "arrow_up",
   arrow_up: "arrow_up",
+  "🛑": "octagonal_sign",
+  octagonal_sign: "octagonal_sign",
 };
 
 const REACTION_DISPLAY: Record<string, string> = {
@@ -46,6 +48,7 @@ const REACTION_DISPLAY: Record<string, string> = {
   eyes: "👀",
   white_check_mark: "✅",
   arrow_up: "⬆️",
+  octagonal_sign: "🛑",
 };
 
 export const DEFAULT_REACTION_COMMANDS: Record<string, ReactionCommandTemplate> = {
@@ -78,6 +81,11 @@ export const DEFAULT_REACTION_COMMANDS: Record<string, ReactionCommandTemplate> 
     action: "steer",
     prompt:
       "Treat the reacted-to message as steering. Read the durable message context, then prioritize it as an explicit operator instruction if it is relevant and safe.",
+  },
+  octagonal_sign: {
+    action: "interrupt",
+    prompt:
+      "Interrupt the current owner process for the reacted Slack thread. Stop the active turn safely, then read the durable context before deciding whether more work is needed.",
   },
   mag: {
     action: "search",
@@ -112,7 +120,7 @@ export function normalizeReactionName(input: string): string {
   const normalized = normalizeReactionNameOrNull(input);
   if (!normalized) {
     throw new Error(
-      `Unsupported reaction ${JSON.stringify(input)}. Use a Slack reaction name like "eyes" or a supported emoji such as 👀, ✅, 🔄, 📝, 🐛, or ⬆️.`,
+      `Unsupported reaction ${JSON.stringify(input)}. Use a Slack reaction name like "eyes" or a supported emoji such as 👀, ✅, 🔄, 📝, 🐛, ⬆️, or 🛑.`,
     );
   }
   return normalized;
@@ -132,6 +140,8 @@ function buildDefaultPromptForAction(action: string): string {
       return DEFAULT_REACTION_COMMANDS.repeat.prompt;
     case "steer":
       return DEFAULT_REACTION_COMMANDS.arrow_up.prompt;
+    case "interrupt":
+      return DEFAULT_REACTION_COMMANDS.octagonal_sign.prompt;
     case "search":
       return DEFAULT_REACTION_COMMANDS.mag.prompt;
     case "track":

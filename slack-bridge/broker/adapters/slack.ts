@@ -21,6 +21,8 @@ import {
   callSlackAPI,
   isAbortError,
   buildAllowlist,
+  buildPinetControlMessage,
+  buildPinetControlMetadata,
 } from "../../helpers.js";
 import {
   buildReactionTriggerMessage,
@@ -332,7 +334,13 @@ export class SlackAdapter implements MessageAdapter {
     }
 
     try {
+      const isInterruptReaction = command.action === "interrupt";
       const reactedMessage = await this.fetchMessageByTs(item.channel, item.ts);
+      if (!reactedMessage && isInterruptReaction) {
+        throw new Error(
+          `Unable to identify Slack thread for interrupt reaction ${item.ts} in channel ${item.channel}`,
+        );
+      }
       const reactedMessageFetchStatus = reactedMessage ? "found" : "unavailable";
 
       const threadTs =
@@ -353,19 +361,25 @@ export class SlackAdapter implements MessageAdapter {
         }
       }
 
-      const reactorName = await this.resolveUser(userId);
+      const reactorName = isInterruptReaction
+        ? await this.resolveUser(userId).catch(() => userId)
+        : await this.resolveUser(userId);
       if (this.shuttingDown) return;
       const reactedMessageAuthorId =
         (reactedMessage?.user as string | undefined) ?? (evt.item_user as string | undefined);
-      const reactedMessageAuthor = reactedMessageAuthorId
-        ? await this.resolveUser(reactedMessageAuthorId)
-        : (reactedMessage?.bot_id as string | undefined)
-          ? "bot"
-          : "unknown";
+      const reactedMessageAuthor = isInterruptReaction
+        ? (reactedMessageAuthorId ??
+          ((reactedMessage?.bot_id as string | undefined) ? "bot" : "unknown"))
+        : reactedMessageAuthorId
+          ? await this.resolveUser(reactedMessageAuthorId)
+          : (reactedMessage?.bot_id as string | undefined)
+            ? "bot"
+            : "unknown";
       if (this.shuttingDown) return;
 
-      const reactedMessageText =
-        typeof reactedMessage?.text === "string" && reactedMessage.text.trim().length > 0
+      const reactedMessageText = isInterruptReaction
+        ? "(interrupt control; reacted message text omitted)"
+        : typeof reactedMessage?.text === "string" && reactedMessage.text.trim().length > 0
           ? reactedMessage.text
           : reactedMessage
             ? "(no text)"
@@ -379,21 +393,31 @@ export class SlackAdapter implements MessageAdapter {
         channel: item.channel,
         userId,
         userName: reactorName,
-        text: buildReactionTriggerMessage({
-          reactionName,
-          command,
-          reactorName,
-          channel: item.channel,
-          threadTs,
-          messageTs: item.ts,
-          reactedMessageText,
-          reactedMessageAuthor,
-        }),
+        text: isInterruptReaction
+          ? buildPinetControlMessage("interrupt")
+          : buildReactionTriggerMessage({
+              reactionName,
+              command,
+              reactorName,
+              channel: item.channel,
+              threadTs,
+              messageTs: item.ts,
+              reactedMessageText,
+              reactedMessageAuthor,
+            }),
         timestamp: reactionEventTs,
         metadata: {
           reactionTrigger: true,
           reactionName,
           reactionAction: command.action,
+          ...(isInterruptReaction
+            ? {
+                ...buildPinetControlMetadata("interrupt"),
+                kind: "pinet_control",
+                command: "interrupt",
+                slackReactionControl: true,
+              }
+            : {}),
           reactorUserId: userId,
           reactorName,
           reactionEventTs,

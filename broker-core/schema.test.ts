@@ -1118,6 +1118,188 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("does not redeliver read referenced Slack mail when arrow-up would make it steering", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("111.222", "slack", "C123", "agent-a");
+      const original = db.insertMessage(
+        "111.222",
+        "slack",
+        "inbound",
+        "U_TARGET",
+        "This was already handled before escalation.",
+        ["agent-a"],
+        { channel: "C123", timestamp: "111.333", userId: "U_TARGET" },
+      );
+      const originalInboxId = db.getInbox("agent-a")[0]!.entry.id;
+      db.markDelivered([originalInboxId], "agent-a");
+      db.markRead([originalInboxId], "agent-a");
+      expect(db.readInbox("agent-a", { markRead: false }).messages).toHaveLength(0);
+
+      db.queueMessage("agent-a", {
+        source: "slack",
+        threadId: "111.222",
+        channel: "C123",
+        userId: "U_REACTOR",
+        userName: "Alice",
+        text: "Reaction trigger from Slack: arrow-up",
+        timestamp: "999.000",
+        metadata: {
+          reactionTrigger: true,
+          reactionName: "arrow_up",
+          reactionAction: "steer",
+          reactorUserId: "U_REACTOR",
+          referencedSource: "slack",
+          referencedExternalId: "C123:111.333",
+        },
+      });
+
+      const read = db.readInbox("agent-a", { markRead: false });
+      expect(read.messages.find((item) => item.message.id === original.id)).toBeUndefined();
+      expect(db.getMessagesByIds([original.id])[0]?.metadata ?? {}).not.toHaveProperty(
+        "pinet_mail_class",
+      );
+      expect(db.getPendingInboxCount("agent-a")).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("redelivers steering reactions only to the current owner after ownership changes", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("222.222", "slack", "C222", "agent-a");
+      const original = db.insertMessage(
+        "222.222",
+        "slack",
+        "inbound",
+        "U_TARGET",
+        "The current owner should get this after escalation.",
+        ["agent-a"],
+        { channel: "C222", timestamp: "222.333", userId: "U_TARGET" },
+      );
+      db.transferThreadOwnership("222.222", "agent-b");
+
+      db.queueMessage("agent-b", {
+        source: "slack",
+        threadId: "222.222",
+        channel: "C222",
+        userId: "U_REACTOR",
+        text: "Reaction trigger from Slack: arrow-up",
+        timestamp: "999.222",
+        metadata: {
+          reactionTrigger: true,
+          reactionName: "arrow_up",
+          reactionAction: "steer",
+          referencedSource: "slack",
+          referencedExternalId: "C222:222.333",
+        },
+      });
+
+      expect(
+        db
+          .readInbox("agent-a", { markRead: false })
+          .messages.find((item) => item.message.id === original.id),
+      ).toBeUndefined();
+      expect(
+        db
+          .readInbox("agent-b", { markRead: false })
+          .messages.find((item) => item.message.id === original.id)?.entry,
+      ).toMatchObject({ delivered: false, readAt: null });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses reaction action rather than emoji name for steering redelivery", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("333.000", "slack", "C333", "agent-a");
+      const original = db.insertMessage(
+        "333.000",
+        "slack",
+        "inbound",
+        "U_TARGET",
+        "Escalate only for configured steer actions.",
+        ["agent-a"],
+        { channel: "C333", timestamp: "333.111", userId: "U_TARGET" },
+      );
+      const originalInboxId = db.getInbox("agent-a")[0]!.entry.id;
+      db.markDelivered([originalInboxId], "agent-a");
+
+      db.queueMessage("agent-a", {
+        source: "slack",
+        threadId: "333.000",
+        channel: "C333",
+        userId: "U_REACTOR",
+        text: "Reaction trigger from Slack: custom steer",
+        timestamp: "999.333",
+        metadata: {
+          reactionTrigger: true,
+          reactionName: "eyes",
+          reactionAction: "steer",
+          referencedSource: "slack",
+          referencedExternalId: "C333:333.111",
+        },
+      });
+
+      expect(
+        db
+          .readInbox("agent-a", { markRead: false })
+          .messages.find((item) => item.message.id === original.id)?.message.metadata,
+      ).toMatchObject({ pinet_mail_class: "steering" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not redeliver arrow-up reactions remapped away from steer", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("444.000", "slack", "C444", "agent-a");
+      const original = db.insertMessage(
+        "444.000",
+        "slack",
+        "inbound",
+        "U_TARGET",
+        "Do not escalate when arrow-up is remapped.",
+        ["agent-a"],
+        { channel: "C444", timestamp: "444.111", userId: "U_TARGET" },
+      );
+      const originalInboxId = db.getInbox("agent-a")[0]!.entry.id;
+      db.markDelivered([originalInboxId], "agent-a");
+      db.markRead([originalInboxId], "agent-a");
+
+      db.queueMessage("agent-a", {
+        source: "slack",
+        threadId: "444.000",
+        channel: "C444",
+        userId: "U_REACTOR",
+        text: "Reaction trigger from Slack: remapped arrow-up",
+        timestamp: "999.444",
+        metadata: {
+          reactionTrigger: true,
+          reactionName: "arrow_up",
+          reactionAction: "review",
+          referencedSource: "slack",
+          referencedExternalId: "C444:444.111",
+        },
+      });
+
+      const read = db.readInbox("agent-a", { markRead: false });
+      expect(read.messages.find((item) => item.message.id === original.id)).toBeUndefined();
+      expect(db.getMessagesByIds([original.id])[0]?.metadata ?? {}).not.toHaveProperty(
+        "pinet_mail_class",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it("reclassifies delivered durable Slack mail from arrow-up reactions", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);

@@ -200,7 +200,7 @@ Messages queue while the agent is busy. When the agent finishes, it automaticall
 
 ### Reaction triggers
 
-Configured emoji reactions create structured Pinet requests from the reacted-to Slack message. The default set includes `:arrow_up:` / ⬆️ as `steer`, which marks the referenced message as steering and asks the target agent to treat it as an operator instruction when relevant and safe. Pinet adds ✅ when it accepts the reaction-triggered request. If it cannot process the reaction at all, it adds ❌; check broker logs for the underlying Slack/API error. When Slack cannot return the reacted message text, Pinet still routes the reaction with channel/thread/message IDs so steering reactions do not fail solely because message lookup was unavailable.
+Configured emoji reactions create structured Pinet requests from the reacted-to Slack message. The default set includes `:arrow_up:` / ⬆️ as `steer`, which marks and redelivers the referenced message as steering so the current thread owner sees an unread operator instruction when relevant and safe. The default `:octagonal_sign:` / 🛑 mapping sends an explicit `interrupt` control to the current thread owner; it aborts the active turn when the owner is busy, but does not reload or exit the process. Pinet adds ✅ when it accepts the reaction-triggered request. If it cannot process the reaction at all, it adds ❌; check broker logs for the underlying Slack/API error. When Slack cannot return the reacted message text, Pinet still routes the reaction with channel/thread/message IDs so steering reactions do not fail solely because message lookup was unavailable.
 
 ### Available tools
 

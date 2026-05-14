@@ -308,6 +308,55 @@ describe("single-player-runtime", () => {
     expect(spies.maybeDrainInboxIfIdle).toHaveBeenCalledWith(ctx);
   });
 
+  it("interrupts busy single-player turns from octagonal-sign reactions", async () => {
+    const state: TestState = {
+      threads: new Map(),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    const abort = vi.fn();
+    const notify = vi.fn();
+    const ctx = {
+      ...createContext(notify),
+      isIdle: () => false,
+      abort,
+    } as unknown as ExtensionContext;
+    const { deps, spies } = createDeps(state, {
+      getReactionCommand: (reactionName) =>
+        reactionName === "octagonal_sign"
+          ? { action: "interrupt", prompt: "Interrupt now." }
+          : undefined,
+      fetchSlackMessageByTs: vi.fn(async () => ({
+        ts: "100.1",
+        text: "busy work",
+        user: "U_TARGET",
+      })),
+      resolveUser: vi.fn(async () => "Alice"),
+    });
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(ctx);
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+    await socketConfig?.onReactionAdded?.({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "octagonal_sign",
+      item: { type: "message", channel: "C123", ts: "100.1" },
+      event_ts: "999.1",
+    });
+
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(state.inbox).toHaveLength(0);
+    expect(spies.addReaction).toHaveBeenCalledWith("C123", "100.1", "white_check_mark");
+    expect(notify).toHaveBeenCalledWith(
+      "Alice requested an interrupt with :octagonal_sign:",
+      "warning",
+    );
+  });
+
   it("preserves file-share metadata on inbound Slack messages", async () => {
     const state: TestState = {
       threads: new Map(),

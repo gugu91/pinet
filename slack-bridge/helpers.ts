@@ -475,7 +475,7 @@ export function formatPinetInboxMessages(entries: FollowerInboxEntry[]): string 
 
 // ─── Pinet control messages ─────────────────────────────
 
-export type PinetControlCommand = "reload" | "exit";
+export type PinetControlCommand = "interrupt" | "reload" | "exit";
 
 export interface PinetRemoteControlState {
   currentCommand: PinetControlCommand | null;
@@ -491,7 +491,26 @@ export interface PinetRemoteControlRequestResult extends PinetRemoteControlState
 }
 
 export function parsePinetControlCommand(value: unknown): PinetControlCommand | null {
-  return value === "reload" || value === "exit" ? value : null;
+  return value === "interrupt" || value === "reload" || value === "exit" ? value : null;
+}
+
+function comparePinetControlPriority(
+  left: PinetControlCommand,
+  right: PinetControlCommand,
+): number {
+  const priority: Record<PinetControlCommand, number> = {
+    interrupt: 0,
+    reload: 1,
+    exit: 2,
+  };
+  return priority[left] - priority[right];
+}
+
+function higherPriorityPinetControlCommand(
+  left: PinetControlCommand,
+  right: PinetControlCommand,
+): PinetControlCommand {
+  return comparePinetControlPriority(left, right) >= 0 ? left : right;
 }
 
 export function queuePinetRemoteControl(
@@ -522,10 +541,22 @@ export function queuePinetRemoteControl(
     };
   }
 
-  const queuedCommand =
-    state.queuedCommand === "exit" || command === "exit"
-      ? "exit"
-      : (state.queuedCommand ?? command);
+  if (command === "interrupt") {
+    const scheduledCommand = state.queuedCommand ?? state.currentCommand;
+    return {
+      currentCommand: state.currentCommand,
+      queuedCommand: state.queuedCommand,
+      accepted: true,
+      shouldStartNow: false,
+      status: "covered",
+      scheduledCommand,
+      ackDisposition: state.queuedCommand ? "on_start" : "immediate",
+    };
+  }
+
+  const queuedCommand = state.queuedCommand
+    ? higherPriorityPinetControlCommand(state.queuedCommand, command)
+    : command;
 
   const status = queuedCommand === state.queuedCommand ? "covered" : "queued";
 
@@ -630,6 +661,7 @@ function parseLegacyPinetControlCommandFromText(
   text: string | undefined,
 ): PinetControlCommand | null {
   const trimmed = text?.trim();
+  if (trimmed === "/interrupt") return "interrupt";
   if (trimmed === "/reload") return "reload";
   if (trimmed === "/exit") return "exit";
   return null;
@@ -697,11 +729,19 @@ export function extractPinetControlCommand(message: {
   const isAgentToAgent =
     metadata.a2a === true ||
     (typeof message.threadId === "string" && message.threadId.startsWith("a2a:"));
-  if (!isAgentToAgent) return null;
+  const isSlackReactionInterrupt =
+    metadata.slackReactionControl === true && metadata.reactionAction === "interrupt";
 
   const metadataCommand =
     parsePinetControlEnvelope(metadata) ??
     (metadata.kind === "pinet_control" ? parsePinetControlCommand(metadata.command) : null);
+
+  if (isSlackReactionInterrupt) {
+    return metadataCommand === "interrupt" ? "interrupt" : null;
+  }
+
+  if (!isAgentToAgent) return null;
+
   if (metadataCommand) return metadataCommand;
 
   // Backward-compatible fallback for structured JSON or exact slash commands sent over a2a flows.
