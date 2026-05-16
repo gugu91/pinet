@@ -14,7 +14,7 @@ import {
   type RuntimeAgentContextDeps,
 } from "./runtime-agent-context.js";
 import type { SecurityGuardrails } from "./guardrails.js";
-import type { GitContext } from "./git-metadata.js";
+import type { GitContext, GitDynamicState } from "./git-metadata.js";
 import type { SinglePlayerThreadInfo } from "./single-player-runtime.js";
 
 interface MutableRuntimeAgentState {
@@ -67,6 +67,7 @@ function createDeps(
     agentAliases?: Set<string>;
     extensionContext?: ExtensionContext | null;
     gitContext?: GitContext;
+    dynamicGitState?: GitDynamicState;
   } = {},
 ) {
   const cwd = overrides.cwd ?? process.cwd();
@@ -108,6 +109,14 @@ function createDeps(
     repo: path.basename(cwd),
     repoRoot: cwd,
     branch: "main",
+  };
+  const dynamicGitState: GitDynamicState = overrides.dynamicGitState ?? {
+    ...(gitContext.branch ? { branch: gitContext.branch } : {}),
+    ...(typeof gitContext.dirty === "boolean" ? { dirty: gitContext.dirty } : {}),
+    ...(typeof gitContext.dirtyFileCount === "number"
+      ? { dirtyFileCount: gitContext.dirtyFileCount }
+      : {}),
+    probeFailed: false,
   };
   const persistState = vi.fn();
   const updateBadge = vi.fn();
@@ -171,6 +180,7 @@ function createDeps(
     persistState,
     updateBadge,
     getGitContext: async () => gitContext,
+    getDynamicGitState: async () => dynamicGitState,
   };
 
   return {
@@ -548,6 +558,101 @@ describe("createRuntimeAgentContext", () => {
     });
 
     fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it("uses live git state instead of the cached launch branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-agent-context-live-"));
+    try {
+      const { deps } = createDeps({
+        cwd: repoRoot,
+        gitContext: {
+          cwd: repoRoot,
+          repo: "extensions",
+          repoRoot,
+          branch: "main",
+          dirty: false,
+          dirtyFileCount: 0,
+        },
+        dynamicGitState: {
+          branch: "agent/portable-commercial-pi-runtime",
+          dirty: true,
+          dirtyFileCount: 2,
+          probeFailed: false,
+        },
+      });
+      const runtimeAgentContext = createRuntimeAgentContext(deps);
+
+      const metadata = await runtimeAgentContext.getAgentMetadata("worker");
+      expect(metadata).toMatchObject({
+        branch: "agent/portable-commercial-pi-runtime",
+        workdirDirty: true,
+        workdirDirtyFileCount: 2,
+      });
+      expect(metadata.capabilities).toMatchObject({
+        branch: "agent/portable-commercial-pi-runtime",
+        workdirDirty: true,
+      });
+      expect((metadata.capabilities as { tags: string[] }).tags).toEqual(
+        expect.arrayContaining(["branch:agent/portable-commercial-pi-runtime", "workdir:dirty"]),
+      );
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fall back to a cached branch when the live probe observes no branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-agent-context-detached-"));
+    try {
+      const { deps } = createDeps({
+        cwd: repoRoot,
+        gitContext: {
+          cwd: repoRoot,
+          repo: "extensions",
+          repoRoot,
+          branch: "main",
+        },
+        dynamicGitState: {
+          dirty: false,
+          dirtyFileCount: 0,
+          probeFailed: false,
+        },
+      });
+      const runtimeAgentContext = createRuntimeAgentContext(deps);
+
+      const metadata = await runtimeAgentContext.getAgentMetadata("worker");
+      expect(metadata).not.toHaveProperty("branch");
+      expect(metadata).toMatchObject({ workdirDirty: false });
+      expect((metadata.capabilities as { tags: string[] }).tags).not.toContain("branch:main");
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("marks probe failures without reporting an unknown dirty state as clean", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-agent-context-probe-fail-"));
+    try {
+      const { deps } = createDeps({
+        cwd: repoRoot,
+        gitContext: {
+          cwd: repoRoot,
+          repo: "extensions",
+          repoRoot,
+          branch: "main",
+        },
+        dynamicGitState: {
+          branch: "main",
+          probeFailed: true,
+        },
+      });
+      const runtimeAgentContext = createRuntimeAgentContext(deps);
+
+      const metadata = await runtimeAgentContext.getAgentMetadata("worker");
+      expect(metadata).toMatchObject({ branch: "main", gitProbeFailed: true });
+      expect(metadata).not.toHaveProperty("workdirDirty");
+      expect((metadata.capabilities as { tags: string[] }).tags).toContain("git-probe-failed");
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 
   it("includes broker-managed launch metadata for marked follower workers", async () => {

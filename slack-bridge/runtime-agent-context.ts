@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { GitContext } from "./git-metadata.js";
+import { type GitContext, type GitDynamicState, probeGitDynamic } from "./git-metadata.js";
 import {
   buildAllowlist,
   buildIdentityReplyGuidelines,
@@ -80,6 +80,8 @@ export interface RuntimeAgentContextDeps {
   persistState: () => void;
   updateBadge: () => void;
   getGitContext: () => Promise<GitContext>;
+  /** Optional test hook for live branch/dirty probing. */
+  getDynamicGitState?: (cwd: string) => Promise<GitDynamicState>;
 }
 
 export interface RuntimeAgentContext {
@@ -369,18 +371,31 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
     return [...tools].sort();
   }
 
+  const dynamicGitProbe = deps.getDynamicGitState ?? ((cwd: string) => probeGitDynamic(cwd));
+
   async function getAgentMetadata(
     role: RuntimeAgentRole = "worker",
   ): Promise<Record<string, unknown>> {
     const gitContext = await deps.getGitContext();
-    const { cwd, repo, repoRoot, branch } = gitContext;
+    const { cwd, repo, repoRoot } = gitContext;
     const resolvedRepoRoot = repoRoot ?? cwd;
     const tools = detectProjectTools(resolvedRepoRoot, cwd);
     const scope = buildSlackCompatibilityScope();
+    let dynamic: GitDynamicState;
+    try {
+      dynamic = await dynamicGitProbe(cwd);
+    } catch {
+      dynamic = { probeFailed: true };
+    }
+    const branch = dynamic.branch;
+    const workdirDirty = dynamic.dirty;
+    const gitProbeFailed = dynamic.probeFailed;
     const tags = [
       `role:${role}`,
       `repo:${repo}`,
       ...(branch ? [`branch:${branch}`] : []),
+      ...(workdirDirty === true ? ["workdir:dirty"] : []),
+      ...(gitProbeFailed ? ["git-probe-failed"] : []),
       ...(scope.workspace?.provider ? [`scope-provider:${scope.workspace.provider}`] : []),
       ...(scope.workspace?.compatibilityKey ? [`scope:${scope.workspace.compatibilityKey}`] : []),
       ...tools.map((tool) => `tool:${tool}`),
@@ -400,7 +415,13 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
 
     return {
       cwd,
-      branch,
+      ...(branch ? { branch } : {}),
+      ...(typeof workdirDirty === "boolean" ? { workdirDirty } : {}),
+      ...(typeof dynamic.dirtyFileCount === "number"
+        ? { workdirDirtyFileCount: dynamic.dirtyFileCount }
+        : {}),
+      ...(gitProbeFailed ? { gitProbeFailed: true } : {}),
+      gitProbedAt: new Date().toISOString(),
       host: os.hostname(),
       role,
       repo,
@@ -415,7 +436,8 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
       capabilities: {
         repo,
         repoRoot,
-        branch,
+        ...(branch ? { branch } : {}),
+        ...(typeof workdirDirty === "boolean" ? { workdirDirty } : {}),
         role,
         tools,
         tags,

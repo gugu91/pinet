@@ -672,7 +672,16 @@ export class BrokerSocketServer {
       return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
     }
 
+    const params = req.params ?? {};
+    const metadata = params.metadata;
+    if (metadata !== undefined && (typeof metadata !== "object" || Array.isArray(metadata))) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "metadata must be an object or null");
+    }
+
     this.db.heartbeatAgent(state.agentId);
+    if (metadata !== undefined) {
+      this.db.updateAgentMetadata(state.agentId, metadata as Record<string, unknown> | null);
+    }
     return rpcOk(req.id, { ok: true });
   }
 

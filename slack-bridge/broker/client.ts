@@ -102,6 +102,24 @@ export const RECONNECT_DELAY_MS = 3000;
 export const INITIAL_RECONNECT_DELAY_MS = 1000;
 export const MAX_RECONNECT_DELAY_MS = 30000;
 export const HEARTBEAT_INTERVAL_MS = 5000;
+export const HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS = 2500;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
 
 /** Compute reconnect delay with exponential backoff and jitter. */
 export function computeReconnectDelay(attempt: number, random = Math.random()): number {
@@ -230,6 +248,11 @@ export class BrokerClient {
   private reconnectAttempt = 0;
   private registrationSnapshot: RegistrationSnapshot | null = null;
   private registeredIdentity: RegistrationResult | null = null;
+  private heartbeatMetadataProvider:
+    | (() => Promise<Record<string, unknown> | null | undefined>)
+    | null = null;
+  private heartbeatMetadataInFlight: Promise<Record<string, unknown> | null | undefined> | null =
+    null;
 
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
@@ -380,8 +403,18 @@ export class BrokerClient {
     }
   }
 
-  async heartbeat(): Promise<void> {
-    await this.request("heartbeat");
+  async heartbeat(metadata?: Record<string, unknown> | null): Promise<void> {
+    if (metadata === undefined) {
+      await this.request("heartbeat");
+      return;
+    }
+    await this.request("heartbeat", { metadata });
+  }
+
+  setHeartbeatMetadataProvider(
+    provider: (() => Promise<Record<string, unknown> | null | undefined>) | null,
+  ): void {
+    this.heartbeatMetadataProvider = provider;
   }
 
   // ─── Messaging ───────────────────────────────────────
@@ -844,11 +877,37 @@ export class BrokerClient {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (!this.connected) return;
-      void this.heartbeat().catch(() => {
+      void this.runHeartbeatTick().catch(() => {
         /* best effort */
       });
     }, HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimer.unref?.();
+  }
+
+  private async readHeartbeatMetadata(): Promise<Record<string, unknown> | null | undefined> {
+    const provider = this.heartbeatMetadataProvider;
+    if (!provider || this.heartbeatMetadataInFlight) {
+      return undefined;
+    }
+
+    const work = Promise.resolve()
+      .then(() => provider())
+      .finally(() => {
+        if (this.heartbeatMetadataInFlight === work) {
+          this.heartbeatMetadataInFlight = null;
+        }
+      });
+    this.heartbeatMetadataInFlight = work;
+
+    try {
+      return await withTimeout(work, HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async runHeartbeatTick(): Promise<void> {
+    await this.heartbeat(await this.readHeartbeatMetadata());
   }
 
   private stopHeartbeat(): void {

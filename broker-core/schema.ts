@@ -1865,6 +1865,18 @@ export class BrokerDB implements BrokerDBInterface {
     }
   }
 
+  updateAgentMetadata(id: string, metadata: Record<string, unknown> | null): AgentInfo | null {
+    const db = this.getDb();
+    if (!this.getAgentRowById(id)) return null;
+    db.prepare("UPDATE agents SET metadata = ?, last_seen = ? WHERE id = ?").run(
+      metadata ? JSON.stringify(metadata) : null,
+      new Date().toISOString(),
+      id,
+    );
+    const updated = this.getAgentRowById(id);
+    return updated ? rowToAgent(updated) : null;
+  }
+
   updateAgentIdentity(
     id: string,
     identity: { name: string; emoji: string; metadata?: Record<string, unknown> | null },

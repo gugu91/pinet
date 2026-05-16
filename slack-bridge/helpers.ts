@@ -904,6 +904,7 @@ export interface AgentCapabilities {
   repo?: string;
   repoRoot?: string;
   branch?: string;
+  workdirDirty?: boolean;
   role?: string;
   tools?: string[];
   tags?: string[];
@@ -921,6 +922,10 @@ export interface AgentDisplayInfo {
   metadata?: {
     cwd?: string;
     branch?: string;
+    workdirDirty?: boolean;
+    workdirDirtyFileCount?: number;
+    gitProbeFailed?: boolean;
+    gitProbedAt?: string;
     host?: string;
     repo?: string;
     role?: string;
@@ -1126,6 +1131,9 @@ export function extractAgentCapabilities(
     repo: asString(capabilitiesRecord?.repo) ?? asString(record?.repo),
     repoRoot: asString(capabilitiesRecord?.repoRoot) ?? asString(record?.repoRoot),
     branch: asString(capabilitiesRecord?.branch) ?? asString(record?.branch),
+    ...(capabilitiesRecord?.workdirDirty === true || record?.workdirDirty === true
+      ? { workdirDirty: true }
+      : {}),
     role: asString(capabilitiesRecord?.role) ?? asString(record?.role),
     tools: asStringArray(capabilitiesRecord?.tools),
     tags: asStringArray(capabilitiesRecord?.tags),
@@ -1139,6 +1147,7 @@ export function buildAgentCapabilityTags(capabilities: AgentCapabilities): strin
   if (capabilities.role) tags.add(`role:${capabilities.role}`);
   if (capabilities.repo) tags.add(`repo:${capabilities.repo}`);
   if (capabilities.branch) tags.add(`branch:${capabilities.branch}`);
+  if (capabilities.workdirDirty) tags.add("workdir:dirty");
   if (capabilities.scope?.workspace?.provider) {
     tags.add(`scope-provider:${capabilities.scope.workspace.provider}`);
   }
@@ -1250,6 +1259,14 @@ export function buildAgentDisplayInfo(
       ? {
           cwd: asString(metadata.cwd),
           branch: asString(metadata.branch),
+          ...(metadata.workdirDirty === true ? { workdirDirty: true } : {}),
+          ...(typeof metadata.workdirDirtyFileCount === "number"
+            ? { workdirDirtyFileCount: metadata.workdirDirtyFileCount }
+            : {}),
+          ...(metadata.gitProbeFailed === true ? { gitProbeFailed: true } : {}),
+          ...(asString(metadata.gitProbedAt)
+            ? { gitProbedAt: asString(metadata.gitProbedAt) }
+            : {}),
           host: asString(metadata.host),
           repo: asString(metadata.repo) ?? capabilities.repo,
           role: asString(metadata.role) ?? capabilities.role,
@@ -2526,11 +2543,12 @@ export function formatAgentList(agents: AgentDisplayInfo[], homedir: string): st
       let line = `${a.emoji} ${a.name} (${a.id}) \u2014 ${a.status}${statusFlavor}${health}${stuckTag}${pid}`;
 
       const meta = a.metadata;
-      if (meta && (meta.cwd || meta.branch || meta.host)) {
+      if (meta && (meta.cwd || meta.branch || meta.host || meta.gitProbeFailed)) {
         const cwd = meta.cwd ? shortenPath(meta.cwd, homedir) : "";
-        const branch = meta.branch ? ` (${meta.branch})` : "";
+        const branch = meta.branch ? ` (${meta.branch}${meta.workdirDirty ? "*" : ""})` : "";
         const host = meta.host ? ` @ ${meta.host}` : "";
-        line += `\n   ${cwd}${branch}${host}`;
+        const probe = meta.gitProbeFailed ? " [git probe failed]" : "";
+        line += `\n   ${cwd}${branch}${host}${probe}`;
       }
 
       if (meta?.brokerManaged) {
