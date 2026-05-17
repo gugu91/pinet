@@ -3,6 +3,7 @@ import {
   createGitContextCache,
   probeGitBranch,
   probeGitContext,
+  probeGitDynamic,
   type ExecFileAsyncLike,
 } from "./git-metadata.js";
 
@@ -23,13 +24,16 @@ describe("probeGitBranch", () => {
 });
 
 describe("probeGitContext", () => {
-  it("returns repo, repoRoot, and branch when git commands succeed", async () => {
+  it("returns repo, repoRoot, branch, and dirty signal when git commands succeed", async () => {
     const runner: ExecFileAsyncLike = vi.fn(async (_file, args) => {
       if (args[0] === "rev-parse") {
         return { stdout: "/Users/alice/src/extensions\n" };
       }
       if (args[0] === "branch") {
         return { stdout: "main\n" };
+      }
+      if (args[0] === "status") {
+        return { stdout: "" };
       }
       throw new Error("unexpected command");
     });
@@ -41,6 +45,8 @@ describe("probeGitContext", () => {
       repo: "extensions",
       repoRoot: "/Users/alice/src/extensions",
       branch: "main",
+      dirty: false,
+      dirtyFileCount: 0,
     });
   });
 
@@ -53,7 +59,6 @@ describe("probeGitContext", () => {
       cwd: "/tmp/scratch",
       repo: "scratch",
       repoRoot: undefined,
-      branch: undefined,
     });
   });
 
@@ -62,14 +67,93 @@ describe("probeGitContext", () => {
       if (args[0] === "rev-parse") {
         return { stdout: "\n" };
       }
-      return { stdout: "   \n" };
+      if (args[0] === "branch") {
+        return { stdout: "   \n" };
+      }
+      if (args[0] === "status") {
+        return { stdout: "" };
+      }
+      throw new Error("unexpected command");
     });
 
     await expect(probeGitContext("/tmp/scratch", runner)).resolves.toEqual({
       cwd: "/tmp/scratch",
       repo: "scratch",
       repoRoot: undefined,
-      branch: undefined,
+      dirty: false,
+      dirtyFileCount: 0,
+    });
+  });
+});
+
+describe("probeGitDynamic", () => {
+  it("returns live branch and clean dirty state when git succeeds", async () => {
+    const runner: ExecFileAsyncLike = vi.fn(async (_file, args) => {
+      if (args[0] === "branch") {
+        return { stdout: "feat/runtime-metadata\n" };
+      }
+      if (args[0] === "status") {
+        return { stdout: "" };
+      }
+      throw new Error("unexpected command");
+    });
+
+    await expect(probeGitDynamic("/Users/alice/repo", runner)).resolves.toEqual({
+      branch: "feat/runtime-metadata",
+      dirty: false,
+      dirtyFileCount: 0,
+      probeFailed: false,
+    });
+  });
+
+  it("flags dirty trees and counts entries", async () => {
+    const runner: ExecFileAsyncLike = vi.fn(async (_file, args) => {
+      if (args[0] === "branch") {
+        return { stdout: "main\n" };
+      }
+      if (args[0] === "status") {
+        return { stdout: " M a.ts\n?? b.ts\n" };
+      }
+      throw new Error("unexpected command");
+    });
+
+    await expect(probeGitDynamic("/Users/alice/repo", runner)).resolves.toEqual({
+      branch: "main",
+      dirty: true,
+      dirtyFileCount: 2,
+      probeFailed: false,
+    });
+  });
+
+  it("does not report clean when status fails", async () => {
+    const runner: ExecFileAsyncLike = vi.fn(async (_file, args) => {
+      if (args[0] === "branch") {
+        return { stdout: "main\n" };
+      }
+      throw new Error("status unavailable");
+    });
+
+    await expect(probeGitDynamic("/Users/alice/repo", runner)).resolves.toEqual({
+      branch: "main",
+      probeFailed: true,
+    });
+  });
+
+  it("omits branch on detached HEAD instead of inventing one", async () => {
+    const runner: ExecFileAsyncLike = vi.fn(async (_file, args) => {
+      if (args[0] === "branch") {
+        return { stdout: "\n" };
+      }
+      if (args[0] === "status") {
+        return { stdout: " M a.ts\n" };
+      }
+      throw new Error("unexpected command");
+    });
+
+    await expect(probeGitDynamic("/Users/alice/repo", runner)).resolves.toEqual({
+      dirty: true,
+      dirtyFileCount: 1,
+      probeFailed: false,
     });
   });
 });

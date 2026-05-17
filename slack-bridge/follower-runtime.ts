@@ -224,6 +224,7 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
         deps.getAgentStableId(),
       );
       deps.applyRegistrationIdentity(registration);
+      client.setHeartbeatMetadataProvider(() => deps.getAgentMetadata("worker"));
     }
 
     async function resumeThreadClaims(): Promise<void> {

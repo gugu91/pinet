@@ -606,6 +606,17 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.getInbox(reg.agentId)).toHaveLength(0);
   });
 
+  it("heartbeat metadata refreshes the broker's agent row", async () => {
+    const reg = await client.register("metadata-agent", "🌿", { branch: "main" });
+
+    await client.heartbeat({ branch: "feature/live", workdirDirty: true });
+
+    expect(db.getAgentById(reg.agentId)?.metadata).toEqual({
+      branch: "feature/live",
+      workdirDirty: true,
+    });
+  });
+
   it("maintenance pruning disconnects stale agents and releases claims", async () => {
     const reg = await client.register("stale-agent", "💤");
     await client.claimThread("t-stale");

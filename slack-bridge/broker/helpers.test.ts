@@ -713,6 +713,31 @@ describe("BrokerDB", () => {
     });
   });
 
+  it("updates agent metadata without changing identity fields", () => {
+    db.registerAgent(
+      "a1",
+      "Hyper Owl",
+      "🦉",
+      100,
+      { branch: "main", role: "worker" },
+      "host:session:/tmp/a",
+    );
+
+    const updated = db.updateAgentMetadata("a1", {
+      branch: "feature/live",
+      workdirDirty: true,
+    });
+
+    expect(updated).toMatchObject({
+      id: "a1",
+      stableId: "host:session:/tmp/a",
+      name: "Hyper Owl",
+      emoji: "🦉",
+      metadata: { branch: "feature/live", workdirDirty: true },
+    });
+    expect(db.updateAgentMetadata("missing", { branch: "main" })).toBeNull();
+  });
+
   it("records and updates task assignment progress", () => {
     db.registerAgent("worker-1", "Hyper Horse", "🐎", 100);
 

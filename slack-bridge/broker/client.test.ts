@@ -10,6 +10,7 @@ import {
   INITIAL_RECONNECT_DELAY_MS,
   MAX_RECONNECT_DELAY_MS,
   HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS,
   computeReconnectDelay,
 } from "./client.js";
 import type { BrokerConnectOpts } from "./client.js";
@@ -364,6 +365,91 @@ describe("BrokerClient — heartbeat / unregister", () => {
     const heartbeatReq = JSON.parse(mock.received[1]) as { id: number; method: string };
     expect(heartbeatReq.method).toBe("heartbeat");
     mock.respondTo(mock.connections[0], heartbeatReq.id, { ok: true });
+
+    setIntervalSpy.mockRestore();
+    client.disconnect();
+  });
+
+  it("sends heartbeat metadata when the provider resolves", async () => {
+    const setIntervalSpy = vi.spyOn(global, "setInterval");
+    const client = new BrokerClient(mock.connectOpts);
+    await client.connect();
+    client.setHeartbeatMetadataProvider(async () => ({
+      branch: "feature/live",
+      workdirDirty: true,
+    }));
+
+    const registerPromise = client.register("HeartbeatBot", "💓");
+    await waitFor(() => mock.received.length > 0);
+    const registerReq = JSON.parse(mock.received[0]) as { id: number };
+    mock.respondTo(mock.connections[0], registerReq.id, {
+      agentId: "hb-meta",
+      name: "HeartbeatBot",
+      emoji: "💓",
+    });
+    await registerPromise;
+
+    const heartbeatTick = setIntervalSpy.mock.calls.at(-1)?.[0] as (() => void) | undefined;
+    heartbeatTick?.();
+
+    await waitFor(() => mock.received.length > 1);
+    const heartbeatReq = JSON.parse(mock.received[1]) as {
+      id: number;
+      method: string;
+      params?: { metadata?: Record<string, unknown> };
+    };
+    expect(heartbeatReq.method).toBe("heartbeat");
+    expect(heartbeatReq.params?.metadata).toEqual({ branch: "feature/live", workdirDirty: true });
+    mock.respondTo(mock.connections[0], heartbeatReq.id, { ok: true });
+
+    setIntervalSpy.mockRestore();
+    client.disconnect();
+  });
+
+  it("falls back to a plain heartbeat while a metadata provider is hung", async () => {
+    const setIntervalSpy = vi.spyOn(global, "setInterval");
+    const client = new BrokerClient(mock.connectOpts);
+    await client.connect();
+    const metadataProvider = vi.fn(
+      () =>
+        new Promise<Record<string, unknown>>(() => {
+          // never resolves
+        }),
+    );
+    client.setHeartbeatMetadataProvider(metadataProvider);
+
+    const registerPromise = client.register("HeartbeatBot", "💓");
+    await waitFor(() => mock.received.length > 0);
+    const registerReq = JSON.parse(mock.received[0]) as { id: number };
+    mock.respondTo(mock.connections[0], registerReq.id, {
+      agentId: "hb-timeout",
+      name: "HeartbeatBot",
+      emoji: "💓",
+    });
+    await registerPromise;
+
+    const heartbeatTick = setIntervalSpy.mock.calls.at(-1)?.[0] as (() => void) | undefined;
+    vi.useFakeTimers();
+    try {
+      heartbeatTick?.();
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => mock.received.length > 1);
+    const heartbeatReq = JSON.parse(mock.received[1]) as {
+      id: number;
+      method: string;
+      params?: { metadata?: unknown };
+    };
+    expect(heartbeatReq.method).toBe("heartbeat");
+    expect(heartbeatReq.params?.metadata).toBeUndefined();
+    mock.respondTo(mock.connections[0], heartbeatReq.id, { ok: true });
+
+    heartbeatTick?.();
+    await waitFor(() => mock.received.length > 2);
+    expect(metadataProvider).toHaveBeenCalledTimes(1);
 
     setIntervalSpy.mockRestore();
     client.disconnect();
