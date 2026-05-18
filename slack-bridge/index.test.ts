@@ -24,6 +24,34 @@ type CommandDefinition = {
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
 
+const BROKER_MANAGED_PINET_ENV_KEYS = [
+  "PINET_BROKER_MANAGED",
+  "PINET_LAUNCH_SOURCE",
+  "PINET_BROKER_AGENT_ID",
+  "PINET_TMUX_SESSION",
+] as const;
+
+const originalBrokerManagedPinetEnv = Object.fromEntries(
+  BROKER_MANAGED_PINET_ENV_KEYS.map((key) => [key, process.env[key]]),
+) as Record<(typeof BROKER_MANAGED_PINET_ENV_KEYS)[number], string | undefined>;
+
+beforeEach(() => {
+  for (const key of BROKER_MANAGED_PINET_ENV_KEYS) {
+    delete process.env[key];
+  }
+});
+
+afterEach(() => {
+  for (const key of BROKER_MANAGED_PINET_ENV_KEYS) {
+    const value = originalBrokerManagedPinetEnv[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+});
+
 function stubIsTTY(stream: NodeJS.ReadStream | NodeJS.WriteStream, value: boolean): () => void {
   const target = stream as unknown as Record<string, unknown>;
   const hadOwnProperty = Object.prototype.hasOwnProperty.call(target, "isTTY");
