@@ -237,6 +237,14 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         : { repoOwner: null, repoName: null, repoRoot: null };
       const recordedAssignments: PinetMeshOpsRecordedAssignment[] = [];
       for (const assignment of parsedAssignments) {
+        const repoOwner = assignment.repoOwner ?? fallbackRepo.repoOwner;
+        const repoName = assignment.repoName ?? fallbackRepo.repoName;
+        const usesFallbackRepoIdentity = !assignment.repoOwner || !assignment.repoName;
+        const fallbackMatchesAssignmentRepo =
+          assignment.repoOwner?.toLowerCase() === fallbackRepo.repoOwner?.toLowerCase() &&
+          assignment.repoName?.toLowerCase() === fallbackRepo.repoName?.toLowerCase();
+        const repoRoot =
+          usesFallbackRepoIdentity || fallbackMatchesAssignmentRepo ? fallbackRepo.repoRoot : null;
         const tracked = db.recordTaskAssignment(
           result.target.id,
           assignment.issueNumber,
@@ -244,9 +252,9 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
           result.threadId,
           result.messageId,
           {
-            repoOwner: assignment.repoOwner ?? fallbackRepo.repoOwner,
-            repoName: assignment.repoName ?? fallbackRepo.repoName,
-            repoRoot: fallbackRepo.repoRoot,
+            repoOwner,
+            repoName,
+            repoRoot,
             taskKind: assignment.taskKind,
           },
         );

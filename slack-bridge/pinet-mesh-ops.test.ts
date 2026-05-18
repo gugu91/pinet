@@ -291,6 +291,34 @@ describe("createPinetMeshOps", () => {
     );
   });
 
+  it("does not attach the current repo root to an explicit different repo assignment", async () => {
+    const { deps, recordTaskAssignment } = createBrokerDeps();
+    const pinetMeshOps = createPinetMeshOps(deps);
+
+    await pinetMeshOps.sendPinetAgentMessage(
+      "worker-1",
+      [
+        "Implementation lane:",
+        "Issue: https://github.com/Nexcade/garage/issues/418",
+        "Branch: `fix/garage-418`",
+      ].join("\n"),
+    );
+
+    expect(recordTaskAssignment).toHaveBeenCalledWith(
+      "worker-1",
+      418,
+      "fix/garage-418",
+      "a2a:broker-1:worker-1",
+      1,
+      expect.objectContaining({
+        repoOwner: "Nexcade",
+        repoName: "garage",
+        repoRoot: null,
+        taskKind: "implementation",
+      }),
+    );
+  });
+
   it("transfers broker thread ownership to the direct recipient when requested", async () => {
     const { deps, insertedMessages, logActivity, transferThreadOwnership } = createBrokerDeps();
     const db = deps.getActiveBrokerDb();

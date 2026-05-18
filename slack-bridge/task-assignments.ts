@@ -55,8 +55,10 @@ const NEW_TASK_ISSUE_REGEX =
   /(?:^|\n)\s*(?:[-*]\s*)?new(?:\s+[a-z-]+){0,3}\s+task\b[^\n#]*\bissue\s*#(\d+)\b/gi;
 const FOLLOW_UP_TASK_ISSUE_REGEX =
   /(?:^|\n)\s*(?:[-*]\s*)?follow-up\s+task(?:\s+from)?\s+issue\s*#(\d+)\b/gi;
-const GITHUB_REPO_ISSUE_URL_REGEX =
+const GITHUB_REPO_URL_REGEX =
   /github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(?:issues|pull)\/(\d+)\b/gi;
+const GITHUB_REPO_ISSUE_URL_REGEX =
+  /github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/(\d+)\b/gi;
 const REPO_LABEL_REGEX =
   /(?:^|\n)\s*(?:[-*]\s*)?(?:repo|repository)\s*:\s*(?:https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/i;
 const READ_ONLY_REVIEW_REGEX =
@@ -160,7 +162,24 @@ function parseRepo(
   }
 
   const repoMatch = normalized.match(REPO_LABEL_REGEX);
-  return { repoOwner: repoMatch?.[1] ?? null, repoName: repoMatch?.[2] ?? null };
+  if (repoMatch) {
+    return { repoOwner: repoMatch[1] ?? null, repoName: repoMatch[2] ?? null };
+  }
+
+  const urlRepos = new Map<string, { repoOwner: string; repoName: string }>();
+  for (const match of normalized.matchAll(GITHUB_REPO_URL_REGEX)) {
+    if (match[1] && match[2]) {
+      urlRepos.set(`${match[1].toLowerCase()}/${match[2].toLowerCase()}`, {
+        repoOwner: match[1],
+        repoName: match[2],
+      });
+    }
+  }
+  if (urlRepos.size === 1) {
+    return [...urlRepos.values()][0] ?? { repoOwner: null, repoName: null };
+  }
+
+  return { repoOwner: null, repoName: null };
 }
 
 function parseTaskKind(message: string, branch: string | null): TaskAssignmentKind {

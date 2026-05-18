@@ -120,6 +120,24 @@ describe("extractTaskAssignmentsFromMessage", () => {
     ]);
   });
 
+  it("uses pull request URLs for repo context without tracking the PR number as an issue", () => {
+    const message = [
+      "Please do a read-only review of https://github.com/gugu91/extensions/pull/292.",
+      "Issue: #287",
+      "Do not mutate files; just report findings.",
+    ].join("\n");
+
+    expect(extractTaskAssignmentsFromMessage(message)).toEqual([
+      {
+        issueNumber: 287,
+        branch: null,
+        repoOwner: "gugu91",
+        repoName: "extensions",
+        taskKind: "review",
+      },
+    ]);
+  });
+
   it("lets explicit implementation branch signals win over generic review wording", () => {
     const message = [
       "Please review the code, implement the fix, and open a PR.",
