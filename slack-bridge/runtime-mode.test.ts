@@ -105,6 +105,17 @@ describe("resolveSlackBridgeStartupRuntimeMode", () => {
     ).toBe("off");
   });
 
+  it("preserves explicit non-follower runtime mode over legacy autoFollow for broker-managed launches", () => {
+    for (const runtimeMode of ["off", "single", "broker"] as const) {
+      expect(
+        resolveSlackBridgeStartupRuntimeMode(
+          { runtimeMode, autoFollow: true },
+          { brokerSocketExists: true, brokerManagedFollowerLaunch: true },
+        ),
+      ).toBe("off");
+    }
+  });
+
   it("keeps broker-managed follower launches off when legacy autoConnect would start single-player mode", () => {
     expect(
       resolveSlackBridgeStartupRuntimeMode(
@@ -118,6 +129,12 @@ describe("resolveSlackBridgeStartupRuntimeMode", () => {
     expect(
       resolveSlackBridgeStartupRuntimeMode(
         { runtimeMode: "follower" },
+        { brokerSocketExists: true, brokerManagedFollowerLaunch: true },
+      ),
+    ).toBe("follower");
+    expect(
+      resolveSlackBridgeStartupRuntimeMode(
+        { autoFollow: true },
         { brokerSocketExists: true, brokerManagedFollowerLaunch: true },
       ),
     ).toBe("follower");

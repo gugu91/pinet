@@ -38,7 +38,7 @@ export function resolveSlackBridgeStartupRuntimeMode(
   const brokerSocketExists = options.brokerSocketExists ?? true;
 
   if (options.brokerManagedFollowerLaunch) {
-    if (settings.autoFollow || explicitMode === "follower") {
+    if (explicitMode === "follower" || (!explicitMode && settings.autoFollow)) {
       return brokerSocketExists ? "follower" : "off";
     }
     return "off";
