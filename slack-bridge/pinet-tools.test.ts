@@ -1117,6 +1117,59 @@ describe("registerPinetTools", () => {
     });
   });
 
+  it("hides recently disconnected agents from pinet agents unless ghosts are requested", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
+
+    const listBrokerAgents = vi.fn(() => [
+      makeAgent({ id: "live", name: "Live Lynx" }),
+      makeAgent({
+        id: "exited",
+        name: "Exited Egret",
+        disconnectedAt: "2026-04-14T11:59:59.000Z",
+      }),
+    ]);
+    const tools = registerWithDeps(createDeps({ listBrokerAgents }));
+
+    const defaultResult = (await tools.get("pinet")?.execute("tool-call-agents-live", {
+      action: "agents",
+      args: { full: true },
+    })) as { details: { data: { text: string; details: { agents: Array<{ id: string }> } } } };
+    expect(defaultResult.details.data.details.agents.map((agent) => agent.id)).toEqual(["live"]);
+    expect(defaultResult.details.data.text).not.toContain("Exited Egret");
+
+    const withGhostsResult = (await tools.get("pinet")?.execute("tool-call-agents-ghosts", {
+      action: "agents",
+      args: { full: true, include_ghosts: true },
+    })) as { details: { data: { text: string; details: { agents: Array<{ id: string }> } } } };
+    expect(withGhostsResult.details.data.details.agents.map((agent) => agent.id)).toEqual([
+      "live",
+      "exited",
+    ]);
+    expect(withGhostsResult.details.data.text).toContain("Exited Egret");
+  });
+
+  it("passes the ghost visibility preference through follower agent listing", async () => {
+    const listFollowerAgents = vi.fn(async (_includeGhosts: boolean) => [
+      makeAgent({ id: "agent-2" }),
+    ]);
+    const tools = registerWithDeps(
+      createDeps({ brokerRole: () => "follower", listFollowerAgents }),
+    );
+
+    await tools.get("pinet")?.execute("tool-call-follower-agents-live", {
+      action: "agents",
+      args: {},
+    });
+    await tools.get("pinet")?.execute("tool-call-follower-agents-ghosts", {
+      action: "agents",
+      args: { include_ghosts: true },
+    });
+
+    expect(listFollowerAgents).toHaveBeenNthCalledWith(1, false);
+    expect(listFollowerAgents).toHaveBeenNthCalledWith(2, true);
+  });
+
   it("keeps pinet agents default cli details compact", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));

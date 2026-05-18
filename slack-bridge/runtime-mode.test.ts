@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isBrokerManagedFollowerLaunch,
   isPinetRuntimeMode,
   normalizeSlackBridgeRuntimeMode,
   resolveSlackBridgeStartupRuntimeMode,
@@ -29,6 +30,26 @@ describe("isPinetRuntimeMode", () => {
     expect(isPinetRuntimeMode("follower")).toBe(true);
     expect(isPinetRuntimeMode("single")).toBe(false);
     expect(isPinetRuntimeMode("off")).toBe(false);
+  });
+});
+
+describe("isBrokerManagedFollowerLaunch", () => {
+  it("detects broker-managed tmux follower launches", () => {
+    expect(
+      isBrokerManagedFollowerLaunch({
+        PINET_BROKER_MANAGED: "1",
+        PINET_LAUNCH_SOURCE: "broker-tmux",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat other broker-managed metadata as the tmux follower path", () => {
+    expect(
+      isBrokerManagedFollowerLaunch({
+        PINET_BROKER_MANAGED: "1",
+        PINET_LAUNCH_SOURCE: "manual",
+      }),
+    ).toBe(false);
   });
 });
 
@@ -73,6 +94,33 @@ describe("resolveSlackBridgeStartupRuntimeMode", () => {
 
   it("allows explicit broker mode at startup", () => {
     expect(resolveSlackBridgeStartupRuntimeMode({ runtimeMode: "broker" })).toBe("broker");
+  });
+
+  it("keeps broker-managed follower launches off even when persistent settings request broker mode", () => {
+    expect(
+      resolveSlackBridgeStartupRuntimeMode(
+        { runtimeMode: "broker" },
+        { brokerSocketExists: true, brokerManagedFollowerLaunch: true },
+      ),
+    ).toBe("off");
+  });
+
+  it("keeps broker-managed follower launches off when legacy autoConnect would start single-player mode", () => {
+    expect(
+      resolveSlackBridgeStartupRuntimeMode(
+        { autoConnect: true },
+        { brokerSocketExists: true, brokerManagedFollowerLaunch: true },
+      ),
+    ).toBe("off");
+  });
+
+  it("still honors follower opt-in for broker-managed launches when a broker socket exists", () => {
+    expect(
+      resolveSlackBridgeStartupRuntimeMode(
+        { runtimeMode: "follower" },
+        { brokerSocketExists: true, brokerManagedFollowerLaunch: true },
+      ),
+    ).toBe("follower");
   });
 
   it("downgrades explicit follower mode to off when no broker socket exists", () => {

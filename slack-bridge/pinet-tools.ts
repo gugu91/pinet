@@ -1250,7 +1250,7 @@ function runPinetAgentsAction(
       throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
     }
 
-    const includeGhosts = true;
+    const includeGhosts = params.include_ghosts === true;
     const recentGhostWindowMs = DEFAULT_HEARTBEAT_TIMEOUT_MS * 2;
     const nowMs = Date.now();
     const hasHint = Boolean(
@@ -1423,6 +1423,12 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
         Type.String({ description: "Comma-separated required capability/tool tags" }),
       ),
       task: Type.Optional(Type.String({ description: "Optional natural-language task hint" })),
+      include_ghosts: Type.Optional(
+        Type.Boolean({
+          description:
+            "Include recently disconnected/resumable agents. Defaults false so graceful exits do not look like actionable ghosts.",
+        }),
+      ),
       ...PINET_OUTPUT_OPTION_PARAMETERS,
     }),
     execute: (_id, params, output) => runPinetAgentsAction(params, deps, "pinet:agents", output),
