@@ -261,7 +261,9 @@ export function normalizeTrackedTaskAssignments(
     const repoKey =
       assignment.repoOwner && assignment.repoName
         ? `${assignment.repoOwner.toLowerCase()}/${assignment.repoName.toLowerCase()}`
-        : "repo_unknown";
+        : assignment.repoRoot
+          ? `root:${assignment.repoRoot}`
+          : "repo_unknown";
     const issueKey = `${repoKey}#${assignment.issueNumber}`;
     if (seenIssueKeys.has(issueKey)) {
       continue;
@@ -523,7 +525,14 @@ export async function resolveTaskAssignments(
     return [];
   }
 
-  const baseRef = await resolveBaseRef(cwd, runner);
+  const baseRefCache = new Map<string, Promise<string | null>>();
+  const resolveBaseRefForCwd = (repoCwd: string): Promise<string | null> => {
+    const cached = baseRefCache.get(repoCwd);
+    if (cached) return cached;
+    const promise = resolveBaseRef(repoCwd, runner);
+    baseRefCache.set(repoCwd, promise);
+    return promise;
+  };
   const branchProgressCache = new Map<
     string,
     Promise<{ branchAheadCount: number; pr: PullRequestSnapshot | null | undefined }>
@@ -537,15 +546,18 @@ export async function resolveTaskAssignments(
   const resolveBranchProgress = (
     assignment: TaskAssignmentInfo,
   ): Promise<{ branchAheadCount: number; pr: PullRequestSnapshot | null | undefined }> => {
-    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${assignment.branch ?? ""}`;
+    const repoCwd = assignment.repoRoot ?? cwd;
+    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd}:${assignment.branch ?? ""}`;
     const cached = branchProgressCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
     const promise = Promise.all([
-      getBranchAheadCount(assignment.branch, baseRef, cwd, runner),
-      getPullRequestForBranch(assignment, cwd, runner),
+      resolveBaseRefForCwd(repoCwd).then((baseRef) =>
+        getBranchAheadCount(assignment.branch, baseRef, repoCwd, runner),
+      ),
+      getPullRequestForBranch(assignment, repoCwd, runner),
     ]).then(([branchAheadCount, pr]) => ({ branchAheadCount, pr }));
     branchProgressCache.set(cacheKey, promise);
     return promise;

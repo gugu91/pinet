@@ -140,6 +140,29 @@ describe("extractTaskAssignmentsFromMessage", () => {
 });
 
 describe("normalizeTrackedTaskAssignments", () => {
+  it("keeps same-number assignments separate when only repo roots are known", () => {
+    const normalized = normalizeTrackedTaskAssignments([
+      makeAssignment({
+        id: 2,
+        agentId: "worker-2",
+        issueNumber: 418,
+        repoRoot: "/repos/two",
+        updatedAt: "2026-04-02T10:01:00.000Z",
+      }),
+      makeAssignment({
+        id: 1,
+        agentId: "worker-1",
+        issueNumber: 418,
+        repoRoot: "/repos/one",
+      }),
+    ]);
+
+    expect(normalized.map((assignment) => assignment.repoRoot)).toEqual([
+      "/repos/two",
+      "/repos/one",
+    ]);
+  });
+
   it("preserves captured repo identity when reparsing issue-only source messages", () => {
     const normalized = normalizeTrackedTaskAssignments(
       [
@@ -323,6 +346,44 @@ describe("resolveTaskAssignments", () => {
     expect(assignment.nextStatus).toBe("branch_pushed");
     expect(assignment.nextPrNumber).toBeNull();
     expect(hasTaskAssignmentStatusChange(assignment)).toBe(true);
+  });
+
+  it("checks branch progress from the captured repo root", async () => {
+    const runner: CommandRunner = vi.fn(async (file, args, options) => {
+      if (
+        file === "git" &&
+        args.slice(0, 4).join(" ") === "rev-parse --verify --quiet origin/main"
+      ) {
+        return { stdout: options.cwd === "/assigned/repo" ? "origin/main\n" : "" };
+      }
+      if (file === "git" && args[0] === "rev-parse" && args.at(-1) === "feat/ralph") {
+        return { stdout: options.cwd === "/assigned/repo" ? "feat/ralph\n" : "" };
+      }
+      if (file === "git" && args[0] === "rev-list") {
+        return { stdout: options.cwd === "/assigned/repo" ? "2\n" : "0\n" };
+      }
+      if (file === "gh") {
+        return { stdout: "[]\n" };
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+    });
+
+    const [assignment] = await resolveTaskAssignments(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 114,
+          branch: "feat/ralph",
+          repoRoot: "/assigned/repo",
+        }),
+      ],
+      "/broker/repo",
+      runner,
+    );
+
+    expect(assignment.branchAheadCount).toBe(2);
+    expect(assignment.nextStatus).toBe("branch_pushed");
   });
 
   it("detects open and merged PRs from GitHub", async () => {
