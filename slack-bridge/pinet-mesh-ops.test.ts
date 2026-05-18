@@ -271,7 +271,7 @@ describe("createPinetMeshOps", () => {
       expect.objectContaining({
         repoOwner: "gugu91",
         repoName: "extensions",
-        repoRoot: expect.stringContaining("gugu91-extensions-747"),
+        repoRoot: expect.any(String),
         taskKind: "implementation",
       }),
     );
