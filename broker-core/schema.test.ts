@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { classifyPinetMail } from "./mail-classification.js";
-import { BrokerDB } from "./schema.js";
+import { BrokerDB, CURRENT_BROKER_SCHEMA_VERSION } from "./schema.js";
 
 function createDb(): { db: BrokerDB; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "broker-core-schema-"));
@@ -229,7 +229,7 @@ describe("BrokerDB message sync identity", () => {
         ),
       );
 
-      expect(version.user_version).toBe(16);
+      expect(version.user_version).toBe(CURRENT_BROKER_SCHEMA_VERSION);
       expect(messageColumns.has("external_id")).toBe(true);
       expect(messageColumns.has("external_ts")).toBe(true);
       expect(inboxColumns.has("read_at")).toBe(true);

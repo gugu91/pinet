@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ActivityLogEntry } from "./activity-log.js";
-import type { AgentInfo, BrokerMessage, TaskAssignmentInfo } from "./broker/types.js";
+import type {
+  AgentInfo,
+  BrokerMessage,
+  TaskAssignmentInfo,
+  TaskAssignmentKind,
+} from "./broker/types.js";
 import {
   createPinetMeshOps,
   type PinetMeshOpsBrokerDbPort,
@@ -104,6 +109,12 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
       branch: string | null,
       threadId: string,
       sourceMessageId: number,
+      options: {
+        repoOwner?: string | null;
+        repoName?: string | null;
+        repoRoot?: string | null;
+        taskKind?: TaskAssignmentKind;
+      } = {},
     ): TaskAssignmentInfo => ({
       id: sourceMessageId,
       agentId,
@@ -113,6 +124,10 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
       status: "assigned",
       threadId,
       sourceMessageId,
+      repoOwner: options.repoOwner ?? null,
+      repoName: options.repoName ?? null,
+      repoRoot: options.repoRoot ?? null,
+      taskKind: options.taskKind ?? "implementation",
       createdAt: "2026-04-15T13:06:00.000Z",
       updatedAt: "2026-04-15T13:06:00.000Z",
     }),
@@ -253,6 +268,12 @@ describe("createPinetMeshOps", () => {
       "refactor/418-pinet-mesh-ops",
       "a2a:broker-1:worker-1",
       1,
+      expect.objectContaining({
+        repoOwner: "gugu91",
+        repoName: "extensions",
+        repoRoot: expect.any(String),
+        taskKind: "implementation",
+      }),
     );
     expect(logActivity).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -266,6 +287,34 @@ describe("createPinetMeshOps", () => {
           { label: "Message", value: 1 },
         ],
         tone: "info",
+      }),
+    );
+  });
+
+  it("does not attach the current repo root to an explicit different repo assignment", async () => {
+    const { deps, recordTaskAssignment } = createBrokerDeps();
+    const pinetMeshOps = createPinetMeshOps(deps);
+
+    await pinetMeshOps.sendPinetAgentMessage(
+      "worker-1",
+      [
+        "Implementation lane:",
+        "Issue: https://github.com/Nexcade/garage/issues/418",
+        "Branch: `fix/garage-418`",
+      ].join("\n"),
+    );
+
+    expect(recordTaskAssignment).toHaveBeenCalledWith(
+      "worker-1",
+      418,
+      "fix/garage-418",
+      "a2a:broker-1:worker-1",
+      1,
+      expect.objectContaining({
+        repoOwner: "Nexcade",
+        repoName: "garage",
+        repoRoot: null,
+        taskKind: "implementation",
       }),
     );
   });

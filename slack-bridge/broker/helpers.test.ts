@@ -855,7 +855,10 @@ describe("BrokerDB", () => {
       ]),
     );
     expect(report).toBe(
-      ["RALPH LOOP — WORKER STATUS:", "- 🐦‍⬛ Frozen Raven: #114 → no commits, no PR ⚠️"].join("\n"),
+      [
+        "RALPH LOOP — WORKER STATUS:",
+        "- 🐦‍⬛ Frozen Raven: #114 → repo unknown; progress not checked ⚠️",
+      ].join("\n"),
     );
   });
 

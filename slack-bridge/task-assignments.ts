@@ -1,6 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { AgentInfo, TaskAssignmentInfo, TaskAssignmentStatus } from "./broker/types.js";
+import type {
+  AgentInfo,
+  TaskAssignmentInfo,
+  TaskAssignmentKind,
+  TaskAssignmentStatus,
+} from "./broker/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -14,6 +19,9 @@ export type CommandRunner = (
 export interface ParsedTaskAssignment {
   issueNumber: number;
   branch: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  taskKind: TaskAssignmentKind;
 }
 
 export interface PullRequestSnapshot {
@@ -47,6 +55,22 @@ const NEW_TASK_ISSUE_REGEX =
   /(?:^|\n)\s*(?:[-*]\s*)?new(?:\s+[a-z-]+){0,3}\s+task\b[^\n#]*\bissue\s*#(\d+)\b/gi;
 const FOLLOW_UP_TASK_ISSUE_REGEX =
   /(?:^|\n)\s*(?:[-*]\s*)?follow-up\s+task(?:\s+from)?\s+issue\s*#(\d+)\b/gi;
+const GITHUB_REPO_URL_REGEX =
+  /github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(?:issues|pull)\/(\d+)\b/gi;
+const GITHUB_REPO_ISSUE_URL_REGEX =
+  /github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/(\d+)\b/gi;
+const REPO_LABEL_REGEX =
+  /(?:^|\n)\s*(?:[-*]\s*)?(?:repo|repository)\s*:\s*(?:https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/i;
+const READ_ONLY_REVIEW_REGEX =
+  /\b(?:read-only|do not mutate|do not edit|review-only|review only|second-pass|second pass|code review)\b/i;
+const REVIEW_TASK_REGEX = /\b(?:review|code review)\b/i;
+const QA_ONLY_TASK_REGEX =
+  /\b(?:qa-only|qa only|test-only|test only|verify-only|verify only|validation-only|validation only)\b/i;
+const QA_TASK_REGEX = /\b(?:qa|test|verify|validation|visual verify|visual verification)\b/i;
+const MERGE_TASK_REGEX = /\bmerge\s+pr\s*#?\d+|\bmerge-only\b|\bmerge only\b/i;
+const INTERACTIVE_TASK_REGEX = /\b(?:interactive-session|human-gated|manual|browser session)\b/i;
+const IMPLEMENTATION_TASK_REGEX =
+  /\b(?:implementation lane|implement|fix|build|change|patch|create a pr|open a pr|branch|worktree)\b/i;
 
 async function runCommand(
   file: string,
@@ -116,12 +140,69 @@ function parseIssueNumbers(message: string): number[] {
     }
   }
 
+  for (const match of normalized.matchAll(GITHUB_REPO_ISSUE_URL_REGEX)) {
+    const issueNumber = Number(match[3]);
+    if (Number.isFinite(issueNumber)) {
+      issueNumbers.add(issueNumber);
+    }
+  }
+
   return [...issueNumbers].sort((left, right) => left - right);
+}
+
+function parseRepo(
+  message: string,
+  issueNumber: number,
+): Pick<ParsedTaskAssignment, "repoOwner" | "repoName"> {
+  const normalized = normalizeMessageForTaskParsing(message);
+  for (const match of normalized.matchAll(GITHUB_REPO_ISSUE_URL_REGEX)) {
+    if (Number(match[3]) === issueNumber) {
+      return { repoOwner: match[1] ?? null, repoName: match[2] ?? null };
+    }
+  }
+
+  const repoMatch = normalized.match(REPO_LABEL_REGEX);
+  if (repoMatch) {
+    return { repoOwner: repoMatch[1] ?? null, repoName: repoMatch[2] ?? null };
+  }
+
+  const urlRepos = new Map<string, { repoOwner: string; repoName: string }>();
+  for (const match of normalized.matchAll(GITHUB_REPO_URL_REGEX)) {
+    if (match[1] && match[2]) {
+      urlRepos.set(`${match[1].toLowerCase()}/${match[2].toLowerCase()}`, {
+        repoOwner: match[1],
+        repoName: match[2],
+      });
+    }
+  }
+  if (urlRepos.size === 1) {
+    return [...urlRepos.values()][0] ?? { repoOwner: null, repoName: null };
+  }
+
+  return { repoOwner: null, repoName: null };
+}
+
+function parseTaskKind(message: string, branch: string | null): TaskAssignmentKind {
+  const normalized = normalizeMessageForTaskParsing(message);
+  if (MERGE_TASK_REGEX.test(normalized)) return "merge";
+  if (INTERACTIVE_TASK_REGEX.test(normalized)) return "interactive";
+  if (READ_ONLY_REVIEW_REGEX.test(normalized)) return "review";
+  if (QA_ONLY_TASK_REGEX.test(normalized)) return "qa";
+  if (branch || IMPLEMENTATION_TASK_REGEX.test(normalized)) return "implementation";
+  if (REVIEW_TASK_REGEX.test(normalized)) return "review";
+  if (QA_TASK_REGEX.test(normalized)) return "qa";
+  return "unknown";
 }
 
 export function extractTaskAssignmentsFromMessage(message: string): ParsedTaskAssignment[] {
   const branch = parseBranch(message);
-  return parseIssueNumbers(message).map((issueNumber) => ({ issueNumber, branch }));
+  const taskKind = parseTaskKind(message, branch);
+  return parseIssueNumbers(message).map((issueNumber) => ({
+    issueNumber,
+    branch,
+    ...parseRepo(message, issueNumber),
+    taskKind,
+  }));
 }
 
 function compareTaskAssignmentRecency(left: TaskAssignmentInfo, right: TaskAssignmentInfo): number {
@@ -158,10 +239,13 @@ function canonicalizeTaskAssignmentFromSourceMessage(
     (candidate) => candidate.issueNumber === assignment.issueNumber,
   );
   if (matchingAssignment) {
-    if (matchingAssignment.branch === assignment.branch) {
-      return assignment;
-    }
-    return { ...assignment, branch: matchingAssignment.branch };
+    return {
+      ...assignment,
+      branch: matchingAssignment.branch,
+      repoOwner: matchingAssignment.repoOwner ?? assignment.repoOwner,
+      repoName: matchingAssignment.repoName ?? assignment.repoName,
+      taskKind: matchingAssignment.taskKind,
+    };
   }
 
   if (parsedAssignments.length === 1) {
@@ -170,6 +254,9 @@ function canonicalizeTaskAssignmentFromSourceMessage(
       ...assignment,
       issueNumber: canonicalAssignment.issueNumber,
       branch: canonicalAssignment.branch,
+      repoOwner: canonicalAssignment.repoOwner ?? assignment.repoOwner,
+      repoName: canonicalAssignment.repoName ?? assignment.repoName,
+      taskKind: canonicalAssignment.taskKind,
     };
   }
 
@@ -188,12 +275,19 @@ export function normalizeTrackedTaskAssignments(
     .sort(compareTaskAssignmentRecency);
 
   const visibleAssignments: TaskAssignmentInfo[] = [];
-  const seenIssueNumbers = new Set<number>();
+  const seenIssueKeys = new Set<string>();
   for (const assignment of canonicalAssignments) {
-    if (seenIssueNumbers.has(assignment.issueNumber)) {
+    const repoKey =
+      assignment.repoOwner && assignment.repoName
+        ? `${assignment.repoOwner.toLowerCase()}/${assignment.repoName.toLowerCase()}`
+        : assignment.repoRoot
+          ? `root:${assignment.repoRoot}`
+          : "repo_unknown";
+    const issueKey = `${repoKey}#${assignment.issueNumber}`;
+    if (seenIssueKeys.has(issueKey)) {
       continue;
     }
-    seenIssueNumbers.add(assignment.issueNumber);
+    seenIssueKeys.add(issueKey);
     visibleAssignments.push(assignment);
   }
 
@@ -289,12 +383,18 @@ async function getBranchAheadCount(
   return maxAheadCount;
 }
 
+function getRepoArg(assignment: Pick<TaskAssignmentInfo, "repoOwner" | "repoName">): string[] {
+  return assignment.repoOwner && assignment.repoName
+    ? ["--repo", `${assignment.repoOwner}/${assignment.repoName}`]
+    : [];
+}
+
 async function getPullRequestForBranch(
-  branch: string | null,
+  assignment: Pick<TaskAssignmentInfo, "branch" | "repoOwner" | "repoName">,
   cwd: string,
   runner: CommandRunner,
 ): Promise<PullRequestSnapshot | null | undefined> {
-  if (!branch) {
+  if (!assignment.branch) {
     return null;
   }
 
@@ -303,8 +403,9 @@ async function getPullRequestForBranch(
     [
       "pr",
       "list",
+      ...getRepoArg(assignment),
       "--head",
-      branch,
+      assignment.branch,
       "--state",
       "all",
       "--json",
@@ -323,12 +424,20 @@ async function getPullRequestForBranch(
 
 async function getPullRequestByNumber(
   prNumber: number,
+  assignment: Pick<TaskAssignmentInfo, "repoOwner" | "repoName">,
   cwd: string,
   runner: CommandRunner,
 ): Promise<PullRequestSnapshot | null | undefined> {
   const pr = await runJsonCommand<PullRequestSnapshot>(
     "gh",
-    ["pr", "view", String(prNumber), "--json", "number,state,mergedAt,headRefName"],
+    [
+      "pr",
+      "view",
+      String(prNumber),
+      ...getRepoArg(assignment),
+      "--json",
+      "number,state,mergedAt,headRefName",
+    ],
     cwd,
     runner,
   );
@@ -339,13 +448,24 @@ async function getPullRequestByNumber(
 }
 
 async function getIssueByNumber(
-  issueNumber: number,
+  assignment: Pick<TaskAssignmentInfo, "issueNumber" | "repoOwner" | "repoName">,
   cwd: string,
   runner: CommandRunner,
 ): Promise<IssueSnapshot | null | undefined> {
+  if (!assignment.repoOwner || !assignment.repoName) {
+    return null;
+  }
+
   const issue = await runJsonCommand<IssueSnapshot>(
     "gh",
-    ["issue", "view", String(issueNumber), "--json", "number,state"],
+    [
+      "issue",
+      "view",
+      String(assignment.issueNumber),
+      ...getRepoArg(assignment),
+      "--json",
+      "number,state",
+    ],
     cwd,
     runner,
   );
@@ -424,29 +544,46 @@ export async function resolveTaskAssignments(
     return [];
   }
 
-  const baseRef = await resolveBaseRef(cwd, runner);
+  const baseRefCache = new Map<string, Promise<string | null>>();
+  const resolveBaseRefForCwd = (repoCwd: string): Promise<string | null> => {
+    const cached = baseRefCache.get(repoCwd);
+    if (cached) return cached;
+    const promise = resolveBaseRef(repoCwd, runner);
+    baseRefCache.set(repoCwd, promise);
+    return promise;
+  };
   const branchProgressCache = new Map<
     string,
     Promise<{ branchAheadCount: number; pr: PullRequestSnapshot | null | undefined }>
   >();
   const pullRequestByNumberCache = new Map<
-    number,
+    string,
     Promise<PullRequestSnapshot | null | undefined>
   >();
-  const issueByNumberCache = new Map<number, Promise<IssueSnapshot | null | undefined>>();
+  const issueByNumberCache = new Map<string, Promise<IssueSnapshot | null | undefined>>();
 
   const resolveBranchProgress = (
-    branch: string | null,
+    assignment: TaskAssignmentInfo,
   ): Promise<{ branchAheadCount: number; pr: PullRequestSnapshot | null | undefined }> => {
-    const cacheKey = branch ?? "";
+    const repoCwd =
+      assignment.repoRoot ?? (assignment.repoOwner && assignment.repoName ? null : null);
+    const commandCwd = repoCwd ?? cwd;
+    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd ?? "repo_root_unavailable"}:${assignment.branch ?? ""}`;
     const cached = branchProgressCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
+    const canResolveRemotePr =
+      repoCwd != null || (assignment.repoOwner != null && assignment.repoName != null);
+    const branchAheadCountPromise = repoCwd
+      ? resolveBaseRefForCwd(repoCwd).then((baseRef) =>
+          getBranchAheadCount(assignment.branch, baseRef, repoCwd, runner),
+        )
+      : Promise.resolve(0);
     const promise = Promise.all([
-      getBranchAheadCount(branch, baseRef, cwd, runner),
-      getPullRequestForBranch(branch, cwd, runner),
+      branchAheadCountPromise,
+      canResolveRemotePr ? getPullRequestForBranch(assignment, commandCwd, runner) : null,
     ]).then(([branchAheadCount, pr]) => ({ branchAheadCount, pr }));
     branchProgressCache.set(cacheKey, promise);
     return promise;
@@ -454,36 +591,49 @@ export async function resolveTaskAssignments(
 
   const resolvePullRequestByNumber = (
     prNumber: number,
+    assignment: TaskAssignmentInfo,
+    repoCwd: string,
   ): Promise<PullRequestSnapshot | null | undefined> => {
-    const cached = pullRequestByNumberCache.get(prNumber);
+    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd}#${prNumber}`;
+    const cached = pullRequestByNumberCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const promise = getPullRequestByNumber(prNumber, cwd, runner);
-    pullRequestByNumberCache.set(prNumber, promise);
+    const promise = getPullRequestByNumber(prNumber, assignment, repoCwd, runner);
+    pullRequestByNumberCache.set(cacheKey, promise);
     return promise;
   };
 
-  const resolveIssueByNumber = (issueNumber: number): Promise<IssueSnapshot | null | undefined> => {
-    const cached = issueByNumberCache.get(issueNumber);
+  const resolveIssueByNumber = (
+    assignment: TaskAssignmentInfo,
+  ): Promise<IssueSnapshot | null | undefined> => {
+    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}#${assignment.issueNumber}`;
+    const cached = issueByNumberCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const promise = getIssueByNumber(issueNumber, cwd, runner);
-    issueByNumberCache.set(issueNumber, promise);
+    const promise = getIssueByNumber(assignment, cwd, runner);
+    issueByNumberCache.set(cacheKey, promise);
     return promise;
   };
 
   return Promise.all(
     assignments.map(async (assignment) => {
-      const { branchAheadCount, pr } = await resolveBranchProgress(assignment.branch);
+      const { branchAheadCount, pr } = await resolveBranchProgress(assignment);
+      const canResolveStoredPr =
+        assignment.repoRoot != null ||
+        (assignment.repoOwner != null && assignment.repoName != null);
       const resolvedPr =
-        pr == null && assignment.prNumber != null
-          ? await resolvePullRequestByNumber(assignment.prNumber)
+        pr == null && assignment.prNumber != null && canResolveStoredPr
+          ? await resolvePullRequestByNumber(
+              assignment.prNumber,
+              assignment,
+              assignment.repoRoot ?? cwd,
+            )
           : pr;
-      const issueState = normalizeIssueState(await resolveIssueByNumber(assignment.issueNumber));
+      const issueState = normalizeIssueState(await resolveIssueByNumber(assignment));
       const { nextStatus, nextPrNumber } = resolveTaskStatus(
         assignment,
         branchAheadCount,
@@ -507,8 +657,22 @@ export function hasTaskAssignmentStatusChange(assignment: ResolvedTaskAssignment
 }
 
 function formatTaskProgressFragment(
-  assignment: Pick<TaskAssignmentInfo, "issueNumber" | "branch" | "status" | "prNumber">,
+  assignment: Pick<
+    TaskAssignmentInfo,
+    | "issueNumber"
+    | "branch"
+    | "status"
+    | "prNumber"
+    | "taskKind"
+    | "repoOwner"
+    | "repoName"
+    | "repoRoot"
+  >,
 ): string {
+  if (assignment.taskKind !== "implementation") {
+    return `#${assignment.issueNumber} → ${assignment.taskKind} task, no implementation PR expected`;
+  }
+
   switch (assignment.status) {
     case "pr_merged":
       return `#${assignment.issueNumber} → PR #${assignment.prNumber ?? "?"} MERGED ✅`;
@@ -520,6 +684,17 @@ function formatTaskProgressFragment(
       return `#${assignment.issueNumber} → commits on ${assignment.branch ?? "tracked branch"}, no PR 👀`;
     case "assigned":
     default:
+      if (!assignment.repoOwner && !assignment.repoName && !assignment.repoRoot) {
+        return `#${assignment.issueNumber} → repo unknown; progress not checked ⚠️`;
+      }
+      if (
+        assignment.branch &&
+        assignment.repoOwner &&
+        assignment.repoName &&
+        !assignment.repoRoot
+      ) {
+        return `#${assignment.issueNumber} → no PR found for ${assignment.branch}; commits not checked (repo root unavailable) ⚠️`;
+      }
       return `#${assignment.issueNumber} → no commits, no PR ⚠️`;
   }
 }
@@ -527,12 +702,25 @@ function formatTaskProgressFragment(
 function getVisibleTaskAssignmentReportEntries<
   T extends Pick<
     TaskAssignmentInfo,
-    "agentId" | "issueNumber" | "branch" | "status" | "prNumber"
+    | "agentId"
+    | "issueNumber"
+    | "branch"
+    | "status"
+    | "prNumber"
+    | "taskKind"
+    | "repoOwner"
+    | "repoName"
+    | "repoRoot"
   > & {
     issueState?: ResolvedTaskAssignment["issueState"];
   },
 >(assignments: T[]): T[] {
-  return assignments.filter((assignment) => assignment.issueState !== "CLOSED");
+  return assignments.filter(
+    (assignment) =>
+      assignment.issueState !== "CLOSED" &&
+      assignment.status !== "pr_merged" &&
+      assignment.status !== "pr_closed",
+  );
 }
 
 function formatAgentLabel(
@@ -554,10 +742,23 @@ function getAgentSortKey(
   return agent?.name ?? agentId;
 }
 
+type ReportableTaskAssignment = Pick<
+  TaskAssignmentInfo,
+  | "agentId"
+  | "issueNumber"
+  | "branch"
+  | "status"
+  | "prNumber"
+  | "taskKind"
+  | "repoOwner"
+  | "repoName"
+  | "repoRoot"
+> & {
+  issueState?: ResolvedTaskAssignment["issueState"];
+};
+
 export function buildTaskAssignmentReport(
-  assignments: Array<
-    Pick<TaskAssignmentInfo, "agentId" | "issueNumber" | "branch" | "status" | "prNumber">
-  >,
+  assignments: ReportableTaskAssignment[],
   agentsById: ReadonlyMap<string, Pick<AgentInfo, "emoji" | "name">>,
   cycleStartedAt?: string,
 ): string | null {
@@ -566,10 +767,7 @@ export function buildTaskAssignmentReport(
     return null;
   }
 
-  const grouped = new Map<
-    string,
-    Array<Pick<TaskAssignmentInfo, "agentId" | "issueNumber" | "branch" | "status" | "prNumber">>
-  >();
+  const grouped = new Map<string, ReportableTaskAssignment[]>();
   for (const assignment of visibleAssignments) {
     const bucket = grouped.get(assignment.agentId);
     if (bucket) {
@@ -605,9 +803,7 @@ export interface PendingTaskAssignmentReport {
 }
 
 export function getPendingTaskAssignmentReport(
-  assignments: Array<
-    Pick<TaskAssignmentInfo, "agentId" | "issueNumber" | "branch" | "status" | "prNumber">
-  >,
+  assignments: ReportableTaskAssignment[],
   agentsById: ReadonlyMap<string, Pick<AgentInfo, "emoji" | "name">>,
   lastDeliveredSignature: string,
   cycleStartedAt?: string,

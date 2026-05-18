@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { normalizeOutgoingPinetControlMessage } from "./helpers.js";
 import {
   dispatchBroadcastAgentMessage,
@@ -5,9 +7,11 @@ import {
   isBroadcastChannelTarget,
   type AgentMessageStorage,
 } from "./broker/agent-messaging.js";
-import type { AgentInfo, TaskAssignmentInfo } from "./broker/types.js";
+import type { AgentInfo, TaskAssignmentInfo, TaskAssignmentKind } from "./broker/types.js";
 import type { ActivityLogEntry } from "./activity-log.js";
 import { extractTaskAssignmentsFromMessage } from "./task-assignments.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface PinetMeshOpsAgentRecord {
   emoji: string;
@@ -49,6 +53,12 @@ export interface PinetMeshOpsBrokerDbPort extends AgentMessageStorage {
     branch: string | null,
     threadId: string,
     sourceMessageId: number,
+    options?: {
+      repoOwner?: string | null;
+      repoName?: string | null;
+      repoRoot?: string | null;
+      taskKind?: TaskAssignmentKind;
+    },
   ) => TaskAssignmentInfo;
   scheduleWakeup: (
     agentId: string,
@@ -129,6 +139,35 @@ function getThreadOwnershipTransferId(metadata?: Record<string, unknown>): strin
   return typeof threadId === "string" && threadId.trim().length > 0 ? threadId.trim() : null;
 }
 
+function parseGitHubRemoteRepo(remoteUrl: string): { repoOwner: string; repoName: string } | null {
+  const match = remoteUrl.match(/github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/i);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  return { repoOwner: match[1], repoName: match[2] };
+}
+
+async function resolveCurrentGitHubRepo(): Promise<{
+  repoOwner: string | null;
+  repoName: string | null;
+  repoRoot: string | null;
+}> {
+  try {
+    const [rootResult, remoteResult] = await Promise.all([
+      execFileAsync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf-8" }),
+      execFileAsync("git", ["remote", "get-url", "origin"], { encoding: "utf-8" }),
+    ]);
+    const remoteRepo = parseGitHubRemoteRepo(String(remoteResult.stdout).trim());
+    return {
+      repoOwner: remoteRepo?.repoOwner ?? null,
+      repoName: remoteRepo?.repoName ?? null,
+      repoRoot: String(rootResult.stdout).trim() || null,
+    };
+  } catch {
+    return { repoOwner: null, repoName: null, repoRoot: null };
+  }
+}
+
 export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
   async function sendPinetAgentMessage(
     targetRef: string,
@@ -190,14 +229,34 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         });
       }
 
+      const parsedAssignments = extractTaskAssignmentsFromMessage(body);
+      const fallbackRepo = parsedAssignments.some(
+        (assignment) => !assignment.repoOwner || !assignment.repoName,
+      )
+        ? await resolveCurrentGitHubRepo()
+        : { repoOwner: null, repoName: null, repoRoot: null };
       const recordedAssignments: PinetMeshOpsRecordedAssignment[] = [];
-      for (const assignment of extractTaskAssignmentsFromMessage(body)) {
+      for (const assignment of parsedAssignments) {
+        const repoOwner = assignment.repoOwner ?? fallbackRepo.repoOwner;
+        const repoName = assignment.repoName ?? fallbackRepo.repoName;
+        const usesFallbackRepoIdentity = !assignment.repoOwner || !assignment.repoName;
+        const fallbackMatchesAssignmentRepo =
+          assignment.repoOwner?.toLowerCase() === fallbackRepo.repoOwner?.toLowerCase() &&
+          assignment.repoName?.toLowerCase() === fallbackRepo.repoName?.toLowerCase();
+        const repoRoot =
+          usesFallbackRepoIdentity || fallbackMatchesAssignmentRepo ? fallbackRepo.repoRoot : null;
         const tracked = db.recordTaskAssignment(
           result.target.id,
           assignment.issueNumber,
           assignment.branch,
           result.threadId,
           result.messageId,
+          {
+            repoOwner,
+            repoName,
+            repoRoot,
+            taskKind: assignment.taskKind,
+          },
         );
         recordedAssignments.push({ issueNumber: tracked.issueNumber, branch: tracked.branch });
       }
