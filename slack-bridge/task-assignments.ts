@@ -546,18 +546,23 @@ export async function resolveTaskAssignments(
   const resolveBranchProgress = (
     assignment: TaskAssignmentInfo,
   ): Promise<{ branchAheadCount: number; pr: PullRequestSnapshot | null | undefined }> => {
-    const repoCwd = assignment.repoRoot ?? cwd;
-    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd}:${assignment.branch ?? ""}`;
+    const repoCwd =
+      assignment.repoRoot ?? (assignment.repoOwner && assignment.repoName ? null : cwd);
+    const commandCwd = repoCwd ?? cwd;
+    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd ?? "repo_root_unavailable"}:${assignment.branch ?? ""}`;
     const cached = branchProgressCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
+    const branchAheadCountPromise = repoCwd
+      ? resolveBaseRefForCwd(repoCwd).then((baseRef) =>
+          getBranchAheadCount(assignment.branch, baseRef, repoCwd, runner),
+        )
+      : Promise.resolve(0);
     const promise = Promise.all([
-      resolveBaseRefForCwd(repoCwd).then((baseRef) =>
-        getBranchAheadCount(assignment.branch, baseRef, repoCwd, runner),
-      ),
-      getPullRequestForBranch(assignment, repoCwd, runner),
+      branchAheadCountPromise,
+      getPullRequestForBranch(assignment, commandCwd, runner),
     ]).then(([branchAheadCount, pr]) => ({ branchAheadCount, pr }));
     branchProgressCache.set(cacheKey, promise);
     return promise;
@@ -625,7 +630,14 @@ export function hasTaskAssignmentStatusChange(assignment: ResolvedTaskAssignment
 function formatTaskProgressFragment(
   assignment: Pick<
     TaskAssignmentInfo,
-    "issueNumber" | "branch" | "status" | "prNumber" | "taskKind"
+    | "issueNumber"
+    | "branch"
+    | "status"
+    | "prNumber"
+    | "taskKind"
+    | "repoOwner"
+    | "repoName"
+    | "repoRoot"
   >,
 ): string {
   if (assignment.taskKind !== "implementation") {
@@ -643,6 +655,14 @@ function formatTaskProgressFragment(
       return `#${assignment.issueNumber} → commits on ${assignment.branch ?? "tracked branch"}, no PR 👀`;
     case "assigned":
     default:
+      if (
+        assignment.branch &&
+        assignment.repoOwner &&
+        assignment.repoName &&
+        !assignment.repoRoot
+      ) {
+        return `#${assignment.issueNumber} → no PR found for ${assignment.branch}; commits not checked (repo root unavailable) ⚠️`;
+      }
       return `#${assignment.issueNumber} → no commits, no PR ⚠️`;
   }
 }
@@ -650,7 +670,15 @@ function formatTaskProgressFragment(
 function getVisibleTaskAssignmentReportEntries<
   T extends Pick<
     TaskAssignmentInfo,
-    "agentId" | "issueNumber" | "branch" | "status" | "prNumber" | "taskKind"
+    | "agentId"
+    | "issueNumber"
+    | "branch"
+    | "status"
+    | "prNumber"
+    | "taskKind"
+    | "repoOwner"
+    | "repoName"
+    | "repoRoot"
   > & {
     issueState?: ResolvedTaskAssignment["issueState"];
   },
@@ -684,7 +712,15 @@ function getAgentSortKey(
 
 type ReportableTaskAssignment = Pick<
   TaskAssignmentInfo,
-  "agentId" | "issueNumber" | "branch" | "status" | "prNumber" | "taskKind"
+  | "agentId"
+  | "issueNumber"
+  | "branch"
+  | "status"
+  | "prNumber"
+  | "taskKind"
+  | "repoOwner"
+  | "repoName"
+  | "repoRoot"
 > & {
   issueState?: ResolvedTaskAssignment["issueState"];
 };

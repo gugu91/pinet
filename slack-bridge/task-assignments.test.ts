@@ -348,6 +348,39 @@ describe("resolveTaskAssignments", () => {
     expect(hasTaskAssignmentStatusChange(assignment)).toBe(true);
   });
 
+  it("does not check branch progress from broker cwd when repo root is unavailable", async () => {
+    const runner: CommandRunner = vi.fn(async (file, args) => {
+      if (file === "gh") {
+        return { stdout: "[]\n" };
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+    });
+
+    const [assignment] = await resolveTaskAssignments(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 114,
+          branch: "feat/ralph",
+          repoOwner: "gugu91",
+          repoName: "extensions",
+          repoRoot: null,
+        }),
+      ],
+      "/broker/repo",
+      runner,
+    );
+
+    expect(assignment.branchAheadCount).toBe(0);
+    expect(assignment.nextStatus).toBe("assigned");
+    expect(runner).not.toHaveBeenCalledWith(
+      "git",
+      expect.any(Array),
+      expect.objectContaining({ cwd: "/broker/repo" }),
+    );
+  });
+
   it("checks branch progress from the captured repo root", async () => {
     const runner: CommandRunner = vi.fn(async (file, args, options) => {
       if (
@@ -733,6 +766,31 @@ describe("buildTaskAssignmentReport", () => {
       [
         "RALPH LOOP — WORKER STATUS:",
         "- 🐦‍⬛ Frozen Raven: #287 → review task, no implementation PR expected",
+      ].join("\n"),
+    );
+  });
+
+  it("does not claim no commits when branch progress is unsafe to check", () => {
+    const report = buildTaskAssignmentReport(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-2",
+          issueNumber: 114,
+          branch: "feat/ralph",
+          repoOwner: "gugu91",
+          repoName: "extensions",
+          repoRoot: null,
+          status: "assigned",
+        }),
+      ],
+      new Map([["worker-2", makeAgent("worker-2", "Frozen Raven", "🐦‍⬛")]]),
+    );
+
+    expect(report).toBe(
+      [
+        "RALPH LOOP — WORKER STATUS:",
+        "- 🐦‍⬛ Frozen Raven: #114 → no PR found for feat/ralph; commits not checked (repo root unavailable) ⚠️",
       ].join("\n"),
     );
   });
