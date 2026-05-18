@@ -79,6 +79,7 @@ import { createAgentCompletionRuntime } from "./agent-completion-runtime.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 import {
   type SlackBridgeRuntimeMode,
+  isBrokerManagedFollowerLaunch,
   resolveSlackBridgeStartupRuntimeMode,
 } from "./runtime-mode.js";
 import {
@@ -1498,6 +1499,7 @@ export default function (pi: ExtensionAPI) {
     maybeWarnSlackUserAccess(ctx);
     const startupMode = resolveSlackBridgeStartupRuntimeMode(settings, {
       brokerSocketExists: fs.existsSync(DEFAULT_SOCKET_PATH),
+      brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
     });
 
     try {

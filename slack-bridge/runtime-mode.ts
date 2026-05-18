@@ -23,6 +23,11 @@ export function isPinetRuntimeMode(mode: SlackBridgeRuntimeMode): boolean {
 
 export interface ResolveSlackBridgeStartupRuntimeModeOptions {
   brokerSocketExists?: boolean;
+  brokerManagedFollowerLaunch?: boolean;
+}
+
+export function isBrokerManagedFollowerLaunch(env = process.env): boolean {
+  return env.PINET_BROKER_MANAGED === "1" && env.PINET_LAUNCH_SOURCE === "broker-tmux";
 }
 
 export function resolveSlackBridgeStartupRuntimeMode(
@@ -31,6 +36,13 @@ export function resolveSlackBridgeStartupRuntimeMode(
 ): SlackBridgeRuntimeMode {
   const explicitMode = normalizeSlackBridgeRuntimeMode(settings.runtimeMode);
   const brokerSocketExists = options.brokerSocketExists ?? true;
+
+  if (options.brokerManagedFollowerLaunch) {
+    if (explicitMode === "follower" || (!explicitMode && settings.autoFollow)) {
+      return brokerSocketExists ? "follower" : "off";
+    }
+    return "off";
+  }
 
   if (explicitMode) {
     if (explicitMode === "follower" && !brokerSocketExists) {
