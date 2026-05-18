@@ -566,7 +566,7 @@ export async function resolveTaskAssignments(
     assignment: TaskAssignmentInfo,
   ): Promise<{ branchAheadCount: number; pr: PullRequestSnapshot | null | undefined }> => {
     const repoCwd =
-      assignment.repoRoot ?? (assignment.repoOwner && assignment.repoName ? null : cwd);
+      assignment.repoRoot ?? (assignment.repoOwner && assignment.repoName ? null : null);
     const commandCwd = repoCwd ?? cwd;
     const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd ?? "repo_root_unavailable"}:${assignment.branch ?? ""}`;
     const cached = branchProgressCache.get(cacheKey);
@@ -574,6 +574,8 @@ export async function resolveTaskAssignments(
       return cached;
     }
 
+    const canResolveRemotePr =
+      repoCwd != null || (assignment.repoOwner != null && assignment.repoName != null);
     const branchAheadCountPromise = repoCwd
       ? resolveBaseRefForCwd(repoCwd).then((baseRef) =>
           getBranchAheadCount(assignment.branch, baseRef, repoCwd, runner),
@@ -581,7 +583,7 @@ export async function resolveTaskAssignments(
       : Promise.resolve(0);
     const promise = Promise.all([
       branchAheadCountPromise,
-      getPullRequestForBranch(assignment, commandCwd, runner),
+      canResolveRemotePr ? getPullRequestForBranch(assignment, commandCwd, runner) : null,
     ]).then(([branchAheadCount, pr]) => ({ branchAheadCount, pr }));
     branchProgressCache.set(cacheKey, promise);
     return promise;
@@ -590,14 +592,15 @@ export async function resolveTaskAssignments(
   const resolvePullRequestByNumber = (
     prNumber: number,
     assignment: TaskAssignmentInfo,
+    repoCwd: string,
   ): Promise<PullRequestSnapshot | null | undefined> => {
-    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}#${prNumber}`;
+    const cacheKey = `${assignment.repoOwner ?? ""}/${assignment.repoName ?? ""}:${repoCwd}#${prNumber}`;
     const cached = pullRequestByNumberCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const promise = getPullRequestByNumber(prNumber, assignment, cwd, runner);
+    const promise = getPullRequestByNumber(prNumber, assignment, repoCwd, runner);
     pullRequestByNumberCache.set(cacheKey, promise);
     return promise;
   };
@@ -619,9 +622,16 @@ export async function resolveTaskAssignments(
   return Promise.all(
     assignments.map(async (assignment) => {
       const { branchAheadCount, pr } = await resolveBranchProgress(assignment);
+      const canResolveStoredPr =
+        assignment.repoRoot != null ||
+        (assignment.repoOwner != null && assignment.repoName != null);
       const resolvedPr =
-        pr == null && assignment.prNumber != null
-          ? await resolvePullRequestByNumber(assignment.prNumber, assignment)
+        pr == null && assignment.prNumber != null && canResolveStoredPr
+          ? await resolvePullRequestByNumber(
+              assignment.prNumber,
+              assignment,
+              assignment.repoRoot ?? cwd,
+            )
           : pr;
       const issueState = normalizeIssueState(await resolveIssueByNumber(assignment));
       const { nextStatus, nextPrNumber } = resolveTaskStatus(
@@ -674,6 +684,9 @@ function formatTaskProgressFragment(
       return `#${assignment.issueNumber} → commits on ${assignment.branch ?? "tracked branch"}, no PR 👀`;
     case "assigned":
     default:
+      if (!assignment.repoOwner && !assignment.repoName && !assignment.repoRoot) {
+        return `#${assignment.issueNumber} → repo unknown; progress not checked ⚠️`;
+      }
       if (
         assignment.branch &&
         assignment.repoOwner &&

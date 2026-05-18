@@ -25,7 +25,7 @@ function makeAssignment(
     sourceMessageId: overrides.sourceMessageId ?? null,
     repoOwner: overrides.repoOwner ?? null,
     repoName: overrides.repoName ?? null,
-    repoRoot: overrides.repoRoot ?? null,
+    repoRoot: overrides.repoRoot === undefined ? "/repo" : overrides.repoRoot,
     taskKind: overrides.taskKind ?? "implementation",
     createdAt: overrides.createdAt ?? "2026-04-02T10:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-04-02T10:00:00.000Z",
