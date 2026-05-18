@@ -223,8 +223,8 @@ function canonicalizeTaskAssignmentFromSourceMessage(
     return {
       ...assignment,
       branch: matchingAssignment.branch,
-      repoOwner: matchingAssignment.repoOwner,
-      repoName: matchingAssignment.repoName,
+      repoOwner: matchingAssignment.repoOwner ?? assignment.repoOwner,
+      repoName: matchingAssignment.repoName ?? assignment.repoName,
       taskKind: matchingAssignment.taskKind,
     };
   }
@@ -235,8 +235,8 @@ function canonicalizeTaskAssignmentFromSourceMessage(
       ...assignment,
       issueNumber: canonicalAssignment.issueNumber,
       branch: canonicalAssignment.branch,
-      repoOwner: canonicalAssignment.repoOwner,
-      repoName: canonicalAssignment.repoName,
+      repoOwner: canonicalAssignment.repoOwner ?? assignment.repoOwner,
+      repoName: canonicalAssignment.repoName ?? assignment.repoName,
       taskKind: canonicalAssignment.taskKind,
     };
   }

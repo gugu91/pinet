@@ -140,6 +140,41 @@ describe("extractTaskAssignmentsFromMessage", () => {
 });
 
 describe("normalizeTrackedTaskAssignments", () => {
+  it("preserves captured repo identity when reparsing issue-only source messages", () => {
+    const normalized = normalizeTrackedTaskAssignments(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 418,
+          branch: "fix/task-tracker-418",
+          repoOwner: "gugu91",
+          repoName: "extensions",
+          sourceMessageId: 100,
+        }),
+      ],
+      new Map([
+        [
+          100,
+          [
+            "Please implement the fix and open a PR.",
+            "Issue: #418",
+            "Branch: `fix/task-tracker-418`",
+          ].join("\n"),
+        ],
+      ]),
+    );
+
+    expect(normalized).toEqual([
+      expect.objectContaining({
+        issueNumber: 418,
+        repoOwner: "gugu91",
+        repoName: "extensions",
+        taskKind: "implementation",
+      }),
+    ]);
+  });
+
   it("drops stale update rows and repairs the canonical issue and branch from the source message", () => {
     const assignments = [
       makeAssignment({
