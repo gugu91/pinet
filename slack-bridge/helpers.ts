@@ -434,6 +434,38 @@ function formatPinetInboxPointer(entry: FollowerInboxEntry): string {
   return buildPinetReadPointer(entry.message.threadId ?? "");
 }
 
+function getTransferredSlackThreadContext(
+  metadata: Record<string, unknown> | null,
+): { threadId: string; channel?: string } | null {
+  const transfer = metadata?.threadOwnershipTransfer;
+  if (!transfer || typeof transfer !== "object" || Array.isArray(transfer)) {
+    return null;
+  }
+
+  const raw = transfer as Record<string, unknown>;
+  const threadId = typeof raw.threadId === "string" ? raw.threadId.trim() : "";
+  if (!threadId) {
+    return null;
+  }
+
+  const source = typeof raw.source === "string" ? raw.source.trim() : "";
+  if (source && source !== "slack") {
+    return null;
+  }
+
+  const channel = typeof raw.channel === "string" ? raw.channel.trim() : "";
+  return { threadId, ...(channel ? { channel } : {}) };
+}
+
+function formatPinetThreadTransferSuffix(entry: FollowerInboxEntry): string {
+  const transfer = getTransferredSlackThreadContext(entry.message.metadata);
+  if (!transfer) {
+    return "";
+  }
+
+  return ` transferred_slack_thread thread_ts=${transfer.threadId}${transfer.channel ? ` channel=${transfer.channel}` : ""} reply=slack_send`;
+}
+
 export function formatPinetInboxMessages(entries: FollowerInboxEntry[]): string {
   const annotatedEntries = entries.map((entry) => {
     const classification = classifyPinetMail({
@@ -451,7 +483,8 @@ export function formatPinetInboxMessages(entries: FollowerInboxEntry[]): string 
     const sender = getPinetSenderLabel(entry.message);
     const label = formatPinetMailClassLabel(classification.class);
     const inboxSuffix = entry.inboxId != null ? ` inbox_id=${entry.inboxId}` : "";
-    return `[thread ${threadTs}] [${label}] ${sender}:${inboxSuffix} ${formatPinetInboxPointer(entry)}`;
+    const transferSuffix = formatPinetThreadTransferSuffix(entry);
+    return `[thread ${threadTs}] [${label}] ${sender}:${inboxSuffix}${transferSuffix} ${formatPinetInboxPointer(entry)}`;
   });
 
   const hasMaintenanceOnly = annotatedEntries.some(
@@ -461,14 +494,19 @@ export function formatPinetInboxMessages(entries: FollowerInboxEntry[]): string 
     (entry) => entry.classification.class === "steering",
   );
   const hasFollowUp = annotatedEntries.some((entry) => entry.classification.class === "fwup");
+  const hasTransferredSlackThread = annotatedEntries.some(({ entry }) =>
+    Boolean(getTransferredSlackThreadContext(entry.message.metadata)),
+  );
 
-  const guidance = hasMaintenanceOnly
-    ? hasActionableWork || hasFollowUp
-      ? "Read pointer(s) before acting; reply via pinet action=send for steering/follow-up."
-      : "Context-only pointer(s); read only if needed."
-    : hasActionableWork
-      ? "Read pointer(s) before acting; reply via pinet action=send."
-      : "Read pointer(s) if follow-up is needed; reply via pinet action=send when needed.";
+  const guidance = hasTransferredSlackThread
+    ? "Read pointer(s) before acting; transferred Slack threads can be replied to with slack_send using the shown thread_ts."
+    : hasMaintenanceOnly
+      ? hasActionableWork || hasFollowUp
+        ? "Read pointer(s) before acting; reply via pinet action=send for steering/follow-up."
+        : "Context-only pointer(s); read only if needed."
+      : hasActionableWork
+        ? "Read pointer(s) before acting; reply via pinet action=send."
+        : "Read pointer(s) if follow-up is needed; reply via pinet action=send when needed.";
 
   return `New Pinet messages:\n${lines.join("\n")}\n\n${guidance}`;
 }
@@ -2133,6 +2171,11 @@ export interface FollowerInboxSyncResult {
   changed: boolean;
 }
 
+export interface TransferredSlackThreadSyncResult {
+  threadUpdates: FollowerThreadState[];
+  changed: boolean;
+}
+
 export interface BrokerInboxControlEntry {
   inboxId: number;
   command: PinetControlCommand;
@@ -2145,6 +2188,45 @@ export interface BrokerInboxSyncResult {
 
 export function isDirectMessageChannel(channel: string): boolean {
   return /^D[A-Z0-9]+$/.test(channel);
+}
+
+export function syncTransferredSlackThreadContexts(
+  entries: FollowerInboxEntry[],
+  existingThreads: ReadonlyMap<string, FollowerThreadState>,
+  agentOwner: string,
+): TransferredSlackThreadSyncResult {
+  let changed = false;
+  const threadUpdates: FollowerThreadState[] = [];
+
+  for (const entry of entries) {
+    const transfer = getTransferredSlackThreadContext(entry.message.metadata);
+    if (!transfer?.channel) {
+      continue;
+    }
+
+    const existing = existingThreads.get(transfer.threadId);
+    const nextThread: FollowerThreadState = {
+      channelId: transfer.channel,
+      threadTs: transfer.threadId,
+      userId: existing?.userId ?? "",
+      owner: existing?.owner ?? agentOwner,
+      source: "slack",
+    };
+
+    threadUpdates.push(nextThread);
+    if (
+      !existing ||
+      existing.channelId !== nextThread.channelId ||
+      existing.threadTs !== nextThread.threadTs ||
+      existing.userId !== nextThread.userId ||
+      existing.owner !== nextThread.owner ||
+      existing.source !== nextThread.source
+    ) {
+      changed = true;
+    }
+  }
+
+  return { threadUpdates, changed };
 }
 
 export function syncFollowerInboxEntries(

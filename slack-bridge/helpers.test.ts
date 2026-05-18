@@ -60,6 +60,7 @@ import {
   isAgentToAgentEntry,
   partitionFollowerInboxEntries,
   syncBrokerInboxEntries,
+  syncTransferredSlackThreadContexts,
   buildBrokerProtocolGuardrailsPrompt,
   buildWorkerPromptGuidelines,
   buildIdentityReplyGuidelines,
@@ -763,6 +764,36 @@ describe("formatPinetInboxMessages", () => {
     expect(result).not.toContain("Take issue #175");
     expect(result).toContain("Read pointer(s) before acting; reply via pinet action=send.");
     expect(result).not.toContain("ACK briefly after reading, do the work");
+  });
+
+  it("surfaces transferred Slack thread context with slack_send guidance", () => {
+    const result = formatPinetInboxMessages([
+      {
+        inboxId: 18,
+        message: {
+          threadId: "a2a:broker:worker",
+          sender: "broker-id",
+          body: "Take issue #756",
+          metadata: {
+            senderAgent: "Broker Bunny",
+            a2a: true,
+            threadOwnershipTransfer: {
+              mode: "transfer",
+              threadId: "1779139556.450249",
+              source: "slack",
+              channel: "C0APL58LB1R",
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(result).toContain(
+      "transferred_slack_thread thread_ts=1779139556.450249 channel=C0APL58LB1R reply=slack_send",
+    );
+    expect(result).toContain(
+      "transferred Slack threads can be replied to with slack_send using the shown thread_ts.",
+    );
   });
 
   it("falls back to the sender id when no senderAgent metadata exists", () => {
@@ -3390,6 +3421,68 @@ describe("isDirectMessageChannel", () => {
 
   it("rejects empty string", () => {
     expect(isDirectMessageChannel("")).toBe(false);
+  });
+});
+
+// ─── syncTransferredSlackThreadContexts ───────────────────
+
+describe("syncTransferredSlackThreadContexts", () => {
+  it("hydrates follower thread state from transferred Slack thread metadata", () => {
+    const threads = new Map<string, FollowerThreadState>();
+    const result = syncTransferredSlackThreadContexts(
+      [
+        {
+          inboxId: 18,
+          message: {
+            threadId: "a2a:broker:worker",
+            sender: "broker-id",
+            body: "Take issue #756",
+            metadata: {
+              a2a: true,
+              threadOwnershipTransfer: {
+                mode: "transfer",
+                threadId: "1779139556.450249",
+                source: "slack",
+                channel: "C0APL58LB1R",
+              },
+            },
+          },
+        },
+      ],
+      threads,
+      "AgentOwner",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.threadUpdates).toEqual([
+      {
+        channelId: "C0APL58LB1R",
+        threadTs: "1779139556.450249",
+        userId: "",
+        owner: "AgentOwner",
+        source: "slack",
+      },
+    ]);
+  });
+
+  it("ignores transfer metadata without channel context", () => {
+    const result = syncTransferredSlackThreadContexts(
+      [
+        {
+          message: {
+            threadId: "a2a:broker:worker",
+            sender: "broker-id",
+            metadata: {
+              threadOwnershipTransfer: { mode: "transfer", threadId: "1779139556.450249" },
+            },
+          },
+        },
+      ],
+      new Map<string, FollowerThreadState>(),
+      "AgentOwner",
+    );
+
+    expect(result).toEqual({ threadUpdates: [], changed: false });
   });
 });
 
