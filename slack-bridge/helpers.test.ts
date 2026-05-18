@@ -83,6 +83,7 @@ import {
   alignAgentIdentityToRole,
   trackBrokerInboundThread,
   syncFollowerInboxEntries,
+  syncFollowerTransferredThreadContext,
   resolveFollowerThreadChannel,
   isDirectMessageChannel,
   buildFollowerRuntimeDiagnostic,
@@ -3506,6 +3507,115 @@ describe("syncFollowerInboxEntries", () => {
         scope,
       },
     });
+  });
+});
+
+// ─── syncFollowerTransferredThreadContext ─────────────────
+
+describe("syncFollowerTransferredThreadContext", () => {
+  it("extracts Slack channel context from explicit broker transfer metadata", () => {
+    const threads = new Map<string, FollowerThreadState>();
+    const result = syncFollowerTransferredThreadContext(
+      [
+        {
+          inboxId: 41,
+          message: {
+            threadId: "a2a:broker-1:worker-1",
+            source: "agent",
+            sender: "broker-1",
+            body: "please take over",
+            createdAt: "2026-05-18T22:00:00.000Z",
+            metadata: {
+              a2a: true,
+              threadOwnershipTransfer: {
+                mode: "transfer",
+                threadId: "1777798507.674009",
+                source: "slack",
+                channel: "C123",
+              },
+            },
+          },
+        },
+      ],
+      threads,
+      "worker-owner-token",
+    );
+
+    expect(result).toEqual({
+      changed: true,
+      threadUpdates: [
+        {
+          channelId: "C123",
+          threadTs: "1777798507.674009",
+          userId: "broker-1",
+          owner: "worker-owner-token",
+          source: "slack",
+        },
+      ],
+    });
+  });
+
+  it("ignores transfers without channel context so callers fall back to diagnostics", () => {
+    const result = syncFollowerTransferredThreadContext(
+      [
+        {
+          message: {
+            threadId: "a2a:broker-1:worker-1",
+            sender: "broker-1",
+            body: "please take over",
+            metadata: {
+              a2a: true,
+              threadOwnershipTransfer: { mode: "transfer", threadId: "1777798507.674009" },
+            },
+          },
+        },
+      ],
+      new Map(),
+      "worker-owner-token",
+    );
+
+    expect(result).toEqual({ changed: false, threadUpdates: [] });
+  });
+
+  it("returns changed=false when the transferred thread context is already cached", () => {
+    const threads = new Map<string, FollowerThreadState>([
+      [
+        "1777798507.674009",
+        {
+          channelId: "C123",
+          threadTs: "1777798507.674009",
+          userId: "broker-1",
+          owner: "worker-owner-token",
+          source: "slack",
+        },
+      ],
+    ]);
+
+    const result = syncFollowerTransferredThreadContext(
+      [
+        {
+          message: {
+            threadId: "a2a:broker-1:worker-1",
+            sender: "broker-1",
+            body: "please take over",
+            metadata: {
+              a2a: true,
+              threadOwnershipTransfer: {
+                mode: "transfer",
+                threadId: "1777798507.674009",
+                source: "slack",
+                channel: "C123",
+              },
+            },
+          },
+        },
+      ],
+      threads,
+      "worker-owner-token",
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.threadUpdates).toHaveLength(1);
   });
 });
 

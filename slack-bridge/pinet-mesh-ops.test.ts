@@ -336,7 +336,12 @@ describe("createPinetMeshOps", () => {
     });
     expect(transferThreadOwnership).toHaveBeenCalledWith("1777798507.674009", "worker-1");
     expect(insertedMessages[0]?.metadata).toMatchObject({
-      threadOwnershipTransfer: { mode: "transfer", threadId: "1777798507.674009" },
+      threadOwnershipTransfer: {
+        mode: "transfer",
+        threadId: "1777798507.674009",
+        source: "slack",
+        channel: "C123",
+      },
       senderAgent: "Broker Crane",
       a2a: true,
     });

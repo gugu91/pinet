@@ -2133,6 +2133,68 @@ export interface FollowerInboxSyncResult {
   changed: boolean;
 }
 
+export interface FollowerTransferredThreadContextSyncResult {
+  threadUpdates: FollowerThreadState[];
+  changed: boolean;
+}
+
+function getFollowerTransferredThreadContext(entry: FollowerInboxEntry): {
+  threadId: string;
+  channel: string;
+  source: string;
+} | null {
+  const metadata = entry.message.metadata ?? {};
+  const transfer = asRecord(metadata.threadOwnershipTransfer);
+  if (!transfer) return null;
+
+  const mode = asString(transfer.mode);
+  if (mode && mode !== "transfer") return null;
+
+  const threadId = asString(transfer.threadId);
+  const channel = asString(transfer.channel);
+  const source = asString(transfer.source) ?? "slack";
+  if (!threadId || !channel || source !== "slack") return null;
+
+  return { threadId, channel, source };
+}
+
+export function syncFollowerTransferredThreadContext(
+  entries: FollowerInboxEntry[],
+  existingThreads: ReadonlyMap<string, FollowerThreadState>,
+  agentOwner: string,
+): FollowerTransferredThreadContextSyncResult {
+  let changed = false;
+  const threadUpdates: FollowerThreadState[] = [];
+
+  for (const entry of entries) {
+    const transferred = getFollowerTransferredThreadContext(entry);
+    if (!transferred) continue;
+
+    const existing = existingThreads.get(transferred.threadId);
+    const nextThread: FollowerThreadState = {
+      channelId: transferred.channel,
+      threadTs: transferred.threadId,
+      userId: existing?.userId || entry.message.sender || "",
+      owner: agentOwner,
+      source: transferred.source,
+    };
+
+    if (
+      !existing ||
+      existing.channelId !== nextThread.channelId ||
+      existing.userId !== nextThread.userId ||
+      existing.owner !== nextThread.owner ||
+      existing.source !== nextThread.source
+    ) {
+      changed = true;
+    }
+
+    threadUpdates.push(nextThread);
+  }
+
+  return { threadUpdates, changed };
+}
+
 export interface BrokerInboxControlEntry {
   inboxId: number;
   command: PinetControlCommand;

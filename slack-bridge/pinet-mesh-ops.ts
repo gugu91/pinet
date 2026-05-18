@@ -139,6 +139,28 @@ function getThreadOwnershipTransferId(metadata?: Record<string, unknown>): strin
   return typeof threadId === "string" && threadId.trim().length > 0 ? threadId.trim() : null;
 }
 
+function enrichThreadOwnershipTransferMetadata(
+  metadata: Record<string, unknown> | undefined,
+  thread: PinetMeshOpsTransferableThread,
+): Record<string, unknown> {
+  const transfer = metadata?.threadOwnershipTransfer;
+  const transferRecord =
+    transfer && typeof transfer === "object" && !Array.isArray(transfer)
+      ? (transfer as Record<string, unknown>)
+      : {};
+
+  return {
+    ...(metadata ?? {}),
+    threadOwnershipTransfer: {
+      ...transferRecord,
+      mode: "transfer",
+      threadId: thread.threadId,
+      ...(thread.source ? { source: thread.source } : {}),
+      ...(thread.channel ? { channel: thread.channel } : {}),
+    },
+  };
+}
+
 function parseGitHubRemoteRepo(remoteUrl: string): { repoOwner: string; repoName: string } | null {
   const match = remoteUrl.match(/github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/i);
   if (!match?.[1] || !match[2]) {
@@ -204,12 +226,16 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         throw new Error(`Thread ${transferThreadId} is not a transferable Slack thread.`);
       }
 
+      const dispatchMetadata = transferThread
+        ? enrichThreadOwnershipTransferMetadata(finalMetadata, transferThread)
+        : finalMetadata;
+
       const result = dispatchDirectAgentMessage(db, {
         senderAgentId: selfId,
         senderAgentName: deps.getAgentName(),
         target: targetRef,
         body: finalBody,
-        metadata: finalMetadata,
+        metadata: dispatchMetadata,
       });
 
       if (transferThreadId) {

@@ -16,6 +16,7 @@ import {
   resolvePinetMeshAuth,
   resolveRuntimeAgentIdentity,
   syncFollowerInboxEntries,
+  syncFollowerTransferredThreadContext,
 } from "./helpers.js";
 import {
   type FollowerDeliveryState,
@@ -322,6 +323,18 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
           }
 
           if (agentMessages.length > 0) {
+            const transferSync = syncFollowerTransferredThreadContext(
+              agentMessages,
+              deps.getThreads(),
+              deps.getAgentOwnerToken(),
+            );
+            if (transferSync.threadUpdates.length > 0) {
+              mergeFollowerThreadUpdates(deps.getThreads(), transferSync.threadUpdates);
+              if (transferSync.changed) {
+                deps.persistState();
+              }
+            }
+
             const pinetPrompt = formatPinetInboxMessages(agentMessages);
             if (deps.deliverFollowUpMessage(pinetPrompt)) {
               markFollowerInboxIdsDelivered(deps.deliveryState, getInboxIds(agentMessages));
