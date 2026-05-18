@@ -41,6 +41,12 @@ import { normalizeReactionName } from "./reaction-triggers.js";
 import { resolveScheduledWakeupFireAt } from "./scheduled-wakeups.js";
 import { performSlackUpload, prepareSlackUpload } from "./slack-upload.js";
 import { TtlCache } from "./ttl-cache.js";
+import {
+  DEFAULT_SLACK_THREAD_STATUS,
+  normalizeSlackThreadStatus,
+  setSlackThreadStatus,
+  SLACK_THREAD_LOADING_MESSAGES,
+} from "./slack-thread-status.js";
 
 export interface SlackToolsThreadContextPort {
   resolveThreadChannel: (threadTs: string | undefined) => Promise<string | null>;
@@ -168,6 +174,10 @@ const SLACK_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
   ],
   presence: [{ action: "presence", args: { users: ["@alice", "U123456"] } }],
   export: [{ action: "export", args: { thread_ts: "1712345678.000100", format: "markdown" } }],
+  status: [
+    { action: "status", args: { thread_ts: "1712345678.000100", status: "Reading context…" } },
+    { action: "status", args: { thread_ts: "1712345678.000100", clear: true } },
+  ],
   post_channel: [
     {
       action: "post_channel",
@@ -2024,6 +2034,71 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
             text: message.text,
           })),
         },
+      };
+    },
+  });
+
+  registerSlackAction({
+    name: "slack_status",
+    label: "Slack Thread Status",
+    description:
+      "Set or clear Slack's in-thread shimmer/thinking status for the current thread. Best-effort; failures do not affect final replies.",
+    promptSnippet:
+      "Update visible Slack thread status with short safe progress hints such as Reading context… or Drafting reply…. Do not expose chain-of-thought.",
+    parameters: Type.Object({
+      thread_ts: Type.String({ description: "Slack thread timestamp to update." }),
+      channel: Type.Optional(
+        Type.String({
+          description:
+            "Optional channel name or ID. Omit when the thread is tracked by the Slack bridge.",
+        }),
+      ),
+      status: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal("is thinking…"),
+            Type.Literal("Reading context…"),
+            Type.Literal("Calling tool…"),
+            Type.Literal("Drafting reply…"),
+            Type.Literal("Checking Slack…"),
+          ],
+          {
+            description:
+              "Controlled visible status text. Ignored when clear=true. Only safe operational progress labels are accepted.",
+          },
+        ),
+      ),
+      clear: Type.Optional(Type.Boolean({ description: "Clear the visible thread status." })),
+    }),
+    async execute(_id, params) {
+      requireToolPolicy(
+        "slack_status",
+        params.thread_ts,
+        `thread_ts=${params.thread_ts} | channel=${params.channel ?? ""} | clear=${params.clear === true}`,
+      );
+      const channelId = await resolveSlackTargetChannel(params.thread_ts, params.channel);
+      const status =
+        params.clear === true
+          ? ""
+          : normalizeSlackThreadStatus(params.status ?? DEFAULT_SLACK_THREAD_STATUS);
+      await setSlackThreadStatus({
+        slack,
+        token: getBotToken(),
+        channelId,
+        threadTs: params.thread_ts,
+        status,
+        loadingMessages: SLACK_THREAD_LOADING_MESSAGES,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: status
+              ? `Updated Slack thread status to “${status}”.`
+              : "Cleared Slack thread status.",
+          },
+        ],
+        details: { channel: channelId, thread_ts: params.thread_ts, status },
       };
     },
   });

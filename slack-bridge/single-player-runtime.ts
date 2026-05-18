@@ -78,6 +78,7 @@ export interface SinglePlayerRuntimeDeps {
   getReactionCommand: (reactionName: string) => ReactionCommandTemplate | undefined;
   consumeConfirmationReply: (threadTs: string, text: string) => { approved: boolean } | null;
   claimOwnedThread: (threadTs: string, channelId: string, source?: string) => void;
+  beginThreadStatus?: (channelId: string, threadTs: string, status: string) => Promise<void>;
 }
 
 type SinglePlayerControlContext = ExtensionContext & {
@@ -419,6 +420,7 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
     if (shuttingDown) return;
     ctx.ui.notify(`${name}: ${text.slice(0, 100)}`, "info");
 
+    void deps.beginThreadStatus?.(channel, threadTs, "is thinking…");
     void deps.addReaction(channel, messageTs, "eyes");
     const pending = deps.getPendingEyes().get(threadTs) ?? [];
     pending.push({ channel, messageTs });
@@ -482,6 +484,8 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
       deps.setLastDmChannel(normalized.channel);
     }
     deps.persistState();
+
+    void deps.beginThreadStatus?.(normalized.channel, normalized.threadTs, "is thinking…");
 
     const name = await deps.resolveUser(normalized.userId);
     if (shuttingDown) return;

@@ -169,6 +169,32 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(requireToolPolicy).not.toHaveBeenCalled();
   });
 
+  it("brackets a single Slack thread with visible status updates", async () => {
+    const beginThreadStatus = vi.fn(async () => undefined);
+    const updateThreadStatus = vi.fn(async () => undefined);
+    const clearThreadStatus = vi.fn(async () => undefined);
+    const { deps } = createDeps({
+      beginThreadStatus,
+      updateThreadStatus,
+      clearThreadStatus,
+    });
+    const runtime = createSlackToolPolicyRuntime(deps);
+
+    runtime.deliverTrackedSlackFollowUpMessage({
+      prompt: "status prompt",
+      messages: [{ channel: "C100", threadTs: "100.1" }],
+    });
+    await runtime.onInput({ source: "extension", text: "status prompt" });
+    await runtime.onTurnStart();
+    expect(beginThreadStatus).toHaveBeenCalledWith("C100", "100.1", "is thinking…");
+
+    await runtime.onToolCall({ toolName: "read", input: { path: "README.md" } });
+    expect(updateThreadStatus).toHaveBeenCalledWith("C100", "100.1", "Calling tool…");
+
+    await runtime.onTurnEnd();
+    expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
+  });
+
   it("clears the active Slack tool-policy turn on agent_end", async () => {
     const { deps, requireToolPolicy } = createDeps({
       getGuardrails: () => ({ requireConfirmation: ["read"] }),

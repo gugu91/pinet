@@ -57,6 +57,8 @@ reactions:read       reactions:write      users:read
 
 `files:read` is required because Slack exposes canvas comment pagination through `files.info`, even when the target is first validated via canvas-specific APIs.
 
+Slack thread shimmer/status updates use `assistant.threads.setStatus`; Slack's 2026 scope update allows this method with the existing `chat:write` bot scope, so no new `assistant:write` scope is needed for status-only support.
+
 ## Configuration
 
 Add your tokens to `~/.pi/agent/settings.json`:
