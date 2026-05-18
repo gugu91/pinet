@@ -119,6 +119,24 @@ describe("extractTaskAssignmentsFromMessage", () => {
       },
     ]);
   });
+
+  it("lets explicit implementation branch signals win over generic review wording", () => {
+    const message = [
+      "Please review the code, implement the fix, and open a PR.",
+      "Issue: #418",
+      "Branch: `fix/task-tracker-418`",
+    ].join("\n");
+
+    expect(extractTaskAssignmentsFromMessage(message)).toEqual([
+      {
+        issueNumber: 418,
+        branch: "fix/task-tracker-418",
+        repoOwner: null,
+        repoName: null,
+        taskKind: "implementation",
+      },
+    ]);
+  });
 });
 
 describe("normalizeTrackedTaskAssignments", () => {

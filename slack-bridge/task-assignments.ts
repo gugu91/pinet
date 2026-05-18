@@ -60,7 +60,10 @@ const GITHUB_REPO_ISSUE_URL_REGEX =
 const REPO_LABEL_REGEX =
   /(?:^|\n)\s*(?:[-*]\s*)?(?:repo|repository)\s*:\s*(?:https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/i;
 const READ_ONLY_REVIEW_REGEX =
-  /\b(?:read-only|do not mutate|do not edit|review|second-pass|second pass|code review)\b/i;
+  /\b(?:read-only|do not mutate|do not edit|review-only|review only|second-pass|second pass|code review)\b/i;
+const REVIEW_TASK_REGEX = /\b(?:review|code review)\b/i;
+const QA_ONLY_TASK_REGEX =
+  /\b(?:qa-only|qa only|test-only|test only|verify-only|verify only|validation-only|validation only)\b/i;
 const QA_TASK_REGEX = /\b(?:qa|test|verify|validation|visual verify|visual verification)\b/i;
 const MERGE_TASK_REGEX = /\bmerge\s+pr\s*#?\d+|\bmerge-only\b|\bmerge only\b/i;
 const INTERACTIVE_TASK_REGEX = /\b(?:interactive-session|human-gated|manual|browser session)\b/i;
@@ -165,8 +168,10 @@ function parseTaskKind(message: string, branch: string | null): TaskAssignmentKi
   if (MERGE_TASK_REGEX.test(normalized)) return "merge";
   if (INTERACTIVE_TASK_REGEX.test(normalized)) return "interactive";
   if (READ_ONLY_REVIEW_REGEX.test(normalized)) return "review";
-  if (QA_TASK_REGEX.test(normalized)) return "qa";
+  if (QA_ONLY_TASK_REGEX.test(normalized)) return "qa";
   if (branch || IMPLEMENTATION_TASK_REGEX.test(normalized)) return "implementation";
+  if (REVIEW_TASK_REGEX.test(normalized)) return "review";
+  if (QA_TASK_REGEX.test(normalized)) return "qa";
   return "unknown";
 }
 

@@ -268,7 +268,12 @@ describe("createPinetMeshOps", () => {
       "refactor/418-pinet-mesh-ops",
       "a2a:broker-1:worker-1",
       1,
-      { repoOwner: null, repoName: null, taskKind: "implementation" },
+      expect.objectContaining({
+        repoOwner: "gugu91",
+        repoName: "extensions",
+        repoRoot: expect.stringContaining("gugu91-extensions-747"),
+        taskKind: "implementation",
+      }),
     );
     expect(logActivity).toHaveBeenCalledWith(
       expect.objectContaining({
