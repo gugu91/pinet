@@ -27,7 +27,11 @@ export interface ThreadConfirmationPolicy {
     tool: string,
     action: string,
   ) => RegisterConfirmationRequestResult;
-  consumeReply: (threadTs: string, text: string) => { approved: boolean } | null;
+  consumeReply: (
+    threadTs: string,
+    text: string,
+    options?: { receivedAt?: string | number | Date },
+  ) => { approved: boolean } | null;
   requireToolPolicy: (toolName: string, threadTs: string | undefined, action: string) => void;
 }
 
@@ -109,7 +113,11 @@ export function createThreadConfirmationPolicy(
     };
   }
 
-  function consumeReply(threadTs: string, text: string): { approved: boolean } | null {
+  function consumeReply(
+    threadTs: string,
+    text: string,
+    options: { receivedAt?: string | number | Date } = {},
+  ): { approved: boolean } | null {
     sweepThreadConfirmationStates();
     const state = threadConfirmationStates.get(threadTs);
     if (!state || state.pending.length === 0) return null;
@@ -119,8 +127,22 @@ export function createThreadConfirmationPolicy(
     const isRejection = isConfirmationRejection(trimmed);
     if (!isApproval && !isRejection) return null;
 
-    const request = state.pending.shift();
+    const request = state.pending[0];
     if (!request) return null;
+
+    if (options.receivedAt !== undefined) {
+      const receivedAtMs =
+        options.receivedAt instanceof Date
+          ? options.receivedAt.getTime()
+          : typeof options.receivedAt === "number"
+            ? options.receivedAt
+            : Date.parse(options.receivedAt);
+      if (!Number.isFinite(receivedAtMs) || receivedAtMs < request.requestedAt) {
+        return null;
+      }
+    }
+
+    state.pending.shift();
 
     if (isApproval) {
       state.approved.push(request);

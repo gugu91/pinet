@@ -36,6 +36,7 @@ describe("consumePinetReadConfirmationReplies", () => {
       "channel=C0AF7L69E5C | thread_ts=1779126107.662159 | ts=1779126146.246369 | thread=false";
     const policy = createThreadConfirmationPolicy({
       getGuardrails: () => ({ requireConfirmation: ["slack:delete"] }),
+      now: () => Date.parse("2026-05-18T11:59:59.000Z"),
     });
 
     expect(policy.registerRequest("1779126107.662159", "slack:delete", action).status).toBe(
@@ -56,6 +57,7 @@ describe("consumePinetReadConfirmationReplies", () => {
     const action = "channel=C0 | thread_ts=100.1 | ts=100.2 | thread=false";
     const policy = createThreadConfirmationPolicy({
       getGuardrails: () => ({ requireConfirmation: ["slack:delete", "slack:pin"] }),
+      now: () => Date.parse("2026-05-18T11:59:59.000Z"),
     });
 
     policy.registerRequest("100.1", "slack:delete", action);
@@ -92,6 +94,44 @@ describe("consumePinetReadConfirmationReplies", () => {
     ).toThrow('Tool "slack:delete" requires confirmation');
     expect(() => policy.requireToolPolicy("slack:pin", "100.1", action)).toThrow(
       'Tool "slack:pin" requires confirmation',
+    );
+  });
+
+  it("rejects stale unread Slack approvals that predate the confirmation request", () => {
+    const action = "channel=C0 | thread_ts=100.1 | ts=100.2 | thread=false";
+    const policy = createThreadConfirmationPolicy({
+      getGuardrails: () => ({ requireConfirmation: ["slack:delete"] }),
+      now: () => Date.parse("2026-05-18T12:00:00.000Z"),
+    });
+
+    policy.registerRequest("100.1", "slack:delete", action);
+    const result = consumePinetReadConfirmationReplies(
+      makeReadResult({
+        messages: [
+          {
+            inboxId: 1,
+            delivered: true,
+            readAt: "2026-05-18T12:00:00.000Z",
+            message: {
+              id: 1,
+              threadId: "100.1",
+              source: "slack",
+              direction: "inbound",
+              sender: "U0AF5S3LQ5C",
+              body: "yes",
+              metadata: null,
+              createdAt: "2026-05-18T11:59:59.000Z",
+            },
+          },
+        ],
+        markedReadIds: [1],
+      }),
+      policy.consumeReply,
+    );
+
+    expect(result.messages[0]?.message.body).toBe("yes");
+    expect(() => policy.requireToolPolicy("slack:delete", "100.1", action)).toThrow(
+      'Tool "slack:delete" requires confirmation for action "channel=C0 | thread_ts=100.1 | ts=100.2 | thread=false". A matching confirmation request is already pending in thread 100.1; wait for the user\'s approval first.',
     );
   });
 

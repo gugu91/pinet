@@ -3,6 +3,7 @@ import type { PinetReadResult } from "@gugu910/pi-pinet-core/pinet-read-formatti
 export type ConsumePinetConfirmationReply = (
   threadTs: string,
   text: string,
+  options?: { receivedAt?: string | number | Date },
 ) => { approved: boolean } | null;
 
 export function consumePinetReadConfirmationReplies(
@@ -24,7 +25,9 @@ export function consumePinetReadConfirmationReplies(
         return item;
       }
 
-      const confirmationResult = consumeReply(item.message.threadId, item.message.body);
+      const confirmationResult = consumeReply(item.message.threadId, item.message.body, {
+        receivedAt: item.message.createdAt,
+      });
       if (confirmationResult === null) return item;
 
       const suffix = confirmationResult.approved
