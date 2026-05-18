@@ -3465,6 +3465,53 @@ describe("syncTransferredSlackThreadContexts", () => {
     ]);
   });
 
+  it("overwrites stale cached owner on explicit transfer", () => {
+    const threads = new Map<string, FollowerThreadState>([
+      [
+        "1779139556.450249",
+        {
+          channelId: "C_OLD",
+          threadTs: "1779139556.450249",
+          userId: "U_ORIGINAL",
+          owner: "PreviousOwner",
+          source: "slack",
+        },
+      ],
+    ]);
+
+    const result = syncTransferredSlackThreadContexts(
+      [
+        {
+          message: {
+            threadId: "a2a:broker:worker",
+            sender: "broker-id",
+            metadata: {
+              threadOwnershipTransfer: {
+                mode: "transfer",
+                threadId: "1779139556.450249",
+                source: "slack",
+                channel: "C0APL58LB1R",
+              },
+            },
+          },
+        },
+      ],
+      threads,
+      "AgentOwner",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.threadUpdates).toEqual([
+      {
+        channelId: "C0APL58LB1R",
+        threadTs: "1779139556.450249",
+        userId: "U_ORIGINAL",
+        owner: "AgentOwner",
+        source: "slack",
+      },
+    ]);
+  });
+
   it("ignores transfer metadata without channel context", () => {
     const result = syncTransferredSlackThreadContexts(
       [

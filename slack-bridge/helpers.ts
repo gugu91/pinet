@@ -2209,7 +2209,7 @@ export function syncTransferredSlackThreadContexts(
       channelId: transfer.channel,
       threadTs: transfer.threadId,
       userId: existing?.userId ?? "",
-      owner: existing?.owner ?? agentOwner,
+      owner: agentOwner,
       source: "slack",
     };
 
