@@ -27,6 +27,9 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
     formatAction: deps.formatAction,
     formatError: deps.formatError,
     deliverFollowUpMessage: deps.deliverFollowUpMessage,
+    beginThreadStatus: deps.beginThreadStatus,
+    updateThreadStatus: deps.updateThreadStatus,
+    clearThreadStatus: deps.clearThreadStatus,
   });
 
   deps.setDeliverTrackedSlackFollowUpMessage(

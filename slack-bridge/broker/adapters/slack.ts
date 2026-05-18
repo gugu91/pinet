@@ -2,7 +2,6 @@ import {
   addSlackReaction,
   buildSlackThreadRuntimeScope,
   classifyMessage,
-  clearSlackThreadStatus,
   extractAppHomeOpened,
   extractThreadContextChanged,
   extractThreadStarted,
@@ -35,6 +34,10 @@ import {
   SLACK_SOCKET_DELIVERY_DEDUP_MAX_SIZE,
   SLACK_SOCKET_DELIVERY_DEDUP_TTL_MS,
 } from "../../slack-access.js";
+import {
+  DEFAULT_SLACK_THREAD_STATUS,
+  SlackThreadStatusManager,
+} from "../../slack-thread-status.js";
 import type { InboundMessage, OutboundMessage, MessageAdapter } from "./types.js";
 
 export {
@@ -105,6 +108,7 @@ export class SlackAdapter implements MessageAdapter {
     ttlMs: SLACK_SOCKET_DELIVERY_DEDUP_TTL_MS,
   });
   private readonly pendingEyes: TtlCache<string, { channel: string; messageTs: string }[]>;
+  private readonly threadStatuses: SlackThreadStatusManager;
 
   constructor(config: SlackAdapterConfig) {
     this.config = config;
@@ -115,6 +119,12 @@ export class SlackAdapter implements MessageAdapter {
     this.pendingEyes = new TtlCache<string, { channel: string; messageTs: string }[]>({
       maxSize: SLACK_PENDING_ATTENTION_MAX_THREADS,
       ttlMs: SLACK_PENDING_ATTENTION_TTL_MS,
+    });
+    this.threadStatuses = new SlackThreadStatusManager({
+      slack: this.callSlack.bind(this),
+      getBotToken: () => this.config.botToken,
+      formatError: errorMsg,
+      logger: console,
     });
     this.allowlist = buildAllowlist(
       {
@@ -159,6 +169,7 @@ export class SlackAdapter implements MessageAdapter {
 
   async disconnect(): Promise<void> {
     this.shuttingDown = true;
+    await this.threadStatuses.clearAll();
     const socketMode = this.socketMode;
     this.socketMode = null;
     if (socketMode) {
@@ -475,6 +486,7 @@ export class SlackAdapter implements MessageAdapter {
 
     if (!isSlackUserAllowed(this.allowlist, userId)) return;
 
+    void this.threadStatuses.begin(channel, threadTs, DEFAULT_SLACK_THREAD_STATUS);
     void this.addReaction(channel, messageTs, "eyes");
     const pending = this.pendingEyes.get(threadTs) ?? [];
     pending.push({ channel, messageTs });
@@ -621,12 +633,7 @@ export class SlackAdapter implements MessageAdapter {
   }
 
   private async clearThreadStatus(channelId: string, threadTs: string): Promise<void> {
-    await clearSlackThreadStatus({
-      slack: this.callSlack.bind(this),
-      token: this.config.botToken,
-      channelId,
-      threadTs,
-    });
+    await this.threadStatuses.clear(channelId, threadTs);
   }
 
   private async setSuggestedPrompts(channelId: string, threadTs: string): Promise<void> {

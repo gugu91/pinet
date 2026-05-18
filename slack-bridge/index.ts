@@ -78,6 +78,7 @@ import { createBrokerRuntimeAccess } from "./broker-runtime-access.js";
 import { createInboxDrainRuntime } from "./inbox-drain-runtime.js";
 import { createAgentCompletionRuntime } from "./agent-completion-runtime.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
+import { SlackThreadStatusManager } from "./slack-thread-status.js";
 import {
   type SlackBridgeRuntimeMode,
   isBrokerManagedFollowerLaunch,
@@ -378,6 +379,12 @@ export default function (pi: ExtensionAPI) {
 
   let isSinglePlayerShuttingDown = () => false;
   let isSinglePlayerConnected = () => false;
+  const slackThreadStatuses = new SlackThreadStatusManager({
+    slack,
+    getBotToken: () => botToken!,
+    formatError: msg,
+    logger: console,
+  });
   const slackRuntimeAccess = createSlackRuntimeAccess({
     slack,
     getBotToken: () => botToken!,
@@ -470,6 +477,11 @@ export default function (pi: ExtensionAPI) {
     formatAction: formatConfirmationAction,
     formatError: msg,
     deliverFollowUpMessage,
+    beginThreadStatus: (channel, threadTs, status) =>
+      slackThreadStatuses.begin(channel, threadTs, status),
+    updateThreadStatus: (channel, threadTs, status) =>
+      slackThreadStatuses.update(channel, threadTs, status),
+    clearThreadStatus: (channel, threadTs) => slackThreadStatuses.clear(channel, threadTs),
     beforeAgentStart: agentPromptGuidance.beforeAgentStart,
     onCompletionAgentEnd: agentCompletionRuntime.onAgentEnd,
     setDeliverTrackedSlackFollowUpMessage: (deliver) => {
@@ -565,6 +577,8 @@ export default function (pi: ExtensionAPI) {
     isUserAllowed,
     getReactionCommand: (reactionName) => reactionCommands.get(reactionName),
     consumeConfirmationReply,
+    beginThreadStatus: (channelId, threadTs, status) =>
+      slackThreadStatuses.begin(channelId, threadTs, status),
     claimOwnedThread: (threadTs, channelId, source = "slack") => {
       if (brokerRole === "broker") {
         brokerRuntime.claimThread(threadTs, channelId, source);
