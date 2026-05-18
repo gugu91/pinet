@@ -68,6 +68,7 @@ import { createPinetMaintenanceDelivery } from "./pinet-maintenance-delivery.js"
 import { createPinetRemoteControlAcks } from "./pinet-remote-control-acks.js";
 import { createPinetRemoteControl } from "./pinet-remote-control.js";
 import { createPinetMeshOps } from "./pinet-mesh-ops.js";
+import { consumePinetReadConfirmationReplies } from "./pinet-confirmation-replies.js";
 import { createAgentPromptGuidance } from "./agent-prompt-guidance.js";
 import { createAgentEventRuntime } from "./agent-event-runtime.js";
 import { createSessionUiRuntime } from "./session-ui-runtime.js";
@@ -963,22 +964,26 @@ export default function (pi: ExtensionAPI) {
         throw new Error("Broker agent identity is unavailable.");
       }
       const result = db.readInbox(selfId, options);
-      return {
-        messages: result.messages.map((item) => ({
-          inboxId: item.entry.id,
-          delivered: item.entry.delivered,
-          readAt: item.entry.readAt,
-          message: item.message,
-        })),
-        unreadCountBefore: result.unreadCountBefore,
-        unreadCountAfter: result.unreadCountAfter,
-        unreadThreads: result.unreadThreads,
-        markedReadIds: result.markedReadIds,
-      };
+      return consumePinetReadConfirmationReplies(
+        {
+          messages: result.messages.map((item) => ({
+            inboxId: item.entry.id,
+            delivered: item.entry.delivered,
+            readAt: item.entry.readAt,
+            message: item.message,
+          })),
+          unreadCountBefore: result.unreadCountBefore,
+          unreadCountAfter: result.unreadCountAfter,
+          unreadThreads: result.unreadThreads,
+          markedReadIds: result.markedReadIds,
+        },
+        consumeConfirmationReply,
+      );
     }
 
     if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.readInbox(options);
+      const result = await brokerClient.client.readInbox(options);
+      return consumePinetReadConfirmationReplies(result, consumeConfirmationReply);
     }
 
     throw new Error("Pinet is in an unexpected state.");

@@ -257,6 +257,26 @@ describe("createThreadConfirmationPolicy", () => {
     );
   });
 
+  it("does not consume timestamped replies that predate the pending request", () => {
+    const { policy, advance } = createPolicyHarness({
+      requireConfirmation: ["bash"],
+    });
+
+    const staleReplyAt = "2026-04-14T11:59:59.000Z";
+    expect(policy.registerRequest("100.1", "bash", "run: ls").status).toBe("created");
+
+    expect(policy.consumeReply("100.1", "yes", { receivedAt: staleReplyAt })).toBeNull();
+    expect(() => policy.requireToolPolicy("bash", "100.1", "run: ls")).toThrow(
+      'Tool "bash" requires confirmation for action "run: ls". A matching confirmation request is already pending in thread 100.1; wait for the user\'s approval first.',
+    );
+
+    advance(1_000);
+    expect(policy.consumeReply("100.1", "yes", { receivedAt: "2026-04-14T12:00:01.000Z" })).toEqual(
+      { approved: true },
+    );
+    expect(() => policy.requireToolPolicy("bash", "100.1", "run: ls")).not.toThrow();
+  });
+
   it("ignores non-confirmation replies and expires stale pending requests", () => {
     const { policy, advance, setGuardrails } = createPolicyHarness({
       requireConfirmation: ["bash"],
