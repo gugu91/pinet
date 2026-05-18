@@ -627,6 +627,40 @@ describe("resolveTaskAssignments", () => {
     expect(hasTaskAssignmentStatusChange(assignment)).toBe(false);
   });
 
+  it("resolves repo-less legacy issues from the provided cwd so closed stale rows can be hidden", async () => {
+    const runner: CommandRunner = vi.fn(async (file, args, options) => {
+      if (file === "gh" && args[0] === "issue" && args[1] === "view") {
+        expect(args).not.toContain("--repo");
+        expect(options).toMatchObject({ cwd: "/repo" });
+        return { stdout: JSON.stringify({ number: 271, state: "CLOSED" }) };
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+    });
+
+    const [assignment] = await resolveTaskAssignments(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 271,
+          status: "assigned",
+          repoOwner: null,
+          repoName: null,
+          repoRoot: null,
+        }),
+      ],
+      "/repo",
+      runner,
+    );
+
+    expect(assignment.issueState).toBe("CLOSED");
+    expect(runner).toHaveBeenCalledWith(
+      "gh",
+      ["issue", "view", "271", "--json", "number,state"],
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+
   it("resolves same-number issues against their captured repositories", async () => {
     const runner: CommandRunner = vi.fn(async (file, args) => {
       if (
@@ -785,6 +819,54 @@ describe("buildTaskAssignmentReport", () => {
         "RALPH LOOP — WORKER STATUS:",
         "- 🐦‍⬛ Frozen Raven: #287 → review task, no implementation PR expected",
       ].join("\n"),
+    );
+  });
+
+  it("keeps legacy unknown assignments visible instead of suppressing implementation pressure", () => {
+    const report = buildTaskAssignmentReport(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-2",
+          issueNumber: 114,
+          taskKind: "unknown",
+          repoOwner: null,
+          repoName: null,
+          repoRoot: null,
+          status: "assigned",
+        }),
+      ],
+      new Map([["worker-2", makeAgent("worker-2", "Frozen Raven", "🐦‍⬛")]]),
+    );
+
+    expect(report).toBe(
+      [
+        "RALPH LOOP — WORKER STATUS:",
+        "- 🐦‍⬛ Frozen Raven: #114 → repo unknown; progress not checked ⚠️",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps closed-unmerged PR warnings visible while the implementation issue is open", () => {
+    const report = buildTaskAssignmentReport(
+      [
+        {
+          ...makeAssignment({
+            id: 1,
+            agentId: "worker-2",
+            issueNumber: 114,
+            status: "pr_closed",
+            prNumber: 115,
+            taskKind: "implementation",
+          }),
+          issueState: "OPEN" as const,
+        },
+      ],
+      new Map([["worker-2", makeAgent("worker-2", "Frozen Raven", "🐦‍⬛")]]),
+    );
+
+    expect(report).toBe(
+      ["RALPH LOOP — WORKER STATUS:", "- 🐦‍⬛ Frozen Raven: #114 → PR #115 CLOSED ⚠️"].join("\n"),
     );
   });
 
