@@ -5,7 +5,7 @@ import {
   isBroadcastChannelTarget,
   type AgentMessageStorage,
 } from "./broker/agent-messaging.js";
-import type { AgentInfo, TaskAssignmentInfo } from "./broker/types.js";
+import type { AgentInfo, TaskAssignmentInfo, TaskAssignmentKind } from "./broker/types.js";
 import type { ActivityLogEntry } from "./activity-log.js";
 import { extractTaskAssignmentsFromMessage } from "./task-assignments.js";
 
@@ -49,6 +49,12 @@ export interface PinetMeshOpsBrokerDbPort extends AgentMessageStorage {
     branch: string | null,
     threadId: string,
     sourceMessageId: number,
+    options?: {
+      repoOwner?: string | null;
+      repoName?: string | null;
+      repoRoot?: string | null;
+      taskKind?: TaskAssignmentKind;
+    },
   ) => TaskAssignmentInfo;
   scheduleWakeup: (
     agentId: string,
@@ -198,6 +204,11 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
           assignment.branch,
           result.threadId,
           result.messageId,
+          {
+            repoOwner: assignment.repoOwner,
+            repoName: assignment.repoName,
+            taskKind: assignment.taskKind,
+          },
         );
         recordedAssignments.push({ issueNumber: tracked.issueNumber, branch: tracked.branch });
       }

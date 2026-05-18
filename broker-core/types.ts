@@ -115,6 +115,14 @@ export type TaskAssignmentStatus =
   | "pr_merged"
   | "pr_closed";
 
+export type TaskAssignmentKind =
+  | "implementation"
+  | "review"
+  | "qa"
+  | "merge"
+  | "interactive"
+  | "unknown";
+
 export interface TaskAssignmentInfo {
   id: number;
   agentId: string;
@@ -124,6 +132,10 @@ export interface TaskAssignmentInfo {
   status: TaskAssignmentStatus;
   threadId: string;
   sourceMessageId: number | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  repoRoot: string | null;
+  taskKind: TaskAssignmentKind;
   createdAt: string;
   updatedAt: string;
 }

@@ -23,6 +23,10 @@ function makeAssignment(
     status: overrides.status ?? "assigned",
     threadId: overrides.threadId ?? `a2a:broker:${overrides.agentId}`,
     sourceMessageId: overrides.sourceMessageId ?? null,
+    repoOwner: overrides.repoOwner ?? null,
+    repoName: overrides.repoName ?? null,
+    repoRoot: overrides.repoRoot ?? null,
+    taskKind: overrides.taskKind ?? "implementation",
     createdAt: overrides.createdAt ?? "2026-04-02T10:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-04-02T10:00:00.000Z",
   };
@@ -45,7 +49,13 @@ describe("extractTaskAssignmentsFromMessage", () => {
     ].join("\n");
 
     expect(extractTaskAssignmentsFromMessage(message)).toEqual([
-      { issueNumber: 114, branch: "feat/ralph-completion-v2" },
+      {
+        issueNumber: 114,
+        branch: "feat/ralph-completion-v2",
+        repoOwner: null,
+        repoName: null,
+        taskKind: "implementation",
+      },
     ]);
   });
 
@@ -61,7 +71,13 @@ describe("extractTaskAssignmentsFromMessage", () => {
     ].join("\n");
 
     expect(extractTaskAssignmentsFromMessage(message)).toEqual([
-      { issueNumber: 287, branch: "fix/pinet-follow-auth-method" },
+      {
+        issueNumber: 287,
+        branch: "fix/pinet-follow-auth-method",
+        repoOwner: null,
+        repoName: null,
+        taskKind: "implementation",
+      },
     ]);
   });
 
@@ -85,6 +101,23 @@ describe("extractTaskAssignmentsFromMessage", () => {
     ].join("\n");
 
     expect(extractTaskAssignmentsFromMessage(message)).toEqual([]);
+  });
+
+  it("captures repo identity from GitHub issue URLs and classifies review-only work", () => {
+    const message = [
+      "Please do a read-only review of PR #292 against https://github.com/gugu91/extensions/issues/287.",
+      "Do not mutate files; just report findings.",
+    ].join("\n");
+
+    expect(extractTaskAssignmentsFromMessage(message)).toEqual([
+      {
+        issueNumber: 287,
+        branch: null,
+        repoOwner: "gugu91",
+        repoName: "extensions",
+        taskKind: "review",
+      },
+    ]);
   });
 });
 
@@ -409,7 +442,16 @@ describe("resolveTaskAssignments", () => {
     });
 
     const [assignment] = await resolveTaskAssignments(
-      [makeAssignment({ id: 1, agentId: "worker-1", issueNumber: 271, status: "assigned" })],
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 271,
+          status: "assigned",
+          repoOwner: "gugu91",
+          repoName: "extensions",
+        }),
+      ],
       "/repo",
       runner,
     );
@@ -418,6 +460,63 @@ describe("resolveTaskAssignments", () => {
     expect(assignment.nextPrNumber).toBeNull();
     expect(assignment.issueState).toBe("CLOSED");
     expect(hasTaskAssignmentStatusChange(assignment)).toBe(false);
+  });
+
+  it("resolves same-number issues against their captured repositories", async () => {
+    const runner: CommandRunner = vi.fn(async (file, args) => {
+      if (
+        file === "git" &&
+        args.slice(0, 4).join(" ") === "rev-parse --verify --quiet origin/main"
+      ) {
+        return { stdout: "origin/main\n" };
+      }
+      if (file === "gh" && args[0] === "pr" && args[1] === "list") {
+        return { stdout: "[]\n" };
+      }
+      if (file === "gh" && args[0] === "issue" && args[1] === "view") {
+        const repo = args[args.indexOf("--repo") + 1];
+        return {
+          stdout: JSON.stringify({
+            number: 747,
+            state: repo === "gugu91/extensions" ? "CLOSED" : "OPEN",
+          }),
+        };
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+    });
+
+    const assignments = await resolveTaskAssignments(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-1",
+          issueNumber: 747,
+          repoOwner: "gugu91",
+          repoName: "extensions",
+        }),
+        makeAssignment({
+          id: 2,
+          agentId: "worker-2",
+          issueNumber: 747,
+          repoOwner: "Nexcade",
+          repoName: "garage",
+        }),
+      ],
+      "/repo",
+      runner,
+    );
+
+    expect(assignments.map((assignment) => assignment.issueState)).toEqual(["CLOSED", "OPEN"]);
+    expect(runner).toHaveBeenCalledWith(
+      "gh",
+      expect.arrayContaining(["issue", "view", "747", "--repo", "gugu91/extensions"]),
+      expect.any(Object),
+    );
+    expect(runner).toHaveBeenCalledWith(
+      "gh",
+      expect.arrayContaining(["issue", "view", "747", "--repo", "Nexcade/garage"]),
+      expect.any(Object),
+    );
   });
 });
 
@@ -456,7 +555,6 @@ describe("buildTaskAssignmentReport", () => {
       [
         "RALPH LOOP — WORKER STATUS:",
         "- 🐦‍⬛ Frozen Raven: #103 → no commits, no PR ⚠️; #104 → commits on feat/worker-2, no PR 👀",
-        "- 🐎 Hyper Horse: #106 → PR #109 MERGED ✅",
       ].join("\n"),
     );
   });
@@ -502,6 +600,28 @@ describe("buildTaskAssignmentReport", () => {
 
     expect(report).toBeNull();
   });
+
+  it("does not describe review-only work as missing commits or PRs", () => {
+    const report = buildTaskAssignmentReport(
+      [
+        makeAssignment({
+          id: 1,
+          agentId: "worker-2",
+          issueNumber: 287,
+          status: "assigned",
+          taskKind: "review",
+        }),
+      ],
+      new Map([["worker-2", makeAgent("worker-2", "Frozen Raven", "🐦‍⬛")]]),
+    );
+
+    expect(report).toBe(
+      [
+        "RALPH LOOP — WORKER STATUS:",
+        "- 🐦‍⬛ Frozen Raven: #287 → review task, no implementation PR expected",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("getPendingTaskAssignmentReport", () => {
@@ -538,12 +658,7 @@ describe("getPendingTaskAssignmentReport", () => {
     });
   });
 
-  it("does not queue a report when it matches the last delivered summary signature", () => {
-    const lastDeliveredReport = [
-      "RALPH LOOP — WORKER STATUS:",
-      "- 🐎 Hyper Horse: #106 → PR #109 MERGED ✅",
-    ].join("\n");
-
+  it("does not queue a recurring report for terminal merged assignments", () => {
     const report = getPendingTaskAssignmentReport(
       [
         makeAssignment({
@@ -555,7 +670,7 @@ describe("getPendingTaskAssignmentReport", () => {
         }),
       ],
       agentsById,
-      lastDeliveredReport,
+      "",
       "2026-04-02T14:10:00.000Z",
     );
 

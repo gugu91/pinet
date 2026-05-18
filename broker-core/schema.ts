@@ -19,6 +19,7 @@ import type {
   InboundMessage,
   ChannelAssignment,
   TaskAssignmentInfo,
+  TaskAssignmentKind,
   TaskAssignmentStatus,
   ScheduledWakeupInfo,
   ScheduledWakeupDelivery,
@@ -110,6 +111,11 @@ interface TaskAssignmentRow {
   status: string;
   thread_id: string;
   source_message_id: number | null;
+  repo_key: string | null;
+  repo_owner: string | null;
+  repo_name: string | null;
+  repo_root: string | null;
+  task_kind: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -367,6 +373,34 @@ function rowToBacklog(row: BacklogRow): BacklogEntry {
   };
 }
 
+function normalizeTaskAssignmentKind(value: string | null | undefined): TaskAssignmentKind {
+  switch (value) {
+    case "implementation":
+    case "review":
+    case "qa":
+    case "merge":
+    case "interactive":
+    case "unknown":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+
+function buildTaskAssignmentRepoKey(input: {
+  repoOwner?: string | null;
+  repoName?: string | null;
+  repoRoot?: string | null;
+}): string {
+  const owner = input.repoOwner?.trim().toLowerCase();
+  const name = input.repoName?.trim().toLowerCase();
+  if (owner && name) {
+    return `${owner}/${name}`;
+  }
+  const repoRoot = input.repoRoot?.trim();
+  return repoRoot ? `root:${repoRoot}` : "repo_unknown";
+}
+
 function rowToTaskAssignment(row: TaskAssignmentRow): TaskAssignmentInfo {
   return {
     id: row.id,
@@ -377,6 +411,10 @@ function rowToTaskAssignment(row: TaskAssignmentRow): TaskAssignmentInfo {
     status: row.status as TaskAssignmentStatus,
     threadId: row.thread_id,
     sourceMessageId: row.source_message_id,
+    repoOwner: row.repo_owner,
+    repoName: row.repo_name,
+    repoRoot: row.repo_root,
+    taskKind: normalizeTaskAssignmentKind(row.task_kind),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -596,7 +634,7 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 16;
+export const CURRENT_BROKER_SCHEMA_VERSION = 17;
 
 const REQUIRED_AGENT_LIFECYCLE_COLUMNS = [
   "stable_id",
@@ -1013,9 +1051,15 @@ function createTaskAssignmentTable(db: DatabaseSync): void {
         CHECK(status IN ('assigned', 'branch_pushed', 'pr_open', 'pr_merged', 'pr_closed')),
       thread_id TEXT NOT NULL,
       source_message_id INTEGER,
+      repo_key TEXT NOT NULL DEFAULT 'repo_unknown',
+      repo_owner TEXT,
+      repo_name TEXT,
+      repo_root TEXT,
+      task_kind TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(task_kind IN ('implementation', 'review', 'qa', 'merge', 'interactive', 'unknown')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      UNIQUE(issue_number)
+      UNIQUE(repo_key, issue_number)
     );
 
     CREATE INDEX IF NOT EXISTS idx_task_assignments_agent_status
@@ -1051,6 +1095,11 @@ function migrateTaskAssignmentsToIssueOwnership(db: DatabaseSync): void {
       status,
       thread_id,
       source_message_id,
+      repo_key,
+      repo_owner,
+      repo_name,
+      repo_root,
+      task_kind,
       created_at,
       updated_at
     )
@@ -1062,6 +1111,88 @@ function migrateTaskAssignmentsToIssueOwnership(db: DatabaseSync): void {
       legacy.status,
       legacy.thread_id,
       legacy.source_message_id,
+      'repo_unknown',
+      NULL,
+      NULL,
+      NULL,
+      'unknown',
+      legacy.created_at,
+      legacy.updated_at
+    FROM task_assignments_legacy AS legacy
+    WHERE legacy.id = (
+      SELECT latest.id
+      FROM task_assignments_legacy AS latest
+      WHERE latest.issue_number = legacy.issue_number
+      ORDER BY latest.updated_at DESC, latest.created_at DESC, latest.id DESC
+      LIMIT 1
+    );
+
+    DROP TABLE task_assignments_legacy;
+  `);
+}
+
+function migrateTaskAssignmentsToRepoScopedTracking(db: DatabaseSync): void {
+  if (!tableExists(db, "task_assignments")) {
+    createTaskAssignmentTable(db);
+    return;
+  }
+
+  const existingColumns = getTableColumns(db, "task_assignments");
+  if (!existingColumns.has("agent_id") || !existingColumns.has("issue_number")) {
+    db.exec("DROP TABLE task_assignments");
+    createTaskAssignmentTable(db);
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE task_assignments RENAME TO task_assignments_legacy;
+    DROP INDEX IF EXISTS idx_task_assignments_agent_status;
+    DROP INDEX IF EXISTS idx_task_assignments_branch;
+  `);
+
+  createTaskAssignmentTable(db);
+
+  const legacyColumns = getTableColumns(db, "task_assignments_legacy");
+  const repoKeyExpr = legacyColumns.has("repo_key")
+    ? "COALESCE(repo_key, 'repo_unknown')"
+    : "'repo_unknown'";
+  const repoOwnerExpr = legacyColumns.has("repo_owner") ? "repo_owner" : "NULL";
+  const repoNameExpr = legacyColumns.has("repo_name") ? "repo_name" : "NULL";
+  const repoRootExpr = legacyColumns.has("repo_root") ? "repo_root" : "NULL";
+  const taskKindExpr = legacyColumns.has("task_kind")
+    ? "COALESCE(task_kind, 'unknown')"
+    : "'unknown'";
+
+  db.exec(`
+    INSERT INTO task_assignments (
+      agent_id,
+      issue_number,
+      branch,
+      pr_number,
+      status,
+      thread_id,
+      source_message_id,
+      repo_key,
+      repo_owner,
+      repo_name,
+      repo_root,
+      task_kind,
+      created_at,
+      updated_at
+    )
+    SELECT
+      legacy.agent_id,
+      legacy.issue_number,
+      legacy.branch,
+      legacy.pr_number,
+      legacy.status,
+      legacy.thread_id,
+      legacy.source_message_id,
+      ${repoKeyExpr},
+      ${repoOwnerExpr},
+      ${repoNameExpr},
+      ${repoRootExpr},
+      ${taskKindExpr},
       legacy.created_at,
       legacy.updated_at
     FROM task_assignments_legacy AS legacy
@@ -1253,6 +1384,9 @@ function runSchemaMigrations(db: DatabaseSync): void {
           break;
         case 16:
           createPortLeaseTable(db);
+          break;
+        case 17:
+          migrateTaskAssignmentsToRepoScopedTracking(db);
           break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
@@ -2527,22 +2661,47 @@ export class BrokerDB implements BrokerDBInterface {
     branch: string | null,
     threadId: string,
     sourceMessageId: number | null,
+    options: {
+      repoOwner?: string | null;
+      repoName?: string | null;
+      repoRoot?: string | null;
+      taskKind?: TaskAssignmentKind;
+    } = {},
   ): TaskAssignmentInfo {
     const db = this.getDb();
     const now = new Date().toISOString();
+    const repoOwner = options.repoOwner ?? null;
+    const repoName = options.repoName ?? null;
+    const repoRoot = options.repoRoot ?? null;
+    const repoKey = buildTaskAssignmentRepoKey({ repoOwner, repoName, repoRoot });
+    const taskKind = normalizeTaskAssignmentKind(options.taskKind ?? "implementation");
     const existing = db
-      .prepare("SELECT * FROM task_assignments WHERE issue_number = ?")
-      .get(issueNumber) as TaskAssignmentRow | undefined;
+      .prepare("SELECT * FROM task_assignments WHERE repo_key = ? AND issue_number = ?")
+      .get(repoKey, issueNumber) as TaskAssignmentRow | undefined;
 
     if (!existing) {
       const info = db
         .prepare(
           `INSERT INTO task_assignments (
              agent_id, issue_number, branch, pr_number, status,
-             thread_id, source_message_id, created_at, updated_at
-           ) VALUES (?, ?, ?, NULL, 'assigned', ?, ?, ?, ?)`,
+             thread_id, source_message_id, repo_key, repo_owner, repo_name, repo_root, task_kind,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, NULL, 'assigned', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(agentId, issueNumber, branch, threadId, sourceMessageId, now, now);
+        .run(
+          agentId,
+          issueNumber,
+          branch,
+          threadId,
+          sourceMessageId,
+          repoKey,
+          repoOwner,
+          repoName,
+          repoRoot,
+          taskKind,
+          now,
+          now,
+        );
 
       const row = db
         .prepare("SELECT * FROM task_assignments WHERE id = ?")
@@ -2555,6 +2714,8 @@ export class BrokerDB implements BrokerDBInterface {
 
     const isReassignment = existing.agent_id !== agentId;
     const nextBranch = isReassignment ? branch : (branch ?? existing.branch);
+    const nextTaskKind =
+      taskKind === "unknown" ? normalizeTaskAssignmentKind(existing.task_kind) : taskKind;
     const shouldResetProgress = isReassignment || nextBranch !== existing.branch;
     db.prepare(
       `UPDATE task_assignments
@@ -2564,6 +2725,10 @@ export class BrokerDB implements BrokerDBInterface {
            status = CASE WHEN ? THEN 'assigned' ELSE status END,
            thread_id = ?,
            source_message_id = ?,
+           repo_owner = ?,
+           repo_name = ?,
+           repo_root = ?,
+           task_kind = ?,
            updated_at = ?
        WHERE id = ?`,
     ).run(
@@ -2573,6 +2738,10 @@ export class BrokerDB implements BrokerDBInterface {
       shouldResetProgress ? 1 : 0,
       threadId,
       sourceMessageId,
+      repoOwner,
+      repoName,
+      repoRoot,
+      nextTaskKind,
       now,
       existing.id,
     );
