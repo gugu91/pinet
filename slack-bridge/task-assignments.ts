@@ -452,10 +452,6 @@ async function getIssueByNumber(
   cwd: string,
   runner: CommandRunner,
 ): Promise<IssueSnapshot | null | undefined> {
-  if (!assignment.repoOwner || !assignment.repoName) {
-    return null;
-  }
-
   const issue = await runJsonCommand<IssueSnapshot>(
     "gh",
     [
@@ -656,6 +652,10 @@ export function hasTaskAssignmentStatusChange(assignment: ResolvedTaskAssignment
   );
 }
 
+function isImplementationProgressTask(taskKind: TaskAssignmentInfo["taskKind"]): boolean {
+  return taskKind === "implementation" || taskKind === "unknown";
+}
+
 function formatTaskProgressFragment(
   assignment: Pick<
     TaskAssignmentInfo,
@@ -669,7 +669,7 @@ function formatTaskProgressFragment(
     | "repoRoot"
   >,
 ): string {
-  if (assignment.taskKind !== "implementation") {
+  if (!isImplementationProgressTask(assignment.taskKind)) {
     return `#${assignment.issueNumber} → ${assignment.taskKind} task, no implementation PR expected`;
   }
 
@@ -719,7 +719,7 @@ function getVisibleTaskAssignmentReportEntries<
     (assignment) =>
       assignment.issueState !== "CLOSED" &&
       assignment.status !== "pr_merged" &&
-      assignment.status !== "pr_closed",
+      (assignment.status !== "pr_closed" || isImplementationProgressTask(assignment.taskKind)),
   );
 }
 
