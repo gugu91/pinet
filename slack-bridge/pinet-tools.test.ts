@@ -281,12 +281,14 @@ describe("registerPinetTools", () => {
     const result = (await tools.get("pinet")?.execute("tool-call-read-json-details", {
       action: "read",
       args: { thread_id: "a2a:broker:worker", f: "json" },
-    })) as { content: Array<{ text: string }> };
-    const envelope = JSON.parse(result.content[0]?.text ?? "{}") as {
-      data: { details: { messages: Array<{ message: { body: string } }> } };
+    })) as {
+      content: Array<{ text: string }>;
+      details: { data: { details: { messages: Array<{ message: { body: string } }> } } };
     };
 
-    expect(envelope.data.details.messages[0]?.message.body).toBe(body);
+    expect(result.content[0]?.text).toContain("Ctrl+O to expand full Pinet tool result");
+    expect(result.content[0]?.text).not.toContain(body);
+    expect(result.details.data.details.messages[0]?.message.body).toBe(body);
   });
 
   it("shows exact Pinet read bodies only with explicit full output", async () => {
@@ -330,7 +332,8 @@ describe("registerPinetTools", () => {
       };
     };
 
-    expect(result.content[0]?.text).toContain(body);
+    expect(result.content[0]?.text).toContain("Ctrl+O to expand full Pinet tool result");
+    expect(result.content[0]?.text).not.toContain(body);
     expect(result.details.data.details.messages[0]?.message.body).toBe(body);
     expect(result.details.data.full_details).toBeUndefined();
   });
@@ -366,16 +369,20 @@ describe("registerPinetTools", () => {
     const result = (await tools.get("pinet")?.execute("tool-call-read-json-full-details", {
       action: "read",
       args: { thread_id: "a2a:broker:worker", format: "json", full: true },
-    })) as { content: Array<{ text: string }> };
-    const envelope = JSON.parse(result.content[0]?.text ?? "{}") as {
-      data: {
-        details: { messages: Array<{ message: { body: string } }> };
-        full_details?: unknown;
+    })) as {
+      content: Array<{ text: string }>;
+      details: {
+        data: {
+          details: { messages: Array<{ message: { body: string } }> };
+          full_details?: unknown;
+        };
       };
     };
 
-    expect(envelope.data.details.messages[0]?.message.body).toBe(body);
-    expect(envelope.data.full_details).toBeUndefined();
+    expect(result.content[0]?.text).toContain("Ctrl+O to expand full Pinet tool result");
+    expect(result.content[0]?.text).not.toContain(body);
+    expect(result.details.data.details.messages[0]?.message.body).toBe(body);
+    expect(result.details.data.full_details).toBeUndefined();
   });
 
   it("routes action-dispatched help through the dispatcher", async () => {
@@ -442,7 +449,9 @@ describe("registerPinetTools", () => {
     expect(result.details.status).toBe("succeeded");
     expect(result.details.data.action).toBe("send");
     expect(result.details.data.text).toBe("Pinet message sent to alpha.");
-    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+    expect(result.content[0]?.text).toContain("[Pinet] ✓ send");
+    expect(result.content[0]?.text).toContain("Ctrl+O to expand full Pinet tool result");
+    expect(result.content[0]?.text).not.toContain('"status": "succeeded"');
   });
 
   it("honors explicit full output for pinet send", async () => {

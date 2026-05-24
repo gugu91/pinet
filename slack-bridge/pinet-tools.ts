@@ -265,12 +265,31 @@ function getPinetToolResultTitle(envelope: PinetDispatcherEnvelope | null): stri
   return action ? `[Pinet] ${status} ${action}` : `[Pinet] ${status} result`;
 }
 
+function isCollapsedPinetToolText(value: string): boolean {
+  return value.includes("Ctrl+O to expand full Pinet tool result");
+}
+
+function getExpandedPinetToolText(
+  contentText: string,
+  envelope: PinetDispatcherEnvelope | null,
+): string {
+  if (!isCollapsedPinetToolText(contentText)) {
+    return contentText;
+  }
+
+  return envelope ? JSON.stringify(envelope, null, 2) : contentText;
+}
+
 function renderPinetToolResult(
   result: unknown,
   options: PinetToolRenderOptions,
 ): PinetToolResultComponent {
   const envelope = isRecord(result) ? readDispatcherEnvelope(result.details) : null;
-  const fullText = getTextContent(result) || (envelope ? JSON.stringify(envelope, null, 2) : "");
+  const contentText = getTextContent(result);
+  const fullText = getExpandedPinetToolText(
+    contentText || (envelope ? JSON.stringify(envelope, null, 2) : ""),
+    envelope,
+  );
   const title = getPinetToolResultTitle(envelope);
 
   if (options.expanded) {
@@ -355,6 +374,40 @@ function getPinetEnvelopeCliText(envelope: PinetDispatcherEnvelope): string {
   return JSON.stringify(envelope, null, 2);
 }
 
+function getPinetEnvelopePreviewText(envelope: PinetDispatcherEnvelope): string {
+  const text = getEnvelopeDataText(envelope) ?? getPinetEnvelopeCliText(envelope);
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return firstLine ?? (envelope.status === "succeeded" ? "(no output)" : "Pinet action failed");
+}
+
+function getPinetEnvelopeCollapsedText(envelope: PinetDispatcherEnvelope): string {
+  const title = getPinetToolResultTitle(envelope);
+  const preview = truncateText(
+    getPinetEnvelopePreviewText(envelope),
+    PINET_TOOL_RESULT_PREVIEW_MAX_LENGTH,
+  );
+  const fullText = JSON.stringify(envelope, null, 2);
+  const stats =
+    fullText.length > PINET_TOOL_RESULT_PREVIEW_MAX_LENGTH || fullText.includes("\n")
+      ? ` (${fullText.split("\n").length} lines, ${fullText.length} chars)`
+      : "";
+  return `${title}${stats}\n${preview}\nCtrl+O to expand full Pinet tool result`;
+}
+
+function shouldCollapsePinetEnvelopeContent(
+  envelope: PinetDispatcherEnvelope,
+  output: PinetOutputOptions,
+): boolean {
+  return (
+    output.format === "json" ||
+    output.full ||
+    getPinetEnvelopeCliText(envelope).length > PINET_TOOL_RESULT_PREVIEW_MAX_LENGTH
+  );
+}
+
 function wrapDispatcherEnvelope(
   envelope: PinetDispatcherEnvelope,
   output: PinetOutputOptions = { format: "json", full: true },
@@ -362,14 +415,14 @@ function wrapDispatcherEnvelope(
   content: Array<{ type: "text"; text: string }>;
   details: PinetDispatcherEnvelope;
 } {
+  const text = shouldCollapsePinetEnvelopeContent(envelope, output)
+    ? getPinetEnvelopeCollapsedText(envelope)
+    : getPinetEnvelopeCliText(envelope);
   return {
     content: [
       {
         type: "text",
-        text:
-          output.format === "json"
-            ? JSON.stringify(envelope, null, 2)
-            : getPinetEnvelopeCliText(envelope),
+        text,
       },
     ],
     details: envelope,
