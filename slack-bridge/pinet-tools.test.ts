@@ -6,11 +6,19 @@ import {
   type RegisterPinetToolsDeps,
 } from "./pinet-tools.js";
 
+type RenderedComponent = {
+  render(width: number): string[];
+};
+
 type ToolDefinition = {
   name: string;
   promptSnippet?: string;
   parameters?: unknown;
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
+  renderResult?: (
+    result: unknown,
+    options: { expanded?: boolean; isPartial?: boolean },
+  ) => RenderedComponent;
 };
 
 function makeAgent(overrides: Partial<PinetToolsAgentRecord> = {}): PinetToolsAgentRecord {
@@ -589,5 +597,25 @@ describe("registerPinetTools", () => {
     expect(result.details.data.details.agents[0]?.metadata).toBeUndefined();
     expect(result.details.data.details.hint.repo).toBe("extensions");
     expect(result.details.data.compact_details).toBeUndefined();
+  });
+
+  it("renders direct pinet tool results collapsed by default and expandable", async () => {
+    const tools = registerWithDeps(createDeps());
+    const pinet = tools.get("pinet");
+
+    const result = await pinet?.execute("tool-call-json-result", {
+      action: "agents",
+      args: { format: "json", full: true },
+    });
+
+    const collapsed = pinet?.renderResult?.(result, { expanded: false }).render(300).join("\n");
+    const expanded = pinet?.renderResult?.(result, { expanded: true }).render(300).join("\n");
+
+    expect(collapsed).toContain("[Pinet] ✓ agents");
+    expect(collapsed).toContain("Ctrl+O to expand full Pinet tool result");
+    expect(collapsed).toContain("Golden Chalk Rabbit");
+    expect(collapsed).not.toContain('"lastHeartbeat"');
+    expect(expanded).toContain('"lastHeartbeat"');
+    expect(expanded).toContain('"status": "succeeded"');
   });
 });

@@ -139,6 +139,30 @@ const PINET_OUTPUT_OPTION_PARAMETERS = {
   ),
 };
 
+const PINET_TOOL_RESULT_PREVIEW_MAX_LENGTH = 240;
+
+interface PinetToolRenderOptions {
+  expanded?: boolean;
+  isPartial?: boolean;
+}
+
+interface PinetToolResultComponent {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+class PinetToolResultCardComponent implements PinetToolResultComponent {
+  constructor(private readonly text: string) {}
+
+  render(width: number): string[] {
+    return this.text.split("\n").map((line) => truncateLineToWidth(line, width));
+  }
+
+  invalidate(): void {
+    // Stateless component.
+  }
+}
+
 function getRecordString(
   record: Record<string, unknown> | null | undefined,
   key: string,
@@ -182,6 +206,91 @@ function getErrorMessage(error: unknown): string {
   } catch {
     return String(error);
   }
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const collapsed = collapseWhitespace(value);
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function truncateLineToWidth(value: string, width: number): string {
+  if (width <= 0) return "";
+  if (value.length <= width) return value;
+  if (width === 1) return "…";
+  return `${value.slice(0, width - 1)}…`;
+}
+
+function getTextContent(result: unknown): string {
+  if (!isRecord(result) || !Array.isArray(result.content)) return "";
+  return result.content
+    .filter((block): block is { type: string; text: string } => {
+      if (!isRecord(block)) return false;
+      return block.type === "text" && typeof block.text === "string";
+    })
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function readDispatcherEnvelope(value: unknown): PinetDispatcherEnvelope | null {
+  if (!isRecord(value)) return null;
+  const { status, data, errors, warnings } = value;
+  if (status !== "succeeded" && status !== "failed") return null;
+  if (!Array.isArray(errors) || !Array.isArray(warnings)) return null;
+  return { status, data, errors: [], warnings: [] };
+}
+
+function getEnvelopeDataText(envelope: PinetDispatcherEnvelope): string | null {
+  if (!isRecord(envelope.data)) return null;
+  return typeof envelope.data.text === "string" && envelope.data.text.trim()
+    ? envelope.data.text
+    : null;
+}
+
+function getEnvelopeAction(envelope: PinetDispatcherEnvelope): string | null {
+  if (!isRecord(envelope.data)) return null;
+  return typeof envelope.data.action === "string" && envelope.data.action.trim()
+    ? envelope.data.action
+    : null;
+}
+
+function getPinetToolResultTitle(envelope: PinetDispatcherEnvelope | null): string {
+  if (!envelope) return "[Pinet] Tool result";
+  const status = envelope.status === "succeeded" ? "✓" : "✗";
+  const action = getEnvelopeAction(envelope);
+  return action ? `[Pinet] ${status} ${action}` : `[Pinet] ${status} result`;
+}
+
+function renderPinetToolResult(
+  result: unknown,
+  options: PinetToolRenderOptions,
+): PinetToolResultComponent {
+  const envelope = isRecord(result) ? readDispatcherEnvelope(result.details) : null;
+  const fullText = getTextContent(result) || (envelope ? JSON.stringify(envelope, null, 2) : "");
+  const title = getPinetToolResultTitle(envelope);
+
+  if (options.expanded) {
+    return new PinetToolResultCardComponent(`${title}\n\n${fullText}`.trimEnd());
+  }
+
+  const previewSource = envelope ? (getEnvelopeDataText(envelope) ?? fullText) : fullText;
+  const preview = truncateText(
+    previewSource || "(no output)",
+    PINET_TOOL_RESULT_PREVIEW_MAX_LENGTH,
+  );
+  const lineCount = fullText.length === 0 ? 0 : fullText.split("\n").length;
+  const stats =
+    lineCount > 1 || fullText.length > PINET_TOOL_RESULT_PREVIEW_MAX_LENGTH
+      ? ` (${lineCount} lines, ${fullText.length} chars)`
+      : "";
+  const partial = options.isPartial ? "Running…\n" : "";
+  return new PinetToolResultCardComponent(
+    `${partial}${title}${stats}\n${preview}\nCtrl+O to expand full Pinet tool result`,
+  );
 }
 
 function classifyPinetError(message: string): PinetDispatcherError {
@@ -771,6 +880,9 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
         }),
       ),
     }),
+    renderResult(result: unknown, options: PinetToolRenderOptions) {
+      return renderPinetToolResult(result, options);
+    },
     async execute(toolCallId, params) {
       let normalizedAction: PinetDispatcherAction;
       try {
