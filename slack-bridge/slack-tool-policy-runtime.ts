@@ -4,7 +4,8 @@ import { evaluateSlackOriginRepoToolPolicy } from "./repo-tool-guardrails.js";
 import { isBrokerForbiddenTool, type SecurityGuardrails } from "./guardrails.js";
 import {
   consumePendingSlackToolPolicyTurn,
-  deliverTrackedSlackFollowUpMessage as trackAndDeliverSlackFollowUpMessage,
+  enqueuePendingSlackToolPolicyTurn,
+  removePendingSlackToolPolicyTurn,
   type PendingSlackToolPolicyTurn,
 } from "./slack-turn-guardrails.js";
 
@@ -43,12 +44,20 @@ export function createSlackToolPolicyRuntime(
     prompt: string;
     messages: Pick<InboxMessage, "threadTs">[];
   }): boolean {
-    return trackAndDeliverSlackFollowUpMessage({
-      queue: pendingSlackToolPolicyTurns,
-      prompt: options.prompt,
-      messages: options.messages,
-      deliver: deps.deliverFollowUpMessage,
-    });
+    const entry = enqueuePendingSlackToolPolicyTurn(
+      pendingSlackToolPolicyTurns,
+      options.prompt,
+      options.messages,
+    );
+
+    if (deps.deliverFollowUpMessage(options.prompt)) {
+      removePendingSlackToolPolicyTurn(pendingSlackToolPolicyTurns, entry);
+      nextSlackToolPolicyTurn = entry;
+      return true;
+    }
+
+    removePendingSlackToolPolicyTurn(pendingSlackToolPolicyTurns, entry);
+    return false;
   }
 
   async function onInput(event: { source?: string; text: string }): Promise<void> {
@@ -56,10 +65,10 @@ export function createSlackToolPolicyRuntime(
       return;
     }
 
-    nextSlackToolPolicyTurn = consumePendingSlackToolPolicyTurn(
-      pendingSlackToolPolicyTurns,
-      event.text,
-    );
+    const consumedTurn = consumePendingSlackToolPolicyTurn(pendingSlackToolPolicyTurns, event.text);
+    if (consumedTurn) {
+      nextSlackToolPolicyTurn = consumedTurn;
+    }
   }
 
   async function onTurnStart(): Promise<void> {

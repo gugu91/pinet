@@ -68,6 +68,10 @@ import { createSlackRequestRuntime } from "./slack-request-runtime.js";
 import { createPinetRegistrationGate } from "./pinet-registration-gate.js";
 import { createBrokerRuntimeAccess } from "./broker-runtime-access.js";
 import { createInboxDrainRuntime } from "./inbox-drain-runtime.js";
+import {
+  registerPinetDeliveryMessageRenderer,
+  sendPinetDeliveryMessage,
+} from "./pinet-delivery-card.js";
 import { createAgentCompletionRuntime } from "./agent-completion-runtime.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 import {
@@ -84,6 +88,8 @@ import {
 // Settings and helpers imported from ./helpers.js
 
 export default function (pi: ExtensionAPI) {
+  registerPinetDeliveryMessageRenderer(pi);
+
   let settings = loadSettingsFromFile();
 
   let botToken = settings.botToken ?? process.env.SLACK_BOT_TOKEN;
@@ -213,7 +219,7 @@ export default function (pi: ExtensionAPI) {
   }) => boolean = () => false;
   const inboxDrainRuntime = createInboxDrainRuntime({
     sendUserMessage: (body) => {
-      pi.sendUserMessage(body);
+      sendPinetDeliveryMessage(pi, body);
     },
     isIdle: () => sessionUiRuntime.getExtensionContext()?.isIdle?.() ?? true,
     takeInboxMessages: (maxMessages) => inbox.splice(0, maxMessages ?? inbox.length),
@@ -503,7 +509,7 @@ export default function (pi: ExtensionAPI) {
     getActiveBrokerSelfId,
     isIdle: () => sessionUiRuntime.getExtensionContext()?.isIdle?.() ?? true,
     sendUserMessage: (body) => {
-      pi.sendUserMessage(body);
+      sendPinetDeliveryMessage(pi, body);
     },
   });
   const { sendBrokerMaintenanceMessage, trySendBrokerFollowUp } = pinetMaintenanceDelivery;

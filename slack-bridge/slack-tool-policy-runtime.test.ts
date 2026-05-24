@@ -65,6 +65,33 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(requireToolPolicy).toHaveBeenCalledTimes(1);
   });
 
+  it("tracks a delivered Slack follow-up turn even when custom-message delivery emits no input event", async () => {
+    const { deps, requireToolPolicy } = createDeps({
+      getGuardrails: () => ({ requireConfirmation: ["read"] }),
+    });
+    const runtime = createSlackToolPolicyRuntime(deps);
+
+    expect(
+      runtime.deliverTrackedSlackFollowUpMessage({
+        prompt: "custom slack prompt",
+        messages: [{ threadTs: "100.1" }],
+      }),
+    ).toBe(true);
+    await runtime.onTurnStart();
+
+    await expect(
+      runtime.onToolCall({
+        toolName: "read",
+        input: { path: "plans/440.md" },
+      }),
+    ).resolves.toBeUndefined();
+    expect(requireToolPolicy).toHaveBeenCalledWith(
+      "read",
+      "100.1",
+      "path=plans/440.md | offset= | limit=",
+    );
+  });
+
   it("ignores non-extension input and rolls back undelivered turns", async () => {
     const { deps, requireToolPolicy } = createDeps({
       getGuardrails: () => ({ requireConfirmation: ["read"] }),

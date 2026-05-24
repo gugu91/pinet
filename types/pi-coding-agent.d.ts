@@ -46,6 +46,15 @@ declare module "@mariozechner/pi-coding-agent" {
     sessionManager: SessionManager;
   }
 
+  export interface CustomMessage<T = unknown> {
+    role: "custom";
+    customType: string;
+    content: string | Array<Record<string, unknown>>;
+    display: boolean;
+    details?: T;
+    timestamp?: number;
+  }
+
   export interface ToolUpdate {
     content?: Array<{ type: string; text?: string }>;
     details?: any;
@@ -86,7 +95,10 @@ declare module "@mariozechner/pi-coding-agent" {
       content: string | Array<Record<string, unknown>>,
       options?: { deliverAs?: string },
     ): void;
-    sendMessage(message: any): void;
+    sendMessage(
+      message: Pick<CustomMessage, "customType" | "content" | "display" | "details">,
+      options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+    ): void;
     appendEntry(customType: string, data?: unknown): void;
   }
 }
