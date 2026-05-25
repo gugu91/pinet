@@ -466,6 +466,8 @@ Use the dispatcher for Pinet tool actions: `pinet action=send`, `pinet action=re
 
 Worker subtree support is staged behind real broker-connected followers. Broker registration now stores typed hierarchy metadata (`parentAgentId`, `rootAgentId`, `treeDepth`, `supervisionState`, `launchId`, `subtreeRole`, `laneId`) so a parent worker can supervise child workers over private A2A while the main broker remains globally observable. `pinet action=agents args.scope=children|subtree args.parent_agent=<id> full=true` inspects a subtree. `pinet action=spawn` currently validates a child task request and returns the `missing_broker_connected_worker_launcher` blocker until the #406 launcher/bootstrap path can start a real follower with `PINET_PARENT_AGENT_ID`, `PINET_LAUNCH_ID`, and related hierarchy env.
 
+A worker can also become a local subtree broker with `/pinet subtree start` (alias: `/pinet subbroker start`) while it remains a follower of the central broker. This starts a separate broker socket/database under `~/.pi/pinet-subtrees/<worker>/` and prints the child follower environment, including `PINET_SOCKET_PATH`. Child workers launched with that environment follow the worker's subtree broker rather than the central Pinet broker, so their reports flow to the supervising worker. Use `/pinet subtree status` to show the active paths and `/pinet subtree stop` to tear the subtree broker down.
+
 Dispatcher content defaults to terse CLI-style confirmations/summaries for noisy reads, sends, and agent lists. In default CLI mode, bulky read/agent payloads are also compacted in `data.details` so tool renderers do not surface full message bodies or agent metadata by accident. Pass `args.format="json"` (or `args.f` / `args["-f"]`) for the dispatcher envelope in content with full structured `data.details`, or `args.full=true` / `args["--full"]=true` for verbose text with full structured `data.details`.
 
 Durable Pinet inbox notifications are classified as `steering`, `fwup`, or `maintenance/context` from explicit metadata or message cues. Follower prompts receive compact pointers such as `pinet action=read args.thread_id=...` instead of the full durable message body; agents use `pinet action=read` to retrieve the actual context. Delivery, read/ack state, and mail classification remain separate.
@@ -493,6 +495,7 @@ Use `/pinet <action> [args]` for mesh lifecycle and broker operations.
 | `/pinet exit <agent>`                 | Ask another agent to exit                                                     |
 | `/pinet free`                         | Mark this agent as idle                                                       |
 | `/pinet snooze [duration/off/status]` | Quiet empty RALPH cycles while preserving human-triggered wake/route behavior |
+| `/pinet subtree [start/status/stop]`  | Run this worker as a local subtree broker for child followers                 |
 
 ### Pinet skins
 

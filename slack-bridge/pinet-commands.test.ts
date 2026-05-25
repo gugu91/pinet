@@ -89,11 +89,36 @@ function createDeps(overrides: Partial<PinetCommandsDeps> = {}): PinetCommandsDe
     getBrokerControlPlaneHomeTabViewerIds: () => [],
     lastBrokerControlPlaneHomeTabRefreshAt: () => null,
     lastBrokerControlPlaneHomeTabError: () => null,
+    subtreeBrokerStatus: () => ({
+      active: false,
+      selfAgentId: null,
+      startedAt: null,
+      paths: null,
+      childLaunchEnv: {},
+      childLaunchHint: null,
+    }),
     getPinetRegistrationBlockReason: () => "blocked",
     connectAsBroker: async () => {},
     connectAsFollower: async () => {},
     reloadPinetRuntime: async () => {},
     disconnectFollower: async () => ({ unregisterError: null }),
+    startSubtreeBroker: async () => ({
+      active: true,
+      selfAgentId: "subbroker-worker-1",
+      startedAt: "2026-05-25T22:00:00.000Z",
+      paths: {
+        rootDir: "/tmp/pinet-subtrees/worker-1",
+        socketPath: "/tmp/pinet-subtrees/worker-1/pinet.sock",
+        dbPath: "/tmp/pinet-subtrees/worker-1/pinet-broker.db",
+        lockPath: "/tmp/pinet-subtrees/worker-1/pinet-broker.lock",
+      },
+      childLaunchEnv: {
+        PINET_SOCKET_PATH: "/tmp/pinet-subtrees/worker-1/pinet.sock",
+        PINET_PARENT_AGENT_ID: "subbroker-worker-1",
+      },
+      childLaunchHint: "PINET_SOCKET_PATH=/tmp/pinet-subtrees/worker-1/pinet.sock pi",
+    }),
+    stopSubtreeBroker: async () => {},
     sendPinetAgentMessage: async (target) => ({ messageId: 1, target }),
     signalAgentFree: async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }),
     applyLocalAgentIdentity: () => {},
@@ -199,6 +224,57 @@ describe("registerPinetCommands", () => {
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("RALPH snooze: off"), "info");
   });
 
+  it("starts a subtree broker from a follower without leaving central follower mode", async () => {
+    const startSubtreeBroker = vi.fn(createDeps().startSubtreeBroker);
+    const commands = registerCommands(
+      createDeps({
+        runtimeMode: () => "follower",
+        brokerRole: () => "follower",
+        startSubtreeBroker,
+      }),
+    );
+    const { ctx, notify } = createContext();
+
+    await commands.get("pinet")?.handler("subtree start", ctx);
+
+    expect(startSubtreeBroker).toHaveBeenCalledWith(ctx);
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("Subtree broker: running"), "info");
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringContaining("PINET_SOCKET_PATH=/tmp/pinet-subtrees/worker-1/pinet.sock"),
+      "info",
+    );
+  });
+
+  it("rejects subtree broker start unless this session is a follower", async () => {
+    const startSubtreeBroker = vi.fn(createDeps().startSubtreeBroker);
+    const commands = registerCommands(
+      createDeps({ runtimeMode: () => "broker", startSubtreeBroker }),
+    );
+    const { ctx, notify } = createContext();
+
+    await commands.get("pinet")?.handler("subtree start", ctx);
+
+    expect(startSubtreeBroker).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringContaining("requires this session to be running as a Pinet worker/follower"),
+      "warning",
+    );
+  });
+
+  it("stops a running subtree broker from the unified command", async () => {
+    const stopSubtreeBroker = vi.fn(async () => {});
+    const commands = registerCommands(createDeps({ stopSubtreeBroker }));
+    const { ctx, notify } = createContext();
+
+    await commands.get("pinet")?.handler("subtree stop", ctx);
+
+    expect(stopSubtreeBroker).toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      "Subtree broker stopped. Child followers should be stopped or re-pointed.",
+      "info",
+    );
+  });
+
   it("runs free from the unified command and rejects removed skin action", async () => {
     const signalAgentFree = vi.fn(async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }));
     const commands = registerCommands(createDeps({ signalAgentFree }));
@@ -229,6 +305,7 @@ describe("formatPinetCommandHelp", () => {
     expect(help).toContain("/pinet exit <agent>");
     expect(help).toContain("/pinet free");
     expect(help).toContain("/pinet snooze [duration|off|status]");
+    expect(help).toContain("/pinet subtree [start|status|stop]");
     expect(help).not.toContain("/pinet skin <theme>");
   });
 });

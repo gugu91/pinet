@@ -76,6 +76,7 @@ import { createSlackRequestRuntime } from "./slack-request-runtime.js";
 import { createPinetRegistrationGate } from "./pinet-registration-gate.js";
 import { createBrokerRuntimeAccess } from "./broker-runtime-access.js";
 import { createInboxDrainRuntime } from "./inbox-drain-runtime.js";
+import { createSubtreeBrokerRuntime } from "./subtree-broker-runtime.js";
 import { createAgentCompletionRuntime } from "./agent-completion-runtime.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 import { SlackThreadStatusManager } from "./slack-thread-status.js";
@@ -525,6 +526,24 @@ export default function (pi: ExtensionAPI) {
     formatError: msg,
   });
   const { requestRemoteControl, runRemoteControl, resetRemoteControlState } = pinetRemoteControl;
+  const subtreeBrokerRuntime = createSubtreeBrokerRuntime({
+    cwd: process.cwd(),
+    getSettings: () => settings,
+    getAgentStableId: () => agentStableId,
+    getCentralAgentId: () => brokerClient?.client.getRegisteredIdentity()?.agentId ?? null,
+    getAgentIdentity: () => ({ name: agentName, emoji: agentEmoji }),
+    getAgentMetadata,
+    getMeshRoleFromMetadata: (metadata, fallbackRole) =>
+      getMeshRoleFromMetadata(metadata, fallbackRole),
+    pushInboxMessages: (messages) => {
+      inbox.push(...messages);
+    },
+    updateBadge,
+    maybeDrainInboxIfIdle,
+    requestRemoteControl,
+    runRemoteControl,
+    formatError: msg,
+  });
   const pinetActivityFormatting = createPinetActivityFormatting({
     getActiveBrokerDb,
   });
@@ -996,6 +1015,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (brokerRole === "follower" && brokerClient?.client) {
+      const subtreeResult = subtreeBrokerRuntime.readInbox(options);
+      if (subtreeResult && (subtreeResult.messages.length > 0 || Boolean(options.threadId))) {
+        return consumePinetReadConfirmationReplies(subtreeResult, consumeConfirmationReply);
+      }
       const result = await brokerClient.client.readInbox(options);
       return consumePinetReadConfirmationReplies(result, consumeConfirmationReply);
     }
@@ -1052,6 +1075,7 @@ export default function (pi: ExtensionAPI) {
     options: { releaseIdentity: boolean },
   ): Promise<void> {
     flushPersist();
+    await subtreeBrokerRuntime.stop({ releaseIdentity: options.releaseIdentity });
     await brokerRuntime.disconnect({ releaseIdentity: options.releaseIdentity });
 
     if (brokerClient) {
@@ -1449,11 +1473,14 @@ export default function (pi: ExtensionAPI) {
       getBrokerControlPlaneHomeTabViewerIds,
       lastBrokerControlPlaneHomeTabRefreshAt: () => brokerRuntime.getLastHomeTabRefreshAt(),
       lastBrokerControlPlaneHomeTabError: () => brokerRuntime.getLastHomeTabError(),
+      subtreeBrokerStatus: () => subtreeBrokerRuntime.getStatus(),
       getPinetRegistrationBlockReason: pinetRegistrationGate.getBlockReason,
       connectAsBroker: (ctx) => transitionToRuntimeMode(ctx, "broker"),
       connectAsFollower: (ctx) => transitionToRuntimeMode(ctx, "follower"),
       reloadPinetRuntime,
       disconnectFollower,
+      startSubtreeBroker: (ctx) => subtreeBrokerRuntime.start(ctx),
+      stopSubtreeBroker: () => subtreeBrokerRuntime.stop({ releaseIdentity: true }),
       sendPinetAgentMessage,
       signalAgentFree,
       applyLocalAgentIdentity,
