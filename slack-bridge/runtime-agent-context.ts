@@ -403,6 +403,7 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
 
     const skinAssignment = resolveSkinAssignment(role, getIdentitySeedForRole(role));
     const brokerManaged = role === "worker" && process.env.PINET_BROKER_MANAGED === "1";
+    const parentAgentId = process.env.PINET_PARENT_AGENT_ID?.trim() || undefined;
     const brokerManagedMetadata = brokerManaged
       ? {
           brokerManaged: true,
@@ -410,6 +411,24 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
           launchSource: process.env.PINET_LAUNCH_SOURCE?.trim() || "broker-tmux",
           tmuxSession: process.env.PINET_TMUX_SESSION?.trim() || undefined,
           brokerManagedAt: new Date().toISOString(),
+          ...(parentAgentId ? { parentAgentId, pinetParentAgentId: parentAgentId } : {}),
+          ...(process.env.PINET_ROOT_AGENT_ID?.trim()
+            ? { rootAgentId: process.env.PINET_ROOT_AGENT_ID.trim() }
+            : {}),
+          ...(process.env.PINET_SPAWNED_BY_AGENT_ID?.trim()
+            ? { spawnedByAgentId: process.env.PINET_SPAWNED_BY_AGENT_ID.trim() }
+            : parentAgentId
+              ? { spawnedByAgentId: parentAgentId }
+              : {}),
+          ...(process.env.PINET_LAUNCH_ID?.trim()
+            ? { launchId: process.env.PINET_LAUNCH_ID.trim() }
+            : {}),
+          ...(process.env.PINET_SUBTREE_ROLE?.trim()
+            ? { subtreeRole: process.env.PINET_SUBTREE_ROLE.trim() }
+            : {}),
+          ...(process.env.PINET_LANE_ID?.trim()
+            ? { laneId: process.env.PINET_LANE_ID.trim() }
+            : {}),
         }
       : {};
 

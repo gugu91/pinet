@@ -936,6 +936,12 @@ export interface AgentDisplayInfo {
     launchSource?: string;
     tmuxSession?: string;
     brokerManagedAt?: string;
+    parentAgentId?: string;
+    rootAgentId?: string;
+    treeDepth?: number;
+    supervisionState?: string;
+    subtreeRole?: string;
+    laneId?: string;
     skinTheme?: string;
     personality?: string;
     skinStatusVocabulary?: PinetSkinStatusVocabulary;
@@ -976,6 +982,12 @@ export interface AgentVisibilityInput {
   lastActivity?: string | null;
   outboundCount?: number | null;
   pendingInboxCount?: number | null;
+  parentAgentId?: string | null;
+  rootAgentId?: string | null;
+  treeDepth?: number;
+  supervisionState?: string;
+  subtreeRole?: string | null;
+  laneId?: string | null;
 }
 
 export interface AgentVisibilityOptions {
@@ -1241,8 +1253,17 @@ export function buildAgentDisplayInfo(
   }
 
   const metadata = asRecord(agent.metadata);
+  const hasHierarchyMetadata = Boolean(
+    agent.parentAgentId ||
+    agent.rootAgentId ||
+    typeof agent.treeDepth === "number" ||
+    agent.supervisionState ||
+    agent.subtreeRole ||
+    agent.laneId,
+  );
   const capabilities = extractAgentCapabilities(metadata);
   const capabilityTags = buildAgentCapabilityTags(capabilities);
+  const displayMetadata = metadata ?? {};
 
   const idleSinceMs = parseIsoMs(agent.idleSince);
   const lastActivityMs = parseIsoMs(agent.lastActivity);
@@ -1255,39 +1276,46 @@ export function buildAgentDisplayInfo(
     id: agent.id,
     ...(agent.pid != null ? { pid: agent.pid } : {}),
     status: agent.status,
-    metadata: metadata
-      ? {
-          cwd: asString(metadata.cwd),
-          branch: asString(metadata.branch),
-          ...(metadata.workdirDirty === true ? { workdirDirty: true } : {}),
-          ...(typeof metadata.workdirDirtyFileCount === "number"
-            ? { workdirDirtyFileCount: metadata.workdirDirtyFileCount }
-            : {}),
-          ...(metadata.gitProbeFailed === true ? { gitProbeFailed: true } : {}),
-          ...(asString(metadata.gitProbedAt)
-            ? { gitProbedAt: asString(metadata.gitProbedAt) }
-            : {}),
-          host: asString(metadata.host),
-          repo: asString(metadata.repo) ?? capabilities.repo,
-          role: asString(metadata.role) ?? capabilities.role,
-          brokerManaged: metadata.brokerManaged === true,
-          brokerManagedBy: asString(metadata.brokerManagedBy),
-          launchSource: asString(metadata.launchSource),
-          tmuxSession: asString(metadata.tmuxSession),
-          brokerManagedAt: asString(metadata.brokerManagedAt),
-          skinTheme: asString(metadata.skinTheme),
-          personality: asString(metadata.personality),
-          ...(extractPinetSkinStatusVocabulary(metadata.skinStatusVocabulary)
-            ? {
-                skinStatusVocabulary: extractPinetSkinStatusVocabulary(
-                  metadata.skinStatusVocabulary,
-                ),
-              }
-            : {}),
-          ...(capabilities.scope ? { scope: capabilities.scope } : {}),
-          capabilities,
-        }
-      : null,
+    metadata:
+      metadata || hasHierarchyMetadata
+        ? {
+            cwd: asString(displayMetadata.cwd),
+            branch: asString(displayMetadata.branch),
+            ...(displayMetadata.workdirDirty === true ? { workdirDirty: true } : {}),
+            ...(typeof displayMetadata.workdirDirtyFileCount === "number"
+              ? { workdirDirtyFileCount: displayMetadata.workdirDirtyFileCount }
+              : {}),
+            ...(displayMetadata.gitProbeFailed === true ? { gitProbeFailed: true } : {}),
+            ...(asString(displayMetadata.gitProbedAt)
+              ? { gitProbedAt: asString(displayMetadata.gitProbedAt) }
+              : {}),
+            host: asString(displayMetadata.host),
+            repo: asString(displayMetadata.repo) ?? capabilities.repo,
+            role: asString(displayMetadata.role) ?? capabilities.role,
+            brokerManaged: displayMetadata.brokerManaged === true,
+            brokerManagedBy: asString(displayMetadata.brokerManagedBy),
+            launchSource: asString(displayMetadata.launchSource),
+            tmuxSession: asString(displayMetadata.tmuxSession),
+            brokerManagedAt: asString(displayMetadata.brokerManagedAt),
+            parentAgentId: agent.parentAgentId ?? asString(displayMetadata.parentAgentId),
+            rootAgentId: agent.rootAgentId ?? asString(displayMetadata.rootAgentId),
+            ...(typeof agent.treeDepth === "number" ? { treeDepth: agent.treeDepth } : {}),
+            supervisionState: agent.supervisionState,
+            subtreeRole: agent.subtreeRole ?? asString(displayMetadata.subtreeRole),
+            laneId: agent.laneId ?? asString(displayMetadata.laneId),
+            skinTheme: asString(displayMetadata.skinTheme),
+            personality: asString(displayMetadata.personality),
+            ...(extractPinetSkinStatusVocabulary(displayMetadata.skinStatusVocabulary)
+              ? {
+                  skinStatusVocabulary: extractPinetSkinStatusVocabulary(
+                    displayMetadata.skinStatusVocabulary,
+                  ),
+                }
+              : {}),
+            ...(capabilities.scope ? { scope: capabilities.scope } : {}),
+            capabilities,
+          }
+        : null,
     lastHeartbeat: agent.lastHeartbeat,
     leaseExpiresAt: computedLeaseExpiresAt,
     heartbeatAgeMs,
@@ -2549,6 +2577,18 @@ export function formatAgentList(agents: AgentDisplayInfo[], homedir: string): st
         const host = meta.host ? ` @ ${meta.host}` : "";
         const probe = meta.gitProbeFailed ? " [git probe failed]" : "";
         line += `\n   ${cwd}${branch}${host}${probe}`;
+      }
+
+      if (meta?.parentAgentId || meta?.supervisionState === "orphaned") {
+        const hierarchy = [
+          meta.parentAgentId ? `parent=${meta.parentAgentId}` : null,
+          meta.rootAgentId ? `root=${meta.rootAgentId}` : null,
+          typeof meta.treeDepth === "number" ? `depth=${meta.treeDepth}` : null,
+          meta.supervisionState ? `state=${meta.supervisionState}` : null,
+          meta.subtreeRole ? `role=${meta.subtreeRole}` : null,
+          meta.laneId ? `lane=${meta.laneId}` : null,
+        ].filter((item): item is string => Boolean(item));
+        line += `\n   subtree: ${hierarchy.join(" · ")}`;
       }
 
       if (meta?.brokerManaged) {

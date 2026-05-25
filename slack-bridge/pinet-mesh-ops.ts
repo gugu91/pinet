@@ -26,6 +26,12 @@ export interface PinetMeshOpsAgentRecord {
   resumableUntil?: string | null;
   outboundCount?: number;
   pendingInboxCount?: number;
+  parentAgentId?: string | null;
+  rootAgentId?: string | null;
+  treeDepth?: number;
+  supervisionState?: string;
+  subtreeRole?: string | null;
+  laneId?: string | null;
 }
 
 export interface PinetMeshOpsRecordedAssignment {
@@ -210,6 +216,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         target: targetRef,
         body: finalBody,
         metadata: finalMetadata,
+        trustedBrokerAgentId: selfId,
       });
 
       if (transferThreadId) {
@@ -371,6 +378,12 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       resumableUntil: agent.resumableUntil,
       outboundCount: agent.outboundCount,
       pendingInboxCount: db.getPendingInboxCount(agent.id),
+      parentAgentId: agent.parentAgentId,
+      rootAgentId: agent.rootAgentId,
+      treeDepth: agent.treeDepth,
+      supervisionState: agent.supervisionState,
+      subtreeRole: agent.subtreeRole,
+      laneId: agent.laneId,
     }));
   }
 
@@ -393,6 +406,12 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       resumableUntil: agent.resumableUntil,
       outboundCount: agent.outboundCount,
       pendingInboxCount: agent.pendingInboxCount,
+      parentAgentId: agent.parentAgentId,
+      rootAgentId: agent.rootAgentId,
+      treeDepth: agent.treeDepth,
+      supervisionState: agent.supervisionState,
+      subtreeRole: agent.subtreeRole,
+      laneId: agent.laneId,
     }));
   }
 

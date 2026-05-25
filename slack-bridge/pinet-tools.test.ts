@@ -1170,6 +1170,47 @@ describe("registerPinetTools", () => {
     expect(listFollowerAgents).toHaveBeenNthCalledWith(2, true);
   });
 
+  it("filters pinet agents by explicit subtree scope and shows hierarchy metadata", async () => {
+    const listBrokerAgents = vi.fn(() => [
+      makeAgent({ id: "parent", name: "Parent" }),
+      makeAgent({
+        id: "child",
+        name: "Child",
+        parentAgentId: "parent",
+        rootAgentId: "parent",
+        treeDepth: 1,
+        supervisionState: "supervised",
+        subtreeRole: "reviewer",
+        laneId: "issue-761",
+      }),
+    ]);
+    const tools = registerWithDeps(createDeps({ listBrokerAgents }));
+
+    const result = (await tools.get("pinet")?.execute("tool-call-agents-children", {
+      action: "agents",
+      args: { scope: "children", parent_agent: "parent", full: true },
+    })) as { details: { data: { text: string; details: { agents: Array<{ id: string }> } } } };
+
+    expect(result.details.data.details.agents.map((agent) => agent.id)).toEqual(["child"]);
+    expect(result.details.data.text).toContain("subtree: parent=parent");
+    expect(result.details.data.text).toContain("role=reviewer");
+  });
+
+  it("validates spawn requests but reports the missing real-follower launcher blocker", async () => {
+    const tools = registerWithDeps(createDeps({ brokerRole: () => "follower" }));
+
+    const result = (await tools.get("pinet")?.execute("tool-call-spawn", {
+      action: "spawn",
+      args: { task: "Review PR #761", repo: "extensions", role: "reviewer", full: true },
+    })) as { details: { data: { text: string; details: { status: string; blocker: string } } } };
+
+    expect(result.details.data.text).toContain("launcher is unavailable");
+    expect(result.details.data.details).toMatchObject({
+      status: "blocked",
+      blocker: "missing_broker_connected_worker_launcher",
+    });
+  });
+
   it("keeps pinet agents default cli details compact", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));

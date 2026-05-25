@@ -609,6 +609,64 @@ describe("BrokerDB", () => {
     expect(agents[0].id).toBe("a1");
   });
 
+  it("registerAgent stores typed Pinet subtree hierarchy metadata", () => {
+    const parent = db.registerAgent("parent", "Parent", "🧭", 100);
+    const child = db.registerAgent("child", "Child", "🪴", 101, {
+      parentAgentId: parent.id,
+      spawnedByAgentId: parent.id,
+      launchId: "launch-1",
+      subtreeRole: "reviewer",
+      laneId: "issue-761",
+    });
+
+    expect(child).toMatchObject({
+      parentAgentId: parent.id,
+      rootAgentId: parent.id,
+      treeDepth: 1,
+      spawnedByAgentId: parent.id,
+      supervisionState: "supervised",
+      launchId: "launch-1",
+      subtreeRole: "reviewer",
+      laneId: "issue-761",
+    });
+    expect(db.getAgentDescendants(parent.id).map((agent) => agent.id)).toEqual(["child"]);
+  });
+
+  it("unregisterAgent orphans descendants and notifies supervised parents when children exit", () => {
+    db.registerAgent("parent", "Parent", "🧭", 100);
+    db.registerAgent("child", "Child", "🪴", 101, { parentAgentId: "parent" });
+    db.registerAgent("grandchild", "Grandchild", "🌱", 102, { parentAgentId: "child" });
+
+    db.unregisterAgent("child");
+
+    expect(db.getAgentById("grandchild")).toMatchObject({
+      parentAgentId: null,
+      supervisionState: "orphaned",
+    });
+    const parentInbox = db.readInbox("parent", { unreadOnly: false, markRead: false });
+    expect(parentInbox.messages[0]?.message.body).toContain("Child worker Child (child) exited");
+    const grandchildInbox = db.readInbox("grandchild", { unreadOnly: false, markRead: false });
+    expect(grandchildInbox.messages[0]?.message.metadata).toMatchObject({
+      lifecycle: "parent_orphaned_child",
+      parentAgentId: "child",
+      childAgentId: "grandchild",
+    });
+  });
+
+  it("rejects dead parents and hierarchy cycles during subtree registration", () => {
+    db.registerAgent("parent", "Parent", "🧭", 100);
+    db.registerAgent("child", "Child", "🪴", 101, { parentAgentId: "parent" });
+
+    expect(() =>
+      db.registerAgent("parent", "Parent", "🧭", 100, { parentAgentId: "child" }),
+    ).toThrow("descendants");
+
+    db.unregisterAgent("parent");
+    expect(() =>
+      db.registerAgent("new-child", "New Child", "🌱", 102, { parentAgentId: "parent" }),
+    ).toThrow("parent parent is not live");
+  });
+
   it("registerAgent upserts on conflict", () => {
     db.registerAgent("a1", "First", "🔵", 100);
     db.registerAgent("a1", "Updated", "🔴", 200);

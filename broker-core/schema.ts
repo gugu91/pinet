@@ -7,6 +7,7 @@ import { getDefaultDbPath } from "./paths.js";
 import type { PinetMailClass } from "./mail-classification.js";
 import type {
   AgentInfo,
+  AgentSupervisionState,
   ThreadInfo,
   BrokerMessage,
   InboxEntry,
@@ -70,6 +71,14 @@ interface AgentRow {
   last_heartbeat: string;
   metadata: string | null;
   status: string;
+  parent_agent_id: string | null;
+  root_agent_id: string | null;
+  tree_depth: number | null;
+  spawned_by_agent_id: string | null;
+  supervision_state: string | null;
+  launch_id: string | null;
+  subtree_role: string | null;
+  lane_id: string | null;
   disconnected_at: string | null;
   resumable_until: string | null;
   idle_since: string | null;
@@ -198,6 +207,14 @@ function rowToAgent(row: AgentRow): AgentInfo {
     lastHeartbeat: row.last_heartbeat,
     metadata: row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : null,
     status: row.status === "working" ? "working" : "idle",
+    parentAgentId: row.parent_agent_id,
+    rootAgentId: row.root_agent_id,
+    treeDepth: row.tree_depth ?? 0,
+    spawnedByAgentId: row.spawned_by_agent_id,
+    supervisionState: normalizeAgentSupervisionState(row.supervision_state),
+    launchId: row.launch_id,
+    subtreeRole: row.subtree_role,
+    laneId: row.lane_id,
     disconnectedAt: row.disconnected_at,
     resumableUntil: row.resumable_until,
     idleSince: row.idle_since,
@@ -462,6 +479,32 @@ function parseMetadataJson(value: string | null): Record<string, unknown> | null
   }
 }
 
+const AGENT_SUPERVISION_STATES = new Set<AgentSupervisionState>([
+  "root",
+  "supervised",
+  "orphaned",
+  "stopping",
+]);
+
+function normalizeAgentSupervisionState(value: unknown): AgentSupervisionState {
+  return typeof value === "string" && AGENT_SUPERVISION_STATES.has(value as AgentSupervisionState)
+    ? (value as AgentSupervisionState)
+    : "root";
+}
+
+function getOptionalMetadataString(
+  metadata: Record<string, unknown> | undefined,
+  keys: string[],
+): string | null {
+  for (const key of keys) {
+    const value = metadata?.[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 function rowToPinetLaneParticipant(row: PinetLaneParticipantRow): PinetLaneParticipantInfo {
   return {
     laneId: row.lane_id,
@@ -634,7 +677,7 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 17;
+export const CURRENT_BROKER_SCHEMA_VERSION = 18;
 
 const REQUIRED_AGENT_LIFECYCLE_COLUMNS = [
   "stable_id",
@@ -831,6 +874,53 @@ function addObservabilityColumns(db: DatabaseSync): void {
     UPDATE agents
     SET idle_since = COALESCE(idle_since, last_seen)
     WHERE status = 'idle' AND idle_since IS NULL;
+  `);
+}
+
+function addAgentHierarchyColumns(db: DatabaseSync): void {
+  ensureColumn(
+    db,
+    "agents",
+    "parent_agent_id",
+    "ALTER TABLE agents ADD COLUMN parent_agent_id TEXT",
+  );
+  ensureColumn(db, "agents", "root_agent_id", "ALTER TABLE agents ADD COLUMN root_agent_id TEXT");
+  ensureColumn(
+    db,
+    "agents",
+    "tree_depth",
+    "ALTER TABLE agents ADD COLUMN tree_depth INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "agents",
+    "spawned_by_agent_id",
+    "ALTER TABLE agents ADD COLUMN spawned_by_agent_id TEXT",
+  );
+  ensureColumn(
+    db,
+    "agents",
+    "supervision_state",
+    "ALTER TABLE agents ADD COLUMN supervision_state TEXT NOT NULL DEFAULT 'root'",
+  );
+  ensureColumn(db, "agents", "launch_id", "ALTER TABLE agents ADD COLUMN launch_id TEXT");
+  ensureColumn(db, "agents", "subtree_role", "ALTER TABLE agents ADD COLUMN subtree_role TEXT");
+  ensureColumn(db, "agents", "lane_id", "ALTER TABLE agents ADD COLUMN lane_id TEXT");
+
+  db.exec(`
+    UPDATE agents
+    SET tree_depth = COALESCE(tree_depth, 0),
+        supervision_state = COALESCE(supervision_state, 'root')
+    WHERE tree_depth IS NULL OR supervision_state IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_agents_parent_agent_id
+      ON agents(parent_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agents_root_agent_id
+      ON agents(root_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agents_supervision_state
+      ON agents(supervision_state, parent_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agents_lane_id
+      ON agents(lane_id);
   `);
 }
 
@@ -1388,6 +1478,9 @@ function runSchemaMigrations(db: DatabaseSync): void {
         case 17:
           migrateTaskAssignmentsToRepoScopedTracking(db);
           break;
+        case 18:
+          addAgentHierarchyColumns(db);
+          break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
       }
@@ -1507,15 +1600,18 @@ export class BrokerDB implements BrokerDBInterface {
         ? (JSON.parse(existingRow.metadata) as Record<string, unknown>)
         : undefined);
     const meta = finalMetadata ? JSON.stringify(finalMetadata) : null;
+    const hierarchy = this.resolveAgentHierarchy(agentId, finalMetadata, existingRow);
 
     db.prepare(
       `INSERT INTO agents (
          id, stable_id, name, emoji, pid,
          connected_at, last_seen, last_heartbeat,
-         metadata, status, disconnected_at, resumable_until,
-         idle_since, last_activity
+         metadata, status,
+         parent_agent_id, root_agent_id, tree_depth, spawned_by_agent_id,
+         supervision_state, launch_id, subtree_role, lane_id,
+         disconnected_at, resumable_until, idle_since, last_activity
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', NULL, NULL, ?, NULL)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)
        ON CONFLICT(id) DO UPDATE SET
          stable_id = COALESCE(excluded.stable_id, agents.stable_id),
          name = excluded.name,
@@ -1526,14 +1622,42 @@ export class BrokerDB implements BrokerDBInterface {
          last_heartbeat = excluded.last_heartbeat,
          metadata = excluded.metadata,
          status = 'idle',
+         parent_agent_id = excluded.parent_agent_id,
+         root_agent_id = excluded.root_agent_id,
+         tree_depth = excluded.tree_depth,
+         spawned_by_agent_id = excluded.spawned_by_agent_id,
+         supervision_state = excluded.supervision_state,
+         launch_id = excluded.launch_id,
+         subtree_role = excluded.subtree_role,
+         lane_id = excluded.lane_id,
          disconnected_at = NULL,
          resumable_until = NULL,
          idle_since = excluded.idle_since,
          last_activity = NULL`,
-    ).run(agentId, persistedStableId, finalName, finalEmoji, pid, now, now, now, meta, now);
+    ).run(
+      agentId,
+      persistedStableId,
+      finalName,
+      finalEmoji,
+      pid,
+      now,
+      now,
+      now,
+      meta,
+      hierarchy.parentAgentId,
+      hierarchy.rootAgentId,
+      hierarchy.treeDepth,
+      hierarchy.spawnedByAgentId,
+      hierarchy.supervisionState,
+      hierarchy.launchId,
+      hierarchy.subtreeRole,
+      hierarchy.laneId,
+      now,
+    );
 
     return {
       id: agentId,
+      stableId: persistedStableId,
       name: finalName,
       emoji: finalEmoji,
       pid,
@@ -1542,8 +1666,84 @@ export class BrokerDB implements BrokerDBInterface {
       lastHeartbeat: now,
       metadata: finalMetadata ?? null,
       status: "idle" as const,
+      parentAgentId: hierarchy.parentAgentId,
+      rootAgentId: hierarchy.rootAgentId,
+      treeDepth: hierarchy.treeDepth,
+      spawnedByAgentId: hierarchy.spawnedByAgentId,
+      supervisionState: hierarchy.supervisionState,
+      launchId: hierarchy.launchId,
+      subtreeRole: hierarchy.subtreeRole,
+      laneId: hierarchy.laneId,
       idleSince: now,
       lastActivity: null,
+    };
+  }
+
+  private resolveAgentHierarchy(
+    agentId: string,
+    metadata: Record<string, unknown> | undefined,
+    existingRow: AgentRow | null | undefined,
+  ): {
+    parentAgentId: string | null;
+    rootAgentId: string | null;
+    treeDepth: number;
+    spawnedByAgentId: string | null;
+    supervisionState: AgentSupervisionState;
+    launchId: string | null;
+    subtreeRole: string | null;
+    laneId: string | null;
+  } {
+    const requestedParentId = getOptionalMetadataString(metadata, [
+      "parentAgentId",
+      "pinetParentAgentId",
+    ]);
+    const parentId = requestedParentId ?? existingRow?.parent_agent_id ?? null;
+    const parent = parentId ? this.getAgentById(parentId) : null;
+
+    if (parentId && (!parent || parent.disconnectedAt)) {
+      throw new Error(`Cannot register supervised Pinet agent; parent ${parentId} is not live.`);
+    }
+    if (parent && parent.id === agentId) {
+      throw new Error("Cannot register a Pinet agent as its own parent.");
+    }
+    if (parent && this.isAgentAncestor(agentId, parent.id)) {
+      throw new Error("Cannot register a Pinet agent under one of its descendants.");
+    }
+
+    const supervisionState = parent
+      ? "supervised"
+      : normalizeAgentSupervisionState(
+          getOptionalMetadataString(metadata, ["supervisionState", "pinetSupervisionState"]) ??
+            existingRow?.supervision_state,
+        );
+    const rootAgentId = parent
+      ? (parent.rootAgentId ?? parent.id)
+      : (getOptionalMetadataString(metadata, ["rootAgentId", "pinetRootAgentId"]) ??
+        existingRow?.root_agent_id ??
+        null);
+    const treeDepth = parent ? (parent.treeDepth ?? 0) + 1 : (existingRow?.tree_depth ?? 0);
+    const spawnedByAgentId =
+      getOptionalMetadataString(metadata, ["spawnedByAgentId", "pinetSpawnedByAgentId"]) ??
+      (parent ? parent.id : (existingRow?.spawned_by_agent_id ?? null));
+
+    return {
+      parentAgentId: parent?.id ?? null,
+      rootAgentId,
+      treeDepth,
+      spawnedByAgentId,
+      supervisionState,
+      launchId:
+        getOptionalMetadataString(metadata, ["launchId", "pinetLaunchId"]) ??
+        existingRow?.launch_id ??
+        null,
+      subtreeRole:
+        getOptionalMetadataString(metadata, ["subtreeRole", "pinetSubtreeRole"]) ??
+        existingRow?.subtree_role ??
+        null,
+      laneId:
+        getOptionalMetadataString(metadata, ["laneId", "pinetLaneId"]) ??
+        existingRow?.lane_id ??
+        null,
     };
   }
 
@@ -1552,6 +1752,7 @@ export class BrokerDB implements BrokerDBInterface {
     const now = new Date().toISOString();
 
     this.withTransaction(() => {
+      const agent = this.getAgentById(id);
       this.requeueUndeliveredMessagesInternal(id, "agent_disconnected");
       db.prepare("DELETE FROM inbox WHERE agent_id = ?").run(id);
       db.prepare("UPDATE agents SET disconnected_at = ?, resumable_until = NULL WHERE id = ?").run(
@@ -1559,6 +1760,10 @@ export class BrokerDB implements BrokerDBInterface {
         id,
       );
       db.prepare("UPDATE threads SET owner_agent = NULL WHERE owner_agent = ?").run(id);
+      if (agent?.parentAgentId) {
+        this.notifyParentOfChildExit(agent, "unregistered");
+      }
+      this.markDescendantsOrphaned(id, "parent_unregistered");
     });
   }
 
@@ -1571,6 +1776,102 @@ export class BrokerDB implements BrokerDBInterface {
       resumableUntil,
       id,
     );
+  }
+
+  private getDirectChildren(parentAgentId: string): AgentInfo[] {
+    const rows = this.getDb()
+      .prepare("SELECT * FROM agents WHERE parent_agent_id = ? ORDER BY connected_at ASC")
+      .all(parentAgentId) as unknown as AgentRow[];
+    return rows.map(rowToAgent);
+  }
+
+  getAgentDescendants(parentAgentId: string, includeDisconnected = false): AgentInfo[] {
+    const descendants: AgentInfo[] = [];
+    const seen = new Set<string>();
+    const queue = this.getDirectChildren(parentAgentId);
+    while (queue.length > 0) {
+      const child = queue.shift();
+      if (!child || seen.has(child.id)) continue;
+      seen.add(child.id);
+      if (includeDisconnected || !child.disconnectedAt) {
+        descendants.push(child);
+      }
+      queue.push(...this.getDirectChildren(child.id));
+    }
+    return descendants;
+  }
+
+  isAgentAncestor(ancestorAgentId: string, descendantAgentId: string): boolean {
+    let current = this.getAgentById(descendantAgentId);
+    const seen = new Set<string>();
+    while (current?.parentAgentId) {
+      if (current.parentAgentId === ancestorAgentId) return true;
+      if (seen.has(current.parentAgentId)) return false;
+      seen.add(current.parentAgentId);
+      current = this.getAgentById(current.parentAgentId);
+    }
+    return false;
+  }
+
+  private notifyParentOfChildExit(agent: AgentInfo, reason: string): void {
+    const parentId = agent.parentAgentId;
+    if (!parentId) return;
+    const parent = this.getAgentById(parentId);
+    if (!parent || parent.disconnectedAt) return;
+    const threadId = `a2a:${agent.id}:${parentId}`;
+    this.createThread(threadId, "agent", `agent:${parentId}`, parentId);
+    this.insertMessage(
+      threadId,
+      "agent",
+      "inbound",
+      agent.id,
+      `Child worker ${agent.name} (${agent.id}) exited: ${reason}.`,
+      [parentId],
+      {
+        a2a: true,
+        senderAgent: agent.name,
+        pinetMailClass: "fwup",
+        subtree: true,
+        childAgentId: agent.id,
+        parentAgentId: parentId,
+        lifecycle: "child_exit",
+        reason,
+      },
+    );
+  }
+
+  private markDescendantsOrphaned(parentAgentId: string, reason: string): void {
+    const descendants = this.getAgentDescendants(parentAgentId, true);
+    if (descendants.length === 0) return;
+    const db = this.getDb();
+    const update = db.prepare(
+      "UPDATE agents SET supervision_state = 'orphaned', parent_agent_id = NULL WHERE id = ?",
+    );
+    for (const child of descendants) {
+      update.run(child.id);
+      if (!child.disconnectedAt) {
+        const threadId = `a2a:${parentAgentId}:${child.id}`;
+        this.createThread(threadId, "agent", `agent:${child.id}`, child.id);
+        this.insertMessage(
+          threadId,
+          "agent",
+          "inbound",
+          parentAgentId,
+          `Parent worker ${parentAgentId} is no longer supervising this subtree (${reason}); this worker is now orphaned and should stop or await broker recovery instructions.`,
+          [child.id],
+          {
+            a2a: true,
+            senderAgent: "Pinet lifecycle",
+            pinetMailClass: "steering",
+            subtree: true,
+            parentAgentId,
+            childAgentId: child.id,
+            lifecycle: "parent_orphaned_child",
+            reason,
+          },
+        );
+      }
+    }
   }
 
   getAgentById(id: string): AgentInfo | null {
@@ -1908,11 +2209,11 @@ export class BrokerDB implements BrokerDBInterface {
     return this.withTransaction(() => {
       const staleRows = db
         .prepare(
-          `SELECT id FROM agents
+          `SELECT * FROM agents
            WHERE (disconnected_at IS NULL AND last_heartbeat <= ?)
               OR (disconnected_at IS NOT NULL AND resumable_until IS NOT NULL AND resumable_until <= ?)`,
         )
-        .all(cutoff, now) as Array<{ id: string }>;
+        .all(cutoff, now) as unknown as AgentRow[];
 
       if (staleRows.length === 0) {
         return [];
@@ -1926,9 +2227,14 @@ export class BrokerDB implements BrokerDBInterface {
       );
 
       for (const row of staleRows) {
+        const agent = rowToAgent(row);
         this.requeueUndeliveredMessagesInternal(row.id, "agent_disconnected");
         disconnectAgent.run(now, row.id);
         releaseClaims.run(row.id);
+        if (agent.parentAgentId) {
+          this.notifyParentOfChildExit(agent, "stale_heartbeat");
+        }
+        this.markDescendantsOrphaned(row.id, "parent_stale");
       }
 
       return staleRows.map((row) => row.id);
@@ -1944,12 +2250,12 @@ export class BrokerDB implements BrokerDBInterface {
     return this.withTransaction(() => {
       const rows = db
         .prepare(
-          `SELECT id FROM agents
+          `SELECT * FROM agents
            WHERE disconnected_at IS NOT NULL
              AND disconnected_at <= ?
              AND (resumable_until IS NULL OR resumable_until <= ?)`,
         )
-        .all(cutoff, nowIso) as Array<{ id: string }>;
+        .all(cutoff, nowIso) as unknown as AgentRow[];
 
       if (rows.length === 0) {
         return [];
@@ -1961,12 +2267,17 @@ export class BrokerDB implements BrokerDBInterface {
       const deleteInbox = db.prepare("DELETE FROM inbox WHERE agent_id = ?");
 
       for (const row of rows) {
+        const agent = rowToAgent(row);
         // Requeue undelivered messages to the backlog
         this.requeueUndeliveredMessagesInternal(row.id, "agent_disconnected");
         // Release thread ownership for the purged agent
         releaseThreads.run(row.id);
         // Clean up all inbox entries (both delivered and undelivered) for the agent
         deleteInbox.run(row.id);
+        if (agent.parentAgentId) {
+          this.notifyParentOfChildExit(agent, "purged");
+        }
+        this.markDescendantsOrphaned(row.id, "parent_purged");
       }
 
       db.prepare(
