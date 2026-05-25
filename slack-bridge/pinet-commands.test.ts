@@ -96,6 +96,8 @@ function createDeps(overrides: Partial<PinetCommandsDeps> = {}): PinetCommandsDe
       paths: null,
       childLaunchEnv: {},
       childLaunchHint: null,
+      childCount: 0,
+      spawnedWorkers: [],
     }),
     getPinetRegistrationBlockReason: () => "blocked",
     connectAsBroker: async () => {},
@@ -117,8 +119,26 @@ function createDeps(overrides: Partial<PinetCommandsDeps> = {}): PinetCommandsDe
         PINET_PARENT_AGENT_ID: "subbroker-worker-1",
       },
       childLaunchHint: "PINET_SOCKET_PATH=/tmp/pinet-subtrees/worker-1/pinet.sock pi",
+      childCount: 0,
+      spawnedWorkers: [],
     }),
     stopSubtreeBroker: async () => {},
+    spawnSubtreeWorker: async (_ctx, input) => ({
+      status: "started",
+      launchId: "launch-1",
+      sessionName: "pinet-extensions-reviewer-launch-1",
+      repoPath: `/tmp/${input.repo}`,
+      role: input.role ?? "subworker",
+      laneId: input.laneId ?? null,
+      agentId: "child-1",
+      agentName: "Child Worker",
+      messageId: 42,
+      threadId: "a2a:subbroker-worker-1:child-1",
+      monitorCommand: "tmux attach -t pinet-extensions-reviewer-launch-1",
+      socketPath: "/tmp/pinet-subtrees/worker-1/pinet.sock",
+      dbPath: "/tmp/pinet-subtrees/worker-1/pinet-broker.db",
+      childLaunchEnv: {},
+    }),
     sendPinetAgentMessage: async (target) => ({ messageId: 1, target }),
     signalAgentFree: async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }),
     applyLocalAgentIdentity: () => {},
@@ -256,7 +276,9 @@ describe("registerPinetCommands", () => {
 
     expect(startSubtreeBroker).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining("requires this session to be running as a Pinet worker/follower"),
+      expect.stringContaining(
+        "operations require this session to be running as a Pinet worker/follower",
+      ),
       "warning",
     );
   });
@@ -270,9 +292,34 @@ describe("registerPinetCommands", () => {
 
     expect(stopSubtreeBroker).toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
-      "Subtree broker stopped. Child followers should be stopped or re-pointed.",
+      "Subtree broker stopped. Spawned child followers were asked to exit.",
       "info",
     );
+  });
+
+  it("spawns a subtree child worker from the unified command", async () => {
+    const spawnSubtreeWorker = vi.fn(createDeps().spawnSubtreeWorker);
+    const commands = registerCommands(
+      createDeps({
+        runtimeMode: () => "follower",
+        brokerRole: () => "follower",
+        spawnSubtreeWorker,
+      }),
+    );
+    const { ctx, notify } = createContext();
+
+    await commands
+      .get("pinet")
+      ?.handler("subtree spawn repo=extensions role=reviewer lane=issue-761 Review PR #761", ctx);
+
+    expect(spawnSubtreeWorker).toHaveBeenCalledWith(ctx, {
+      repo: "extensions",
+      role: "reviewer",
+      laneId: "issue-761",
+      task: "Review PR #761",
+    });
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("Subtree worker started"), "info");
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("child-1"), "info");
   });
 
   it("runs free from the unified command and rejects removed skin action", async () => {
@@ -305,7 +352,7 @@ describe("formatPinetCommandHelp", () => {
     expect(help).toContain("/pinet exit <agent>");
     expect(help).toContain("/pinet free");
     expect(help).toContain("/pinet snooze [duration|off|status]");
-    expect(help).toContain("/pinet subtree [start|status|stop]");
+    expect(help).toContain("/pinet subtree [start|status|spawn|stop]");
     expect(help).not.toContain("/pinet skin <theme>");
   });
 });

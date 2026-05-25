@@ -1,14 +1,22 @@
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
   PinetReadOptions,
   PinetReadResult,
 } from "@gugu910/pi-pinet-core/pinet-read-formatting";
+import { dispatchDirectAgentMessage, resolveDirectAgentTarget } from "./broker/agent-messaging.js";
+import { startBroker, type Broker } from "./broker/index.js";
+import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
+import type { AgentInfo, BrokerMessage } from "./broker/types.js";
 import {
   buildPinetOwnerToken,
   generateAgentName,
+  normalizeOutgoingPinetControlMessage,
   resolvePinetMeshAuth,
   syncBrokerInboxEntries,
   type FollowerInboxEntry,
@@ -17,15 +25,27 @@ import {
   type PinetRemoteControlRequestResult,
   type SlackBridgeSettings,
 } from "./helpers.js";
-import { startBroker, type Broker } from "./broker/index.js";
-import type { BrokerMessage } from "./broker/types.js";
-import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
+
+const execFileAsync = promisify(execFile);
+const DEFAULT_SPAWN_REGISTRATION_TIMEOUT_MS = 45_000;
+const SUBTREE_CHILD_EXIT_GRACE_MS = 5_000;
 
 export interface SubtreeBrokerPaths {
   rootDir: string;
   socketPath: string;
   dbPath: string;
   lockPath: string;
+}
+
+export interface SubtreeWorkerRecord {
+  launchId: string;
+  sessionName: string;
+  repoPath: string;
+  role: string;
+  laneId: string | null;
+  agentId: string | null;
+  startedAt: string;
+  monitorCommand: string;
 }
 
 export interface SubtreeBrokerStatus {
@@ -35,6 +55,54 @@ export interface SubtreeBrokerStatus {
   paths: SubtreeBrokerPaths | null;
   childLaunchEnv: Record<string, string>;
   childLaunchHint: string | null;
+  childCount: number;
+  spawnedWorkers: SubtreeWorkerRecord[];
+}
+
+export interface SubtreeAgentRecord {
+  emoji: string;
+  name: string;
+  id: string;
+  pid?: number;
+  status: "working" | "idle";
+  metadata: Record<string, unknown> | null;
+  lastHeartbeat: string;
+  lastSeen?: string;
+  disconnectedAt?: string | null;
+  resumableUntil?: string | null;
+  outboundCount?: number;
+  pendingInboxCount?: number;
+  parentAgentId?: string | null;
+  rootAgentId?: string | null;
+  treeDepth?: number;
+  supervisionState?: string;
+  subtreeRole?: string | null;
+  laneId?: string | null;
+}
+
+export interface SubtreeSpawnInput {
+  task: string;
+  repo: string;
+  role?: string;
+  laneId?: string;
+  waitForRegistrationMs?: number;
+}
+
+export interface SubtreeSpawnResult {
+  status: "started";
+  launchId: string;
+  sessionName: string;
+  repoPath: string;
+  role: string;
+  laneId: string | null;
+  agentId: string;
+  agentName: string;
+  messageId: number;
+  threadId: string;
+  monitorCommand: string;
+  socketPath: string;
+  dbPath: string;
+  childLaunchEnv: Record<string, string>;
 }
 
 export interface SubtreeBrokerRuntimeDeps {
@@ -61,15 +129,32 @@ export interface SubtreeBrokerRuntimeDeps {
 
 export interface SubtreeBrokerRuntime {
   start: (ctx: ExtensionContext) => Promise<SubtreeBrokerStatus>;
-  stop: (options?: { releaseIdentity?: boolean }) => Promise<void>;
+  stop: (options?: { releaseIdentity?: boolean; stopChildren?: boolean }) => Promise<void>;
   getStatus: () => SubtreeBrokerStatus;
   readInbox: (options?: PinetReadOptions) => PinetReadResult | null;
+  sendMessage: (
+    target: string,
+    body: string,
+    metadata?: Record<string, unknown>,
+  ) => Promise<{ messageId: number; target: string; threadId: string } | null>;
+  listAgents: (includeGhosts?: boolean) => SubtreeAgentRecord[] | null;
+  spawnWorker: (ctx: ExtensionContext, input: SubtreeSpawnInput) => Promise<SubtreeSpawnResult>;
   isActive: () => boolean;
 }
 
 function sanitizePathSegment(value: string): string {
   const sanitized = value.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
   return sanitized || "agent";
+}
+
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 export function buildSubtreeBrokerPaths(stableId: string): SubtreeBrokerPaths {
@@ -89,6 +174,7 @@ function buildSelfAgentId(stableId: string): string {
 function buildChildLaunchEnv(
   paths: SubtreeBrokerPaths,
   selfAgentId: string,
+  input: { launchId?: string; role?: string; laneId?: string; tmuxSession?: string } = {},
 ): Record<string, string> {
   return {
     PINET_SOCKET_PATH: paths.socketPath,
@@ -97,6 +183,10 @@ function buildChildLaunchEnv(
     PINET_ROOT_AGENT_ID: selfAgentId,
     PINET_SPAWNED_BY_AGENT_ID: selfAgentId,
     PINET_LAUNCH_SOURCE: "subtree-broker-tmux",
+    ...(input.launchId ? { PINET_LAUNCH_ID: input.launchId } : {}),
+    ...(input.role ? { PINET_SUBTREE_ROLE: input.role } : {}),
+    ...(input.laneId ? { PINET_LANE_ID: input.laneId } : {}),
+    ...(input.tmuxSession ? { PINET_TMUX_SESSION: input.tmuxSession } : {}),
   };
 }
 
@@ -129,12 +219,151 @@ function toFollowerInboxEntry(input: {
   };
 }
 
+function metadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveRepoPath(repo: string, cwd: string): string {
+  const trimmed = repo.trim();
+  if (!trimmed) throw new Error("spawn requires repo");
+
+  const candidates = [
+    path.isAbsolute(trimmed) ? trimmed : null,
+    trimmed === "." ? cwd : null,
+    path.resolve(cwd, trimmed),
+    path.join(os.homedir(), trimmed),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  throw new Error(`spawn repo not found: ${repo}`);
+}
+
+function normalizeRole(role: string | undefined): string {
+  const normalized = role?.trim();
+  return normalized && normalized.length > 0 ? normalized : "subworker";
+}
+
+function buildTmuxSessionName(repoPath: string, role: string, launchId: string): string {
+  const repoName = sanitizePathSegment(path.basename(repoPath));
+  const roleName = sanitizePathSegment(role);
+  const shortLaunch = sanitizePathSegment(launchId).slice(-8);
+  return sanitizePathSegment(`pinet-${repoName}-${roleName}-${shortLaunch}`).slice(0, 80);
+}
+
+function findTmuxSocketPath(): string | null {
+  const configuredDir = process.env.CLAUDE_TMUX_SOCKET_DIR?.trim();
+  const candidates = [
+    configuredDir ? path.join(configuredDir, "claude.sock") : null,
+    process.env.TMUX?.split(",")[0] ?? null,
+    process.env.TMPDIR ? path.join(process.env.TMPDIR, "claude-tmux-sockets", "claude.sock") : null,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function buildTmuxBaseArgs(socketPath: string | null): string[] {
+  return socketPath ? ["-S", socketPath] : [];
+}
+
+function buildTmuxMonitorCommand(sessionName: string, socketPath: string | null): string {
+  const socketArgs = socketPath ? `-S ${quoteShellValue(socketPath)} ` : "";
+  return `tmux ${socketArgs}attach -t ${quoteShellValue(sessionName)}`;
+}
+
+function getExtensionEntryPath(): string {
+  const currentPath = fileURLToPath(import.meta.url);
+  const extension = path.extname(currentPath) || ".js";
+  return path.join(path.dirname(currentPath), `index${extension}`);
+}
+
+function childStartupPrompt(parentAgentId: string): string {
+  return [
+    `You are a Pinet subtree child supervised by ${parentAgentId}.`,
+    "Wait for the supervising worker's Pinet task, then do that task and report back through Pinet.",
+    "If you are not following Pinet yet, wait for the launcher to run /pinet follow.",
+  ].join(" ");
+}
+
+function buildLauncherScript(input: {
+  repoPath: string;
+  env: Record<string, string>;
+  extensionEntryPath: string;
+  startupPrompt: string;
+}): string {
+  const inheritedEnvKeys = [
+    "PI_CODING_AGENT_DIR",
+    "PI_CODING_AGENT_SESSION_DIR",
+    "PI_OFFLINE",
+    "PI_SETTINGS_PATH",
+  ];
+  const inheritedExports = inheritedEnvKeys
+    .map((key) => {
+      const value = process.env[key];
+      return value ? `export ${key}=${quoteShellValue(value)}` : null;
+    })
+    .filter((line): line is string => Boolean(line));
+  const envExports = Object.entries(input.env).map(
+    ([key, value]) => `export ${key}=${quoteShellValue(value)}`,
+  );
+  const nickname = `Subtree ${input.env.PINET_SUBTREE_ROLE ?? "Worker"} ${input.env.PINET_LAUNCH_ID ?? randomSuffix()}`;
+
+  return [
+    "#!/bin/bash",
+    "set -euo pipefail",
+    `cd ${quoteShellValue(input.repoPath)}`,
+    ...inheritedExports,
+    ...envExports,
+    `export PI_NICKNAME=${quoteShellValue(nickname)}`,
+    `exec pi -e ${quoteShellValue(input.extensionEntryPath)} ${quoteShellValue(input.startupPrompt)}`,
+    "",
+  ].join("\n");
+}
+
+function isSubtreeChildAgent(agent: AgentInfo, selfAgentId: string): boolean {
+  return agent.id !== selfAgentId && agent.parentAgentId === selfAgentId;
+}
+
+function toSubtreeAgentRecord(db: Broker["db"], agent: AgentInfo): SubtreeAgentRecord {
+  return {
+    emoji: agent.emoji,
+    name: agent.name,
+    id: agent.id,
+    pid: agent.pid,
+    status: agent.status,
+    metadata: agent.metadata,
+    lastHeartbeat: agent.lastHeartbeat,
+    lastSeen: agent.lastSeen,
+    disconnectedAt: agent.disconnectedAt,
+    resumableUntil: agent.resumableUntil,
+    outboundCount: agent.outboundCount,
+    pendingInboxCount: db.getPendingInboxCount(agent.id),
+    parentAgentId: agent.parentAgentId,
+    rootAgentId: agent.rootAgentId,
+    treeDepth: agent.treeDepth,
+    supervisionState: agent.supervisionState,
+    subtreeRole: agent.subtreeRole,
+    laneId: agent.laneId,
+  };
+}
+
 export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): SubtreeBrokerRuntime {
   let activeBroker: Broker | null = null;
   let selfAgentId: string | null = null;
   let startedAt: string | null = null;
   let activePaths: SubtreeBrokerPaths | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  const spawnedWorkers = new Map<string, SubtreeWorkerRecord>();
 
   function stopHeartbeat(): void {
     if (!heartbeatTimer) return;
@@ -154,6 +383,13 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     heartbeatTimer.unref?.();
   }
 
+  function currentChildren(): AgentInfo[] {
+    const broker = activeBroker;
+    const agentId = selfAgentId;
+    if (!broker || !agentId) return [];
+    return broker.db.getAllAgents().filter((agent) => isSubtreeChildAgent(agent, agentId));
+  }
+
   function getStatus(): SubtreeBrokerStatus {
     const childLaunchEnv =
       activePaths && selfAgentId ? buildChildLaunchEnv(activePaths, selfAgentId) : {};
@@ -167,6 +403,8 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
         activePaths && selfAgentId
           ? buildChildLaunchHint(activePaths, selfAgentId, deps.cwd)
           : null,
+      childCount: currentChildren().length,
+      spawnedWorkers: [...spawnedWorkers.values()],
     };
   }
 
@@ -218,7 +456,131 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     };
   }
 
-  async function stop(options: { releaseIdentity?: boolean } = {}): Promise<void> {
+  async function sendMessage(
+    target: string,
+    body: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<{ messageId: number; target: string; threadId: string } | null> {
+    if (!activeBroker || !selfAgentId) return null;
+    const targetAgent = resolveDirectAgentTarget(activeBroker.db.getAgents(), target);
+    if (!targetAgent || targetAgent.id === selfAgentId) return null;
+
+    const control = normalizeOutgoingPinetControlMessage(body, metadata);
+    const finalBody = control?.body ?? body;
+    const finalMetadata = control?.metadata ?? metadata;
+    const identity = deps.getAgentIdentity();
+    const result = dispatchDirectAgentMessage(activeBroker.db, {
+      senderAgentId: selfAgentId,
+      senderAgentName: identity.name || "Subtree Broker",
+      target,
+      body: finalBody,
+      ...(finalMetadata ? { metadata: finalMetadata } : {}),
+    });
+
+    return {
+      messageId: result.messageId,
+      target: result.target.name,
+      threadId: result.threadId,
+    };
+  }
+
+  function listAgents(includeGhosts = false): SubtreeAgentRecord[] | null {
+    const broker = activeBroker;
+    if (!broker) return null;
+    const agents = broker.db.getAllAgents();
+    const filtered = includeGhosts ? agents : agents.filter((agent) => !agent.disconnectedAt);
+    return filtered.map((agent) => toSubtreeAgentRecord(broker.db, agent));
+  }
+
+  async function sendFollowCommand(sessionName: string, tmuxBaseArgs: string[]): Promise<void> {
+    await execFileAsync("tmux", [
+      ...tmuxBaseArgs,
+      "send-keys",
+      "-t",
+      sessionName,
+      "-l",
+      "--",
+      "/pinet follow",
+    ]);
+    await execFileAsync("tmux", [...tmuxBaseArgs, "send-keys", "-t", sessionName, "Enter"]);
+  }
+
+  async function waitForSpawnedAgent(input: {
+    broker: Broker;
+    launchId: string;
+    sessionName: string;
+    tmuxBaseArgs: string[];
+    timeoutMs: number;
+  }): Promise<AgentInfo> {
+    const deadline = Date.now() + input.timeoutMs;
+    let lastFollowAttemptAt = 0;
+
+    while (Date.now() < deadline) {
+      const agent = input.broker.db
+        .getAllAgents()
+        .find((candidate) => metadataString(candidate.metadata, "launchId") === input.launchId);
+      if (agent) return agent;
+
+      if (Date.now() - lastFollowAttemptAt > 6_000) {
+        lastFollowAttemptAt = Date.now();
+        await sendFollowCommand(input.sessionName, input.tmuxBaseArgs).catch(() => {
+          // The session may still be starting; the loop retries until timeout.
+        });
+      }
+
+      await delay(1_000);
+    }
+
+    throw new Error(
+      `subtree worker session ${input.sessionName} started but did not register within ${input.timeoutMs}ms`,
+    );
+  }
+
+  async function requestChildExit(agent: AgentInfo): Promise<void> {
+    await sendMessage(agent.id, "/exit", { subtreeLifecycle: "stop" }).catch(() => null);
+  }
+
+  async function killTmuxSession(sessionName: string, tmuxBaseArgs: string[]): Promise<void> {
+    await execFileAsync("tmux", [...tmuxBaseArgs, "has-session", "-t", sessionName]).catch(() => {
+      throw new Error("missing");
+    });
+    await execFileAsync("tmux", [...tmuxBaseArgs, "kill-session", "-t", sessionName]);
+  }
+
+  function childTmuxSessions(broker: Broker, agentId: string): string[] {
+    const sessions = new Set<string>();
+    for (const worker of spawnedWorkers.values()) {
+      sessions.add(worker.sessionName);
+    }
+    for (const agent of broker.db.getAllAgents()) {
+      if (!isSubtreeChildAgent(agent, agentId)) continue;
+      const session = metadataString(agent.metadata, "tmuxSession");
+      if (session) sessions.add(session);
+    }
+    return [...sessions];
+  }
+
+  async function stopChildren(broker: Broker, agentId: string): Promise<void> {
+    const children = broker.db
+      .getAllAgents()
+      .filter((agent) => isSubtreeChildAgent(agent, agentId));
+    await Promise.all(children.map(requestChildExit));
+    if (children.length > 0) {
+      await delay(SUBTREE_CHILD_EXIT_GRACE_MS);
+    }
+
+    const tmuxSocketPath = findTmuxSocketPath();
+    const tmuxBaseArgs = buildTmuxBaseArgs(tmuxSocketPath);
+    await Promise.all(
+      childTmuxSessions(broker, agentId).map((sessionName) =>
+        killTmuxSession(sessionName, tmuxBaseArgs).catch(() => undefined),
+      ),
+    );
+  }
+
+  async function stop(
+    options: { releaseIdentity?: boolean; stopChildren?: boolean } = {},
+  ): Promise<void> {
     stopHeartbeat();
     const broker = activeBroker;
     const agentId = selfAgentId;
@@ -229,12 +591,17 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
 
     if (!broker) return;
     try {
+      if (agentId && options.stopChildren !== false) {
+        await stopChildren(broker, agentId);
+      }
       if (options.releaseIdentity && agentId) {
         broker.db.unregisterAgent(agentId);
       }
       await broker.stop();
     } catch {
       // Best effort; callers should be able to continue even if shutdown cleanup is partial.
+    } finally {
+      spawnedWorkers.clear();
     }
   }
 
@@ -300,11 +667,112 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     return getStatus();
   }
 
+  async function spawnWorker(
+    ctx: ExtensionContext,
+    input: SubtreeSpawnInput,
+  ): Promise<SubtreeSpawnResult> {
+    if (!input.task.trim()) throw new Error("spawn requires task");
+    if (!input.repo.trim()) throw new Error("spawn requires repo");
+    if (!activeBroker) {
+      await start(ctx);
+    }
+    if (!activeBroker || !activePaths || !selfAgentId) {
+      throw new Error("Subtree broker is not running.");
+    }
+
+    const repoPath = resolveRepoPath(input.repo, deps.cwd);
+    const role = normalizeRole(input.role);
+    const launchId = `subtree-${Date.now().toString(36)}-${randomSuffix()}`;
+    const sessionName = buildTmuxSessionName(repoPath, role, launchId);
+    const tmuxSocketPath = findTmuxSocketPath();
+    const tmuxBaseArgs = buildTmuxBaseArgs(tmuxSocketPath);
+    const monitorCommand = buildTmuxMonitorCommand(sessionName, tmuxSocketPath);
+    const childLaunchEnv = buildChildLaunchEnv(activePaths, selfAgentId, {
+      launchId,
+      role,
+      ...(input.laneId ? { laneId: input.laneId } : {}),
+      tmuxSession: sessionName,
+    });
+    const launchersDir = path.join(activePaths.rootDir, "launchers");
+    fs.mkdirSync(launchersDir, { recursive: true });
+    const launcherPath = path.join(launchersDir, `${sessionName}.sh`);
+    fs.writeFileSync(
+      launcherPath,
+      buildLauncherScript({
+        repoPath,
+        env: childLaunchEnv,
+        extensionEntryPath: getExtensionEntryPath(),
+        startupPrompt: childStartupPrompt(selfAgentId),
+      }),
+      { mode: 0o700 },
+    );
+
+    await execFileAsync("tmux", [
+      ...tmuxBaseArgs,
+      "new-session",
+      "-d",
+      "-s",
+      sessionName,
+      launcherPath,
+    ]);
+    const workerRecord: SubtreeWorkerRecord = {
+      launchId,
+      sessionName,
+      repoPath,
+      role,
+      laneId: input.laneId ?? null,
+      agentId: null,
+      startedAt: new Date().toISOString(),
+      monitorCommand,
+    };
+    spawnedWorkers.set(launchId, workerRecord);
+
+    const agent = await waitForSpawnedAgent({
+      broker: activeBroker,
+      launchId,
+      sessionName,
+      tmuxBaseArgs,
+      timeoutMs: input.waitForRegistrationMs ?? DEFAULT_SPAWN_REGISTRATION_TIMEOUT_MS,
+    });
+    const updatedRecord: SubtreeWorkerRecord = { ...workerRecord, agentId: agent.id };
+    spawnedWorkers.set(launchId, updatedRecord);
+
+    const messageResult = await sendMessage(agent.id, input.task, {
+      subtreeTask: true,
+      launchId,
+      role,
+      ...(input.laneId ? { laneId: input.laneId } : {}),
+    });
+    if (!messageResult) {
+      throw new Error(`subtree worker ${agent.id} registered but could not receive the task`);
+    }
+
+    return {
+      status: "started",
+      launchId,
+      sessionName,
+      repoPath,
+      role,
+      laneId: input.laneId ?? null,
+      agentId: agent.id,
+      agentName: agent.name,
+      messageId: messageResult.messageId,
+      threadId: messageResult.threadId,
+      monitorCommand,
+      socketPath: activePaths.socketPath,
+      dbPath: activePaths.dbPath,
+      childLaunchEnv,
+    };
+  }
+
   return {
     start,
     stop,
     getStatus,
     readInbox,
+    sendMessage,
+    listAgents,
+    spawnWorker,
     isActive: () => activeBroker !== null,
   };
 }

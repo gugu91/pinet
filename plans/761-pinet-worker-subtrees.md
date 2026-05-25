@@ -1,40 +1,56 @@
 # #761 Pinet worker subtrees implementation note
 
-This branch now distinguishes two subtree models:
+This branch implements worker-owned Pinet subtrees end to end.
 
-1. The original staging model: supervised children register in the central broker DB with typed parent/root hierarchy metadata.
-2. The desired runtime model: a worker can become a local subtree broker, and child workers connect to that worker-owned broker socket instead of the central Pinet broker.
+## End-to-end behavior
 
-The desired model is the one to complete. The central broker should keep seeing the supervising worker, while child workers report into the supervising worker's local broker.
+- A normal Pinet follower worker can run `/pinet subtree start` while remaining connected to the central broker.
+- The worker starts a separate local broker socket/database under `~/.pi/pinet-subtrees/<worker>/` and registers itself inside that local broker as `subbroker-<worker>`.
+- Child workers launched by that worker receive `PINET_SOCKET_PATH` plus parent/root/launch/role/lane metadata, so they follow the worker-owned subtree broker rather than `~/.pi/pinet.sock`.
+- `pinet action=spawn` now launches a real tmux-backed child worker, waits for registration in the subtree broker DB, and delivers the task over Pinet A2A.
+- `/pinet subtree spawn repo=<repo> [role=<role>] [lane=<lane>] <task>` provides the same flow from the slash-command surface.
+- The supervising worker can inspect child roster with `pinet action=agents args.scope=subtree args.full=true`, read child reports with `pinet action=read`, reply/control children with `pinet action=send`, and ask children to exit with `pinet action=exit`.
+- `/pinet subtree stop` asks spawned children to exit, then cleans up known tmux sessions and stops the local subtree broker.
+- The central broker sees only the supervising worker. The subtree DB contains the child workers and their messages.
 
-## Implemented in this branch
+## Implementation notes
 
-- Adds typed agent hierarchy fields in the broker database: parent/root ids, tree depth, spawned-by audit, supervision state, launch id, subtree role, and lane id.
-- Accepts hierarchy metadata during real Pinet follower registration, including env-derived metadata from broker-managed launches.
-- Preserves the broker protocol boundary for the staging model: supervised children are normal broker-connected followers, but ordinary broadcasts/backlog assignment exclude supervised children.
-- Adds subtree-aware A2A policy: parent/child/ancestor/descendant messages are allowed; unrelated workers cannot directly message supervised children; broker emergency overrides remain explicit.
-- Adds lifecycle handling: child exit notifies its parent; parent unregister/reap/purge marks descendants orphaned and sends child orphan notices.
-- Extends `pinet action=agents` with explicit `scope=children|subtree` plus hierarchy details in full output.
-- Adds `pinet action=spawn` as a validation surface that returns a precise blocker until the real launcher/bootstrap contract exists.
-- Adds `/pinet subtree start` (alias `/pinet subbroker start`) so a follower worker can keep following the central broker while starting a separate local broker socket/database under `~/.pi/pinet-subtrees/<worker>/`.
-- Adds `PINET_SOCKET_PATH` support for followers, allowing child workers to connect to a worker-owned subtree broker instead of the central `~/.pi/pinet.sock` broker.
-- Routes subtree broker inbox reads back through the supervising worker, so `pinet action=read args.thread_id=<subtree-a2a-thread>` resolves child messages from the subtree broker DB.
+- Broker registration still stores typed hierarchy metadata: parent/root ids, tree depth, spawned-by audit, supervision state, launch id, subtree role, and lane id.
+- `follower-runtime.ts` honors `PINET_SOCKET_PATH`, letting children connect to a worker-owned broker socket.
+- `runtime-mode.ts` treats `PINET_BROKER_MANAGED=1` plus `PINET_LAUNCH_SOURCE=subtree-broker-tmux` or an explicit `PINET_SOCKET_PATH` as a managed follower launch, preventing child sessions from trying to become the global broker just because persistent settings request broker mode.
+- `subtree-broker-runtime.ts` owns the local broker, tmux launch, child registration wait, task delivery, roster/read/send routing, and cleanup.
+- `pinet-tools.ts` routes follower-owned `send`, `read`, `agents scope=subtree`, `spawn`, `reload`, and `exit` through the active subtree broker where applicable, falling back to the central broker for normal follower work.
 
-## Current local smoke result
+## E2E smoke result
 
-A tmux smoke verified the desired routing path:
+A manual tmux smoke on 2026-05-26 verified the full workflow with isolated temp HOME/agent dirs and the active local package cache extension:
 
-- Parent worker followed the central broker.
-- Parent ran `/pinet subtree start` and received a dedicated socket/database plus child launch environment.
-- Child worker launched with `PINET_SOCKET_PATH=<parent-subtree-socket>` and `PINET_PARENT_AGENT_ID=<subbroker-self-id>`.
-- Child registered only in the subtree broker DB as `supervised`, not in the central broker DB.
-- Child sent an A2A report to the parent broker id.
-- Parent received the subtree pointer and `pinet action=read` returned the child message body from the subtree broker DB.
+- Central broker started with `/pinet start`.
+- Parent worker followed central with `/pinet follow` and started `/pinet subtree start`.
+- Parent launched a real child through `/pinet subtree spawn repo=/Users/thomasmustier/extensions role=smoke lane=smoke-761 <task>`.
+- Child registered only in the subtree DB as a supervised child, not in the central broker DB.
+- Child read the task, sent `E2E smoke child report from spawned worker` back to the subbroker, and parent read the full report body through `pinet action=read`.
+- Parent sent an acknowledgement back to the child.
+- `/pinet subtree stop` asked the child to exit, removed the spawned child tmux session, and stopped the subtree broker socket.
 
-## Remaining work for full parity
+Detailed evidence is in `.research/761-pinet-worker-subtree-e2e.md`.
 
-- Wire `pinet action=spawn` to a real tmux/process launcher that uses the `/pinet subtree start` environment instead of returning `missing_broker_connected_worker_launcher`.
-- Add broker-style child roster/status operations scoped to the active subtree broker, not just read routing.
-- Add durable lane metadata for subtree brokers: tmux session, socket path, DB path, parent worker id, and cleanup TTL.
-- Make startup settings path handling respect `PI_CODING_AGENT_DIR` in slack-bridge settings loading, or provide a supported per-worker runtime-mode override, so child workers do not briefly attempt the global configured broker mode before `/pinet follow`.
-- Decide how much of central broker RALPH/maintenance should run in worker-owned subtree brokers, and which signals should roll up to the central broker via the supervising worker.
+## Verification to keep current
+
+Run these before merging:
+
+```bash
+pnpm --filter @gugu910/pi-slack-bridge lint
+pnpm --filter @gugu910/pi-slack-bridge typecheck
+pnpm --filter @gugu910/pi-slack-bridge test -- pinet-tools.test.ts pinet-commands.test.ts runtime-mode.test.ts
+pnpm --filter @gugu910/pi-slack-bridge build
+```
+
+Manual smoke should prove:
+
+1. Parent follower starts `/pinet subtree start`.
+2. Parent runs `pinet action=spawn` or `/pinet subtree spawn ...`.
+3. Child registers in the subtree DB only, not the central broker DB.
+4. Child reports to parent; parent reads the report with `pinet action=read`.
+5. Parent replies or sends `/reload`/`/exit` to the child through the subtree broker.
+6. `/pinet subtree stop` cleans up child tmux sessions and stops the local broker.

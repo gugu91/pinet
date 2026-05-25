@@ -855,6 +855,8 @@ export default function (pi: ExtensionAPI) {
     getActiveBrokerSelfId,
     getAgentName: () => agentName,
     getFollowerClient: () => brokerClient?.client ?? null,
+    sendSubtreeAgentMessage: (target, body, metadata) =>
+      subtreeBrokerRuntime.sendMessage(target, body, metadata),
     formatTrackedAgent,
     logActivity: (entry) => {
       brokerRuntime.logActivity(entry);
@@ -1235,6 +1237,13 @@ export default function (pi: ExtensionAPI) {
       readPinetInbox,
       listBrokerAgents,
       listFollowerAgents,
+      listSubtreeAgents: (includeGhosts) => subtreeBrokerRuntime.listAgents(includeGhosts),
+      getSubtreeSelfAgentId: () => subtreeBrokerRuntime.getStatus().selfAgentId,
+      spawnSubtreeWorker: async (input) => {
+        const activeCtx = sessionUiRuntime.getExtensionContext();
+        if (!activeCtx) throw new Error("No active Pi extension context for subtree spawn.");
+        return await subtreeBrokerRuntime.spawnWorker(activeCtx, input);
+      },
       listPinetLanes,
       upsertPinetLane,
       setPinetLaneParticipant,
@@ -1481,6 +1490,7 @@ export default function (pi: ExtensionAPI) {
       disconnectFollower,
       startSubtreeBroker: (ctx) => subtreeBrokerRuntime.start(ctx),
       stopSubtreeBroker: () => subtreeBrokerRuntime.stop({ releaseIdentity: true }),
+      spawnSubtreeWorker: (ctx, input) => subtreeBrokerRuntime.spawnWorker(ctx, input),
       sendPinetAgentMessage,
       signalAgentFree,
       applyLocalAgentIdentity,

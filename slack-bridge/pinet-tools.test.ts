@@ -55,6 +55,24 @@ function createDeps(overrides: Partial<RegisterPinetToolsDeps> = {}): RegisterPi
     }),
     listBrokerAgents: () => [makeAgent()],
     listFollowerAgents: async (_includeGhosts: boolean) => [makeAgent({ id: "agent-2" })],
+    listSubtreeAgents: () => null,
+    getSubtreeSelfAgentId: () => null,
+    spawnSubtreeWorker: async (input) => ({
+      status: "started",
+      launchId: "launch-1",
+      sessionName: "pinet-extensions-reviewer-launch-1",
+      repoPath: `/tmp/${input.repo}`,
+      role: input.role ?? "subworker",
+      laneId: input.laneId ?? null,
+      agentId: "child-1",
+      agentName: "Child Worker",
+      messageId: 42,
+      threadId: "a2a:subbroker:child-1",
+      monitorCommand: "tmux attach -t pinet-extensions-reviewer-launch-1",
+      socketPath: "/tmp/pinet-subtrees/worker-1/pinet.sock",
+      dbPath: "/tmp/pinet-subtrees/worker-1/pinet-broker.db",
+      childLaunchEnv: {},
+    }),
     listPinetLanes: async () => [],
     upsertPinetLane: async (input) => ({
       laneId: input.laneId,
@@ -378,11 +396,10 @@ describe("registerPinetTools", () => {
     };
 
     expect(readPinetInbox).toHaveBeenCalledWith({ threadId: "a2a:broker:worker", limit: 5 });
-    expect(result.details.data.text).toBe(
-      "Pinet read: 1 unread message; unread 2→1; marked 1; 1 unread thread.",
+    expect(result.details.data.text).toContain(
+      "Pinet read (unread) from thread a2a:broker:worker: 1 message.",
     );
-    expect(result.details.data.text).not.toContain("please inspect #594");
-    expect(result.details.data.text).not.toContain("pointer=pinet action=read");
+    expect(result.details.data.text).toContain("please inspect #594");
     expect(result.details.data.details.markedReadIds).toEqual([31]);
     expect(result.details.data.details.messageCount).toBe(1);
   });
@@ -417,7 +434,7 @@ describe("registerPinetTools", () => {
 
     const result = (await tools.get("pinet")?.execute("tool-call-read-compact-details", {
       action: "read",
-      args: { thread_id: "a2a:broker:worker" },
+      args: {},
     })) as {
       content: Array<{ text: string }>;
       details: {
@@ -1170,6 +1187,39 @@ describe("registerPinetTools", () => {
     expect(listFollowerAgents).toHaveBeenNthCalledWith(2, true);
   });
 
+  it("lists local subtree children from a follower-owned subtree broker", async () => {
+    const listSubtreeAgents = vi.fn(() => [
+      makeAgent({ id: "subbroker", name: "Parent Subbroker" }),
+      makeAgent({
+        id: "child",
+        name: "Child",
+        parentAgentId: "subbroker",
+        rootAgentId: "subbroker",
+        treeDepth: 1,
+        supervisionState: "supervised",
+        subtreeRole: "reviewer",
+      }),
+    ]);
+    const listFollowerAgents = vi.fn(async () => [makeAgent({ id: "central-worker" })]);
+    const tools = registerWithDeps(
+      createDeps({
+        brokerRole: () => "follower",
+        listFollowerAgents,
+        listSubtreeAgents,
+        getSubtreeSelfAgentId: () => "subbroker",
+      }),
+    );
+
+    const result = (await tools.get("pinet")?.execute("tool-call-subtree-agents", {
+      action: "agents",
+      args: { scope: "subtree", full: true },
+    })) as { details: { data: { details: { agents: Array<{ id: string }> } } } };
+
+    expect(listSubtreeAgents).toHaveBeenCalledWith(false);
+    expect(listFollowerAgents).not.toHaveBeenCalled();
+    expect(result.details.data.details.agents.map((agent) => agent.id)).toEqual(["child"]);
+  });
+
   it("filters pinet agents by explicit subtree scope and shows hierarchy metadata", async () => {
     const listBrokerAgents = vi.fn(() => [
       makeAgent({ id: "parent", name: "Parent" }),
@@ -1196,18 +1246,28 @@ describe("registerPinetTools", () => {
     expect(result.details.data.text).toContain("role=reviewer");
   });
 
-  it("validates spawn requests but reports the missing real-follower launcher blocker", async () => {
-    const tools = registerWithDeps(createDeps({ brokerRole: () => "follower" }));
+  it("launches subtree workers through the dispatcher", async () => {
+    const spawnSubtreeWorker = vi.fn(createDeps().spawnSubtreeWorker);
+    const tools = registerWithDeps(
+      createDeps({ brokerRole: () => "follower", spawnSubtreeWorker }),
+    );
 
     const result = (await tools.get("pinet")?.execute("tool-call-spawn", {
       action: "spawn",
       args: { task: "Review PR #761", repo: "extensions", role: "reviewer", full: true },
-    })) as { details: { data: { text: string; details: { status: string; blocker: string } } } };
+    })) as {
+      details: { data: { text: string; details: { status: string; agentId: string } } };
+    };
 
-    expect(result.details.data.text).toContain("launcher is unavailable");
+    expect(spawnSubtreeWorker).toHaveBeenCalledWith({
+      task: "Review PR #761",
+      repo: "extensions",
+      role: "reviewer",
+    });
+    expect(result.details.data.text).toContain("Pinet subtree worker started");
     expect(result.details.data.details).toMatchObject({
-      status: "blocked",
-      blocker: "missing_broker_connected_worker_launcher",
+      status: "started",
+      agentId: "child-1",
     });
   });
 

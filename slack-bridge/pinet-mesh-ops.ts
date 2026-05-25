@@ -94,6 +94,11 @@ export interface PinetMeshOpsDeps {
   getActiveBrokerSelfId: () => string | null;
   getAgentName: () => string;
   getFollowerClient: () => PinetMeshOpsFollowerClientPort | null;
+  sendSubtreeAgentMessage?: (
+    target: string,
+    body: string,
+    metadata?: Record<string, unknown>,
+  ) => Promise<{ messageId: number; target: string; threadId: string } | null>;
   formatTrackedAgent: (agentId: string) => string;
   logActivity: (entry: ActivityLogEntry) => void;
 }
@@ -296,6 +301,15 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
     }
 
     if (deps.getBrokerRole() === "follower") {
+      const subtreeResult = await deps.sendSubtreeAgentMessage?.(
+        targetRef,
+        finalBody,
+        finalMetadata,
+      );
+      if (subtreeResult) {
+        return { messageId: subtreeResult.messageId, target: subtreeResult.target };
+      }
+
       const client = deps.getFollowerClient();
       if (!client) {
         throw new Error("Pinet is in an unexpected state.");
