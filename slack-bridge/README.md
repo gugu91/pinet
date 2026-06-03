@@ -426,6 +426,10 @@ Startup selection:
 
 Pinet supports a broker/follower architecture for coordinating multiple pi agents over Slack.
 
+### Runtime composition boundary
+
+Broker startup is composed as Pinet core plus injected transport adapter factories. `broker-runtime.ts` starts the broker DB/socket/router and skin/agent state, then calls `createAdapterBindings` to attach transports. The packaged Slack bridge passes `createSlackPinetRuntimeAdapterFactory(...)`, while tests use an in-memory non-Slack adapter to demonstrate the same boundary without Slack tokens or Slack-specific metadata. Adapter factories return `MessageAdapter` bindings; the core wires inbound delivery, registers adapters on the broker, and connects them.
+
 ### Quick start
 
 **Broker** (one per mesh — coordinates routing and health):
