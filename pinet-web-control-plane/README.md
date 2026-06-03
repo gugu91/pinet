@@ -15,7 +15,8 @@ Add a separate `pinet-web-control-plane` block to `~/.pi/agent/settings.json`:
     "host": "127.0.0.1",
     "port": 17771,
     "username": "pinet",
-    "passwordEnv": "PINET_WEB_CONTROL_PLANE_PASSWORD"
+    "passwordEnv": "PINET_WEB_CONTROL_PLANE_PASSWORD",
+    "requireBrokerLock": true
   }
 }
 ```
@@ -26,15 +27,17 @@ Then provide the Basic Auth password out of band:
 export PINET_WEB_CONTROL_PLANE_PASSWORD="change-me"
 ```
 
-| Key           | Required | Description                                                                                                |
-| ------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `enabled`     | yes      | Must be `true` to start the extension; default is disabled                                                 |
-| `host`        | no       | Loopback-only bind host (`127.0.0.1`, `::1`, or `localhost`); defaults to `127.0.0.1`                      |
-| `port`        | no       | Local listen port; defaults to `17771`; `0` selects an ephemeral port                                      |
-| `username`    | no       | Basic Auth username; defaults to `pinet` or `PINET_WEB_CONTROL_PLANE_USERNAME`                             |
-| `password`    | no       | Inline Basic Auth password; prefer `passwordEnv` for local use                                             |
-| `passwordEnv` | no       | Environment variable that contains the Basic Auth password; defaults to `PINET_WEB_CONTROL_PLANE_PASSWORD` |
-| `dbPath`      | no       | Broker SQLite database path; defaults to the normal Pinet broker DB path                                   |
+| Key                 | Required | Description                                                                                                |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `enabled`           | yes      | Must be `true` to start the extension; default is disabled                                                 |
+| `host`              | no       | Loopback-only bind host (`127.0.0.1`, `::1`, or `localhost`); defaults to `127.0.0.1`                      |
+| `port`              | no       | Local listen port; defaults to `17771`; `0` selects an ephemeral port                                      |
+| `username`          | no       | Basic Auth username; defaults to `pinet` or `PINET_WEB_CONTROL_PLANE_USERNAME`                             |
+| `password`          | no       | Inline Basic Auth password; prefer `passwordEnv` for local use                                             |
+| `passwordEnv`       | no       | Environment variable that contains the Basic Auth password; defaults to `PINET_WEB_CONTROL_PLANE_PASSWORD` |
+| `dbPath`            | no       | Broker SQLite database path; defaults to the normal Pinet broker DB path                                   |
+| `lockPath`          | no       | Broker leader lock path; defaults to the normal Pinet broker lock path                                     |
+| `requireBrokerLock` | no       | Keep `true` (default) so only the live broker process can bind/serve the dashboard                         |
 
 ## Routes
 
@@ -55,6 +58,7 @@ This is a first-cut local operations dashboard:
 - loopback-only; non-loopback bind hosts are rejected
 - Basic Auth required
 - read-only HTTP routes only
+- broker-process-only by default: the extension binds only when the current process owns the Pinet broker leader lock, and requests fail closed if that ownership is lost
 - no process-control endpoints
 - no Slack tokens, mesh secrets, prompt text, message bodies, lane summaries, snooze reasons, or raw free-text control data
 - dashboard strings are HTML-escaped and redacted for common Slack/app/Bearer/JSON/env token-shaped secrets

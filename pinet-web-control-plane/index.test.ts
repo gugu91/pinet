@@ -240,9 +240,42 @@ describe("createPinetWebControlPlane", () => {
     await Promise.all(servers.splice(0).map((server) => server.stop()));
   });
 
-  it("serves authenticated dashboard JSON", async () => {
+  it("does not start unless the current process owns the broker lock by default", async () => {
     const controlPlane = createPinetWebControlPlane({
       getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      buildDashboardSnapshot: async () => snapshot,
+      isBrokerLeader: () => false,
+    });
+    servers.push(controlPlane);
+
+    await expect(controlPlane.start()).resolves.toBeNull();
+    expect(controlPlane.isStarted()).toBe(false);
+  });
+
+  it("stops serving if broker ownership is lost", async () => {
+    let brokerLeader = true;
+    const controlPlane = createPinetWebControlPlane({
+      getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      buildDashboardSnapshot: async () => snapshot,
+      isBrokerLeader: () => brokerLeader,
+    });
+    servers.push(controlPlane);
+
+    const url = await controlPlane.start();
+    brokerLeader = false;
+    const response = await fetch(new URL("/api/dashboard", url!), {
+      headers: { Authorization: basicAuth() },
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "web control plane is only available in the active broker process",
+    });
+  });
+
+  it("serves authenticated dashboard JSON", async () => {
+    const controlPlane = createPinetWebControlPlane({
+      getSettings: () => ({ enabled: true, port: 0, password: "secret", requireBrokerLock: false }),
       buildDashboardSnapshot: async () => snapshot,
     });
     servers.push(controlPlane);
@@ -260,7 +293,7 @@ describe("createPinetWebControlPlane", () => {
 
   it("challenges unauthenticated requests", async () => {
     const controlPlane = createPinetWebControlPlane({
-      getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      getSettings: () => ({ enabled: true, port: 0, password: "secret", requireBrokerLock: false }),
       buildDashboardSnapshot: async () => snapshot,
     });
     servers.push(controlPlane);
@@ -274,7 +307,7 @@ describe("createPinetWebControlPlane", () => {
 
   it("rejects non-read HTTP methods", async () => {
     const controlPlane = createPinetWebControlPlane({
-      getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      getSettings: () => ({ enabled: true, port: 0, password: "secret", requireBrokerLock: false }),
       buildDashboardSnapshot: async () => snapshot,
     });
     servers.push(controlPlane);
@@ -291,7 +324,7 @@ describe("createPinetWebControlPlane", () => {
 
   it("serves escaped read-only HTML", async () => {
     const controlPlane = createPinetWebControlPlane({
-      getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      getSettings: () => ({ enabled: true, port: 0, password: "secret", requireBrokerLock: false }),
       buildDashboardSnapshot: async () => snapshot,
     });
     servers.push(controlPlane);
@@ -308,7 +341,7 @@ describe("createPinetWebControlPlane", () => {
 
   it("returns 503 when the broker snapshot is unavailable", async () => {
     const controlPlane = createPinetWebControlPlane({
-      getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      getSettings: () => ({ enabled: true, port: 0, password: "secret", requireBrokerLock: false }),
       buildDashboardSnapshot: async () => null,
     });
     servers.push(controlPlane);

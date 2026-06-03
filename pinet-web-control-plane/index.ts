@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defaultLockPath } from "@gugu910/pi-broker-core/leader";
 import { getDefaultDbPath } from "@gugu910/pi-broker-core/paths";
 
 const SETTINGS_KEY = "pinet-web-control-plane";
@@ -24,6 +25,8 @@ export interface PinetWebControlPlaneSettings {
   password?: string;
   passwordEnv?: string;
   dbPath?: string;
+  lockPath?: string;
+  requireBrokerLock?: boolean;
 }
 
 export interface ResolvedPinetWebControlPlaneSettings {
@@ -33,11 +36,14 @@ export interface ResolvedPinetWebControlPlaneSettings {
   username: string;
   password: string;
   dbPath: string;
+  lockPath: string;
+  requireBrokerLock: boolean;
 }
 
 export interface PinetWebControlPlaneDeps {
   getSettings: () => PinetWebControlPlaneSettings;
   buildDashboardSnapshot: () => Promise<PinetWebControlPlaneDashboardSnapshot | null>;
+  isBrokerLeader?: (settings: ResolvedPinetWebControlPlaneSettings) => boolean;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -176,7 +182,18 @@ export function resolvePinetWebControlPlaneSettings(
     username,
     password,
     dbPath: normalizeOptionalString(settings.dbPath) ?? getDefaultDbPath(),
+    lockPath: normalizeOptionalString(settings.lockPath) ?? defaultLockPath(),
+    requireBrokerLock: settings.requireBrokerLock !== false,
   };
+}
+
+export function isCurrentProcessBrokerLeader(lockPath = defaultLockPath()): boolean {
+  try {
+    const content = fs.readFileSync(lockPath, "utf-8").trim();
+    return content === String(process.pid);
+  } catch {
+    return false;
+  }
 }
 
 function timingSafeStringEquals(left: string, right: string): boolean {
@@ -617,9 +634,9 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
   async function handleRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    credentials: Pick<ResolvedPinetWebControlPlaneSettings, "username" | "password">,
+    resolvedSettings: ResolvedPinetWebControlPlaneSettings,
   ): Promise<void> {
-    if (!isAuthorized(req.headers.authorization, credentials)) {
+    if (!isAuthorized(req.headers.authorization, resolvedSettings)) {
       writeUnauthorized(res);
       return;
     }
@@ -628,6 +645,26 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
     const headOnly = method === "HEAD";
     if (method !== "GET" && method !== "HEAD") {
       writeMethodNotAllowed(res);
+      return;
+    }
+
+    if (
+      resolvedSettings.requireBrokerLock &&
+      !(
+        deps.isBrokerLeader?.(resolvedSettings) ??
+        isCurrentProcessBrokerLeader(resolvedSettings.lockPath)
+      )
+    ) {
+      writeResponse(
+        res,
+        503,
+        JSON.stringify({
+          ok: false,
+          error: "web control plane is only available in the active broker process",
+        }),
+        "application/json; charset=utf-8",
+        { headOnly },
+      );
       return;
     }
 
@@ -705,6 +742,17 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
   async function start(): Promise<string | null> {
     const resolvedSettings = resolvePinetWebControlPlaneSettings(deps.getSettings(), deps.env);
     if (!resolvedSettings) {
+      await stop();
+      return null;
+    }
+
+    if (
+      resolvedSettings.requireBrokerLock &&
+      !(
+        deps.isBrokerLeader?.(resolvedSettings) ??
+        isCurrentProcessBrokerLeader(resolvedSettings.lockPath)
+      )
+    ) {
       await stop();
       return null;
     }
