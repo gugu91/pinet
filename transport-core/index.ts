@@ -118,10 +118,30 @@ export interface OutboundMessage {
   scope?: RuntimeScopeCarrier;
 }
 
+export interface AdapterThreadClaimEffect {
+  threadId: string;
+  channel?: string;
+}
+
+export interface AdapterCapabilityEffects {
+  claimThread?: AdapterThreadClaimEffect | ReadonlyArray<AdapterThreadClaimEffect>;
+}
+
+export interface AdapterCapabilityRequest {
+  capability: string;
+  params: Record<string, unknown>;
+}
+
+export interface AdapterCapabilityResult {
+  result: Record<string, unknown>;
+  effects?: AdapterCapabilityEffects;
+}
+
 export interface MessageAdapter {
   name: string;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   onInbound(handler: (msg: InboundMessage) => void): void;
   send(msg: OutboundMessage): Promise<void>;
+  invokeCapability?(request: AdapterCapabilityRequest): Promise<AdapterCapabilityResult>;
 }

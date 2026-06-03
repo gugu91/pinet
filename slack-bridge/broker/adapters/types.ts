@@ -1,1 +1,7 @@
-export type { InboundMessage, OutboundMessage, MessageAdapter } from "@gugu910/pi-transport-core";
+export type {
+  AdapterCapabilityRequest,
+  AdapterCapabilityResult,
+  InboundMessage,
+  OutboundMessage,
+  MessageAdapter,
+} from "@gugu910/pi-transport-core";

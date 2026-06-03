@@ -636,10 +636,14 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     client.disconnect();
     await server.stop();
 
-    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 }, undefined, {
-      heartbeatTimeoutMs: 50,
-      pruneIntervalMs: 10,
-    });
+    server = new BrokerSocketServer(
+      db,
+      { type: "tcp", host: "127.0.0.1", port: 0 },
+      {
+        heartbeatTimeoutMs: 50,
+        pruneIntervalMs: 10,
+      },
+    );
     await server.start();
 
     const info = server.getConnectInfo();
@@ -916,36 +920,89 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(after).toHaveLength(0);
   });
 
-  it("slack.proxy returns error when not configured", async () => {
-    await client.register("proxy-tester", "🔌");
-    await expect(client.slackProxy("chat.postMessage", { channel: "C1" })).rejects.toThrow(
-      "slack.proxy is not configured",
-    );
+  it("adapter.capability returns error when the adapter does not expose the capability", async () => {
+    await client.register("capability-tester", "🔌");
+    await expect(
+      client.invokeAdapterCapability("slack", "api.call", {
+        method: "chat.postMessage",
+        params: { channel: "C1" },
+      }),
+    ).rejects.toThrow("Adapter slack does not implement capability api.call");
   });
 
-  it("slack.proxy works when configured", async () => {
-    // Stop and recreate server with slack proxy function
-    client.disconnect();
-    await server.stop();
+  it("dispatches adapter.capability through the registered transport adapter", async () => {
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability: async ({ capability, params }) => ({
+          result: { ok: true, capability, echo: params },
+        }),
+      },
+    ]);
 
-    const slackProxy = async (method: string, params: Record<string, unknown>) => {
-      return { ok: true, method, echo: params };
-    };
+    await client.register("capability-agent", "🔌");
 
-    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 }, slackProxy);
-    await server.start();
+    const result = await client.invokeAdapterCapability("slack", "api.call", {
+      method: "conversations.history",
+      params: { channel: "C123" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.capability).toBe("api.call");
+    expect(
+      ((result.echo as Record<string, unknown>).params as Record<string, unknown>).channel,
+    ).toBe("C123");
+  });
 
-    const info = server.getConnectInfo();
-    if (info.type !== "tcp") throw new Error("Expected TCP");
-    client = new BrokerClient({ host: info.host, port: info.port });
-    await client.connect();
+  it("keeps slackProxy as a compatibility wrapper over adapter.capability", async () => {
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability: async ({ capability, params }) => ({
+          result: { ok: true, capability, echo: params },
+        }),
+      },
+    ]);
 
     await client.register("proxy-agent", "🔌");
 
     const result = await client.slackProxy("conversations.history", { channel: "C123" });
     expect(result.ok).toBe(true);
-    expect(result.method).toBe("conversations.history");
-    expect((result.echo as Record<string, unknown>).channel).toBe("C123");
+    expect(result.capability).toBe("api.call");
+    expect((result.echo as Record<string, unknown>).method).toBe("conversations.history");
+  });
+
+  it("accepts legacy slack.proxy RPCs as a server-side Slack adapter alias", async () => {
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability: async ({ capability, params }) => ({
+          result: { ok: true, capability, echo: params },
+        }),
+      },
+    ]);
+
+    await client.register("legacy-proxy-agent", "🔌");
+    const rpcClient = client as unknown as {
+      request: (
+        method: string,
+        params: Record<string, unknown>,
+      ) => Promise<Record<string, unknown>>;
+    };
+
+    const result = await rpcClient.request("slack.proxy", {
+      method: "conversations.history",
+      params: { channel: "C123" },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.capability).toBe("api.call");
+    expect((result.echo as Record<string, unknown>).method).toBe("conversations.history");
+    expect(
+      ((result.echo as Record<string, unknown>).params as Record<string, unknown>).channel,
+    ).toBe("C123");
   });
 
   it("message.send delivers through the registered transport adapter", async () => {
@@ -1133,21 +1190,31 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     await expect(client.resolveThread("missing-thread")).resolves.toBeNull();
   });
 
-  it("slack.proxy chat.postMessage auto-claims thread for calling agent", async () => {
+  it("adapter.capability effects auto-claim thread for calling agent", async () => {
     client.disconnect();
     await server.stop();
 
-    const slackProxy = async (_method: string, params: Record<string, unknown>) => {
-      // Simulate Slack chat.postMessage response
-      return {
-        ok: true,
-        ts: "new-msg-ts",
-        channel: params.channel,
-        message: { ts: "new-msg-ts", text: params.text },
-      };
-    };
-
-    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 }, slackProxy);
+    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability: async ({ params }) => {
+          const body = params.params as Record<string, unknown>;
+          return {
+            result: {
+              ok: true,
+              ts: "new-msg-ts",
+              channel: body.channel,
+              message: { ts: "new-msg-ts", text: body.text },
+            },
+            effects: {
+              claimThread: { threadId: "new-msg-ts", channel: body.channel as string },
+            },
+          };
+        },
+      },
+    ]);
     await server.start();
 
     const info = server.getConnectInfo();
@@ -1169,20 +1236,31 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(thread!.channel).toBe("C-AUTO");
   });
 
-  it("slack.proxy chat.postMessage with thread_ts claims the existing thread", async () => {
+  it("adapter.capability effects claim the existing thread", async () => {
     client.disconnect();
     await server.stop();
 
-    const slackProxy = async (_method: string, params: Record<string, unknown>) => {
-      return {
-        ok: true,
-        ts: "reply-ts",
-        channel: params.channel,
-        message: { ts: "reply-ts", text: params.text },
-      };
-    };
-
-    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 }, slackProxy);
+    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability: async ({ params }) => {
+          const body = params.params as Record<string, unknown>;
+          return {
+            result: {
+              ok: true,
+              ts: "reply-ts",
+              channel: body.channel,
+              message: { ts: "reply-ts", text: body.text },
+            },
+            effects: {
+              claimThread: { threadId: "existing-thread-ts", channel: body.channel as string },
+            },
+          };
+        },
+      },
+    ]);
     await server.start();
 
     const info = server.getConnectInfo();
@@ -1209,15 +1287,20 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.getThread("reply-ts")).toBeNull();
   });
 
-  it("slack.proxy non-postMessage methods do not claim threads", async () => {
+  it("adapter.capability calls without claim effects do not claim threads", async () => {
     client.disconnect();
     await server.stop();
 
-    const slackProxy = async (method: string, _params: Record<string, unknown>) => {
-      return { ok: true, method, ts: "some-ts" };
-    };
-
-    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 }, slackProxy);
+    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability: async ({ params }) => ({
+          result: { ok: true, method: params.method, ts: "some-ts" },
+        }),
+      },
+    ]);
     await server.start();
 
     const info = server.getConnectInfo();
@@ -1646,10 +1729,14 @@ describe("broker integration — mesh auth", () => {
     dir = tmpDir();
     db = new BrokerDB(path.join(dir, "auth.db"));
     db.initialize();
-    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 }, undefined, {
-      meshSecret: "shared-secret",
-      authTimeoutMs: 100,
-    });
+    server = new BrokerSocketServer(
+      db,
+      { type: "tcp", host: "127.0.0.1", port: 0 },
+      {
+        meshSecret: "shared-secret",
+        authTimeoutMs: 100,
+      },
+    );
     await server.start();
   });
 
