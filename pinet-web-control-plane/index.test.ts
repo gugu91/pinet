@@ -252,6 +252,21 @@ describe("createPinetWebControlPlane", () => {
     expect(controlPlane.isStarted()).toBe(false);
   });
 
+  it("can start after later broker leadership promotion", async () => {
+    let brokerLeader = false;
+    const controlPlane = createPinetWebControlPlane({
+      getSettings: () => ({ enabled: true, port: 0, password: "secret" }),
+      buildDashboardSnapshot: async () => snapshot,
+      isBrokerLeader: () => brokerLeader,
+    });
+    servers.push(controlPlane);
+
+    await expect(controlPlane.start()).resolves.toBeNull();
+    brokerLeader = true;
+    await expect(controlPlane.start()).resolves.toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+    expect(controlPlane.isStarted()).toBe(true);
+  });
+
   it("stops serving if broker ownership is lost", async () => {
     let brokerLeader = true;
     const controlPlane = createPinetWebControlPlane({

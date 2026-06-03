@@ -824,7 +824,12 @@ function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const CONTROL_PLANE_RECONCILE_INTERVAL_MS = 2_000;
+
 export default function (pi: ExtensionAPI) {
+  let reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  let lastNotifiedUrl: string | null = null;
+  let lastStartError: string | null = null;
   const controlPlane = createPinetWebControlPlane({
     getSettings: () => loadSettings(),
     buildDashboardSnapshot: async () => {
@@ -834,24 +839,53 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", async (_event, ctx: ExtensionContext) => {
+  async function reconcile(ctx: ExtensionContext): Promise<void> {
     const settings = loadSettings();
     if (!settings.enabled) {
+      lastNotifiedUrl = null;
+      await controlPlane.stop();
+      return;
+    }
+
+    if (controlPlane.isStarted()) {
       return;
     }
 
     try {
       const startedUrl = await controlPlane.start();
-      if (startedUrl) {
+      lastStartError = null;
+      if (startedUrl && startedUrl !== lastNotifiedUrl) {
+        lastNotifiedUrl = startedUrl;
         ctx.ui.notify(`Pinet web control plane listening at ${startedUrl}`, "info");
       }
     } catch (err) {
-      console.error(`[pinet-web-control-plane] start failed: ${msg(err)}`);
-      ctx.ui.notify(`Pinet web control plane unavailable: ${msg(err)}`, "warning");
+      const message = msg(err);
+      if (message !== lastStartError) {
+        lastStartError = message;
+        console.error(`[pinet-web-control-plane] start failed: ${message}`);
+        ctx.ui.notify(`Pinet web control plane unavailable: ${message}`, "warning");
+      }
     }
+  }
+
+  pi.on("session_start", async (_event, ctx: ExtensionContext) => {
+    await reconcile(ctx);
+    if (reconcileTimer) {
+      clearInterval(reconcileTimer);
+    }
+    reconcileTimer = setInterval(() => {
+      void reconcile(ctx).catch((err: unknown) => {
+        console.error(`[pinet-web-control-plane] reconcile failed: ${msg(err)}`);
+      });
+    }, CONTROL_PLANE_RECONCILE_INTERVAL_MS);
+    reconcileTimer.unref?.();
   });
 
   pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
+    if (reconcileTimer) {
+      clearInterval(reconcileTimer);
+      reconcileTimer = null;
+    }
     try {
       await controlPlane.stop();
     } catch (err) {

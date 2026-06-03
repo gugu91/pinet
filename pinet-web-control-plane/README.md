@@ -58,7 +58,7 @@ This is a first-cut local operations dashboard:
 - loopback-only; non-loopback bind hosts are rejected
 - Basic Auth required
 - read-only HTTP routes only
-- broker-process-only by default: the extension binds only when the current process owns the Pinet broker leader lock, closes its listener when that ownership is lost, and requests fail closed during handoff
+- broker-process-only by default: the extension binds only when the current process owns the Pinet broker leader lock, periodically retries after `/pinet start`/broker promotion, closes its listener when ownership is lost, and requests fail closed during handoff
 - no process-control endpoints
 - no Slack tokens, mesh secrets, prompt text, message bodies, lane summaries, snooze reasons, or raw free-text control data
 - dashboard strings are HTML-escaped and redacted for common Slack/app/Bearer/JSON/env token-shaped secrets
