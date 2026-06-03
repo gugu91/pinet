@@ -54,6 +54,7 @@ import {
   type SinglePlayerThreadInfo,
 } from "./single-player-runtime.js";
 import { createBrokerRuntime } from "./broker-runtime.js";
+import { createSlackPinetRuntimeAdapterFactory } from "./slack-pinet-runtime-adapter.js";
 import { SlackActivityLogger } from "./activity-log.js";
 import { createBrokerDeliveryState, queueBrokerInboxIds } from "./broker-delivery.js";
 import { buildBrokerControlPlaneDashboardSnapshot } from "./broker/control-plane-dashboard.js";
@@ -617,13 +618,22 @@ export default function (pi: ExtensionAPI) {
   });
   const { resolveBrokerThreadOwnerHint } = brokerThreadOwnerHints;
 
-  const brokerRuntime = createBrokerRuntime({
+  const handleBrokerAppHomeOpened = async (userId: string, ctx: ExtensionContext) => {
+    await pinetHomeTabs.publishCurrentPinetHomeTabSafely(userId, ctx, new Date().toISOString());
+  };
+  const slackPinetAdapterFactory = createSlackPinetRuntimeAdapterFactory({
     getSettings: () => settings,
     getBotToken: () => botToken!,
     getAppToken: () => appToken!,
     getAllowedUsers: () => allowedUsers,
     shouldAllowAllWorkspaceUsers: () =>
       resolveAllowAllWorkspaceUsers(settings, process.env.SLACK_ALLOW_ALL_WORKSPACE_USERS),
+    onAppHomeOpened: handleBrokerAppHomeOpened,
+  });
+
+  const brokerRuntime = createBrokerRuntime({
+    getSettings: () => settings,
+    getAllowedUsers: () => allowedUsers,
     getBrokerStableId: () => brokerStableId,
     setBrokerStableId: (stableId) => {
       brokerStableId = stableId;
@@ -702,9 +712,6 @@ export default function (pi: ExtensionAPI) {
         console.error(`[slack-bridge] broker inbound routing failed: ${msg(err)}`);
       }
     },
-    onAppHomeOpened: async (userId, ctx) => {
-      await pinetHomeTabs.publishCurrentPinetHomeTabSafely(userId, ctx, new Date().toISOString());
-    },
     pushInboxMessages: (messages) => {
       inbox.push(...messages);
     },
@@ -743,6 +750,7 @@ export default function (pi: ExtensionAPI) {
       ),
     buildCurrentDashboardSnapshot: async (openedAt) =>
       buildCurrentBrokerControlPlaneDashboardSnapshot(openedAt),
+    createAdapterBindings: [slackPinetAdapterFactory],
     onMaintenanceResult: (ctx, { result, previousSignature, signature }) => {
       if (signature && signature !== previousSignature) {
         ctx.ui.notify(`Pinet broker: ${result.anomalies.join("; ")}`, "warning");

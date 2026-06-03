@@ -3,7 +3,6 @@ import type { BrokerControlPlaneDashboardSnapshot } from "./broker/control-plane
 import {
   createBrokerRuntime,
   resolveConfiguredBrokerSkinTheme,
-  shouldRouteKnownSlackThread,
   type BrokerRuntimeDeps,
 } from "./broker-runtime.js";
 import type { SlackActivityLogger } from "./activity-log.js";
@@ -11,10 +10,7 @@ import type { SlackActivityLogger } from "./activity-log.js";
 function createDeps(overrides: Partial<BrokerRuntimeDeps> = {}): BrokerRuntimeDeps {
   return {
     getSettings: () => ({}),
-    getBotToken: () => "xoxb-test",
-    getAppToken: () => "xapp-test",
     getAllowedUsers: () => null,
-    shouldAllowAllWorkspaceUsers: () => false,
     getBrokerStableId: () => "broker-stable-id",
     setBrokerStableId: vi.fn(),
     getActiveSkinTheme: () => null,
@@ -27,7 +23,6 @@ function createDeps(overrides: Partial<BrokerRuntimeDeps> = {}): BrokerRuntimeDe
       () => "broker" as ReturnType<BrokerRuntimeDeps["getMeshRoleFromMetadata"]>,
     ) as BrokerRuntimeDeps["getMeshRoleFromMetadata"],
     handleInboundMessage: vi.fn(),
-    onAppHomeOpened: vi.fn(),
     pushInboxMessages: vi.fn(),
     updateBadge: vi.fn(),
     maybeDrainInboxIfIdle: vi.fn(() => false),
@@ -70,54 +65,10 @@ function createDeps(overrides: Partial<BrokerRuntimeDeps> = {}): BrokerRuntimeDe
       (input) => input as unknown as BrokerControlPlaneDashboardSnapshot,
     ),
     buildCurrentDashboardSnapshot: vi.fn(async () => null),
+    createAdapterBindings: [],
     ...overrides,
   };
 }
-
-describe("broker-runtime known Slack thread routing", () => {
-  it("does not route legacy DM assistant threads without persisted context after cache loss", () => {
-    expect(
-      shouldRouteKnownSlackThread({
-        source: "slack",
-        channel: "D123",
-        metadata: null,
-      }),
-    ).toBe(false);
-  });
-
-  it("routes DM assistant threads once Slack context is persisted", () => {
-    expect(
-      shouldRouteKnownSlackThread({
-        source: "slack",
-        channel: "D123",
-        metadata: {
-          slackThreadContext: {
-            channelId: "C_TEAM",
-            scope: {
-              workspace: {
-                provider: "slack",
-                source: "compatibility",
-                compatibilityKey: "default",
-                channelId: "C_TEAM",
-              },
-              instance: { source: "compatibility", compatibilityKey: "default" },
-            },
-          },
-        },
-      }),
-    ).toBe(true);
-  });
-
-  it("continues routing non-DM Slack threads without extra context", () => {
-    expect(
-      shouldRouteKnownSlackThread({
-        source: "slack",
-        channel: "C123",
-        metadata: null,
-      }),
-    ).toBe(true);
-  });
-});
 
 describe("broker-runtime", () => {
   it("resolves broker skin strictly from config with default fallback", () => {
