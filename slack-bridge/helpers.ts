@@ -41,6 +41,14 @@ export interface SlackBridgeSettings {
   agentEmoji?: string;
   meshSecret?: string;
   meshSecretPath?: string;
+  webControlPlane?: {
+    enabled?: boolean;
+    host?: string;
+    port?: number;
+    username?: string;
+    password?: string;
+    passwordEnv?: string;
+  };
   imessage?: {
     enabled?: boolean;
   };

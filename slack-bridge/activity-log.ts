@@ -81,7 +81,7 @@ export function redactSensitiveText(value: string): string {
   let redacted = normalizeWhitespace(value);
 
   const replacements: Array<[RegExp, string]> = [
-    [/xox[baprs]-[A-Za-z0-9-]+/g, REDACTED],
+    [/(?:xox[baprs]|xapp)-[A-Za-z0-9-]+/g, REDACTED],
     [/xoxe\.[A-Za-z0-9.-]+/g, REDACTED],
     [/(Bearer\s+)[^\s]+/gi, `$1${REDACTED}`],
     [
@@ -92,7 +92,7 @@ export function redactSensitiveText(value: string): string {
       /("(?:token|password|secret|api[_-]?key|authorization)"\s*:\s*")([^"]+)(")/gi,
       `$1${REDACTED}$3`,
     ],
-    [/(SLACK_[A-Z_]+)=([^\s]+)/g, `$1=${REDACTED}`],
+    [/(\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*\b)=([^\s]+)/g, `$1=${REDACTED}`],
   ];
 
   for (const [pattern, replacement] of replacements) {

@@ -135,6 +135,13 @@ Behavior and precedence:
     "ralphSnoozeAfterEmptyCycles": 0,
     "ralphSnoozeDurationMs": 1800000,
     "meshSecretPath": "/Users/alice/.config/pi/pinet.secret",
+    "webControlPlane": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 17771,
+      "username": "pinet",
+      "passwordEnv": "PINET_WEB_CONTROL_PLANE_PASSWORD"
+    },
     "suggestedPrompts": [{ "title": "Status", "message": "What are you working on?" }],
     "security": {
       "readOnly": false,
@@ -168,6 +175,7 @@ Slack access is now **default-deny** unless you configure one of these explicitl
 | `skinTheme`                    | no       | Pinet presentation skin selected at broker startup/reload (`default`, `foundation`, `cosmere`, or free-form)          |
 | `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                     |
 | `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file               |
+| `webControlPlane`              | no       | Optional broker-only read-only web dashboard; disabled by default and requires Basic Auth credentials                 |
 | `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                    |
 | `security.readOnly`            | no       | Runtime-block write-capable tools for Slack-triggered turns, including core tools like `bash`, `edit`, and `write`    |
 | `security.requireConfirmation` | no       | Runtime-require Slack approval before matching tools execute; core tools need a specific Slack thread context         |
@@ -473,6 +481,8 @@ Scheduled Pinet wake-ups use the same durable read surface: due wake-ups are per
 Durable lane metadata is stored in SQLite and can be inspected/updated with `pinet action=lanes`. PM-mode lanes can record the accountable follower/PM, implementation lead, participant roles (`pm`, `lead`, `implementer`, `reviewer`, `second_pass_reviewer`, etc.), linked issue/PR, state, and summary. The `detached` lane state means a lane is manually supervised by a human; broker/RALPH/status surfaces keep it visible but should not treat it as normal auto-reassignment work without explicit human/broker action.
 
 Durable local port leases are stored in SQLite and can be managed with `pinet action=ports`. Use `op=acquire` with `purpose` and `ttl_ms` to reserve either a requested `port` (for example `3000`) or the first free port in `min_port..max_port` (default `49152..65535`, host default `127.0.0.1`). Use `op=renew` with `lease_id` and `ttl_ms`, `op=release`, `op=status`, `op=list`, or `op=expire`. Follower RPC access is scoped to the caller-owned leases; broker-local maintenance can still expire all stale leases. Active leases are unique by `(host, port)`; broker maintenance expires stale leases conservatively, and process-kill behavior should be layered on explicit cleanup hooks rather than hidden in lease acquisition.
+
+Optional web control plane: set `webControlPlane.enabled: true` on the broker and provide a Basic Auth password via `webControlPlane.password`, `webControlPlane.passwordEnv`, or `PINET_WEB_CONTROL_PLANE_PASSWORD`. The first cut is read-only (`GET`/`HEAD` only) and loopback-only (`127.0.0.1`, `::1`, or `localhost`); non-loopback hosts are rejected rather than exposing broker state on the LAN. It serves `/` as an auto-refreshing dashboard and `/api/dashboard` (or `/dashboard.json`) as JSON from a web-safe broker dashboard snapshot that drops snooze reason/source fields, removes lane free-text summaries, and redacts secret-shaped strings. It does not expose Slack tokens, mesh secrets, prompts, or process-control endpoints.
 
 Broker-mode ghost cleanup is deliberately conservative. The broker stores follower PIDs in the agent registry, but it only sends real process signals for ghosts that registered with broker-managed launch metadata (`PINET_BROKER_MANAGED=1`) and still verify as Pi follower processes. Reaping sends `SIGTERM` first and schedules a bounded `SIGKILL` only if the same verified broker-managed process remains; unmarked or mismatched PIDs are never killed.
 
