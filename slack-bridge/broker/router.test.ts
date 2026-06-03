@@ -316,6 +316,38 @@ describe("MessageRouter — route", () => {
     expect(db.threads.get("t-100")?.ownerAgent).toBe("hippo");
   });
 
+  it("uses a neutral transport owner hint for an existing unowned non-Slack thread", () => {
+    const hippo = makeAgent({ id: "hippo", name: "Pixel Lime Hippo", stableId: "stable-hippo" });
+    const cobra = makeAgent({ id: "cobra", name: "Aurora Pearl Cobra", stableId: "stable-cobra" });
+    db.agents = [hippo, cobra];
+    db.threads.set(
+      "chat:alice",
+      makeThread({
+        threadId: "chat:alice",
+        source: "imessage",
+        channel: "chat:alice",
+        ownerAgent: null,
+      }),
+    );
+
+    const decision = router.route(
+      makeMessage({
+        source: "imessage",
+        threadId: "chat:alice",
+        channel: "chat:alice",
+        userId: "+15551234567",
+        text: "please keep this with the current owner",
+        timestamp: "msg-2",
+        metadata: {
+          threadOwnerHint: { stableId: "stable-hippo", agentName: "Pixel Lime Hippo" },
+        },
+      }),
+    );
+
+    expect(decision).toEqual({ action: "deliver", agentId: "hippo" });
+    expect(db.threads.get("chat:alice")?.ownerAgent).toBe("hippo");
+  });
+
   it("does not leak a known-thread reply to a channel assignment when ownership is missing", () => {
     const hippo = makeAgent({ id: "hippo", name: "Pixel Lime Hippo" });
     const cobra = makeAgent({ id: "cobra", name: "Aurora Pearl Cobra" });

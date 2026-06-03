@@ -663,6 +663,7 @@ export default function (pi: ExtensionAPI) {
                 ...message,
                 metadata: {
                   ...(message.metadata ?? {}),
+                  threadOwnerHint: ownerHint,
                   ...(ownerHint.agentOwner ? { threadOwnerAgentOwner: ownerHint.agentOwner } : {}),
                   ...(ownerHint.agentName ? { threadOwnerAgentName: ownerHint.agentName } : {}),
                 },

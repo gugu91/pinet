@@ -634,6 +634,77 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("deduplicates non-Slack transport messages by neutral transport identity", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("chat:alice", "imessage", "chat:alice", null);
+
+      const first = db.insertMessage(
+        "chat:alice",
+        "imessage",
+        "inbound",
+        "+15551234567",
+        "hello from iMessage",
+        ["agent-1"],
+        { transportChannelId: "chat:alice", transportTimestamp: "msg-1" },
+      );
+      const replay = db.insertMessage(
+        "chat:alice",
+        "imessage",
+        "inbound",
+        "+15551234567",
+        "hello from iMessage replay",
+        ["agent-1", "agent-2"],
+        { transportChannelId: "chat:alice", transportTimestamp: "msg-1" },
+      );
+
+      expect(replay.id).toBe(first.id);
+      expect(first.externalId).toBe("chat:alice:msg-1");
+      expect(first.externalTs).toBe("msg-1");
+      expect(db.getInbox("agent-1")).toHaveLength(1);
+      expect(db.getInbox("agent-2")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("scopes timestamp-only transport identities by thread", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("chat:alice", "imessage", "chat:alice", null);
+      db.createThread("chat:bob", "imessage", "chat:bob", null);
+
+      const alice = db.insertMessage(
+        "chat:alice",
+        "imessage",
+        "inbound",
+        "+15551234567",
+        "hello from Alice",
+        ["agent-1"],
+        { timestamp: "msg-1" },
+      );
+      const bob = db.insertMessage(
+        "chat:bob",
+        "imessage",
+        "inbound",
+        "+15557654321",
+        "hello from Bob",
+        ["agent-2"],
+        { timestamp: "msg-1" },
+      );
+
+      expect(bob.id).not.toBe(alice.id);
+      expect(alice.externalId).toBe("chat:alice:msg-1");
+      expect(bob.externalId).toBe("chat:bob:msg-1");
+      expect(db.getInbox("agent-1")).toHaveLength(1);
+      expect(db.getInbox("agent-2")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("stamps queued unrouted Slack backlog mail with an explicit class", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);
@@ -1014,6 +1085,36 @@ describe("BrokerDB message sync identity", () => {
       expect(read.unreadCountBefore).toBe(0);
       expect(read.unreadThreads).toEqual([]);
       expect(db.getInbox("agent-a")).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("applies thread-affinity pruning to non-Slack transport inbox rows", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("chat:alice", "imessage", "chat:alice", "agent-a");
+      db.queueMessage("agent-a", {
+        source: "imessage",
+        threadId: "chat:alice",
+        channel: "chat:alice",
+        userId: "+15551234567",
+        text: "new reply in chat",
+        timestamp: "msg-1",
+      });
+      db.queueMessage("agent-b", {
+        source: "imessage",
+        threadId: "chat:alice",
+        channel: "chat:alice",
+        userId: "+15551234567",
+        text: "new reply in chat fanout",
+        timestamp: "msg-2",
+      });
+
+      expect(db.getInbox("agent-a")).toHaveLength(1);
+      expect(db.getInbox("agent-b")).toHaveLength(0);
+      expect(db.getUnreadInboxCount("agent-b")).toBe(0);
     } finally {
       db.close();
     }
