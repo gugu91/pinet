@@ -255,7 +255,14 @@ function getStringMetadataValue(
   return null;
 }
 
+const INTERNAL_AGENT_SOURCE = "agent";
+
+function isExternalTransportSource(source: string): boolean {
+  return source.trim().length > 0 && source !== INTERNAL_AGENT_SOURCE;
+}
+
 function deriveMessageSyncIdentity(
+  threadId: string,
   source: string,
   metadata?: Record<string, unknown>,
 ): { externalId: string | null; externalTs: string | null } {
@@ -275,15 +282,30 @@ function deriveMessageSyncIdentity(
     return { externalId: explicitExternalId, externalTs: explicitExternalTs };
   }
 
-  if (source === "slack") {
-    const channel = getStringMetadataValue(metadata, ["channel", "channelId", "channel_id"]);
-    const timestamp = getStringMetadataValue(metadata, ["timestamp", "ts"]);
-    if (timestamp && channel) {
-      return { externalId: `${channel}:${timestamp}`, externalTs: timestamp };
-    }
-    if (timestamp) {
-      return { externalId: timestamp, externalTs: timestamp };
-    }
+  if (!isExternalTransportSource(source)) {
+    return { externalId: null, externalTs: explicitExternalTs };
+  }
+
+  const channel = getStringMetadataValue(metadata, [
+    "transportChannelId",
+    "transport_channel_id",
+    "conversationId",
+    "conversation_id",
+    "channel",
+    "channelId",
+    "channel_id",
+  ]);
+  const timestamp = getStringMetadataValue(metadata, [
+    "transportTimestamp",
+    "transport_timestamp",
+    "timestamp",
+    "ts",
+  ]);
+  if (timestamp && channel) {
+    return { externalId: `${channel}:${timestamp}`, externalTs: timestamp };
+  }
+  if (timestamp && threadId.trim().length > 0) {
+    return { externalId: `${threadId}:${timestamp}`, externalTs: timestamp };
   }
 
   return { externalId: null, externalTs: explicitExternalTs };
@@ -855,15 +877,15 @@ function addThreadMetadataColumn(db: DatabaseSync): void {
 
 function backfillMessageSyncIdentities(db: DatabaseSync): void {
   const rows = db
-    .prepare("SELECT id, source, metadata FROM messages WHERE metadata IS NOT NULL")
-    .all() as Array<{ id: number; source: string; metadata: string | null }>;
+    .prepare("SELECT id, thread_id, source, metadata FROM messages WHERE metadata IS NOT NULL")
+    .all() as Array<{ id: number; thread_id: string; source: string; metadata: string | null }>;
   const update = db.prepare("UPDATE messages SET external_id = ?, external_ts = ? WHERE id = ?");
 
   for (const row of rows) {
     if (!row.metadata) continue;
     try {
       const metadata = JSON.parse(row.metadata) as Record<string, unknown>;
-      const identity = deriveMessageSyncIdentity(row.source, metadata);
+      const identity = deriveMessageSyncIdentity(row.thread_id, row.source, metadata);
       if (identity.externalId || identity.externalTs) {
         update.run(identity.externalId, identity.externalTs, row.id);
       }
@@ -2246,7 +2268,7 @@ export class BrokerDB implements BrokerDBInterface {
            FROM inbox i
            JOIN messages m ON m.id = i.message_id
            WHERE m.thread_id = ?
-             AND m.source = 'slack'
+             AND m.source <> 'agent'
              AND m.direction = 'inbound'
              AND i.read_at IS NULL`,
         )
@@ -2444,7 +2466,7 @@ export class BrokerDB implements BrokerDBInterface {
         .get(row.message_id) as
         | { source: string; direction: string; metadata: string | null }
         | undefined;
-      if (message?.source === "slack" && message.direction === "inbound") {
+      if (message && isExternalTransportSource(message.source) && message.direction === "inbound") {
         let metadata: Record<string, unknown> = {};
         if (message.metadata) {
           try {
@@ -2628,7 +2650,7 @@ export class BrokerDB implements BrokerDBInterface {
 
   getPendingInboxCount(agentId: string): number {
     return this.withTransaction(() => {
-      this.dropStaleSlackInboxRows(agentId);
+      this.dropStaleTransportInboxRows(agentId);
       const db = this.getDb();
       const row = db
         .prepare("SELECT COUNT(*) AS count FROM inbox WHERE agent_id = ? AND delivered = 0")
@@ -3276,7 +3298,7 @@ export class BrokerDB implements BrokerDBInterface {
 
   private buildInboundMessageMetadata(message: InboundMessage): Record<string, unknown> {
     const threadOwner =
-      message.source === "slack" && message.threadId
+      isExternalTransportSource(message.source) && message.threadId
         ? this.getThread(message.threadId)?.ownerAgent
         : null;
     return this.withInboundMailClassMetadata(message, {
@@ -3295,7 +3317,7 @@ export class BrokerDB implements BrokerDBInterface {
     message: InboundMessage,
     metadata: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (message.source !== "slack") {
+    if (!isExternalTransportSource(message.source)) {
       return metadata;
     }
 
@@ -3345,7 +3367,7 @@ export class BrokerDB implements BrokerDBInterface {
     ]);
     const externalId =
       referencedExternalId ??
-      (referencedSource === "slack" && referencedChannel && referencedMessageTs
+      (referencedChannel && referencedMessageTs
         ? `${referencedChannel}:${referencedMessageTs}`
         : null);
     if (!externalId) return;
@@ -3477,7 +3499,7 @@ export class BrokerDB implements BrokerDBInterface {
     const db = this.getDb();
     const now = new Date().toISOString();
     const metaJson = metadata ? JSON.stringify(metadata) : null;
-    const identity = deriveMessageSyncIdentity(source, metadata);
+    const identity = deriveMessageSyncIdentity(threadId, source, metadata);
 
     const info = db
       .prepare(
@@ -3591,7 +3613,7 @@ export class BrokerDB implements BrokerDBInterface {
     return row ? rowToBrokerMessage(row) : null;
   }
 
-  private dropStaleSlackInboxRows(agentId: string): number {
+  private dropStaleTransportInboxRows(agentId: string): number {
     const db = this.getDb();
     const rows = db
       .prepare(
@@ -3604,7 +3626,7 @@ export class BrokerDB implements BrokerDBInterface {
          JOIN threads t ON t.thread_id = m.thread_id
          WHERE i.agent_id = ?
            AND (i.delivered = 0 OR i.read_at IS NULL)
-           AND m.source = 'slack'
+           AND m.source <> 'agent'
            AND m.direction = 'inbound'
            AND t.owner_agent IS NOT NULL`,
       )
@@ -3644,7 +3666,7 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   getInbox(agentId: string, limit = 50): { entry: InboxEntry; message: BrokerMessage }[] {
-    this.dropStaleSlackInboxRows(agentId);
+    this.dropStaleTransportInboxRows(agentId);
     const db = this.getDb();
 
     const rows = db
@@ -3706,7 +3728,7 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   readInbox(agentId: string, options: InboxReadOptions = {}): InboxReadResult {
-    this.dropStaleSlackInboxRows(agentId);
+    this.dropStaleTransportInboxRows(agentId);
     const db = this.getDb();
     const unreadOnly = options.unreadOnly ?? true;
     const markRead = options.markRead ?? true;
@@ -3833,7 +3855,7 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   getUnreadInboxCount(agentId: string): number {
-    this.dropStaleSlackInboxRows(agentId);
+    this.dropStaleTransportInboxRows(agentId);
     const db = this.getDb();
     const row = db
       .prepare("SELECT COUNT(*) AS count FROM inbox WHERE agent_id = ? AND read_at IS NULL")
@@ -3842,7 +3864,7 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   getUnreadThreadSummary(agentId: string, limit = 20): InboxThreadUnreadSummary[] {
-    this.dropStaleSlackInboxRows(agentId);
+    this.dropStaleTransportInboxRows(agentId);
     const db = this.getDb();
     const clampedLimit = Math.min(Math.max(Math.trunc(limit), 1), 100);
     const rows = db
