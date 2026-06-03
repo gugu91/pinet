@@ -105,6 +105,16 @@ importers:
         specifier: file:../transport-core
         version: link:../transport-core
 
+  pinet-web-control-plane:
+    dependencies:
+      "@gugu910/pi-broker-core":
+        specifier: file:../broker-core
+        version: link:../broker-core
+    devDependencies:
+      "@earendil-works/pi-coding-agent":
+        specifier: ^0.74.0
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
+
   slack-api:
     dependencies:
       "@slack/web-api":

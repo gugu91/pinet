@@ -12,16 +12,17 @@ interactive browsing and screenshots.
 
 ## Extensions
 
-| Package                                     | Description                                                                     |
-| ------------------------------------------- | ------------------------------------------------------------------------------- |
-| [`transport-core`](transport-core/)         | Transport-neutral message contracts shared across transport packages            |
-| [`browser-playwright`](browser-playwright/) | Supported Anthropic-sandbox browsing path; Playwright-first single browser tool |
-| [`slack-bridge`](slack-bridge/)             | Slack assistant app (Pinet) — broker mesh, inbox, canvases, deploy tooling      |
-| [`slack-api`](slack-api/)                   | Typed Slack Web API client + CLI generated from OpenAPI                         |
-| [`imessage-bridge`](imessage-bridge/)       | macOS/iMessage send-first transport package + readiness helpers                 |
-| [`nvim-bridge`](nvim-bridge/)               | Neovim editor context sync; PiComms disabled pending Pinet adapter replacement  |
-| [`neon-psql`](neon-psql/)                   | Config-driven Neon tunnel + `psql` tool                                         |
-| [`types`](types/)                           | Shared ambient type declarations                                                |
+| Package                                               | Description                                                                     |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------- |
+| [`transport-core`](transport-core/)                   | Transport-neutral message contracts shared across transport packages            |
+| [`browser-playwright`](browser-playwright/)           | Supported Anthropic-sandbox browsing path; Playwright-first single browser tool |
+| [`slack-bridge`](slack-bridge/)                       | Slack assistant app (Pinet) — broker mesh, inbox, canvases, deploy tooling      |
+| [`pinet-web-control-plane`](pinet-web-control-plane/) | Optional local read-only web dashboard for Pinet broker state                   |
+| [`slack-api`](slack-api/)                             | Typed Slack Web API client + CLI generated from OpenAPI                         |
+| [`imessage-bridge`](imessage-bridge/)                 | macOS/iMessage send-first transport package + readiness helpers                 |
+| [`nvim-bridge`](nvim-bridge/)                         | Neovim editor context sync; PiComms disabled pending Pinet adapter replacement  |
+| [`neon-psql`](neon-psql/)                             | Config-driven Neon tunnel + `psql` tool                                         |
+| [`types`](types/)                                     | Shared ambient type declarations                                                |
 
 ## Current state snapshot
 
@@ -123,8 +124,9 @@ package target.
 For local development, load individual extensions directly:
 
 ```bash
-ln -s "$(pwd)/slack-bridge"       ~/.pi/agent/extensions/slack-bridge
-ln -s "$(pwd)/nvim-bridge"        ~/.pi/agent/extensions/nvim-bridge
+ln -s "$(pwd)/slack-bridge"              ~/.pi/agent/extensions/slack-bridge
+ln -s "$(pwd)/pinet-web-control-plane"   ~/.pi/agent/extensions/pinet-web-control-plane
+ln -s "$(pwd)/nvim-bridge"               ~/.pi/agent/extensions/nvim-bridge
 ln -s "$(pwd)/neon-psql"          ~/.pi/agent/extensions/neon-psql
 ln -s "$(pwd)/browser-playwright" ~/.pi/agent/extensions/browser-playwright
 ```
@@ -164,6 +166,9 @@ extensions/
 │   ├── broker/         #   message routing, socket server, adapters
 │   ├── index.ts        #   extension entry point
 │   └── package.json    #   workspace package + pi manifest
+├── pinet-web-control-plane/ # @gugu910/pi-pinet-web-control-plane
+│   ├── index.ts        #   optional local read-only web dashboard extension
+│   └── package.json    #   standalone workspace package + pi manifest
 ├── slack-api/          # @gugu910/pi-slack-api
 │   ├── generated/      #   generated typed Slack Web API client
 │   ├── cli.ts          #   CLI wrapper around generated methods

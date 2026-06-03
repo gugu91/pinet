@@ -3,6 +3,7 @@ packages:
   - broker-core
   - browser-playwright
   - pinet-core
+  - pinet-web-control-plane
   - slack-bridge
   - slack-api
   - imessage-bridge

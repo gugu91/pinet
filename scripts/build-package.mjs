@@ -30,6 +30,13 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "pinet-web-control-plane": {
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   "imessage-bridge": {
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
     excludeFiles: new Set(),

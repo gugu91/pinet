@@ -10,7 +10,8 @@
       "./slack-bridge/index.ts",
       "./nvim-bridge/index.ts",
       "./neon-psql/index.ts",
-      "./browser-playwright/index.ts"
+      "./browser-playwright/index.ts",
+      "./pinet-web-control-plane/index.ts"
     ]
   },
   "scripts": {
@@ -53,6 +54,7 @@
     "broker-core",
     "browser-playwright",
     "pinet-core",
+    "pinet-web-control-plane",
     "slack-bridge",
     "slack-api",
     "imessage-bridge",

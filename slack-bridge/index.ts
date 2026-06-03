@@ -64,7 +64,6 @@ import { createPersistedRuntimeState } from "./persisted-runtime-state.js";
 import { createRuntimeAgentContext } from "./runtime-agent-context.js";
 import { createPinetActivityFormatting } from "./pinet-activity-formatting.js";
 import { createPinetControlPlaneDashboard } from "./pinet-control-plane-dashboard.js";
-import { createPinetWebControlPlane } from "./pinet-web-control-plane.js";
 import { createPinetMaintenanceDelivery } from "./pinet-maintenance-delivery.js";
 import { createPinetRemoteControlAcks } from "./pinet-remote-control-acks.js";
 import { createPinetRemoteControl } from "./pinet-remote-control.js";
@@ -539,10 +538,6 @@ export default function (pi: ExtensionAPI) {
     getRalphSnoozeStatus: () => brokerRuntime.getRalphSnoozeStatus(),
   });
   const { buildCurrentBrokerControlPlaneDashboardSnapshot } = pinetControlPlaneDashboard;
-  const pinetWebControlPlane = createPinetWebControlPlane({
-    getSettings: () => settings,
-    buildDashboardSnapshot: () => buildCurrentBrokerControlPlaneDashboardSnapshot(),
-  });
 
   // ─── Socket Mode (native WebSocket) ─────────────────
 
@@ -1057,9 +1052,6 @@ export default function (pi: ExtensionAPI) {
     options: { releaseIdentity: boolean },
   ): Promise<void> {
     flushPersist();
-    await pinetWebControlPlane.stop().catch((err: unknown) => {
-      console.error(`[slack-bridge] Pinet web control plane stop failed: ${msg(err)}`);
-    });
     await brokerRuntime.disconnect({ releaseIdentity: options.releaseIdentity });
 
     if (brokerClient) {
@@ -1343,28 +1335,6 @@ export default function (pi: ExtensionAPI) {
     }
 
     brokerRuntime.startObservability(ctx);
-    try {
-      const webControlPlaneUrl = await pinetWebControlPlane.start();
-      if (webControlPlaneUrl) {
-        ctx.ui.notify(`Pinet web control plane listening at ${webControlPlaneUrl}`, "info");
-        brokerRuntime.logActivity({
-          kind: "transport_readiness",
-          level: "actions",
-          title: "Pinet web control plane started",
-          summary: `${webControlPlaneUrl} (loopback, read-only, Basic Auth required)`,
-          tone: "info",
-        });
-      }
-    } catch (err) {
-      ctx.ui.notify(`Pinet web control plane unavailable: ${msg(err)}`, "warning");
-      brokerRuntime.logActivity({
-        kind: "transport_readiness",
-        level: "errors",
-        title: "Pinet web control plane unavailable",
-        summary: msg(err),
-        tone: "warning",
-      });
-    }
     setExtStatus(ctx, "ok");
     brokerRuntime.logActivity({
       kind: "broker_started",
