@@ -629,7 +629,12 @@ export async function buildDashboardSnapshotFromDbPath(
 
 export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): PinetWebControlPlane {
   let server: http.Server | null = null;
+  let leaderMonitor: ReturnType<typeof setInterval> | null = null;
   let url: string | null = null;
+
+  function hasBrokerLeadership(settings: ResolvedPinetWebControlPlaneSettings): boolean {
+    return deps.isBrokerLeader?.(settings) ?? isCurrentProcessBrokerLeader(settings.lockPath);
+  }
 
   async function handleRequest(
     req: http.IncomingMessage,
@@ -648,13 +653,7 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
       return;
     }
 
-    if (
-      resolvedSettings.requireBrokerLock &&
-      !(
-        deps.isBrokerLeader?.(resolvedSettings) ??
-        isCurrentProcessBrokerLeader(resolvedSettings.lockPath)
-      )
-    ) {
+    if (resolvedSettings.requireBrokerLock && !hasBrokerLeadership(resolvedSettings)) {
       writeResponse(
         res,
         503,
@@ -665,6 +664,11 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
         "application/json; charset=utf-8",
         { headOnly },
       );
+      res.once("finish", () => {
+        void stop().catch(() => {
+          /* best effort */
+        });
+      });
       return;
     }
 
@@ -720,6 +724,11 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
   }
 
   async function stop(): Promise<void> {
+    if (leaderMonitor) {
+      clearInterval(leaderMonitor);
+      leaderMonitor = null;
+    }
+
     const activeServer = server;
     if (!activeServer) {
       url = null;
@@ -746,13 +755,7 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
       return null;
     }
 
-    if (
-      resolvedSettings.requireBrokerLock &&
-      !(
-        deps.isBrokerLeader?.(resolvedSettings) ??
-        isCurrentProcessBrokerLeader(resolvedSettings.lockPath)
-      )
-    ) {
+    if (resolvedSettings.requireBrokerLock && !hasBrokerLeadership(resolvedSettings)) {
       await stop();
       return null;
     }
@@ -779,6 +782,16 @@ export function createPinetWebControlPlane(deps: PinetWebControlPlaneDeps): Pine
     });
 
     server = nextServer;
+    if (resolvedSettings.requireBrokerLock) {
+      leaderMonitor = setInterval(() => {
+        if (!hasBrokerLeadership(resolvedSettings)) {
+          void stop().catch(() => {
+            /* best effort */
+          });
+        }
+      }, 1_000);
+      leaderMonitor.unref?.();
+    }
     const address = nextServer.address() as AddressInfo;
     const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
     url = `http://${host}:${address.port}/`;

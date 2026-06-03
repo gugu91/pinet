@@ -271,6 +271,21 @@ describe("createPinetWebControlPlane", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: "web control plane is only available in the active broker process",
     });
+
+    for (let attempt = 0; attempt < 10 && controlPlane.isStarted(); attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    expect(controlPlane.isStarted()).toBe(false);
+
+    const handoffPort = Number(new URL(url!).port);
+    const newLeaderControlPlane = createPinetWebControlPlane({
+      getSettings: () => ({ enabled: true, port: handoffPort, password: "secret" }),
+      buildDashboardSnapshot: async () => snapshot,
+      isBrokerLeader: () => true,
+    });
+    servers.push(newLeaderControlPlane);
+
+    await expect(newLeaderControlPlane.start()).resolves.toBe(`http://127.0.0.1:${handoffPort}/`);
   });
 
   it("serves authenticated dashboard JSON", async () => {
