@@ -836,14 +836,13 @@ function addBrokerManagedTmuxPresence(agents: AgentDisplayInfo[]): AgentDisplayI
   const targets = agents.flatMap((agent) => {
     const session = getBrokerManagedTmuxSession(agent);
     if (!session || agent.pid == null) return [];
-    return [{ session, pid: agent.pid }];
+    return [{ id: agent.id, session, pid: agent.pid }];
   });
   if (targets.length === 0) return agents;
 
-  const presenceBySession = inspectBrokerManagedTmuxSessionPresence(targets);
+  const presenceByAgentId = inspectBrokerManagedTmuxSessionPresence(targets);
   return agents.map((agent) => {
-    const session = getBrokerManagedTmuxSession(agent);
-    const tmuxPresence = session ? presenceBySession.get(session) : undefined;
+    const tmuxPresence = presenceByAgentId.get(agent.id);
     return tmuxPresence ? { ...agent, tmuxPresence } : agent;
   });
 }

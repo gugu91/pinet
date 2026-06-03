@@ -145,4 +145,64 @@ describe("tmux presence helpers", () => {
     });
     expect(execFileSync).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps broker-managed presence keyed to each agent id for reused sessions", () => {
+    const execFileSync = vi
+      .fn()
+      .mockReturnValueOnce("101\n")
+      .mockReturnValueOnce("worker-one\t1\n")
+      .mockReturnValueOnce("worker-one\t10\t0\n");
+
+    const result = inspectBrokerManagedTmuxSessionPresence(
+      [
+        { id: "active-agent", session: "worker-one", pid: 101 },
+        { id: "stale-agent", session: "worker-one", pid: 202 },
+      ],
+      {
+        execFileSync,
+        now: () => 10_000,
+      },
+    );
+
+    expect(result.get("active-agent")).toMatchObject({
+      session: "worker-one",
+      status: "attached",
+      interactiveClientCount: 1,
+      latestInteractiveClientActivityAt: "1970-01-01T00:00:10.000Z",
+    });
+    expect(result.get("stale-agent")).toEqual({
+      session: "worker-one",
+      status: "unknown",
+      attachedClientCount: 0,
+      interactiveClientCount: 0,
+      controlClientCount: 0,
+      recentInteractiveClientCount: 0,
+      probedAt: "1970-01-01T00:00:10.000Z",
+      error: "tmux_session_not_verified_for_agent_pid",
+    });
+    expect(execFileSync).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports tmux probe failures separately from broker-managed pid mismatches", () => {
+    const execFileSync = vi.fn(() => {
+      throw new Error("tmux unavailable");
+    });
+
+    const result = inspectBrokerManagedTmuxSessionPresence([{ session: "worker-one", pid: 101 }], {
+      execFileSync,
+      now: () => 10_000,
+    });
+
+    expect(result.get("worker-one")).toEqual({
+      session: "worker-one",
+      status: "unknown",
+      attachedClientCount: 0,
+      interactiveClientCount: 0,
+      controlClientCount: 0,
+      recentInteractiveClientCount: 0,
+      probedAt: "1970-01-01T00:00:10.000Z",
+      error: "tmux_probe_failed",
+    });
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+  });
 });

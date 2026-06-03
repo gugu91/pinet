@@ -32,6 +32,7 @@ export interface InspectTmuxPresenceDeps {
 }
 
 export interface BrokerManagedTmuxPresenceTarget {
+  id?: string;
   session: string;
   pid: number;
 }
@@ -176,29 +177,33 @@ export function summarizeTmuxSessionPresence(
   return result;
 }
 
+function buildUnknownPresenceInfo(
+  session: string,
+  nowMs: number,
+  error: string,
+): TmuxSessionPresenceInfo {
+  return {
+    session,
+    status: "unknown",
+    attachedClientCount: 0,
+    interactiveClientCount: 0,
+    controlClientCount: 0,
+    recentInteractiveClientCount: 0,
+    probedAt: new Date(nowMs).toISOString(),
+    error,
+  };
+}
+
 function buildUnknownPresence(
   sessionNames: Iterable<string>,
   nowMs: number,
   error: string,
 ): Map<string, TmuxSessionPresenceInfo> {
-  const probedAt = new Date(nowMs).toISOString();
   return new Map(
     Array.from(sessionNames)
       .map((session) => session.trim())
       .filter((session) => session.length > 0)
-      .map((session) => [
-        session,
-        {
-          session,
-          status: "unknown" as const,
-          attachedClientCount: 0,
-          interactiveClientCount: 0,
-          controlClientCount: 0,
-          recentInteractiveClientCount: 0,
-          probedAt,
-          error,
-        },
-      ]),
+      .map((session) => [session, buildUnknownPresenceInfo(session, nowMs, error)]),
   );
 }
 
@@ -303,13 +308,61 @@ export function inspectBrokerManagedTmuxSessionPresence(
   targets: Iterable<BrokerManagedTmuxPresenceTarget>,
   deps: InspectTmuxPresenceDeps = {},
 ): Map<string, TmuxSessionPresenceInfo> {
-  const pidsBySession = new Map<string, Set<number>>();
+  const nowMs = deps.now?.() ?? Date.now();
+  const exec = deps.execFileSync ?? execFileSync;
+  const result = new Map<string, TmuxSessionPresenceInfo>();
+  const verifiedKeysBySession = new Map<string, string[]>();
+  const panePidsBySession = new Map<string, number[] | null>();
+
   for (const target of targets) {
     const session = target.session.trim();
-    if (!session || !Number.isInteger(target.pid) || target.pid <= 1) continue;
-    const pids = pidsBySession.get(session) ?? new Set<number>();
-    pids.add(target.pid);
-    pidsBySession.set(session, pids);
+    const key = target.id?.trim() || session;
+    if (!session || !key || !Number.isInteger(target.pid) || target.pid <= 1) continue;
+
+    let panePids = panePidsBySession.get(session);
+    if (panePids === undefined) {
+      try {
+        const panesOutput = exec("tmux", ["list-panes", "-t", session, "-F", LIST_PANES_FORMAT], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }) as string;
+        panePids = parseTmuxPanePids(panesOutput);
+      } catch {
+        panePids = null;
+      }
+      panePidsBySession.set(session, panePids);
+    }
+
+    if (panePids === null) {
+      result.set(key, buildUnknownPresenceInfo(session, nowMs, "tmux_probe_failed"));
+      continue;
+    }
+
+    if (!panePids.includes(target.pid)) {
+      result.set(
+        key,
+        buildUnknownPresenceInfo(session, nowMs, "tmux_session_not_verified_for_agent_pid"),
+      );
+      continue;
+    }
+
+    const verifiedKeys = verifiedKeysBySession.get(session) ?? [];
+    verifiedKeys.push(key);
+    verifiedKeysBySession.set(session, verifiedKeys);
   }
-  return inspectAllowedTmuxSessions([...pidsBySession.keys()], deps, pidsBySession);
+
+  const verifiedPresenceBySession = inspectAllowedTmuxSessions([...verifiedKeysBySession.keys()], {
+    ...deps,
+    now: () => nowMs,
+  });
+  for (const [session, keys] of verifiedKeysBySession) {
+    const presence =
+      verifiedPresenceBySession.get(session) ??
+      buildUnknownPresenceInfo(session, nowMs, "tmux_session_not_found");
+    for (const key of keys) {
+      result.set(key, presence);
+    }
+  }
+
+  return result;
 }
