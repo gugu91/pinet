@@ -913,6 +913,19 @@ export interface AgentCapabilities {
 
 export type AgentHealth = "healthy" | "stale" | "ghost" | "resumable";
 
+export interface AgentTmuxPresenceInfo {
+  session: string;
+  status: "attached" | "detached" | "unknown";
+  attachedClientCount: number;
+  interactiveClientCount: number;
+  controlClientCount: number;
+  recentInteractiveClientCount: number;
+  latestClientActivityAt?: string;
+  latestInteractiveClientActivityAt?: string;
+  probedAt: string;
+  error?: string;
+}
+
 export interface AgentDisplayInfo {
   emoji: string;
   name: string;
@@ -957,6 +970,7 @@ export interface AgentDisplayInfo {
   outboundCount?: number | null;
   pendingInboxCount?: number | null;
   capabilityTags?: string[];
+  tmuxPresence?: AgentTmuxPresenceInfo;
   routingScore?: number;
   routingReasons?: string[];
 }
@@ -2558,6 +2572,31 @@ export function formatAgentList(agents: AgentDisplayInfo[], homedir: string): st
           meta.brokerManagedBy ? `by=${meta.brokerManagedBy}` : null,
         ].filter((item): item is string => Boolean(item));
         line += `\n   managed: ${managed.join(" · ")}`;
+      }
+
+      if (a.tmuxPresence) {
+        const presence = a.tmuxPresence;
+        const presenceSummary =
+          presence.status === "unknown"
+            ? `unknown${presence.error ? ` (${presence.error})` : ""}`
+            : presence.attachedClientCount === 0
+              ? "no tmux clients attached"
+              : [
+                  `${presence.interactiveClientCount} interactive client${presence.interactiveClientCount === 1 ? "" : "s"}`,
+                  presence.controlClientCount > 0
+                    ? `${presence.controlClientCount} control client${presence.controlClientCount === 1 ? "" : "s"}`
+                    : null,
+                  presence.attachedClientCount >
+                  presence.interactiveClientCount + presence.controlClientCount
+                    ? `${presence.attachedClientCount} attached reported`
+                    : null,
+                  presence.recentInteractiveClientCount > 0
+                    ? `${presence.recentInteractiveClientCount} recently active`
+                    : null,
+                ]
+                  .filter((item): item is string => Boolean(item))
+                  .join(" · ");
+        line += `\n   tmux presence: ${presenceSummary}`;
       }
 
       if (meta?.skinTheme) {

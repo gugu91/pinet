@@ -27,6 +27,7 @@ import { isBroadcastChannelTarget } from "./broker/agent-messaging.js";
 import { DEFAULT_HEARTBEAT_TIMEOUT_MS } from "./broker/socket-server.js";
 import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
 import type { RalphSnoozeStatus } from "./ralph-loop.js";
+import { inspectBrokerManagedTmuxSessionPresence } from "./tmux-presence.js";
 import type {
   PortLeaseAcquireInput,
   PortLeaseInfo,
@@ -823,6 +824,30 @@ function getAgentRole(agent: AgentDisplayInfo): string | undefined {
   return getRecordString(agent.metadata, "role");
 }
 
+function getBrokerManagedTmuxSession(agent: AgentDisplayInfo): string | undefined {
+  const metadata = agent.metadata;
+  if (!metadata?.brokerManaged) return undefined;
+  if (metadata.launchSource !== "broker-tmux") return undefined;
+  if (!metadata.brokerManagedBy) return undefined;
+  return metadata.tmuxSession;
+}
+
+function addBrokerManagedTmuxPresence(agents: AgentDisplayInfo[]): AgentDisplayInfo[] {
+  const targets = agents.flatMap((agent) => {
+    const session = getBrokerManagedTmuxSession(agent);
+    if (!session || agent.pid == null) return [];
+    return [{ session, pid: agent.pid }];
+  });
+  if (targets.length === 0) return agents;
+
+  const presenceBySession = inspectBrokerManagedTmuxSessionPresence(targets);
+  return agents.map((agent) => {
+    const session = getBrokerManagedTmuxSession(agent);
+    const tmuxPresence = session ? presenceBySession.get(session) : undefined;
+    return tmuxPresence ? { ...agent, tmuxPresence } : agent;
+  });
+}
+
 function buildCompactAgentDetails(
   agents: AgentDisplayInfo[],
   hint: PinetAgentsRoutingHint,
@@ -844,6 +869,7 @@ function buildCompactAgentDetails(
         brokerManaged: agent.metadata?.brokerManaged === true,
         launchSource: agent.metadata?.launchSource ?? null,
         tmuxSession: agent.metadata?.tmuxSession ?? null,
+        ...(agent.tmuxPresence ? { tmuxPresence: agent.tmuxPresence } : {}),
         routingScore: agent.routingScore ?? null,
         ...(agent.pendingInboxCount != null && agent.pendingInboxCount > 0
           ? { pendingInboxCount: agent.pendingInboxCount }
@@ -1277,7 +1303,11 @@ function runPinetAgentsAction(
       includeGhosts,
       recentDisconnectWindowMs: recentGhostWindowMs,
     }).map(toDisplay);
-    const agents = rankAgentsForRouting(visibleAgents, hint);
+    const agentsWithTmuxPresence =
+      deps.brokerRole() === "broker" && output.full
+        ? addBrokerManagedTmuxPresence(visibleAgents)
+        : visibleAgents;
+    const agents = rankAgentsForRouting(agentsWithTmuxPresence, hint);
     const header = hasHint && output.full ? `${buildPinetAgentsHintText(hint)}\n\n` : "";
     const text = `${header}${
       output.full ? formatAgentList(agents, os.homedir()) : formatCompactAgentList(agents, hint)
