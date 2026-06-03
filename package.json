@@ -24,7 +24,7 @@
     "typecheck": "turbo run typecheck",
     "build": "turbo run build",
     "build:packages": "node ./scripts/build-all.mjs",
-    "test": "turbo run test",
+    "test": "turbo run test && node --test scripts/*.test.mjs",
     "deploy:slack": "node --experimental-strip-types ./slack-bridge/deploy-manifest.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm format:check",
     "prepush": "pnpm lint && pnpm typecheck && pnpm test",

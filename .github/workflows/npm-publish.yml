@@ -1,0 +1,78 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Package lane to publish"
+        required: true
+        type: choice
+        options:
+          - pinet
+          - slack-bridge
+      dry_run:
+        description: "Run npm publish --dry-run only"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.target }} packages
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Dry-run publish target packages
+        if: ${{ inputs.dry_run }}
+        run: >-
+          node ./scripts/publish-npm-packages.mjs
+          --target "${{ inputs.target }}"
+          --dry-run
+
+      - name: Guard real publish ref
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "Real npm publishes must be dispatched from refs/heads/main. Current ref: $GITHUB_REF"
+          exit 1
+
+      - name: Configure npm authentication
+        if: ${{ !inputs.dry_run }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+
+      - name: Publish target packages
+        if: ${{ !inputs.dry_run }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >-
+          node ./scripts/publish-npm-packages.mjs
+          --target "${{ inputs.target }}"
+          --publish
