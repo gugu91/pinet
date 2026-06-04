@@ -39,7 +39,7 @@ pnpm bootstrap:npm
 node ./scripts/bootstrap-npm-packages.mjs --dry-run
 ```
 
-That script also defaults to dry-run/readiness and processes the same full package set. Its real publish mode is a local maintainer bootstrap escape hatch only; it is not the normal release path.
+That script also defaults to dry-run/readiness and processes the same full package set. Its real publish mode is a local maintainer bootstrap escape hatch only; the code refuses CI/automation and common npm token-authenticated environments. It is not the normal release path.
 
 When `dry_run=true`, the workflow stops after the dry-run/readiness job and does not request the `npm-publish` environment. Dry-run dispatches use the `npm-publish-dry-run` concurrency group. Real publish dispatches use the `npm-publish-live` concurrency group so live publishes are globally serialized.
 
@@ -77,7 +77,7 @@ node ./scripts/bootstrap-npm-packages.mjs \
   --confirm "bootstrap @pinet packages"
 ```
 
-The real bootstrap mode still runs the same package-name, metadata/artifact, build-output, public-type, placeholder-version, and already-published-version gates. It then runs `npm publish --access public` for the full package set from the local npm CLI login. The maintainer running it must already be logged in with `npm login` as a `pinet` org owner/admin with package creation rights. This repo does not configure token auth and does not make bootstrap publishing the normal release path.
+The real bootstrap mode still runs the same package-name, metadata/artifact, build-output, public-type, placeholder-version, and already-published-version gates. Before any publish attempt, it also refuses automated or token-authenticated environments by failing when `CI`, `GITHUB_ACTIONS`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`, or common npm auth config variables are present, including case/punctuation/camelCase variants such as `npm_config__authToken`. It then runs `npm publish --access public` for the full package set from the local npm CLI login. The maintainer running it must already be logged in with `npm login` as a `pinet` org owner/admin with package creation rights. This repo does not configure token auth and does not make bootstrap publishing the normal release path.
 
 Immediately after any successful first-publish bootstrap, configure npm Trusted Publishing for every package in <https://www.npmjs.com/settings/pinet/packages> with owner/repo `gugu91/extensions`, workflow `npm-publish.yml`, and environment `npm-publish` if npm asks for one. Normal future publishes should then use the GitHub Actions Trusted Publishing/OIDC workflow with provenance. If npm's team/access UI loops or blocks package creation, resolve org/team/admin access in npm first rather than adding CI token automation.
 
