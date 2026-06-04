@@ -8,6 +8,7 @@ import type {
 } from "./broker/types.js";
 import {
   createPinetMeshOps,
+  parseGitHubRemoteRepo,
   type PinetMeshOpsBrokerDbPort,
   type PinetMeshOpsDeps,
   type PinetMeshOpsFollowerClientPort,
@@ -227,6 +228,23 @@ function createFollowerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     listAgents,
   };
 }
+
+describe("parseGitHubRemoteRepo", () => {
+  it("parses github.com remotes and local SSH host aliases", () => {
+    expect(parseGitHubRemoteRepo("git@github.com:gugu91/extensions.git")).toEqual({
+      repoOwner: "gugu91",
+      repoName: "extensions",
+    });
+    expect(parseGitHubRemoteRepo("github-gugu91:gugu91/extensions.git")).toEqual({
+      repoOwner: "gugu91",
+      repoName: "extensions",
+    });
+    expect(parseGitHubRemoteRepo("https://github.com/gugu91/extensions")).toEqual({
+      repoOwner: "gugu91",
+      repoName: "extensions",
+    });
+  });
+});
 
 describe("createPinetMeshOps", () => {
   it("normalizes broker direct control messages before dispatch", async () => {

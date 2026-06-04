@@ -160,8 +160,14 @@ function appendSlackThreadTransferNotice(body: string, threadId: string, channel
   ].join("\n");
 }
 
-function parseGitHubRemoteRepo(remoteUrl: string): { repoOwner: string; repoName: string } | null {
-  const match = remoteUrl.match(/github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/i);
+export function parseGitHubRemoteRepo(
+  remoteUrl: string,
+): { repoOwner: string; repoName: string } | null {
+  const match = remoteUrl
+    .trim()
+    .match(
+      /^(?:(?:https?:\/\/|ssh:\/\/)(?:[^@/\s]+@)?|(?:[^@/\s]+@)?)github(?:\.com|[-.][^/:]+)?[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+    );
   if (!match?.[1] || !match[2]) {
     return null;
   }
