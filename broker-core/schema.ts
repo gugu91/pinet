@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { classifyPinetMail } from "./mail-classification.js";
 import { getDefaultDbPath } from "./paths.js";
+import { DEFAULT_EXTERNAL_THREAD_SOURCE } from "./types.js";
 import type { PinetMailClass } from "./mail-classification.js";
 import type {
   AgentInfo,
@@ -2196,7 +2197,7 @@ export class BrokerDB implements BrokerDBInterface {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         threadId,
-        updates.source ?? "slack",
+        updates.source ?? DEFAULT_EXTERNAL_THREAD_SOURCE,
         updates.channel ?? "",
         updates.ownerAgent !== undefined ? updates.ownerAgent : null,
         updates.ownerBinding !== undefined ? updates.ownerBinding : null,
@@ -2324,7 +2325,12 @@ export class BrokerDB implements BrokerDBInterface {
     }
   }
 
-  claimThread(threadId: string, agentId: string, source = "slack", channel = ""): boolean {
+  claimThread(
+    threadId: string,
+    agentId: string,
+    source = DEFAULT_EXTERNAL_THREAD_SOURCE,
+    channel = "",
+  ): boolean {
     const db = this.getDb();
     const now = new Date().toISOString();
 
@@ -3383,7 +3389,7 @@ export class BrokerDB implements BrokerDBInterface {
       externalId,
       "steering",
       {
-        reason: "slack_reaction_arrow_up",
+        reason: "reaction_steer",
         reactionName,
         reactorUserId: getStringMetadataValue(metadata, ["reactorUserId", "reactor_user_id"]),
         reactorName: getStringMetadataValue(metadata, ["reactorName", "reactor_name"]),

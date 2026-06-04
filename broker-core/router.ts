@@ -1,3 +1,4 @@
+import { DEFAULT_EXTERNAL_THREAD_SOURCE } from "./types.js";
 import type { AgentInfo, BrokerDBInterface, InboundMessage, RoutingDecision } from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -402,13 +403,20 @@ export class MessageRouter {
   /**
    * Claim a thread for an agent (first-responder-wins).
    * Optionally provide the transport source and channel to store when creating
-   * a new thread. Defaults to Slack for backward compatibility.
+   * a new thread. Defaults to a neutral external source when callers do not
+   * provide one; Slack call sites should continue passing `source: "slack"`
+   * explicitly through inbound messages or compatibility wrappers.
    * Returns true if the claim succeeded, false if another agent already owns it.
    *
    * Delegates to the DB layer which performs the claim atomically
    * (single SQL statement) to avoid TOCTOU races. (#125)
    */
-  claimThread(threadId: string, agentId: string, channel?: string, source = "slack"): boolean {
+  claimThread(
+    threadId: string,
+    agentId: string,
+    channel?: string,
+    source = DEFAULT_EXTERNAL_THREAD_SOURCE,
+  ): boolean {
     return this.db.claimThread(threadId, agentId, source, channel ?? "");
   }
 

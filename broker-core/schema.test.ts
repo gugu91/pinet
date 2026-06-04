@@ -431,6 +431,36 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("uses a neutral fallback source when upserting or claiming missing-source threads", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.updateThread("metadata-only", { metadata: { migrated: true } });
+      expect(db.getThread("metadata-only")).toMatchObject({
+        source: "external",
+        channel: "",
+        ownerAgent: null,
+        metadata: { migrated: true },
+      });
+
+      expect(db.claimThread("missing-claim", "agent-neutral")).toBe(true);
+      expect(db.getThread("missing-claim")).toMatchObject({
+        source: "external",
+        channel: "",
+        ownerAgent: "agent-neutral",
+      });
+
+      expect(db.claimThread("slack-claim", "agent-slack", "slack", "C123")).toBe(true);
+      expect(db.getThread("slack-claim")).toMatchObject({
+        source: "slack",
+        channel: "C123",
+        ownerAgent: "agent-slack",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("persists PM lane metadata and participants across reopen", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);
@@ -1149,7 +1179,7 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
-  it("reclassifies the original Slack message as steering for linked arrow-up reaction mail", () => {
+  it("reclassifies the original Slack message with a neutral reaction steering reason", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);
     try {
@@ -1191,12 +1221,12 @@ describe("BrokerDB message sync identity", () => {
       const reclassified = read.messages.find((item) => item.message.id === original.id)?.message;
       expect(reclassified?.metadata).toMatchObject({
         pinet_mail_class: "steering",
-        pinet_mail_class_reason: "slack_reaction_arrow_up",
+        pinet_mail_class_reason: "reaction_steer",
       });
       expect(reclassified?.metadata?.pinet_mail_class_audit).toEqual([
         expect.objectContaining({
           class: "steering",
-          reason: "slack_reaction_arrow_up",
+          reason: "reaction_steer",
           reactionName: "arrow_up",
           reactorUserId: "U_REACTOR",
           reactorName: "Alice",

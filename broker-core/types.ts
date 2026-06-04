@@ -1,5 +1,7 @@
 import type { PinetMailClass } from "./mail-classification.js";
 
+export const DEFAULT_EXTERNAL_THREAD_SOURCE = "external";
+
 // ─── Domain types ─────────────────────────────────────────
 
 export interface AgentInfo {
