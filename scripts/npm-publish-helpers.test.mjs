@@ -103,10 +103,11 @@ test("validatePublishMetadata blocks placeholder versions for real publish only"
     entry("pinet-core", {
       name: "@gugu910/pi-pinet-core",
       version: "0.0.0",
+      license: "MIT",
       publishConfig: { access: "public" },
       main: "./dist/index.js",
       types: "./dist/index.d.ts",
-      files: ["dist/"],
+      files: ["README.md", "LICENSE", "dist/"],
     }),
   ];
 
@@ -122,9 +123,10 @@ test("validatePublishMetadata requires declaration metadata", () => {
     entry("pinet-core", {
       name: "@gugu910/pi-pinet-core",
       version: "0.0.0",
+      license: "MIT",
       publishConfig: { access: "public" },
       main: "./dist/index.js",
-      files: ["dist/"],
+      files: ["README.md", "LICENSE", "dist/"],
     }),
   ];
 

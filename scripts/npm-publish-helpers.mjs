@@ -153,10 +153,13 @@ export function validatePublishMetadata(entries, { dryRun }) {
     if (manifest.publishConfig?.access !== "public") {
       errors.push(`${manifest.name}: publishConfig.access must be public`);
     }
+    if (!manifest.license) errors.push(`${manifest.name}: package.json must include license`);
     if (!manifest.main) errors.push(`${manifest.name}: package.json must include main`);
     if (!manifest.types) errors.push(`${manifest.name}: package.json must include types`);
-    if (!manifest.files?.includes("dist/")) {
-      errors.push(`${manifest.name}: package files must include dist/`);
+    for (const requiredFile of ["README.md", "LICENSE", "dist/"]) {
+      if (!manifest.files?.includes(requiredFile)) {
+        errors.push(`${manifest.name}: package files must include ${requiredFile}`);
+      }
     }
     if (!dryRun && manifest.version === "0.0.0") {
       errors.push(`${manifest.name}: refusing a real npm publish at placeholder version 0.0.0`);

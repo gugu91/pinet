@@ -2,6 +2,13 @@
 
 All notable changes to this repository are documented in this file.
 
+## Release note policy
+
+Readiness-only npm publishing workflow or documentation changes do not by
+themselves create a new release entry, tag, or package version. Add a versioned
+entry only when a maintainer approves a real release with intentional package
+version bumps and publish scope.
+
 ## [0.1.4] - 2026-04-23
 
 Pinet v0.1.4 is a focused patch release for `@gugu910/pi-slack-bridge` that fixes Slack external file-upload requests to use the form encoding Slack expects. The runtime behavior change is intentionally narrow: `slack_upload` should stop failing with `invalid_arguments` when it calls `files.getUploadURLExternal` and `files.completeUploadExternal`.

@@ -23,6 +23,7 @@
   },
   "files": [
     "README.md",
+    "LICENSE",
     "dist/"
   ],
   "pi": {},
