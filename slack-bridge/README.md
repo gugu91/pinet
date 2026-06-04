@@ -4,17 +4,42 @@ Slack assistant integration for [pi](https://github.com/badlogic/pi-mono) — mu
 
 ## Install
 
+Install the latest Pinet Slack bridge pi package:
+
 ```bash
 pi install npm:@pinet/slack-bridge
 ```
 
-Or with npm:
+Or pin an exact published version for reproducible installs:
+
+```bash
+pi install npm:@pinet/slack-bridge@0.1.0
+```
+
+For package managers or local inspection, the npm package is also installable directly:
 
 ```bash
 npm install @pinet/slack-bridge
 ```
 
-## Publishing
+## Package metadata and publishing
+
+This package declares pi package/gallery metadata in [`package.json`](./package.json):
+
+- `keywords` includes `pi-package` for gallery discovery.
+- `pi.extensions` points at the built extension entrypoint, `./dist/index.js`.
+- `pi.skills` points at the bundled skill directory, `./skills`.
+- No `pi.image` or `pi.video` preview is declared yet because this package does
+  not currently include a reviewed gallery image/video asset.
+
+The published tarball is expected to include the package metadata, README,
+Slack app manifest, built `dist/` files, bundled `skills/`, and LICENSE. Verify
+that locally with:
+
+```bash
+cd slack-bridge
+npm pack --dry-run
+```
 
 This package is included in the full npm publish set tracked in
 [`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
