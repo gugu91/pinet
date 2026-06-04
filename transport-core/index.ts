@@ -102,6 +102,11 @@ export interface InboundMessage {
 export interface NormalizedMessageContent {
   text: string;
   markdown?: string;
+  /**
+   * Compatibility/native-rendering escape hatch for Slack Block Kit payloads.
+   * This remains intentionally Slack-shaped for the current publish-readiness
+   * track while a future transport-neutral rich-content model is considered.
+   */
   slackBlocks?: ReadonlyArray<Record<string, unknown>>;
 }
 

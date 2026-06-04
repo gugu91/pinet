@@ -49,5 +49,6 @@
     "@gugu910/pi-pinet-core": "file:../pinet-core",
     "@gugu910/pi-transport-core": "file:../transport-core",
     "@sinclair/typebox": "^0.34.49"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }

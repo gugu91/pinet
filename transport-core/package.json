@@ -30,5 +30,6 @@
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test *.test.ts"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }
