@@ -369,7 +369,7 @@ export async function validatePublicTypeResolution(repoRoot, entries) {
         publicTypeSpecifiers.add(specifier);
 
         const packageName = packageBaseName(specifier);
-        if (targetNames.has(packageName)) continue;
+        if (packageName === manifest.name) continue;
 
         if (!declaredDependencies.has(packageName)) {
           declarationErrors.push(
@@ -378,14 +378,16 @@ export async function validatePublicTypeResolution(repoRoot, entries) {
           continue;
         }
 
-        const installedRoot = await findInstalledPackageRoot(repoRoot, packageRoot, packageName);
-        if (!installedRoot) {
-          declarationErrors.push(
-            `${manifest.name}: ${packageName} is declared for public types but is not installed for the isolated type-resolution smoke test`,
-          );
-          continue;
+        if (!targetNames.has(packageName)) {
+          const installedRoot = await findInstalledPackageRoot(repoRoot, packageRoot, packageName);
+          if (!installedRoot) {
+            declarationErrors.push(
+              `${manifest.name}: ${packageName} is declared for public types but is not installed for the isolated type-resolution smoke test`,
+            );
+            continue;
+          }
+          importedExternalDependencies.set(packageName, installedRoot);
         }
-        importedExternalDependencies.set(packageName, installedRoot);
       }
     }
   }
