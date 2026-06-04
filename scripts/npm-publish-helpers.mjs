@@ -44,6 +44,92 @@ export function parseArgs(argv) {
   return args;
 }
 
+const bootstrapConfirmationPhrase = "bootstrap @pinet packages";
+
+const bootstrapBlockedEnvVars = Object.freeze([
+  "CI",
+  "GITHUB_ACTIONS",
+  "NODE_AUTH_TOKEN",
+  "NPM_TOKEN",
+  "NPM_CONFIG__AUTH",
+  "NPM_CONFIG__AUTH_TOKEN",
+  "NPM_CONFIG_//REGISTRY.NPMJS.ORG/:_AUTH",
+  "NPM_CONFIG_//REGISTRY.NPMJS.ORG/:_AUTHTOKEN",
+]);
+
+function hasValue(value) {
+  return value !== undefined && value !== "";
+}
+
+function isNpmRegistryAuthEnvVar(name) {
+  const normalized = name.toLowerCase();
+  return (
+    normalized.startsWith("npm_config_") &&
+    normalized.includes("registry.npmjs.org") &&
+    (normalized.endsWith(":_auth") || normalized.endsWith(":_authtoken"))
+  );
+}
+
+export function assertLocalNpmOrgBootstrapEnvironment(env = process.env) {
+  const blockedNames = new Set(bootstrapBlockedEnvVars.map((name) => name.toLowerCase()));
+  const blocked = [];
+
+  for (const [name, value] of Object.entries(env)) {
+    if (!hasValue(value)) continue;
+    const normalized = name.toLowerCase();
+    if (blockedNames.has(normalized) || isNpmRegistryAuthEnvVar(name)) {
+      blocked.push(name);
+    }
+  }
+
+  if (blocked.length > 0) {
+    throw new Error(
+      `Real npm org pinet bootstrap is local-maintainer-only and refuses automated or token-authenticated environments. Unset before retrying: ${blocked.sort().join(", ")}`,
+    );
+  }
+}
+
+export function parseBootstrapArgs(argv) {
+  const args = {
+    dryRun: true,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--dry-run") {
+      args.dryRun = true;
+      continue;
+    }
+    if (arg === "--bootstrap-publish") {
+      args.dryRun = false;
+      continue;
+    }
+    if (arg === "--confirm") {
+      index += 1;
+      const confirmation = argv[index];
+      if (!confirmation) {
+        throw new Error("--confirm requires a confirmation phrase");
+      }
+      if (confirmation !== bootstrapConfirmationPhrase) {
+        throw new Error(
+          `Real npm org pinet bootstrap requires --confirm ${JSON.stringify(bootstrapConfirmationPhrase)}`,
+        );
+      }
+      args.confirmed = true;
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  if (!args.dryRun && !args.confirmed) {
+    throw new Error(
+      `Real npm org pinet bootstrap requires --bootstrap-publish --confirm ${JSON.stringify(bootstrapConfirmationPhrase)}`,
+    );
+  }
+
+  return { dryRun: args.dryRun };
+}
+
 export function getPublishPackages() {
   return [...publishPackageDirectories];
 }
