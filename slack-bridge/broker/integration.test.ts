@@ -1514,25 +1514,39 @@ describe("broker integration — router with real DB", () => {
     expect(db.getChannelAssignment("C123")).toBeNull();
   });
 
-  it("updateThread upserts when thread does not exist", () => {
-    // Thread does not exist yet — updateThread should create it
+  it("updateThread upserts missing-source threads with a neutral source", () => {
+    // Thread does not exist yet — updateThread should create it without assuming Slack.
     db.updateThread("t-upsert", { ownerAgent: "agent-1", channel: "C-UPSERT" });
 
     const thread = db.getThread("t-upsert");
     expect(thread).not.toBeNull();
     expect(thread!.ownerAgent).toBe("agent-1");
     expect(thread!.channel).toBe("C-UPSERT");
-    expect(thread!.source).toBe("slack");
+    expect(thread!.source).toBe("external");
   });
 
-  it("updateThread upsert defaults source to slack and channel to empty", () => {
+  it("updateThread upsert defaults source to external and channel to empty", () => {
     db.updateThread("t-upsert-defaults", { ownerAgent: "agent-2" });
 
     const thread = db.getThread("t-upsert-defaults");
     expect(thread).not.toBeNull();
-    expect(thread!.source).toBe("slack");
+    expect(thread!.source).toBe("external");
     expect(thread!.channel).toBe("");
     expect(thread!.ownerAgent).toBe("agent-2");
+  });
+
+  it("updateThread preserves explicit Slack compatibility upserts", () => {
+    db.updateThread("t-upsert-slack", {
+      ownerAgent: "agent-slack",
+      source: "slack",
+      channel: "C-SLACK",
+    });
+
+    const thread = db.getThread("t-upsert-slack");
+    expect(thread).not.toBeNull();
+    expect(thread!.source).toBe("slack");
+    expect(thread!.channel).toBe("C-SLACK");
+    expect(thread!.ownerAgent).toBe("agent-slack");
   });
 
   it("updateThread still works normally for existing threads", () => {
