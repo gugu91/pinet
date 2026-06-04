@@ -7,6 +7,7 @@ import { BrokerSocketServer } from "./socket-server.js";
 import { BrokerClient } from "./client.js";
 import { runBrokerMaintenancePass } from "./maintenance.js";
 import { MessageRouter } from "./router.js";
+import type { OutboundMessage } from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -1164,6 +1165,42 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const thread = db.getThread("t-with-channel");
     expect(thread).not.toBeNull();
     expect(thread!.channel).toBe("C-TEST-123");
+    expect(thread!.source).toBe("slack");
+  });
+
+  it("thread.claim with only a channel remains Slack-sendable via message.send", async () => {
+    const sentMessages: OutboundMessage[] = [];
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async (message) => {
+          sentMessages.push(message);
+        },
+      },
+    ]);
+    await client.register("legacy-slack-claimer", "📺");
+
+    await client.claimThread("t-channel-only-send", "C-LEGACY");
+    const result = await client.sendMessage({
+      threadId: "t-channel-only-send",
+      body: "still Slack-sendable",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        adapter: "slack",
+        threadId: "t-channel-only-send",
+        channel: "C-LEGACY",
+        source: "slack",
+      }),
+    );
+    expect(sentMessages).toEqual([
+      expect.objectContaining({
+        threadId: "t-channel-only-send",
+        channel: "C-LEGACY",
+        text: "still Slack-sendable",
+      }),
+    ]);
   });
 
   it("thread.claim with source stores source on a new thread", async () => {
