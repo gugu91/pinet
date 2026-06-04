@@ -1,6 +1,6 @@
 {
   "name": "@pinet/imessage-bridge",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "macOS/iMessage send-first adapter and readiness helpers for pi",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
