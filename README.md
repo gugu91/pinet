@@ -265,9 +265,13 @@ node ./scripts/bootstrap-npm-packages.mjs \
 ```
 
 The maintainer must already be logged in with `npm login` as a `pinet` org
-owner/admin. This repo does not add token automation. Immediately after any
-successful bootstrap, configure Trusted Publishing for every `@pinet/*` package
-and use the GitHub Actions workflow for normal future publishes.
+owner/admin. The script enforces this local-maintainer-only path by refusing real
+bootstrap mode when CI markers (`CI`, `GITHUB_ACTIONS`) or common npm token auth
+environment variables, including case/punctuation variants of npm auth config
+names, are present. This repo does not add token automation.
+Immediately after any successful bootstrap, configure Trusted Publishing for
+every `@pinet/*` package and use the GitHub Actions workflow for normal future
+publishes.
 
 The publish and bootstrap scripts still refuse placeholder `0.0.0` versions and
 versions that already exist on npm.

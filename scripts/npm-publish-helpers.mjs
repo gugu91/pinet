@@ -46,6 +46,53 @@ export function parseArgs(argv) {
 
 const bootstrapConfirmationPhrase = "bootstrap @pinet packages";
 
+const bootstrapBlockedEnvNames = Object.freeze([
+  "CI",
+  "GITHUB_ACTIONS",
+  "NODE_AUTH_TOKEN",
+  "NPM_TOKEN",
+]);
+
+const normalizedBootstrapBlockedEnvNames = new Set(
+  bootstrapBlockedEnvNames.map(normalizeEnvNameForAuthDetection),
+);
+
+function hasValue(value) {
+  return value !== undefined && value !== "";
+}
+
+function normalizeEnvNameForAuthDetection(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isNpmAuthEnvVar(name) {
+  const normalized = normalizeEnvNameForAuthDetection(name);
+  if (!normalized.startsWith("npmconfig")) {
+    return false;
+  }
+
+  const configName = normalized.slice("npmconfig".length);
+  return configName === "auth" || configName.endsWith("auth") || configName.endsWith("authtoken");
+}
+
+export function assertLocalNpmOrgBootstrapEnvironment(env = process.env) {
+  const blocked = [];
+
+  for (const [name, value] of Object.entries(env)) {
+    if (!hasValue(value)) continue;
+    const normalized = normalizeEnvNameForAuthDetection(name);
+    if (normalizedBootstrapBlockedEnvNames.has(normalized) || isNpmAuthEnvVar(name)) {
+      blocked.push(name);
+    }
+  }
+
+  if (blocked.length > 0) {
+    throw new Error(
+      `Real npm org pinet bootstrap is local-maintainer-only and refuses automated or token-authenticated environments. Unset before retrying: ${blocked.sort().join(", ")}`,
+    );
+  }
+}
+
 export function parseBootstrapArgs(argv) {
   const args = {
     dryRun: true,

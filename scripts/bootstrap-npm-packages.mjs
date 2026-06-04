@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertLocalNpmOrgBootstrapEnvironment,
   assertVersionsNotAlreadyPublished,
   getPublishPackages,
   loadWorkspaceManifests,
@@ -68,13 +69,17 @@ function printBootstrapPlan({ dryRun }) {
   }
   console.log(
     dryRun
-      ? "No packages will be published. The script will build, validate, patch local file: dependencies to exact versions in a temporary checkout state, and run npm publish --dry-run for every package."
+      ? "No packages will be published. The script will build, validate, patch local file: dependencies to exact versions in place, restore those manifests before exit, and run npm publish --dry-run for every package."
       : "Packages WILL be published with npm publish --access public from the local npm CLI login. Use this only for first package creation in the npm pinet org; configure npm Trusted Publishing immediately afterward for normal future CI publishes.",
   );
 }
 
 async function main() {
   const args = parseBootstrapArgs(process.argv.slice(2));
+  if (!args.dryRun) {
+    assertLocalNpmOrgBootstrapEnvironment();
+  }
+
   const packageDirectories = getPublishPackages();
   const manifests = await loadWorkspaceManifests(repoRoot);
   const entries = rewriteLocalDependencySpecs(packageDirectories, manifests);

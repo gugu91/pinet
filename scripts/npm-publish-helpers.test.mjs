@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  assertLocalNpmOrgBootstrapEnvironment,
   assertVersionsNotAlreadyPublished,
   getPublishPackages,
   parseArgs,
@@ -56,6 +57,45 @@ test("parseBootstrapArgs defaults to dry-run and requires scary real-publish con
     /requires --confirm "bootstrap @pinet packages"/,
   );
   assert.throws(() => parseBootstrapArgs(["--target", "pinet"]), /Unknown argument: --target/);
+});
+
+test("assertLocalNpmOrgBootstrapEnvironment blocks CI and token-authenticated live bootstrap contexts", () => {
+  assert.doesNotThrow(() => assertLocalNpmOrgBootstrapEnvironment({ PATH: "/usr/bin" }));
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ CI: "true" }),
+    /local-maintainer-only.*CI/,
+  );
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ GITHUB_ACTIONS: "true" }),
+    /local-maintainer-only.*GITHUB_ACTIONS/,
+  );
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ NODE_AUTH_TOKEN: "token" }),
+    /local-maintainer-only.*NODE_AUTH_TOKEN/,
+  );
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ npm_config__authToken: "token" }),
+    /local-maintainer-only.*npm_config__authToken/,
+  );
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ npm_config__authtoken: "token" }),
+    /local-maintainer-only.*npm_config__authtoken/,
+  );
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ NPM_CONFIG__AUTHTOKEN: "token" }),
+    /local-maintainer-only.*NPM_CONFIG__AUTHTOKEN/,
+  );
+  assert.throws(
+    () => assertLocalNpmOrgBootstrapEnvironment({ npm_config_authToken: "token" }),
+    /local-maintainer-only.*npm_config_authToken/,
+  );
+  assert.throws(
+    () =>
+      assertLocalNpmOrgBootstrapEnvironment({
+        "npm_config_//registry.npmjs.org/:_authToken": "token",
+      }),
+    /local-maintainer-only.*npm_config_\/\/registry\.npmjs\.org\/:_authToken/,
+  );
 });
 
 test("rewriteLocalDependencySpecs replaces in-set file dependencies with exact versions", () => {
