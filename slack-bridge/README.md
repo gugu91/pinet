@@ -5,13 +5,13 @@ Slack assistant integration for [pi](https://github.com/badlogic/pi-mono) — mu
 ## Install
 
 ```bash
-pi install npm:@gugu910/pi-slack-bridge
+pi install npm:@pinet/slack-bridge
 ```
 
 Or with npm:
 
 ```bash
-npm install @gugu910/pi-slack-bridge
+npm install @pinet/slack-bridge
 ```
 
 ## Publishing

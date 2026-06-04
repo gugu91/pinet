@@ -1,5 +1,5 @@
 {
-  "name": "@gugu910/pi-imessage-bridge",
+  "name": "@pinet/imessage-bridge",
   "version": "0.0.0",
   "type": "module",
   "description": "macOS/iMessage send-first adapter and readiness helpers for pi",
@@ -32,7 +32,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gugu910/pi-transport-core": "file:../transport-core"
+    "@pinet/transport-core": "file:../transport-core"
   },
   "types": "./dist/index.d.ts"
 }

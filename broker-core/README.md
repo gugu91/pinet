@@ -1,4 +1,4 @@
-# @gugu910/pi-broker-core
+# @pinet/broker-core
 
 Transport-neutral broker kernel primitives for the `extensions` repo.
 

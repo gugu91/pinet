@@ -41,6 +41,19 @@ function versionExists(packageName, version) {
   return parseNpmViewVersionExists(result, packageName, version);
 }
 
+function assertTrustedPublishingRuntime() {
+  if (process.env.GITHUB_ACTIONS !== "true") {
+    throw new Error(
+      "Real npm publishing requires the GitHub Actions Trusted Publishing/OIDC workflow context; run the Publish npm packages workflow from main instead of local token publishing.",
+    );
+  }
+  if (!process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN || !process.env.ACTIONS_ID_TOKEN_REQUEST_URL) {
+    throw new Error(
+      "Real npm publishing requires GitHub OIDC id-token access for npm Trusted Publishing; check id-token: write and the npm-publish environment.",
+    );
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const packageDirectories = getPublishPackages();
@@ -69,9 +82,7 @@ async function main() {
     }
 
     if (!args.dryRun) {
-      if (!process.env.NPM_TOKEN) {
-        throw new Error("NPM_TOKEN is required for real npm publishing");
-      }
+      assertTrustedPublishingRuntime();
       assertVersionsNotAlreadyPublished(entries, versionExists);
     }
 

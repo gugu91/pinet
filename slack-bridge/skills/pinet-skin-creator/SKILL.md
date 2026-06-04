@@ -83,8 +83,8 @@ do not add model calls to broker startup or follower join paths.
 7. **Validate**
    - Run focused tests for descriptor loading/selection and status-vocabulary
      propagation if code changed.
-   - Run package `pnpm --filter @gugu910/pi-slack-bridge lint` and
-     `pnpm --filter @gugu910/pi-slack-bridge typecheck` when touching
+   - Run package `pnpm --filter @pinet/slack-bridge lint` and
+     `pnpm --filter @pinet/slack-bridge typecheck` when touching
      TypeScript.
    - For JSON descriptor work, run a targeted test that reads/validates the
      descriptor and verifies the authored identity pool is large enough without

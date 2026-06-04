@@ -332,7 +332,7 @@ import {
   buildCompatibilityInstanceScope as _buildCompatibilityInstanceScope,
   buildCompatibilityWorkspaceScope as _buildCompatibilityWorkspaceScope,
   buildRuntimeScopeCarrier as _buildRuntimeScopeCarrier,
-} from "@gugu910/pi-transport-core";
+} from "@pinet/transport-core";
 import type {
   InboundMessage as _InboundMessage,
   NormalizedMessageContent as _NormalizedMessageContent,
@@ -345,7 +345,7 @@ import type {
   RuntimeScopeCarrier as _RuntimeScopeCarrier,
   WorkspaceInstallScopeCarrier as _WorkspaceInstallScopeCarrier,
   InstanceScopeCarrier as _InstanceScopeCarrier,
-} from "@gugu910/pi-transport-core";
+} from "@pinet/transport-core";
 
 export type InboundMessage = _InboundMessage;
 export type NormalizedMessageContent = _NormalizedMessageContent;

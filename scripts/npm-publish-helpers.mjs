@@ -3,13 +3,21 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-export const publishPackageDirectories = Object.freeze([
-  "transport-core",
-  "broker-core",
-  "pinet-core",
-  "imessage-bridge",
-  "slack-bridge",
+export const publishPackages = Object.freeze([
+  { directory: "transport-core", packageName: "@pinet/transport-core" },
+  { directory: "broker-core", packageName: "@pinet/broker-core" },
+  { directory: "pinet-core", packageName: "@pinet/pinet-core" },
+  { directory: "imessage-bridge", packageName: "@pinet/imessage-bridge" },
+  { directory: "slack-bridge", packageName: "@pinet/slack-bridge" },
 ]);
+
+export const publishPackageDirectories = Object.freeze(
+  publishPackages.map(({ directory }) => directory),
+);
+
+const publishPackageNamesByDirectory = new Map(
+  publishPackages.map(({ directory, packageName }) => [directory, packageName]),
+);
 
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const publicDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
@@ -129,7 +137,11 @@ export function validatePublishMetadata(entries, { dryRun }) {
   const errors = [];
 
   for (const { directory, manifest } of entries) {
+    const expectedName = publishPackageNamesByDirectory.get(directory);
     if (!manifest.name) errors.push(`${directory}: package.json must include name`);
+    if (expectedName && manifest.name !== expectedName) {
+      errors.push(`${directory}: package name must be ${expectedName} for npm org pinet publish`);
+    }
     if (!manifest.version) errors.push(`${directory}: package.json must include version`);
     if (manifest.private === true) errors.push(`${manifest.name}: package must not be private`);
     if (manifest.publishConfig?.access !== "public") {

@@ -26,6 +26,7 @@
     "build:packages": "node ./scripts/build-all.mjs",
     "test": "turbo run test && node --test scripts/*.test.mjs",
     "deploy:slack": "node --experimental-strip-types ./slack-bridge/deploy-manifest.ts",
+    "publish:npm": "node ./scripts/publish-npm-packages.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm format:check",
     "prepush": "pnpm lint && pnpm typecheck && pnpm test",
     "lint-staged": "lint-staged",

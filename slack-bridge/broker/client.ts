@@ -7,7 +7,7 @@ import type {
   PinetReadOptions,
   PinetReadResult,
   PinetUnreadThreadSummary,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+} from "@pinet/pinet-core/pinet-read-formatting";
 import type {
   ClientAgentInfo,
   NormalizedMessageContent,
@@ -44,7 +44,7 @@ export type {
   PinetReadOptions,
   PinetReadResult,
   PinetUnreadThreadSummary,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+} from "@pinet/pinet-core/pinet-read-formatting";
 
 export interface ThreadInfo {
   threadId: string;

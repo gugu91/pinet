@@ -1,4 +1,4 @@
-# @gugu910/pi-transport-core
+# @pinet/transport-core
 
 Tiny transport-neutral contracts package for the `extensions` repo.
 

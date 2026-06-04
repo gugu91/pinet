@@ -1,4 +1,4 @@
-# @gugu910/pi-imessage-bridge
+# @pinet/imessage-bridge
 
 Thin macOS/iMessage **send-first** package for the `extensions` repo.
 
@@ -24,7 +24,7 @@ That means outbound sends can work even when the local Messages database is unav
 
 ## Trust boundary notes
 
-`@gugu910/pi-imessage-bridge` is an intentional **same-host local-power surface**.
+`@pinet/imessage-bridge` is an intentional **same-host local-power surface**.
 
 - When enabled, outbound sends run through the local Messages app via `/usr/bin/osascript` as the current macOS user.
 - There is no extra approval or policy layer inside this package today; the trust boundary is local operator intent on the same host.
@@ -64,7 +64,7 @@ import {
   createIMessageAdapter,
   detectIMessageMvpEnvironment,
   getDefaultIMessageThreadId,
-} from "@gugu910/pi-imessage-bridge";
+} from "@pinet/imessage-bridge";
 
 const readiness = detectIMessageMvpEnvironment();
 if (readiness.canAttemptSend) {

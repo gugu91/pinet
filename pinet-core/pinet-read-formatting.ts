@@ -2,7 +2,7 @@ import {
   classifyPinetMail,
   formatPinetMailClassLabel,
   type PinetMailClass,
-} from "@gugu910/pi-broker-core/mail-classification";
+} from "@pinet/broker-core/mail-classification";
 
 export interface PinetInboxItem {
   inboxId: number;

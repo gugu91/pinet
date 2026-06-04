@@ -44,17 +44,17 @@ test("rewriteLocalDependencySpecs replaces in-set file dependencies with exact v
     [
       "transport-core",
       entry("transport-core", {
-        name: "@gugu910/pi-transport-core",
+        name: "@pinet/transport-core",
         version: "0.1.0",
       }),
     ],
     [
       "broker-core",
       entry("broker-core", {
-        name: "@gugu910/pi-broker-core",
+        name: "@pinet/broker-core",
         version: "0.1.0",
         dependencies: {
-          "@gugu910/pi-transport-core": "file:../transport-core",
+          "@pinet/transport-core": "file:../transport-core",
         },
       }),
     ],
@@ -62,9 +62,9 @@ test("rewriteLocalDependencySpecs replaces in-set file dependencies with exact v
 
   const rewritten = rewriteLocalDependencySpecs(["transport-core", "broker-core"], manifests);
 
-  assert.equal(rewritten[1].manifest.dependencies["@gugu910/pi-transport-core"], "0.1.0");
+  assert.equal(rewritten[1].manifest.dependencies["@pinet/transport-core"], "0.1.0");
   assert.deepEqual(rewritten[1].rewrites, [
-    "@gugu910/pi-transport-core: file:../transport-core -> 0.1.0",
+    "@pinet/transport-core: file:../transport-core -> 0.1.0",
   ]);
 });
 
@@ -73,17 +73,17 @@ test("rewriteLocalDependencySpecs rejects local dependencies outside the publish
     [
       "transport-core",
       entry("transport-core", {
-        name: "@gugu910/pi-transport-core",
+        name: "@pinet/transport-core",
         version: "0.1.0",
       }),
     ],
     [
       "broker-core",
       entry("broker-core", {
-        name: "@gugu910/pi-broker-core",
+        name: "@pinet/broker-core",
         version: "0.1.0",
         dependencies: {
-          "@gugu910/pi-transport-core": "file:../transport-core",
+          "@pinet/transport-core": "file:../transport-core",
         },
       }),
     ],
@@ -98,7 +98,7 @@ test("rewriteLocalDependencySpecs rejects local dependencies outside the publish
 test("validatePublishMetadata blocks placeholder versions for real publish only", () => {
   const entries = [
     entry("pinet-core", {
-      name: "@gugu910/pi-pinet-core",
+      name: "@pinet/pinet-core",
       version: "0.0.0",
       license: "MIT",
       publishConfig: { access: "public" },
@@ -118,7 +118,7 @@ test("validatePublishMetadata blocks placeholder versions for real publish only"
 test("validatePublishMetadata requires declaration metadata", () => {
   const entries = [
     entry("pinet-core", {
-      name: "@gugu910/pi-pinet-core",
+      name: "@pinet/pinet-core",
       version: "0.0.0",
       license: "MIT",
       publishConfig: { access: "public" },
@@ -128,6 +128,25 @@ test("validatePublishMetadata requires declaration metadata", () => {
   ];
 
   assert.throws(() => validatePublishMetadata(entries, { dryRun: true }), /must include types/);
+});
+
+test("validatePublishMetadata requires npm org pinet package names", () => {
+  const entries = [
+    entry("pinet-core", {
+      name: "@gugu910/pi-pinet-core",
+      version: "0.0.0",
+      license: "MIT",
+      publishConfig: { access: "public" },
+      main: "./dist/index.js",
+      types: "./dist/index.d.ts",
+      files: ["README.md", "LICENSE", "dist/"],
+    }),
+  ];
+
+  assert.throws(
+    () => validatePublishMetadata(entries, { dryRun: true }),
+    /package name must be @pinet\/pinet-core/,
+  );
 });
 
 test("validateBuildOutputs checks package files", async () => {
@@ -141,7 +160,7 @@ test("validateBuildOutputs checks package files", async () => {
     () =>
       validateBuildOutputs(repoRoot, [
         entry("pinet-core", {
-          name: "@gugu910/pi-pinet-core",
+          name: "@pinet/pinet-core",
           main: "./dist/index.js",
           types: "./dist/index.d.ts",
         }),
@@ -163,7 +182,7 @@ test("validateBuildOutputs checks JavaScript exports and declaration outputs", a
     () =>
       validateBuildOutputs(repoRoot, [
         entry("pinet-core", {
-          name: "@gugu910/pi-pinet-core",
+          name: "@pinet/pinet-core",
           main: "./dist/index.js",
           types: "./dist/index.d.ts",
           exports: {
@@ -180,7 +199,7 @@ test("validateBuildOutputs checks JavaScript exports and declaration outputs", a
   await assert.doesNotReject(() =>
     validateBuildOutputs(repoRoot, [
       entry("pinet-core", {
-        name: "@gugu910/pi-pinet-core",
+        name: "@pinet/pinet-core",
         main: "./dist/index.js",
         types: "./dist/index.d.ts",
         exports: {
@@ -405,7 +424,7 @@ test("parseNpmViewVersionExists distinguishes found, not-found, and lookup error
   assert.equal(
     parseNpmViewVersionExists(
       { status: 0, stdout: "0.1.0\n", stderr: "" },
-      "@gugu910/pi-broker-core",
+      "@pinet/broker-core",
       "0.1.0",
     ),
     true,
@@ -413,7 +432,7 @@ test("parseNpmViewVersionExists distinguishes found, not-found, and lookup error
   assert.equal(
     parseNpmViewVersionExists(
       { status: 1, stdout: "", stderr: "npm ERR! code E404\nnpm ERR! 404 Not Found" },
-      "@gugu910/pi-broker-core",
+      "@pinet/broker-core",
       "0.1.0",
     ),
     false,
@@ -422,30 +441,30 @@ test("parseNpmViewVersionExists distinguishes found, not-found, and lookup error
     () =>
       parseNpmViewVersionExists(
         { status: 1, stdout: "", stderr: "npm ERR! network timeout" },
-        "@gugu910/pi-broker-core",
+        "@pinet/broker-core",
         "0.1.0",
       ),
-    /Unable to verify @gugu910\/pi-broker-core@0.1.0/,
+    /Unable to verify @pinet\/broker-core@0.1.0/,
   );
   assert.throws(
     () =>
       parseNpmViewVersionExists(
         { status: 1, stdout: "", stderr: "" },
-        "@gugu910/pi-broker-core",
+        "@pinet/broker-core",
         "0.1.0",
       ),
-    /Unable to verify @gugu910\/pi-broker-core@0.1.0/,
+    /Unable to verify @pinet\/broker-core@0.1.0/,
   );
 });
 
 test("assertVersionsNotAlreadyPublished fails closed for existing versions", () => {
   const entries = [
     entry("transport-core", {
-      name: "@gugu910/pi-transport-core",
+      name: "@pinet/transport-core",
       version: "0.1.0",
     }),
     entry("broker-core", {
-      name: "@gugu910/pi-broker-core",
+      name: "@pinet/broker-core",
       version: "0.1.0",
     }),
   ];
@@ -454,8 +473,8 @@ test("assertVersionsNotAlreadyPublished fails closed for existing versions", () 
     () =>
       assertVersionsNotAlreadyPublished(
         entries,
-        (packageName, version) => packageName === "@gugu910/pi-broker-core" && version === "0.1.0",
+        (packageName, version) => packageName === "@pinet/broker-core" && version === "0.1.0",
       ),
-    /@gugu910\/pi-broker-core@0.1.0/,
+    /@pinet\/broker-core@0.1.0/,
   );
 });

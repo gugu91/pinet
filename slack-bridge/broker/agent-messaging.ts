@@ -1,1 +1,1 @@
-export * from "@gugu910/pi-broker-core/agent-messaging";
+export * from "@pinet/broker-core/agent-messaging";

@@ -153,14 +153,14 @@ caching.
 
 ```
 extensions/
-├── transport-core/     # @gugu910/pi-transport-core
+├── transport-core/     # @pinet/transport-core
 │   ├── index.ts        #   canonical transport message contracts
 │   └── package.json    #   workspace package
 ├── browser-playwright/ # @gugu910/pi-browser-playwright
 │   ├── index.ts        #   Playwright-first single `browser` tool entry point
 │   ├── helpers.ts      #   security defaults + install guidance
 │   └── package.json    #   workspace package + pi manifest
-├── slack-bridge/       # @gugu910/pi-slack-bridge
+├── slack-bridge/       # @pinet/slack-bridge
 │   ├── broker/         #   message routing, socket server, adapters
 │   ├── index.ts        #   extension entry point
 │   └── package.json    #   workspace package + pi manifest
@@ -168,7 +168,7 @@ extensions/
 │   ├── generated/      #   generated typed Slack Web API client
 │   ├── cli.ts          #   CLI wrapper around generated methods
 │   └── package.json    #   workspace package + pi manifest
-├── imessage-bridge/    # @gugu910/pi-imessage-bridge
+├── imessage-bridge/    # @pinet/imessage-bridge
 │   ├── mvp.ts          #   local macOS/iMessage readiness helpers
 │   ├── send.ts         #   AppleScript send-first transport helper
 │   └── package.json    #   standalone workspace package
@@ -240,15 +240,20 @@ Safe readiness checks are the default path:
 1. Open **Actions → Publish npm packages → Run workflow**.
 2. Leave `dry_run=true`.
 3. Confirm the workflow runs `scripts/publish-npm-packages.mjs --dry-run` for
-   the full package set and does not request npm credentials.
+   the full `@pinet/*` package set and does not request npm credentials.
+
+The same dry-run path can be run locally with `pnpm publish:npm`; it defaults to
+readiness only and has no package target selector.
 
 Real publishes are intentionally harder to trigger. They require a maintainer to
 dispatch from `main` with `dry_run=false`, enter `publish all` as the exact
-`release_approval` phrase, approve the protected `npm-publish` environment,
-and provide the environment-scoped `NPM_TOKEN`. That environment is an external
-repository prerequisite that must be configured and verified before any real
-publish attempt. The publish script still refuses placeholder `0.0.0` versions
-and versions that already exist on npm.
+`release_approval` phrase, and approve the protected `npm-publish` environment.
+The publish job uses npm Trusted Publishing / GitHub OIDC with
+`npm publish --provenance`; it does not use `NPM_TOKEN`. Maintainers must also
+configure npm Trusted Publishers for every package in the npm `pinet` org
+settings (`https://www.npmjs.com/settings/pinet/packages`) before real publish.
+The publish script still refuses placeholder `0.0.0` versions and versions that
+already exist on npm.
 
 Do not publish, tag, or bump package versions as part of readiness-only changes;
 record release notes in `CHANGELOG.md` only when a maintainer approves a real

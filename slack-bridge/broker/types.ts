@@ -1,1 +1,1 @@
-export * from "@gugu910/pi-broker-core/types";
+export * from "@pinet/broker-core/types";

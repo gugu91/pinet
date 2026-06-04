@@ -105,19 +105,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Configure npm authentication
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify Trusted Publishing context
         run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "NPM_TOKEN is required for real npm publishing"
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "GitHub OIDC is required for npm Trusted Publishing. Check id-token: write and the npm-publish environment."
             exit 1
           fi
-          npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
 
       - name: Publish packages
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >-
           node ./scripts/publish-npm-packages.mjs
           --publish
