@@ -232,8 +232,9 @@ expectations and the required smoke checklist.
 The publishable Pinet/Slack package set is tracked in
 [`plans/npm-publish.md`](plans/npm-publish.md) and executed through the manual
 [`Publish npm packages`](.github/workflows/npm-publish.yml) GitHub Actions
-workflow. The workflow intentionally has no package target selector; it always
-validates or publishes the full set in dependency order.
+workflow. The workflow supports manual dry-run/publish dispatches and release-tag
+publishes from `vX.Y.Z` tags. It intentionally has no package target selector; it
+always validates or publishes the full set in dependency order.
 
 Safe readiness checks are the default path:
 
@@ -247,13 +248,23 @@ readiness only and has no package target selector. The one-time npm org package
 creation bootstrap path is `pnpm bootstrap:npm`, which also defaults to dry-run
 and prints the full `@pinet/*` package set it would publish.
 
-Real publishes are intentionally harder to trigger. They require a maintainer to
-dispatch from `main` with `dry_run=false`, enter `publish all` as the exact
-`release_approval` phrase, and approve the protected `npm-publish` environment.
-The publish job uses npm Trusted Publishing / GitHub OIDC with
-`npm publish --provenance`; it does not use a long-lived npm token. Maintainers must also
-configure npm Trusted Publishers for every package in the npm `pinet` org
-settings (`https://www.npmjs.com/settings/pinet/packages`) before real publish.
+Real publishes are intentionally harder to trigger. Maintainers can either
+manually dispatch from `main` with `dry_run=false` and `release_approval` exactly
+`publish all`, or push a release tag named `vX.Y.Z` after the version bump has
+merged to the current `main` tip. Tag-triggered publishes validate that the tag
+commit equals the current `origin/main` tip and that all five `@pinet/*` package
+versions equal the tag version before the protected publish job can request the
+`npm-publish` environment. Both real publish paths require maintainer approval of
+the protected `npm-publish` environment. The publish job uses npm Trusted
+Publishing / GitHub OIDC with `npm publish --provenance`; it does not use a
+long-lived npm token. Maintainers must also configure npm Trusted Publishers for
+every package in the npm `pinet` org settings
+(`https://www.npmjs.com/settings/pinet/packages`) before real publish. The live
+GitHub `npm-publish` environment must also be verified out-of-band by a
+maintainer before tag releases are considered ready: it should require approval
+and allow deployments from `main` plus release tags matching `v*.*.*`. That tag
+environment allowance does not replace the workflow guard that requires the tag
+commit to equal the current `origin/main` tip.
 If npm requires packages to exist before Trusted Publishing can be configured,
 a `pinet` org owner/admin may use the guarded local bootstrap script only after
 maintainer-approved versions are set:
@@ -271,6 +282,18 @@ and use the GitHub Actions workflow for normal future publishes.
 
 The publish and bootstrap scripts still refuse placeholder `0.0.0` versions and
 versions that already exist on npm.
+
+Normal tag-release procedure:
+
+1. Bump all five `@pinet/*` package versions to the same version, update
+   `pnpm-lock.yaml`, and add a maintainer-approved `CHANGELOG.md` entry.
+2. Open and merge that version-bump PR to `main` after dry-run/readiness is
+   green.
+3. Create and push a `vX.Y.Z` tag on the current `main` tip after the merge. The
+   tag-triggered workflow validates the tag commit equals the current
+   `origin/main` tip and every publishable package version equals `X.Y.Z` before
+   any dry-run/publish step, dry-runs the full set, then waits for `npm-publish`
+   environment approval before publishing.
 
 Do not publish, tag, or bump package versions as part of readiness-only changes;
 record release notes in `CHANGELOG.md` only when a maintainer approves a real
