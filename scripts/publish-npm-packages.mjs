@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertVersionsNotAlreadyPublished,
-  getTargetPackages,
+  getPublishPackages,
   loadWorkspaceManifests,
   parseArgs,
   parseNpmViewVersionExists,
@@ -43,13 +43,9 @@ function versionExists(packageName, version) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.target) {
-    throw new Error("Missing required --target argument");
-  }
-
-  const targetDirectories = getTargetPackages(args.target);
+  const packageDirectories = getPublishPackages();
   const manifests = await loadWorkspaceManifests(repoRoot);
-  const entries = rewriteLocalDependencySpecs(targetDirectories, manifests);
+  const entries = rewriteLocalDependencySpecs(packageDirectories, manifests);
 
   validatePublishMetadata(entries, { dryRun: args.dryRun });
 

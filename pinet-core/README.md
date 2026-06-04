@@ -14,7 +14,7 @@ Design proposal: `plans/slack-split-proposal.md`
 
 ## Publishing
 
-This package is included in the manual `pinet` and `slack-bridge` npm publish
-lanes tracked in [`../plans/npm-publish.md`](../plans/npm-publish.md). Use the
-GitHub Actions workflow's default dry-run/readiness path for validation; do not
-publish, tag, or bump versions without explicit maintainer release approval.
+This package is included in the full npm publish set tracked in
+[`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
+workflow's default dry-run/readiness path for validation; do not publish, tag, or
+bump versions without explicit maintainer release approval.

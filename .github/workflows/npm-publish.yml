@@ -1,24 +1,17 @@
 name: Publish npm packages
 
-run-name: npm ${{ inputs.dry_run && 'dry-run' || 'publish' }} ${{ inputs.target }} packages
+run-name: npm ${{ inputs.dry_run && 'dry-run' || 'publish' }} all packages
 
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: "Package lane to validate or publish"
-        required: true
-        type: choice
-        options:
-          - pinet
-          - slack-bridge
       dry_run:
         description: "Run npm publish --dry-run only"
         required: true
         type: boolean
         default: true
       release_approval:
-        description: "For real publishes only: type 'publish <target>'"
+        description: "For real publishes only: type 'publish all'"
         required: false
         type: string
         default: ""
@@ -27,12 +20,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ inputs.dry_run && format('dry-run-{0}', inputs.target) || 'live' }}
+  group: npm-publish-${{ inputs.dry_run && 'dry-run' || 'live' }}
   cancel-in-progress: false
 
 jobs:
   readiness:
-    name: Validate ${{ inputs.target }} publish readiness
+    name: Validate npm publish readiness
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -54,10 +47,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Dry-run publish target packages
+      - name: Dry-run publish packages
         run: >-
           node ./scripts/publish-npm-packages.mjs
-          --target "${{ inputs.target }}"
           --dry-run
 
   publish-preflight:
@@ -75,16 +67,15 @@ jobs:
       - name: Guard real publish approval phrase
         env:
           RELEASE_APPROVAL: ${{ inputs.release_approval }}
-          TARGET: ${{ inputs.target }}
         run: |
-          expected="publish ${TARGET}"
+          expected="publish all"
           if [ "${RELEASE_APPROVAL}" != "${expected}" ]; then
             echo "Real npm publishes require release_approval exactly: ${expected}"
             exit 1
           fi
 
   publish:
-    name: Publish ${{ inputs.target }} packages
+    name: Publish npm packages
     if: ${{ !inputs.dry_run }}
     needs:
       - readiness
@@ -124,10 +115,9 @@ jobs:
           fi
           npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
 
-      - name: Publish target packages
+      - name: Publish packages
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >-
           node ./scripts/publish-npm-packages.mjs
-          --target "${{ inputs.target }}"
           --publish

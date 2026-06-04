@@ -6,7 +6,7 @@ import path from "node:path";
 
 import {
   assertVersionsNotAlreadyPublished,
-  getTargetPackages,
+  getPublishPackages,
   parseArgs,
   parseNpmViewVersionExists,
   rewriteLocalDependencySpecs,
@@ -23,9 +23,8 @@ function entry(directory, manifest) {
   };
 }
 
-test("getTargetPackages keeps Pinet and Slack bridge targets separated", () => {
-  assert.deepEqual(getTargetPackages("pinet"), ["transport-core", "broker-core", "pinet-core"]);
-  assert.deepEqual(getTargetPackages("slack-bridge"), [
+test("getPublishPackages returns the full publish set in dependency order", () => {
+  assert.deepEqual(getPublishPackages(), [
     "transport-core",
     "broker-core",
     "pinet-core",
@@ -35,14 +34,12 @@ test("getTargetPackages keeps Pinet and Slack bridge targets separated", () => {
 });
 
 test("parseArgs defaults to dry-run and accepts publish mode", () => {
-  assert.deepEqual(parseArgs(["--target", "pinet"]), { target: "pinet", dryRun: true });
-  assert.deepEqual(parseArgs(["--target=slack-bridge", "--publish"]), {
-    target: "slack-bridge",
-    dryRun: false,
-  });
+  assert.deepEqual(parseArgs([]), { dryRun: true });
+  assert.deepEqual(parseArgs(["--publish"]), { dryRun: false });
+  assert.throws(() => parseArgs(["--target", "pinet"]), /Unknown argument: --target/);
 });
 
-test("rewriteLocalDependencySpecs replaces in-target file dependencies with exact versions", () => {
+test("rewriteLocalDependencySpecs replaces in-set file dependencies with exact versions", () => {
   const manifests = new Map([
     [
       "transport-core",
@@ -71,7 +68,7 @@ test("rewriteLocalDependencySpecs replaces in-target file dependencies with exac
   ]);
 });
 
-test("rewriteLocalDependencySpecs rejects local dependencies outside the target", () => {
+test("rewriteLocalDependencySpecs rejects local dependencies outside the publish set", () => {
   const manifests = new Map([
     [
       "transport-core",
@@ -94,7 +91,7 @@ test("rewriteLocalDependencySpecs rejects local dependencies outside the target"
 
   assert.throws(
     () => rewriteLocalDependencySpecs(["broker-core"], manifests),
-    /transport-core is not in the broker-core publish target/,
+    /transport-core is not in the broker-core publish package set/,
   );
 });
 
@@ -314,7 +311,7 @@ test("validatePublicTypeResolution catches declared but unresolvable declaration
   );
 });
 
-test("validatePublicTypeResolution catches undeclared sibling target declaration imports", async () => {
+test("validatePublicTypeResolution catches undeclared sibling publish-set declaration imports", async () => {
   const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-sibling-types-"));
   const packageARoot = path.join(repoRoot, "package-a");
   const packageBRoot = path.join(repoRoot, "package-b");
