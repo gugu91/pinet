@@ -120,6 +120,13 @@ This repo now uses pnpm workspaces + Turborepo for **repo-internal monorepo
 tooling**. It is **not** yet a supported root-level `pi install git:...`
 package target.
 
+For the published Pinet Slack bridge pi package, install from npm:
+
+```bash
+pi install npm:@pinet/slack-bridge
+pi install npm:@pinet/slack-bridge@0.1.0 # pinned version
+```
+
 For local development, load individual extensions directly:
 
 ```bash
