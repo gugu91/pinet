@@ -939,10 +939,16 @@ export class BrokerSocketServer {
     }
 
     const channel = typeof params.channel === "string" ? params.channel : undefined;
-    const source =
+    let source =
       typeof params.source === "string" && params.source.trim().length > 0
         ? params.source.trim()
         : undefined;
+    // Backward compatibility: legacy Slack callers used channel-only thread.claim
+    // requests. Keep those claims Slack-sendable while allowing truly source-less
+    // claims to fall through to broker-core's neutral default.
+    if (!source && channel) {
+      source = "slack";
+    }
     const claimed = this.router.claimThread(threadId, state.agentId, channel, source);
     return rpcOk(req.id, { claimed });
   }
