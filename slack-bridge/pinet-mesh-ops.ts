@@ -97,7 +97,12 @@ export interface PinetMeshOps {
     target: string,
     body: string,
     metadata?: Record<string, unknown>,
-  ) => Promise<{ messageId: number; target: string; transferredThreadId?: string }>;
+  ) => Promise<{
+    messageId: number;
+    target: string;
+    transferredThreadId?: string;
+    transferredThreadChannel?: string;
+  }>;
   sendPinetBroadcastMessage: (
     channel: string,
     body: string,
@@ -129,14 +134,30 @@ function prepareOutgoingPinetAgentMessage(
   return { body, metadata };
 }
 
-function getThreadOwnershipTransferId(metadata?: Record<string, unknown>): string | null {
+function getThreadOwnershipTransferMetadata(
+  metadata?: Record<string, unknown>,
+): Record<string, unknown> | null {
   const transfer = metadata?.threadOwnershipTransfer;
-  if (!transfer || typeof transfer !== "object" || Array.isArray(transfer)) {
-    return null;
-  }
+  return transfer && typeof transfer === "object" && !Array.isArray(transfer)
+    ? (transfer as Record<string, unknown>)
+    : null;
+}
 
-  const threadId = (transfer as Record<string, unknown>).threadId;
+function getThreadOwnershipTransferId(metadata?: Record<string, unknown>): string | null {
+  const threadId = getThreadOwnershipTransferMetadata(metadata)?.threadId;
   return typeof threadId === "string" && threadId.trim().length > 0 ? threadId.trim() : null;
+}
+
+function appendSlackThreadTransferNotice(body: string, threadId: string, channel: string): string {
+  return [
+    body,
+    "",
+    "Transferred Slack thread context:",
+    `- thread_ts: ${threadId}`,
+    `- channel: ${channel}`,
+    `- To report directly in the transferred Slack thread, use slack_send with thread_ts ${threadId}; the channel is already recorded in Pinet.`,
+    "- If slack_send says the thread is already owned by another agent, ask the broker to inspect ownership and transfer it again.",
+  ].join("\n");
 }
 
 function parseGitHubRemoteRepo(remoteUrl: string): { repoOwner: string; repoName: string } | null {
@@ -204,12 +225,31 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         throw new Error(`Thread ${transferThreadId} is not a transferable Slack thread.`);
       }
 
+      const transferThreadChannel = transferThread?.channel;
+      const transferMetadata = getThreadOwnershipTransferMetadata(finalMetadata);
+      const dispatchMetadata = transferThreadId
+        ? {
+            ...(finalMetadata ?? {}),
+            threadOwnershipTransfer: {
+              ...(transferMetadata ?? {}),
+              mode: "transfer",
+              threadId: transferThreadId,
+              source: "slack",
+              channel: transferThreadChannel,
+            },
+          }
+        : finalMetadata;
+      const dispatchBody =
+        transferThreadId && transferThreadChannel
+          ? appendSlackThreadTransferNotice(finalBody, transferThreadId, transferThreadChannel)
+          : finalBody;
+
       const result = dispatchDirectAgentMessage(db, {
         senderAgentId: selfId,
         senderAgentName: deps.getAgentName(),
         target: targetRef,
-        body: finalBody,
-        metadata: finalMetadata,
+        body: dispatchBody,
+        metadata: dispatchMetadata,
       });
 
       if (transferThreadId) {
@@ -285,6 +325,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         messageId: result.messageId,
         target: result.target.name,
         ...(transferThreadId ? { transferredThreadId: transferThreadId } : {}),
+        ...(transferThreadChannel ? { transferredThreadChannel: transferThreadChannel } : {}),
       };
     }
 
