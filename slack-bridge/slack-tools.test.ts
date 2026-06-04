@@ -1594,6 +1594,54 @@ describe("registerSlackTools", () => {
     );
   });
 
+  it("does not bookmark private file URLs as fallback canvas permalinks", async () => {
+    const { slack, tools, setFilesInfoResponse } = setup();
+    setFilesInfoResponse({
+      ok: true,
+      file: {
+        id: "F_FALLBACK_PRIVATE",
+        title: "Private URL only",
+        url_private: "https://files.slack.com/files-pri/T/F_FALLBACK_PRIVATE/download/doc",
+      },
+      comments: [],
+      response_metadata: { next_cursor: "" },
+    } as SlackResult);
+
+    const originalSlack = slack.getMockImplementation()!;
+    slack.mockImplementation(
+      async (method: string, token: string, body?: Record<string, unknown>) => {
+        if (method === "conversations.canvases.create") {
+          throw new Error("Slack conversations.canvases.create: canvas_tab_creation_failed");
+        }
+        if (method === "canvases.create") {
+          return { ok: true, token, body, canvas_id: "F_FALLBACK_PRIVATE" } as SlackResult;
+        }
+        return originalSlack(method, token, body);
+      },
+    );
+
+    const result = await tools.get("slack_canvas_create")!.execute("tool-canvas-create-private", {
+      kind: "channel",
+      channel: "proj-alpha",
+      title: "Private URL only",
+      markdown: "# Review",
+    });
+
+    expect(slack.mock.calls.some(([method]) => method === "bookmarks.add")).toBe(false);
+    expect(result.content?.[0]?.text).toContain("Slack did not expose a permalink");
+    expect(result.details).toEqual(
+      expect.not.objectContaining({
+        permalink: "https://files.slack.com/files-pri/T/F_FALLBACK_PRIVATE/download/doc",
+      }),
+    );
+    expect(result.details).toEqual(
+      expect.objectContaining({
+        canvas_id: "F_FALLBACK_PRIVATE",
+        bookmark_status: "skipped",
+      }),
+    );
+  });
+
   it("guides channel canvas updates toward fallback canvas IDs when Slack exposes no channel canvas", async () => {
     const { tools } = setup();
 
@@ -1602,7 +1650,7 @@ describe("registerSlackTools", () => {
         channel: "proj-alpha",
         markdown: "## Update",
       }),
-    ).rejects.toThrow("use the standalone fallback canvas_id returned by canvas_create");
+    ).rejects.toThrow("canvas_create will auto-create and bookmark a standalone fallback");
   });
 
   it("validates a direct canvas id before reading its comments", async () => {
@@ -1822,6 +1870,77 @@ describe("registerSlackTools", () => {
     const details = (result as { details: Record<string, unknown> }).details;
     expect(details.channel_id).toBe("C_PROJ");
     expect(details.canvas_id).toBeNull();
+  });
+
+  it("falls back and bookmarks a standalone project canvas when channel tab creation fails", async () => {
+    const { slack, tools, setFilesInfoResponse } = setup();
+    setFilesInfoResponse({
+      ok: true,
+      file: {
+        id: "F_PROJECT_FALLBACK",
+        title: "Beta RFC",
+        permalink: "https://example.slack.com/docs/T/F_PROJECT_FALLBACK",
+      },
+      comments: [],
+      response_metadata: { next_cursor: "" },
+    } as SlackResult);
+
+    const originalSlack = slack.getMockImplementation()!;
+    slack.mockImplementation(
+      async (method: string, token: string, body?: Record<string, unknown>) => {
+        if (method === "conversations.canvases.create") {
+          throw new Error("Slack conversations.canvases.create: canvas_tab_creation_failed");
+        }
+        if (method === "canvases.create") {
+          return { ok: true, token, body, canvas_id: "F_PROJECT_FALLBACK" } as SlackResult;
+        }
+        return originalSlack(method, token, body);
+      },
+    );
+
+    const result = await tools.get("slack_project_create")!.execute("tool-proj-fallback", {
+      name: "proj-beta",
+      canvas_title: "Beta RFC",
+      canvas_markdown: "# Beta",
+    });
+
+    expect(slack).toHaveBeenCalledWith(
+      "canvases.create",
+      "xoxb-initial",
+      expect.objectContaining({
+        channel_id: "C_PROJ",
+        title: "Beta RFC",
+      }),
+    );
+    expect(slack).toHaveBeenCalledWith("files.info", "xoxb-initial", {
+      file: "F_PROJECT_FALLBACK",
+    });
+    expect(slack).toHaveBeenCalledWith(
+      "bookmarks.add",
+      "xoxb-initial",
+      expect.objectContaining({
+        channel_id: "C_PROJ",
+        title: "Beta RFC",
+        link: "https://example.slack.com/docs/T/F_PROJECT_FALLBACK",
+      }),
+    );
+    expect(result.content?.[0]?.text).toContain("Created standalone fallback RFC canvas");
+    expect(result.content?.[0]?.text).toContain("canvas_id=F_PROJECT_FALLBACK");
+
+    const details = (result as { details: Record<string, unknown> }).details;
+    expect(details).toEqual(
+      expect.objectContaining({
+        channel_id: "C_PROJ",
+        canvas_id: "F_PROJECT_FALLBACK",
+        canvas_kind: "standalone",
+        canvas_fallback: true,
+        canvas_fallback_reason: "canvas_tab_creation_failed",
+        bookmark_status: "added",
+        bookmark_id: "Bk123",
+        permalink: "https://example.slack.com/docs/T/F_PROJECT_FALLBACK",
+        next_action: "canvas_update canvas_id=F_PROJECT_FALLBACK",
+      }),
+    );
   });
 
   it("classifies raw upload 403 responses as input when no proxy marker is present", async () => {
