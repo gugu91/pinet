@@ -11,6 +11,7 @@ import {
   parseNpmViewVersionExists,
   rewriteLocalDependencySpecs,
   validateBuildOutputs,
+  validatePublicTypeResolution,
   validatePublishMetadata,
 } from "./npm-publish-helpers.mjs";
 
@@ -167,6 +168,125 @@ test("validateBuildOutputs checks JavaScript exports and declaration outputs", a
         },
       }),
     ]),
+  );
+});
+
+test("validatePublicTypeResolution catches undeclared declaration imports", async () => {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-types-"));
+  const packageRoot = path.join(repoRoot, "example-package");
+  await mkdir(path.join(packageRoot, "dist"), { recursive: true });
+  await writeFile(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "example-package",
+        type: "module",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(packageRoot, "dist", "index.js"), "export {};\n");
+  await writeFile(
+    path.join(packageRoot, "dist", "index.d.ts"),
+    'import type { MissingType } from "missing-public-types";\nexport type Example = MissingType;\n',
+  );
+
+  await assert.rejects(
+    () =>
+      validatePublicTypeResolution(repoRoot, [
+        entry("example-package", {
+          name: "example-package",
+          main: "./dist/index.js",
+          types: "./dist/index.d.ts",
+        }),
+      ]),
+    /missing-public-types.*does not declare/s,
+  );
+
+  await mkdir(path.join(repoRoot, "node_modules", "missing-public-types"), { recursive: true });
+  await writeFile(
+    path.join(repoRoot, "node_modules", "missing-public-types", "package.json"),
+    `${JSON.stringify(
+      {
+        name: "missing-public-types",
+        type: "module",
+        main: "./index.js",
+        types: "./index.d.ts",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(repoRoot, "node_modules", "missing-public-types", "index.js"), "\n");
+  await writeFile(
+    path.join(repoRoot, "node_modules", "missing-public-types", "index.d.ts"),
+    "export interface MissingType { value: string; }\n",
+  );
+
+  await assert.doesNotReject(() =>
+    validatePublicTypeResolution(repoRoot, [
+      entry("example-package", {
+        name: "example-package",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+        peerDependencies: {
+          "missing-public-types": "*",
+        },
+      }),
+    ]),
+  );
+});
+
+test("validatePublicTypeResolution catches declared but unresolvable declaration subpaths", async () => {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-subpath-types-"));
+  const packageRoot = path.join(repoRoot, "example-package");
+  const dependencyRoot = path.join(repoRoot, "node_modules", "resolved-pkg");
+  await mkdir(path.join(packageRoot, "dist"), { recursive: true });
+  await mkdir(dependencyRoot, { recursive: true });
+
+  await writeFile(path.join(packageRoot, "dist", "index.js"), "export {};\n");
+  await writeFile(
+    path.join(packageRoot, "dist", "index.d.ts"),
+    'import type { MissingSubpathType } from "resolved-pkg/missing-subpath";\nexport type Example = MissingSubpathType;\n',
+  );
+  await writeFile(
+    path.join(dependencyRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "resolved-pkg",
+        type: "module",
+        main: "./index.js",
+        types: "./index.d.ts",
+        exports: {
+          ".": {
+            types: "./index.d.ts",
+            default: "./index.js",
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(dependencyRoot, "index.js"), "\n");
+  await writeFile(path.join(dependencyRoot, "index.d.ts"), "export interface RootType {}\n");
+
+  await assert.rejects(
+    () =>
+      validatePublicTypeResolution(repoRoot, [
+        entry("example-package", {
+          name: "example-package",
+          main: "./dist/index.js",
+          types: "./dist/index.d.ts",
+          peerDependencies: {
+            "resolved-pkg": "*",
+          },
+        }),
+      ]),
+    /resolved-pkg\/missing-subpath/s,
   );
 });
 
