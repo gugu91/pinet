@@ -91,6 +91,39 @@ export function getPublishPackages() {
   return [...publishPackageDirectories];
 }
 
+const releaseTagPattern = /^refs\/tags\/v(\d+\.\d+\.\d+)$/;
+
+export function parseReleaseTagVersion(ref) {
+  const match = releaseTagPattern.exec(ref);
+  if (!match?.[1]) {
+    throw new Error(
+      `Tag-triggered npm publishes require a ref like refs/tags/vX.Y.Z. Current ref: ${ref}`,
+    );
+  }
+  return match[1];
+}
+
+export function assertReleaseTagVersionMatchesManifests(ref, entries) {
+  const version = parseReleaseTagVersion(ref);
+  const mismatches = [];
+
+  for (const { manifest } of entries) {
+    if (manifest.version !== version) {
+      mismatches.push(
+        `${manifest.name}: package.json version ${manifest.version} != tag version ${version}`,
+      );
+    }
+  }
+
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Tag-triggered npm publish version validation failed:\n- ${mismatches.join("\n- ")}`,
+    );
+  }
+
+  return version;
+}
+
 export async function readJson(filePath) {
   const text = await fs.readFile(filePath, "utf8");
   return JSON.parse(text);

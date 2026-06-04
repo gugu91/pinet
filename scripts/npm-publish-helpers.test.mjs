@@ -8,8 +8,10 @@ import {
   assertVersionsNotAlreadyPublished,
   getPublishPackages,
   parseArgs,
+  assertReleaseTagVersionMatchesManifests,
   parseBootstrapArgs,
   parseNpmViewVersionExists,
+  parseReleaseTagVersion,
   rewriteLocalDependencySpecs,
   validateBuildOutputs,
   validatePublicTypeResolution,
@@ -56,6 +58,39 @@ test("parseBootstrapArgs defaults to dry-run and requires scary real-publish con
     /requires --confirm "bootstrap @pinet packages"/,
   );
   assert.throws(() => parseBootstrapArgs(["--target", "pinet"]), /Unknown argument: --target/);
+});
+
+test("parseReleaseTagVersion accepts stable vX.Y.Z release tags", () => {
+  assert.equal(parseReleaseTagVersion("refs/tags/v1.2.3"), "1.2.3");
+  assert.throws(
+    () => parseReleaseTagVersion("refs/tags/v1.2.3-alpha.1"),
+    /require a ref like refs\/tags\/vX\.Y\.Z/,
+  );
+  assert.throws(
+    () => parseReleaseTagVersion("refs/tags/npm-v1.2.3"),
+    /require a ref like refs\/tags\/vX\.Y\.Z/,
+  );
+  assert.throws(
+    () => parseReleaseTagVersion("refs/heads/main"),
+    /require a ref like refs\/tags\/vX\.Y\.Z/,
+  );
+});
+
+test("assertReleaseTagVersionMatchesManifests requires the full set to match the tag", () => {
+  const entries = [
+    entry("transport-core", { name: "@pinet/transport-core", version: "1.2.3" }),
+    entry("broker-core", { name: "@pinet/broker-core", version: "1.2.3" }),
+  ];
+
+  assert.equal(assertReleaseTagVersionMatchesManifests("refs/tags/v1.2.3", entries), "1.2.3");
+  assert.throws(
+    () =>
+      assertReleaseTagVersionMatchesManifests("refs/tags/v1.2.4", [
+        entries[0],
+        entry("broker-core", { name: "@pinet/broker-core", version: "1.2.3" }),
+      ]),
+    /@pinet\/transport-core: package\.json version 1\.2\.3 != tag version 1\.2\.4/,
+  );
 });
 
 test("rewriteLocalDependencySpecs replaces in-set file dependencies with exact versions", () => {

@@ -1,6 +1,6 @@
 name: Publish npm packages
 
-run-name: npm ${{ inputs.dry_run && 'dry-run' || 'publish' }} all packages
+run-name: npm ${{ github.event_name == 'push' && github.ref_name || (inputs.dry_run && 'dry-run' || 'publish') }} all packages
 
 on:
   workflow_dispatch:
@@ -11,16 +11,19 @@ on:
         type: boolean
         default: true
       release_approval:
-        description: "For real publishes only: type 'publish all'"
+        description: "For manual real publishes only: type 'publish all'"
         required: false
         type: string
         default: ""
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ inputs.dry_run && 'dry-run' || 'live' }}
+  group: npm-publish-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'dry-run' || 'live' }}
   cancel-in-progress: false
 
 jobs:
@@ -44,6 +47,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Validate tag release version
+        if: ${{ github.event_name == 'push' }}
+        run: node ./scripts/validate-npm-tag-version.mjs "$GITHUB_REF"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -54,29 +61,57 @@ jobs:
 
   publish-preflight:
     name: Check real publish gates
-    if: ${{ !inputs.dry_run }}
+    if: ${{ github.event_name == 'push' || !inputs.dry_run }}
     needs: readiness
     runs-on: ubuntu-latest
     steps:
-      - name: Guard real publish ref
-        if: ${{ github.ref != 'refs/heads/main' }}
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Guard tag points at current main tip
+        if: ${{ github.event_name == 'push' }}
         run: |
-          echo "Real npm publishes must be dispatched from refs/heads/main. Current ref: $GITHUB_REF"
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          trigger_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          checkout_commit="$(git rev-parse HEAD)"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          if [ "${trigger_commit}" != "${main_commit}" ] || [ "${checkout_commit}" != "${main_commit}" ]; then
+            echo "Tag-triggered npm publishes require the tag commit to equal the current origin/main tip."
+            echo "Trigger commit: ${trigger_commit}"
+            echo "Checked-out commit: ${checkout_commit}"
+            echo "origin/main: ${main_commit}"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Guard manual real publish ref
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "Manual real npm publishes must be dispatched from refs/heads/main. Current ref: $GITHUB_REF"
           exit 1
 
-      - name: Guard real publish approval phrase
+      - name: Guard manual real publish approval phrase
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           RELEASE_APPROVAL: ${{ inputs.release_approval }}
         run: |
           expected="publish all"
           if [ "${RELEASE_APPROVAL}" != "${expected}" ]; then
-            echo "Real npm publishes require release_approval exactly: ${expected}"
+            echo "Manual real npm publishes require release_approval exactly: ${expected}"
             exit 1
           fi
 
+      - name: Validate tag release version
+        if: ${{ github.event_name == 'push' }}
+        run: node ./scripts/validate-npm-tag-version.mjs "$GITHUB_REF"
+
   publish:
     name: Publish npm packages
-    if: ${{ !inputs.dry_run }}
+    if: ${{ github.event_name == 'push' || !inputs.dry_run }}
     needs:
       - readiness
       - publish-preflight
