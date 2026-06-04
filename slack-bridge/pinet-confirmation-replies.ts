@@ -1,4 +1,4 @@
-import type { PinetReadResult } from "@gugu910/pi-pinet-core/pinet-read-formatting";
+import type { PinetReadResult } from "@pinet/pinet-core/pinet-read-formatting";
 
 export type ConsumePinetConfirmationReply = (
   threadTs: string,

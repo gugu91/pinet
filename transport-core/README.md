@@ -1,4 +1,4 @@
-# @gugu910/pi-transport-core
+# @pinet/transport-core
 
 Tiny transport-neutral contracts package for the `extensions` repo.
 
@@ -22,7 +22,7 @@ This package exists to keep transport contracts transport-neutral while other pa
 
 ## Publishing
 
-This package is part of both manual npm publish lanes tracked in
+This package is part of the full npm publish set tracked in
 [`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
 workflow's default dry-run/readiness path for validation; do not publish, tag, or
 bump versions without explicit maintainer release approval.

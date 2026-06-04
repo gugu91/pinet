@@ -1,5 +1,5 @@
 {
-  "name": "@gugu910/pi-pinet-core",
+  "name": "@pinet/pinet-core",
   "version": "0.0.0",
   "type": "module",
   "description": "Pinet runtime core for pi — broker/follower orchestration and mesh tooling",
@@ -35,8 +35,8 @@
     "test": "vitest run *.test.ts"
   },
   "dependencies": {
-    "@gugu910/pi-broker-core": "file:../broker-core",
-    "@gugu910/pi-transport-core": "file:../transport-core"
+    "@pinet/broker-core": "file:../broker-core",
+    "@pinet/transport-core": "file:../transport-core"
   },
   "types": "./dist/index.d.ts"
 }

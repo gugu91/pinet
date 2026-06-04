@@ -1,1 +1,1 @@
-export * from "@gugu910/pi-broker-core/maintenance";
+export * from "@pinet/broker-core/maintenance";

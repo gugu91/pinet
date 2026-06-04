@@ -1,5 +1,5 @@
 {
-  "name": "@gugu910/pi-broker-core",
+  "name": "@pinet/broker-core",
   "version": "0.0.0",
   "type": "module",
   "description": "Transport-neutral broker kernel primitives for pi transports",
@@ -43,7 +43,7 @@
     "test": "vitest run *.test.ts"
   },
   "dependencies": {
-    "@gugu910/pi-transport-core": "file:../transport-core"
+    "@pinet/transport-core": "file:../transport-core"
   },
   "types": "./dist/index.d.ts"
 }

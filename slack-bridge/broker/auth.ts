@@ -1,1 +1,1 @@
-export * from "@gugu910/pi-broker-core/auth";
+export * from "@pinet/broker-core/auth";

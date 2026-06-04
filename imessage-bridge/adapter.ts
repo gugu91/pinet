@@ -2,7 +2,7 @@ import type {
   InboundMessage as IMessageAdapterInboundMessage,
   MessageAdapter,
   OutboundMessage as IMessageAdapterOutboundMessage,
-} from "@gugu910/pi-transport-core";
+} from "@pinet/transport-core";
 import { assertIMessageSendCapability, sendIMessage, type RunAppleScript } from "./send.js";
 import {
   formatIMessageMvpReadiness,

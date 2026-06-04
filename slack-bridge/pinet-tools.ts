@@ -5,15 +5,15 @@ import {
   formatPinetReadResultFull,
   type PinetReadOptions,
   type PinetReadResult,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+} from "@pinet/pinet-core/pinet-read-formatting";
 import {
   normalizePinetOutputOptions,
   type PinetOutputOptions,
-} from "@gugu910/pi-pinet-core/output-options";
+} from "@pinet/pinet-core/output-options";
 import {
   parseScheduledWakeupDelay,
   resolveScheduledWakeupFireAt,
-} from "@gugu910/pi-pinet-core/scheduled-wakeups";
+} from "@pinet/pinet-core/scheduled-wakeups";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {

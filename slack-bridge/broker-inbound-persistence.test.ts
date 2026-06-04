@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DeliveredInboundMessageResult, InboundMessage } from "@gugu910/pi-broker-core/types";
+import type { DeliveredInboundMessageResult, InboundMessage } from "@pinet/broker-core/types";
 import {
   buildPersistedInboundNotificationText,
   buildPinetReadPointer,

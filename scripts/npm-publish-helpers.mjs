@@ -3,16 +3,21 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-export const publishTargets = Object.freeze({
-  pinet: ["transport-core", "broker-core", "pinet-core"],
-  "slack-bridge": [
-    "transport-core",
-    "broker-core",
-    "pinet-core",
-    "imessage-bridge",
-    "slack-bridge",
-  ],
-});
+export const publishPackages = Object.freeze([
+  { directory: "transport-core", packageName: "@pinet/transport-core" },
+  { directory: "broker-core", packageName: "@pinet/broker-core" },
+  { directory: "pinet-core", packageName: "@pinet/pinet-core" },
+  { directory: "imessage-bridge", packageName: "@pinet/imessage-bridge" },
+  { directory: "slack-bridge", packageName: "@pinet/slack-bridge" },
+]);
+
+export const publishPackageDirectories = Object.freeze(
+  publishPackages.map(({ directory }) => directory),
+);
+
+const publishPackageNamesByDirectory = new Map(
+  publishPackages.map(({ directory, packageName }) => [directory, packageName]),
+);
 
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const publicDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
@@ -21,7 +26,6 @@ const requiredPackageFiles = ["README.md", "LICENSE", "dist/"];
 export function parseArgs(argv) {
   const args = {
     dryRun: true,
-    target: undefined,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -34,29 +38,14 @@ export function parseArgs(argv) {
       args.dryRun = false;
       continue;
     }
-    if (arg === "--target") {
-      args.target = argv[index + 1];
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--target=")) {
-      args.target = arg.slice("--target=".length);
-      continue;
-    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
   return args;
 }
 
-export function getTargetPackages(target) {
-  const packages = publishTargets[target];
-  if (!packages) {
-    throw new Error(
-      `Unknown npm publish target "${target}". Expected one of: ${Object.keys(publishTargets).join(", ")}`,
-    );
-  }
-  return packages;
+export function getPublishPackages() {
+  return [...publishPackageDirectories];
 }
 
 export async function readJson(filePath) {
@@ -86,12 +75,12 @@ export async function loadWorkspaceManifests(repoRoot) {
   return manifests;
 }
 
-export function rewriteLocalDependencySpecs(targetDirectories, manifests) {
-  const targetSet = new Set(targetDirectories);
+export function rewriteLocalDependencySpecs(packageDirectories, manifests) {
+  const packageSet = new Set(packageDirectories);
   const patched = [];
   const byDirectory = new Map(manifests);
 
-  for (const directory of targetDirectories) {
+  for (const directory of packageDirectories) {
     const entry = byDirectory.get(directory);
     if (!entry) {
       throw new Error(`Target package directory is not a workspace: ${directory}`);
@@ -118,9 +107,9 @@ export function rewriteLocalDependencySpecs(targetDirectories, manifests) {
             `${manifest.name} has unsupported local dependency ${dependencyName}@${specifier}`,
           );
         }
-        if (!targetSet.has(dependencyDirectory)) {
+        if (!packageSet.has(dependencyDirectory)) {
           throw new Error(
-            `${manifest.name} depends on ${dependencyEntry.manifest.name}, but ${dependencyDirectory} is not in the ${targetDirectories.join(", ")} publish target`,
+            `${manifest.name} depends on ${dependencyEntry.manifest.name}, but ${dependencyDirectory} is not in the ${packageDirectories.join(", ")} publish package set`,
           );
         }
         if (dependencyName !== dependencyEntry.manifest.name) {
@@ -148,7 +137,11 @@ export function validatePublishMetadata(entries, { dryRun }) {
   const errors = [];
 
   for (const { directory, manifest } of entries) {
+    const expectedName = publishPackageNamesByDirectory.get(directory);
     if (!manifest.name) errors.push(`${directory}: package.json must include name`);
+    if (expectedName && manifest.name !== expectedName) {
+      errors.push(`${directory}: package name must be ${expectedName} for npm org pinet publish`);
+    }
     if (!manifest.version) errors.push(`${directory}: package.json must include version`);
     if (manifest.private === true) errors.push(`${manifest.name}: package must not be private`);
     if (manifest.publishConfig?.access !== "public") {

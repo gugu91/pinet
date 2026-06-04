@@ -1,1 +1,1 @@
-export * from "@gugu910/pi-broker-core/router";
+export * from "@pinet/broker-core/router";

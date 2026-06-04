@@ -5,7 +5,7 @@ import {
   DEFAULT_RESUMABLE_WINDOW_MS,
   defaultDbPath,
   type TaskAssignmentAwaitingReplyInfo,
-} from "@gugu910/pi-broker-core/schema";
+} from "@pinet/broker-core/schema";
 import type { RalphCycleRecord } from "../helpers.js";
 
 interface RalphCycleRow {

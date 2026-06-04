@@ -1,4 +1,4 @@
-# @gugu910/pi-broker-core
+# @pinet/broker-core
 
 Transport-neutral broker kernel primitives for the `extensions` repo.
 
@@ -20,7 +20,7 @@ Transport-neutral broker kernel primitives for the `extensions` repo.
 
 ## Publishing
 
-This package is part of both manual npm publish lanes tracked in
+This package is part of the full npm publish set tracked in
 [`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
 workflow's default dry-run/readiness path for validation; do not publish, tag, or
 bump versions without explicit maintainer release approval.

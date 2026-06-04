@@ -5,21 +5,21 @@ Slack assistant integration for [pi](https://github.com/badlogic/pi-mono) — mu
 ## Install
 
 ```bash
-pi install npm:@gugu910/pi-slack-bridge
+pi install npm:@pinet/slack-bridge
 ```
 
 Or with npm:
 
 ```bash
-npm install @gugu910/pi-slack-bridge
+npm install @pinet/slack-bridge
 ```
 
 ## Publishing
 
-This package is released through the manual `slack-bridge` npm publish lane
-tracked in [`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub
-Actions workflow's default dry-run/readiness path for validation; do not publish,
-tag, or bump versions without explicit maintainer release approval.
+This package is included in the full npm publish set tracked in
+[`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
+workflow's default dry-run/readiness path for validation; do not publish, tag, or
+bump versions without explicit maintainer release approval.
 
 ## Prerequisites
 

@@ -1,4 +1,4 @@
-import type { RuntimeScopeCarrier } from "@gugu910/pi-transport-core";
+import type { RuntimeScopeCarrier } from "@pinet/transport-core";
 import {
   buildSlackCompatibilityScope,
   isUserAllowed,

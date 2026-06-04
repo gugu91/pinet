@@ -37,7 +37,7 @@ import {
   createIMessageAdapter,
   detectIMessageMvpEnvironment,
   formatIMessageMvpReadiness,
-} from "@gugu910/pi-imessage-bridge";
+} from "@pinet/imessage-bridge";
 import {
   SLACK_SOCKET_DELIVERY_DEDUP_MAX_SIZE,
   SLACK_SOCKET_DELIVERY_DEDUP_TTL_MS,

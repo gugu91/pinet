@@ -1,5 +1,5 @@
 {
-  "name": "@gugu910/pi-transport-core",
+  "name": "@pinet/transport-core",
   "version": "0.0.0",
   "type": "module",
   "description": "Transport-neutral message contracts for pi transports",

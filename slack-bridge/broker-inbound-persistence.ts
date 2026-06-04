@@ -2,7 +2,7 @@ import type {
   BrokerMessage,
   DeliveredInboundMessageResult,
   InboundMessage,
-} from "@gugu910/pi-broker-core/types";
+} from "@pinet/broker-core/types";
 
 export interface DeliveredInboundPersistenceStore {
   queueDeliveredMessage(agentId: string, message: InboundMessage): DeliveredInboundMessageResult;

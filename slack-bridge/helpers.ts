@@ -4,13 +4,13 @@ import * as path from "node:path";
 import {
   classifyPinetMail,
   formatPinetMailClassLabel,
-} from "@gugu910/pi-broker-core/mail-classification";
+} from "@pinet/broker-core/mail-classification";
 import {
   buildCompatibilityInstanceScope,
   buildCompatibilityWorkspaceScope,
   buildRuntimeScopeCarrier,
   type RuntimeScopeCarrier,
-} from "@gugu910/pi-transport-core";
+} from "@pinet/transport-core";
 import type { ReactionCommandSettings } from "./reaction-triggers.js";
 import { buildPinetReadPointer } from "./broker-inbound-persistence.js";
 import { matchesToolPattern } from "./guardrails.js";
