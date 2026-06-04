@@ -180,29 +180,57 @@ function hasSlackThreadContext(metadata: Record<string, unknown> | null | undefi
   return typeof context?.channelId === "string" && context.channelId.length > 0;
 }
 
+function isTerminalLaneForVisibleRelay(lane: Pick<PinetLaneInfo, "state">): boolean {
+  return lane.state === "done" || lane.state === "cancelled" || lane.state === "detached";
+}
+
+function getVisibleRelayLaneRank(lane: Pick<PinetLaneInfo, "state">): number {
+  return isTerminalLaneForVisibleRelay(lane) ? 2 : 0;
+}
+
+function getSafeGithubEventRelayTarget(
+  threadsById: (threadId: string) => ThreadInfo | null,
+  threadId: string | null | undefined,
+): GithubEventRelayTarget | null {
+  if (!threadId) return null;
+  const thread = threadsById(threadId);
+  if (!thread || thread.source !== "slack" || !thread.channel) {
+    return null;
+  }
+  if (thread.channel.startsWith("D") && !hasSlackThreadContext(thread.metadata)) {
+    return null;
+  }
+  return { threadId, source: "slack", channel: thread.channel };
+}
+
 export function resolveSafeGithubEventRelayTarget(
   threadsById: (threadId: string) => ThreadInfo | null,
   event: GithubEventRelayEvent,
   lanes: ReadonlyArray<PinetLaneInfo>,
   assignmentThreadId: string,
 ): GithubEventRelayTarget | null {
-  const laneThreadIds = selectPinetLanesForGithubEventRelay(lanes, event)
-    .map((lane) => lane.threadId)
-    .filter((threadId): threadId is string => typeof threadId === "string" && threadId.length > 0);
-  const candidateThreadIds = [...new Set([...laneThreadIds, assignmentThreadId])];
+  const candidatesByThreadId = new Map<string, { target: GithubEventRelayTarget; rank: number }>();
+  const addCandidate = (threadId: string | null | undefined, rank: number): void => {
+    const target = getSafeGithubEventRelayTarget(threadsById, threadId);
+    if (!target) return;
 
-  for (const threadId of candidateThreadIds) {
-    const thread = threadsById(threadId);
-    if (!thread || thread.source !== "slack" || !thread.channel) {
-      continue;
+    const existing = candidatesByThreadId.get(target.threadId);
+    if (!existing || rank < existing.rank) {
+      candidatesByThreadId.set(target.threadId, { target, rank });
     }
-    if (thread.channel.startsWith("D") && !hasSlackThreadContext(thread.metadata)) {
-      continue;
-    }
-    return { threadId, source: "slack", channel: thread.channel };
+  };
+
+  for (const lane of selectPinetLanesForGithubEventRelay(lanes, event)) {
+    addCandidate(lane.threadId, getVisibleRelayLaneRank(lane));
   }
+  addCandidate(assignmentThreadId, 1);
 
-  return null;
+  const candidates = [...candidatesByThreadId.values()];
+  if (candidates.length === 0) return null;
+
+  const bestRank = Math.min(...candidates.map((candidate) => candidate.rank));
+  const bestCandidates = candidates.filter((candidate) => candidate.rank === bestRank);
+  return bestCandidates.length === 1 ? bestCandidates[0]!.target : null;
 }
 
 export function buildGithubEventRelayPayload(

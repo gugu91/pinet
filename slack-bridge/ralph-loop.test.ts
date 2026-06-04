@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { PinetLaneInfo, ThreadInfo } from "./broker/types.js";
 import {
   applyTrackedAssignmentIdleReplyStalls,
   buildTrackedAssignmentReplyNudgeMessage,
@@ -334,6 +335,8 @@ describe("runRalphLoopCycle GitHub event relay", () => {
       nextStatus?: "assigned" | "pr_open" | "pr_merged" | "pr_closed";
       nextPrNumber?: number | null;
       safeThread?: boolean;
+      lanes?: PinetLaneInfo[];
+      threads?: Map<string, ThreadInfo>;
     } = {},
   ) {
     const state = createRalphLoopState();
@@ -358,7 +361,7 @@ describe("runRalphLoopCycle GitHub event relay", () => {
       createdAt: now,
       updatedAt: now,
     } as const;
-    const lane = {
+    const lane: PinetLaneInfo = {
       laneId: "issue-774",
       name: null,
       task: null,
@@ -376,6 +379,23 @@ describe("runRalphLoopCycle GitHub event relay", () => {
       lastActivityAt: now,
       participants: [],
     };
+    const threads =
+      overrides.threads ??
+      new Map<string, ThreadInfo>([
+        [
+          "123.456",
+          {
+            threadId: "123.456",
+            source: "slack",
+            channel: "C123",
+            ownerAgent: "worker-1",
+            ownerBinding: null,
+            metadata: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      ]);
     const db = {
       getRecentRalphCycles: () => [],
       getAllAgents: () => [],
@@ -385,22 +405,11 @@ describe("runRalphLoopCycle GitHub event relay", () => {
       listTaskAssignmentsAwaitingFirstReply: () => [],
       listTaskAssignments: () => [rawAssignment],
       getMessagesByIds: () => [],
-      listPinetLanes: () => [lane],
+      listPinetLanes: () => overrides.lanes ?? [lane],
       upsertPinetLane,
       updateTaskAssignmentProgress,
       getThread: (threadId: string) =>
-        overrides.safeThread === false || threadId !== "123.456"
-          ? null
-          : {
-              threadId: "123.456",
-              source: "slack",
-              channel: "C123",
-              ownerAgent: "worker-1",
-              ownerBinding: null,
-              metadata: null,
-              createdAt: now,
-              updatedAt: now,
-            },
+        overrides.safeThread === false ? null : (threads.get(threadId) ?? null),
       recordRalphCycle: vi.fn(),
     };
     const deps = createLoopDeps({
@@ -476,6 +485,77 @@ describe("runRalphLoopCycle GitHub event relay", () => {
         metadata: expect.objectContaining({
           githubEventRelay: expect.objectContaining({ status: "pr_open", prNumber: 123 }),
         }),
+      }),
+    );
+  });
+
+  it("uses active lanes for visible delivery when exact repo matches include done lanes", async () => {
+    const now = "2026-06-04T00:00:00.000Z";
+    const baseLane = {
+      name: null,
+      task: null,
+      issueNumber: 774,
+      prNumber: null,
+      ownerAgentId: null,
+      implementationLeadAgentId: null,
+      pmMode: false,
+      summary: null,
+      metadata: { github: { owner: "gugu91", repo: "extensions" } },
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+      participants: [],
+    } satisfies Partial<PinetLaneInfo>;
+    const activeLane: PinetLaneInfo = {
+      ...baseLane,
+      laneId: "active-lane",
+      threadId: "active-thread",
+      state: "active",
+    } as PinetLaneInfo;
+    const doneLane: PinetLaneInfo = {
+      ...baseLane,
+      laneId: "done-lane",
+      threadId: "done-thread",
+      state: "done",
+    } as PinetLaneInfo;
+    const threads = new Map<string, ThreadInfo>([
+      [
+        "active-thread",
+        {
+          threadId: "active-thread",
+          source: "slack",
+          channel: "C123",
+          ownerAgent: "worker-1",
+          ownerBinding: null,
+          metadata: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      [
+        "done-thread",
+        {
+          threadId: "done-thread",
+          source: "slack",
+          channel: "C999",
+          ownerAgent: "worker-1",
+          ownerBinding: null,
+          metadata: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    ]);
+
+    const { emitGithubEventRelay, upsertPinetLane } = await runGithubRelayCycle({
+      lanes: [doneLane, activeLane],
+      threads,
+    });
+
+    expect(upsertPinetLane).toHaveBeenCalledTimes(2);
+    expect(emitGithubEventRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { threadId: "active-thread", source: "slack", channel: "C123" },
       }),
     );
   });

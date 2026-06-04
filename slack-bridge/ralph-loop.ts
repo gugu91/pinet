@@ -315,8 +315,8 @@ async function processGithubEventRelayForAssignment(
   if (!event) return;
 
   const lanes = db.listPinetLanes({ includeDone: true });
-  const matchingLanes = selectPinetLanesForGithubEventRelay(lanes, event);
-  for (const lane of matchingLanes) {
+  const metadataLanes = selectPinetLanesForGithubEventRelay(lanes, event);
+  for (const lane of metadataLanes) {
     db.upsertPinetLane({
       laneId: lane.laneId,
       prNumber: event.prNumber,
@@ -327,7 +327,7 @@ async function processGithubEventRelayForAssignment(
   const target = resolveSafeGithubEventRelayTarget(
     (threadId) => db.getThread(threadId),
     event,
-    matchingLanes,
+    lanes,
     assignment.threadId,
   );
 

@@ -191,4 +191,68 @@ describe("GitHub event relay helpers", () => {
       ),
     ).toBeNull();
   });
+
+  it("prefers active Slack-backed lanes over terminal historical lanes", () => {
+    const event = buildGithubEventRelayEvent(
+      { ...baseAssignment, nextStatus: "pr_open", nextPrNumber: 123 },
+      "2026-06-04T01:02:03.000Z",
+    )!;
+    const activeLane = lane({
+      laneId: "active",
+      threadId: "active-thread",
+      state: "active",
+      metadata: { github: { owner: "gugu91", repo: "extensions" } },
+    });
+    const doneLane = lane({
+      laneId: "done",
+      threadId: "done-thread",
+      state: "done",
+      metadata: { github: { owner: "gugu91", repo: "extensions" } },
+    });
+    const threads = new Map<string, ThreadInfo>([
+      ["active-thread", thread({ threadId: "active-thread", channel: "C123" })],
+      ["done-thread", thread({ threadId: "done-thread", channel: "C999" })],
+    ]);
+
+    expect(
+      resolveSafeGithubEventRelayTarget(
+        (threadId) => threads.get(threadId) ?? null,
+        event,
+        [doneLane, activeLane],
+        "a2a:broker:worker",
+      ),
+    ).toEqual({ threadId: "active-thread", source: "slack", channel: "C123" });
+  });
+
+  it("skips visible delivery when multiple equally ranked safe Slack targets remain", () => {
+    const event = buildGithubEventRelayEvent(
+      { ...baseAssignment, nextStatus: "pr_open", nextPrNumber: 123 },
+      "2026-06-04T01:02:03.000Z",
+    )!;
+    const activeLaneA = lane({
+      laneId: "active-a",
+      threadId: "active-thread-a",
+      state: "active",
+      metadata: { github: { owner: "gugu91", repo: "extensions" } },
+    });
+    const activeLaneB = lane({
+      laneId: "active-b",
+      threadId: "active-thread-b",
+      state: "review",
+      metadata: { github: { owner: "gugu91", repo: "extensions" } },
+    });
+    const threads = new Map<string, ThreadInfo>([
+      ["active-thread-a", thread({ threadId: "active-thread-a", channel: "C123" })],
+      ["active-thread-b", thread({ threadId: "active-thread-b", channel: "C456" })],
+    ]);
+
+    expect(
+      resolveSafeGithubEventRelayTarget(
+        (threadId) => threads.get(threadId) ?? null,
+        event,
+        [activeLaneA, activeLaneB],
+        "a2a:broker:worker",
+      ),
+    ).toBeNull();
+  });
 });
