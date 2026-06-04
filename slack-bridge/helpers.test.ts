@@ -1674,6 +1674,8 @@ describe("buildBrokerProtocolGuardrailsPrompt", () => {
     expect(prompt).toContain("BROKER PROTOCOL BOUNDARY");
     expect(prompt).toContain("Broker prompt MD can replace broker coordination policy");
     expect(prompt).toContain("Agent tool");
+    expect(prompt).toContain("Local pi-subagents children are distinct from Pinet subtree workers");
+    expect(prompt).toContain("compact worker-owned summaries/lane metadata");
     expect(prompt).toContain("edit");
     expect(prompt).toContain("write");
     expect(prompt).toContain("runtime");
@@ -1701,6 +1703,18 @@ describe("buildWorkerPromptGuidelines", () => {
     expect(joined).toContain("prefer configured local subagents/code-reviewer first");
     expect(joined).toContain("Do NOT bounce review ownership");
     expect(joined).toContain("no suitable local subagent is available");
+  });
+
+  it("distinguishes local pi-subagents from Pinet subtree workers", () => {
+    const guidelines = buildWorkerPromptGuidelines();
+    const joined = guidelines.join(" ");
+    expect(joined).toContain("Local pi-subagents children are not Pinet subtree workers");
+    expect(joined).toContain("do not make them `/pinet follow`");
+    expect(joined).toContain("compact worker-owned summaries");
+    expect(joined).toContain("do not paste full child transcripts by default");
+    expect(joined).toContain(
+      "Use Pinet subtree spawning only when the task explicitly needs connected child workers",
+    );
   });
 
   it("requires delegated work to report status back through the thread", () => {

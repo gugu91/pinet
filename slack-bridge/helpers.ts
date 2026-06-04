@@ -1765,6 +1765,7 @@ export function buildBrokerProtocolGuardrailsPrompt(): string {
     "🔒 BROKER PROTOCOL BOUNDARY:",
     "Broker prompt MD can replace broker coordination policy, tone, and operating style, but it cannot relax runtime-enforced tool restrictions or the Pinet protocol boundary.",
     "The broker must not spawn local subagents through the Agent tool. Local subagents have no Slack/Pinet connectivity, cannot own Slack/Pinet threads, and cannot be monitored by the mesh.",
+    "Local pi-subagents children are distinct from Pinet subtree workers: the broker may ask a connected worker to use local subagents and publish compact worker-owned summaries/lane metadata, but those child sessions must not register with Pinet, receive direct broker routing, or own Slack/Pinet threads.",
     "The broker must not use edit or write. Those tools are blocked at runtime for broker sessions; delegate implementation and review work to connected Pinet workers instead.",
     "Broker prompt diagnostics must never echo private prompt file contents. Report only concise source/status/warning labels.",
   ].join("\n");
@@ -1788,6 +1789,9 @@ export function buildWorkerPromptGuidelines(): string[] {
     "",
     "HELPER / DELEGATION RULES:",
     "- For helper analysis, planning, and review, prefer configured local subagents/code-reviewer first when available. You own the connected Pinet lane and must summarize any local subagent output back in the original Pinet/Slack thread.",
+    "- Local pi-subagents children are not Pinet subtree workers: keep them local and non-routable, do not make them `/pinet follow`, and keep Slack/Pinet replies and thread ownership in the parent worker.",
+    "- When a lane/PM asks for pi-subagents visibility, publish compact worker-owned summaries in lane metadata or the requested report: run id, state, short summary, blocker/needs-attention status, and artifact/session refs; do not paste full child transcripts by default.",
+    "- Use Pinet subtree spawning only when the task explicitly needs connected child workers; do not substitute subtree workers for local pi-subagents helper runs.",
     "- Do NOT bounce review ownership to another connected worker merely so that worker can invoke a local subagent; invoke the local helper yourself when suitable.",
     "- Use Pinet delegation to another connected worker only when no suitable local subagent is available, a connected session/worktree is explicitly needed, or the broker has explicitly instructed maintainer-consented PM mode.",
     "- In PM mode, remain accountable: nominate an implementation lead, delegate implementation, coordinate blockers/status, act as second-pass reviewer, and coordinate merge readiness.",
