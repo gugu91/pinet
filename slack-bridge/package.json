@@ -1,6 +1,6 @@
 {
   "name": "@pinet/slack-bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Pi package for Pinet Slack assistant integration — multi-agent broker, thread routing, and inbox tools",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
