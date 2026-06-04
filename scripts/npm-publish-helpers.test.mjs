@@ -290,6 +290,96 @@ test("validatePublicTypeResolution catches declared but unresolvable declaration
   );
 });
 
+test("validatePublicTypeResolution catches undeclared sibling target declaration imports", async () => {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-sibling-types-"));
+  const packageARoot = path.join(repoRoot, "package-a");
+  const packageBRoot = path.join(repoRoot, "package-b");
+  await mkdir(path.join(packageARoot, "dist"), { recursive: true });
+  await mkdir(path.join(packageBRoot, "dist"), { recursive: true });
+
+  await writeFile(path.join(packageARoot, "dist", "index.js"), "export {};\n");
+  await writeFile(
+    path.join(packageARoot, "dist", "index.d.ts"),
+    'import type { SiblingType } from "package-b/subpath";\nexport type Example = SiblingType;\n',
+  );
+  await writeFile(path.join(packageBRoot, "dist", "index.js"), "export {};\n");
+  await writeFile(path.join(packageBRoot, "dist", "index.d.ts"), "export {};\n");
+  await writeFile(path.join(packageBRoot, "dist", "subpath.js"), "export {};\n");
+  await writeFile(
+    path.join(packageBRoot, "dist", "subpath.d.ts"),
+    "export interface SiblingType { value: string; }\n",
+  );
+  await writeFile(
+    path.join(packageARoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "package-a",
+        type: "module",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    path.join(packageBRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "package-b",
+        type: "module",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+        exports: {
+          ".": {
+            types: "./dist/index.d.ts",
+            default: "./dist/index.js",
+          },
+          "./subpath": {
+            types: "./dist/subpath.d.ts",
+            default: "./dist/subpath.js",
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  const packageBEntry = entry("package-b", {
+    name: "package-b",
+    main: "./dist/index.js",
+    types: "./dist/index.d.ts",
+  });
+
+  await assert.rejects(
+    () =>
+      validatePublicTypeResolution(repoRoot, [
+        entry("package-a", {
+          name: "package-a",
+          main: "./dist/index.js",
+          types: "./dist/index.d.ts",
+        }),
+        packageBEntry,
+      ]),
+    /package-b.*does not declare/s,
+  );
+
+  await assert.doesNotReject(() =>
+    validatePublicTypeResolution(repoRoot, [
+      entry("package-a", {
+        name: "package-a",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+        dependencies: {
+          "package-b": "0.1.0",
+        },
+      }),
+      packageBEntry,
+    ]),
+  );
+});
+
 test("parseNpmViewVersionExists distinguishes found, not-found, and lookup errors", () => {
   assert.equal(
     parseNpmViewVersionExists(
