@@ -67,7 +67,7 @@ describe("GitHub event relay helpers", () => {
       url: "https://github.com/gugu91/extensions/pull/123",
     });
     expect(formatGithubEventRelayText(event!)).toBe(
-      "GitHub relay: gugu91/extensions <https://github.com/gugu91/extensions/pull/123|PR #123> opened/ready for review for issue #774.",
+      "GitHub relay: gugu91/extensions <https://github.com/gugu91/extensions/pull/123|PR #123> opened for issue #774.",
     );
     expect(
       buildGithubEventRelayPayload(event!, {

@@ -472,7 +472,7 @@ describe("runRalphLoopCycle GitHub event relay", () => {
     expect(emitGithubEventRelay).toHaveBeenCalledWith(
       expect.objectContaining({
         target: { threadId: "123.456", source: "slack", channel: "C123" },
-        text: expect.stringContaining("opened/ready for review"),
+        text: expect.stringContaining("opened"),
         metadata: expect.objectContaining({
           githubEventRelay: expect.objectContaining({ status: "pr_open", prNumber: 123 }),
         }),

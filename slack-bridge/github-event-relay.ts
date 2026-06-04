@@ -101,7 +101,7 @@ export function formatGithubEventRelayText(event: GithubEventRelayEvent): string
   if (event.status === "pr_merged") {
     return `GitHub relay: ${repoPrefix}${linkedPr} merged for issue #${event.issueNumber}.`;
   }
-  return `GitHub relay: ${repoPrefix}${linkedPr} opened/ready for review for issue #${event.issueNumber}.`;
+  return `GitHub relay: ${repoPrefix}${linkedPr} opened for issue #${event.issueNumber}.`;
 }
 
 export function buildGithubEventRelayMetadata(
