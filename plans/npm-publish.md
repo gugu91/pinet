@@ -32,6 +32,15 @@ node ./scripts/publish-npm-packages.mjs --dry-run
 
 Both forms default to dry-run/readiness. The script has no `--target` flag and always processes the full package set. The `--publish` mode is reserved for the GitHub Actions Trusted Publishing/OIDC workflow context; it is not a local token-publish path.
 
+For one-time npm org package creation before Trusted Publishing can be configured, use the bootstrap script described below:
+
+```bash
+pnpm bootstrap:npm
+node ./scripts/bootstrap-npm-packages.mjs --dry-run
+```
+
+That script also defaults to dry-run/readiness and processes the same full package set. Its real publish mode is a local maintainer bootstrap escape hatch only; it is not the normal release path.
+
 When `dry_run=true`, the workflow stops after the dry-run/readiness job and does not request the `npm-publish` environment. Dry-run dispatches use the `npm-publish-dry-run` concurrency group. Real publish dispatches use the `npm-publish-live` concurrency group so live publishes are globally serialized.
 
 Real publishes require all of these gates before the publish job can run:
@@ -51,10 +60,26 @@ Packages are intended for the npm `pinet` org/package settings area: <https://ww
 
 Keep the GitHub and npm setup separate:
 
-- **GitHub setup:** create/verify the `npm-publish` environment, require maintainer reviewers, restrict deployment branches to `main`, and do not add `NPM_TOKEN` for this workflow.
+- **GitHub setup:** create/verify the `npm-publish` environment, require maintainer reviewers, restrict deployment branches to `main`, and do not add long-lived npm token auth for this workflow.
 - **npm setup:** an npm `pinet` org owner/admin must have package creation/publish authority for the org and must configure Trusted Publishing for every package in the list above.
 
-Trusted Publishing is package-scoped in npm's settings UI. If npm does not allow a Trusted Publisher to be configured for a package before that package exists, do not add a token fallback in this repo. The safe bootstrap is to have an npm `pinet` org owner/admin create or first-publish/claim the packages using npm-approved org procedures, then configure Trusted Publishing for each package, then use this GitHub Actions workflow for subsequent provenance publishes. If npm's team/access UI loops or blocks package creation, resolve org/team/admin access in npm first rather than adding CI token automation.
+Trusted Publishing is package-scoped in npm's settings UI. If npm does not allow a Trusted Publisher to be configured for a package before that package exists, do not add a token fallback in this repo.
+
+The repo includes a guarded first-publish bootstrap script for that narrow package-creation gap:
+
+```bash
+# safe default: builds, validates, and runs npm publish --dry-run for the full set
+pnpm bootstrap:npm
+
+# real one-time bootstrap only, after maintainer-approved versions are set
+node ./scripts/bootstrap-npm-packages.mjs \
+  --bootstrap-publish \
+  --confirm "bootstrap @pinet packages"
+```
+
+The real bootstrap mode still runs the same package-name, metadata/artifact, build-output, public-type, placeholder-version, and already-published-version gates. It then runs `npm publish --access public` for the full package set from the local npm CLI login. The maintainer running it must already be logged in with `npm login` as a `pinet` org owner/admin with package creation rights. This repo does not configure token auth and does not make bootstrap publishing the normal release path.
+
+Immediately after any successful first-publish bootstrap, configure npm Trusted Publishing for every package in <https://www.npmjs.com/settings/pinet/packages> with owner/repo `gugu91/extensions`, workflow `npm-publish.yml`, and environment `npm-publish` if npm asks for one. Normal future publishes should then use the GitHub Actions Trusted Publishing/OIDC workflow with provenance. If npm's team/access UI loops or blocks package creation, resolve org/team/admin access in npm first rather than adding CI token automation.
 
 ## Package artifacts and type/declaration artifacts
 
@@ -74,9 +99,9 @@ Publishable packages must also expose `types: "./dist/index.d.ts"` and build mat
 
 ## Required GitHub/npm configuration
 
-Secret names:
+Secrets:
 
-- No `NPM_TOKEN` is required or expected for the Trusted Publishing workflow.
+- No long-lived npm token secret is required or expected for the Trusted Publishing workflow.
 
 GitHub environment:
 
@@ -100,7 +125,7 @@ GitHub permissions:
 ## Release gates before setting `dry_run=false`
 
 - #772 has confirmed the Pinet/Slack boundary and the full publish set is still correct.
-- Package versions are intentionally bumped. The publish script refuses real publishes for placeholder `0.0.0` packages or versions already present on npm.
+- Package versions are intentionally bumped. The publish and bootstrap scripts refuse real publishes for placeholder `0.0.0` packages or versions already present on npm.
 - `CHANGELOG.md` has a maintainer-approved entry covering the full package set and package versions.
 - The dry-run/readiness job is green on the same `main` commit intended for release.
 - The workflow dispatch includes the exact `publish all` release approval phrase.

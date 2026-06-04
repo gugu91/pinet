@@ -243,17 +243,34 @@ Safe readiness checks are the default path:
    the full `@pinet/*` package set and does not request npm credentials.
 
 The same dry-run path can be run locally with `pnpm publish:npm`; it defaults to
-readiness only and has no package target selector.
+readiness only and has no package target selector. The one-time npm org package
+creation bootstrap path is `pnpm bootstrap:npm`, which also defaults to dry-run
+and prints the full `@pinet/*` package set it would publish.
 
 Real publishes are intentionally harder to trigger. They require a maintainer to
 dispatch from `main` with `dry_run=false`, enter `publish all` as the exact
 `release_approval` phrase, and approve the protected `npm-publish` environment.
 The publish job uses npm Trusted Publishing / GitHub OIDC with
-`npm publish --provenance`; it does not use `NPM_TOKEN`. Maintainers must also
+`npm publish --provenance`; it does not use a long-lived npm token. Maintainers must also
 configure npm Trusted Publishers for every package in the npm `pinet` org
 settings (`https://www.npmjs.com/settings/pinet/packages`) before real publish.
-The publish script still refuses placeholder `0.0.0` versions and versions that
-already exist on npm.
+If npm requires packages to exist before Trusted Publishing can be configured,
+a `pinet` org owner/admin may use the guarded local bootstrap script only after
+maintainer-approved versions are set:
+
+```bash
+node ./scripts/bootstrap-npm-packages.mjs \
+  --bootstrap-publish \
+  --confirm "bootstrap @pinet packages"
+```
+
+The maintainer must already be logged in with `npm login` as a `pinet` org
+owner/admin. This repo does not add token automation. Immediately after any
+successful bootstrap, configure Trusted Publishing for every `@pinet/*` package
+and use the GitHub Actions workflow for normal future publishes.
+
+The publish and bootstrap scripts still refuse placeholder `0.0.0` versions and
+versions that already exist on npm.
 
 Do not publish, tag, or bump package versions as part of readiness-only changes;
 record release notes in `CHANGELOG.md` only when a maintainer approves a real

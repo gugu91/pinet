@@ -8,6 +8,7 @@ import {
   assertVersionsNotAlreadyPublished,
   getPublishPackages,
   parseArgs,
+  parseBootstrapArgs,
   parseNpmViewVersionExists,
   rewriteLocalDependencySpecs,
   validateBuildOutputs,
@@ -37,6 +38,24 @@ test("parseArgs defaults to dry-run and accepts publish mode", () => {
   assert.deepEqual(parseArgs([]), { dryRun: true });
   assert.deepEqual(parseArgs(["--publish"]), { dryRun: false });
   assert.throws(() => parseArgs(["--target", "pinet"]), /Unknown argument: --target/);
+});
+
+test("parseBootstrapArgs defaults to dry-run and requires scary real-publish confirmation", () => {
+  assert.deepEqual(parseBootstrapArgs([]), { dryRun: true });
+  assert.deepEqual(parseBootstrapArgs(["--dry-run"]), { dryRun: true });
+  assert.deepEqual(
+    parseBootstrapArgs(["--bootstrap-publish", "--confirm", "bootstrap @pinet packages"]),
+    { dryRun: false },
+  );
+  assert.throws(
+    () => parseBootstrapArgs(["--bootstrap-publish"]),
+    /requires --bootstrap-publish --confirm/,
+  );
+  assert.throws(
+    () => parseBootstrapArgs(["--bootstrap-publish", "--confirm", "publish all"]),
+    /requires --confirm "bootstrap @pinet packages"/,
+  );
+  assert.throws(() => parseBootstrapArgs(["--target", "pinet"]), /Unknown argument: --target/);
 });
 
 test("rewriteLocalDependencySpecs replaces in-set file dependencies with exact versions", () => {

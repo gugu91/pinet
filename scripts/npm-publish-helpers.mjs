@@ -44,6 +44,49 @@ export function parseArgs(argv) {
   return args;
 }
 
+const bootstrapConfirmationPhrase = "bootstrap @pinet packages";
+
+export function parseBootstrapArgs(argv) {
+  const args = {
+    dryRun: true,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--dry-run") {
+      args.dryRun = true;
+      continue;
+    }
+    if (arg === "--bootstrap-publish") {
+      args.dryRun = false;
+      continue;
+    }
+    if (arg === "--confirm") {
+      index += 1;
+      const confirmation = argv[index];
+      if (!confirmation) {
+        throw new Error("--confirm requires a confirmation phrase");
+      }
+      if (confirmation !== bootstrapConfirmationPhrase) {
+        throw new Error(
+          `Real npm org pinet bootstrap requires --confirm ${JSON.stringify(bootstrapConfirmationPhrase)}`,
+        );
+      }
+      args.confirmed = true;
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  if (!args.dryRun && !args.confirmed) {
+    throw new Error(
+      `Real npm org pinet bootstrap requires --bootstrap-publish --confirm ${JSON.stringify(bootstrapConfirmationPhrase)}`,
+    );
+  }
+
+  return { dryRun: args.dryRun };
+}
+
 export function getPublishPackages() {
   return [...publishPackageDirectories];
 }
