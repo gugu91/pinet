@@ -1168,6 +1168,17 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(thread!.source).toBe("slack");
   });
 
+  it("thread.claim without source or channel keeps the neutral broker default", async () => {
+    await client.register("neutral-claimer", "🧱");
+
+    await client.claimThread("t-source-less-neutral");
+
+    const thread = db.getThread("t-source-less-neutral");
+    expect(thread).not.toBeNull();
+    expect(thread!.source).toBe("external");
+    expect(thread!.channel).toBe("");
+  });
+
   it("thread.claim with only a channel remains Slack-sendable via message.send", async () => {
     const sentMessages: OutboundMessage[] = [];
     server.setOutboundMessageAdapters([
@@ -1199,6 +1210,50 @@ describe("broker integration — client ↔ server ↔ DB", () => {
         threadId: "t-channel-only-send",
         channel: "C-LEGACY",
         text: "still Slack-sendable",
+      }),
+    ]);
+  });
+
+  it("thread.claim with only a channel repairs neutralized Slack-channel rows", async () => {
+    const sentMessages: OutboundMessage[] = [];
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async (message) => {
+          sentMessages.push(message);
+        },
+      },
+    ]);
+    await client.register("legacy-repair-claimer", "🧱");
+    db.createThread("t-neutralized-slack-channel", "external", "C-NEUTRALIZED", null);
+
+    await client.claimThread("t-neutralized-slack-channel", "C-NEUTRALIZED");
+    const thread = db.getThread("t-neutralized-slack-channel");
+    expect(thread).toEqual(
+      expect.objectContaining({
+        source: "slack",
+        channel: "C-NEUTRALIZED",
+      }),
+    );
+
+    const result = await client.sendMessage({
+      threadId: "t-neutralized-slack-channel",
+      body: "repaired and sendable",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        adapter: "slack",
+        threadId: "t-neutralized-slack-channel",
+        channel: "C-NEUTRALIZED",
+        source: "slack",
+      }),
+    );
+    expect(sentMessages).toEqual([
+      expect.objectContaining({
+        threadId: "t-neutralized-slack-channel",
+        channel: "C-NEUTRALIZED",
+        text: "repaired and sendable",
       }),
     ]);
   });
