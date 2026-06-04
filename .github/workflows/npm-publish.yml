@@ -1,10 +1,12 @@
 name: Publish npm packages
 
+run-name: npm ${{ inputs.dry_run && 'dry-run' || 'publish' }} ${{ inputs.target }} packages
+
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Package lane to publish"
+        description: "Package lane to validate or publish"
         required: true
         type: choice
         options:
@@ -15,20 +17,23 @@ on:
         required: true
         type: boolean
         default: true
+      release_approval:
+        description: "For real publishes only: type 'publish <target>'"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
-  group: npm-publish
+  group: npm-publish-${{ inputs.dry_run && format('dry-run-{0}', inputs.target) || 'live' }}
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish ${{ inputs.target }} packages
+  readiness:
+    name: Validate ${{ inputs.target }} publish readiness
     runs-on: ubuntu-latest
-    environment: npm-publish
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -50,26 +55,76 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Dry-run publish target packages
-        if: ${{ inputs.dry_run }}
         run: >-
           node ./scripts/publish-npm-packages.mjs
           --target "${{ inputs.target }}"
           --dry-run
 
+  publish-preflight:
+    name: Check real publish gates
+    if: ${{ !inputs.dry_run }}
+    needs: readiness
+    runs-on: ubuntu-latest
+    steps:
       - name: Guard real publish ref
-        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        if: ${{ github.ref != 'refs/heads/main' }}
         run: |
           echo "Real npm publishes must be dispatched from refs/heads/main. Current ref: $GITHUB_REF"
           exit 1
 
+      - name: Guard real publish approval phrase
+        env:
+          RELEASE_APPROVAL: ${{ inputs.release_approval }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          expected="publish ${TARGET}"
+          if [ "${RELEASE_APPROVAL}" != "${expected}" ]; then
+            echo "Real npm publishes require release_approval exactly: ${expected}"
+            exit 1
+          fi
+
+  publish:
+    name: Publish ${{ inputs.target }} packages
+    if: ${{ !inputs.dry_run }}
+    needs:
+      - readiness
+      - publish-preflight
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Configure npm authentication
-        if: ${{ !inputs.dry_run }}
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "NPM_TOKEN is required for real npm publishing"
+            exit 1
+          fi
+          npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
 
       - name: Publish target packages
-        if: ${{ !inputs.dry_run }}
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >-

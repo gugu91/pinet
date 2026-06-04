@@ -16,6 +16,7 @@ export const publishTargets = Object.freeze({
 
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const publicDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
+const requiredPackageFiles = ["README.md", "LICENSE", "dist/"];
 
 export function parseArgs(argv) {
   const args = {
@@ -153,10 +154,13 @@ export function validatePublishMetadata(entries, { dryRun }) {
     if (manifest.publishConfig?.access !== "public") {
       errors.push(`${manifest.name}: publishConfig.access must be public`);
     }
+    if (!manifest.license) errors.push(`${manifest.name}: package.json must include license`);
     if (!manifest.main) errors.push(`${manifest.name}: package.json must include main`);
     if (!manifest.types) errors.push(`${manifest.name}: package.json must include types`);
-    if (!manifest.files?.includes("dist/")) {
-      errors.push(`${manifest.name}: package files must include dist/`);
+    for (const requiredFile of requiredPackageFiles) {
+      if (!manifest.files?.includes(requiredFile)) {
+        errors.push(`${manifest.name}: package files must include ${requiredFile}`);
+      }
     }
     if (!dryRun && manifest.version === "0.0.0") {
       errors.push(`${manifest.name}: refusing a real npm publish at placeholder version 0.0.0`);
@@ -217,9 +221,18 @@ function declarationPathForJavaScript(exportedPath) {
 
 export async function validateBuildOutputs(repoRoot, entries) {
   const missing = [];
+  const missingPackageFiles = [];
 
   for (const { directory, manifest } of entries) {
     const packageRoot = path.join(repoRoot, directory);
+
+    for (const requiredFile of requiredPackageFiles) {
+      const requiredPath = path.join(packageRoot, requiredFile.replace(/\/$/, ""));
+      if (!(await pathExists(requiredPath))) {
+        missingPackageFiles.push(`${manifest.name}: ${requiredFile}`);
+      }
+    }
+
     const exportedPaths = new Set([manifest.main, manifest.types]);
 
     for (const value of Object.values(manifest.exports ?? {})) {
@@ -248,6 +261,12 @@ export async function validateBuildOutputs(repoRoot, entries) {
         missing.push(`${manifest.name}: ${exportedPath}`);
       }
     }
+  }
+
+  if (missingPackageFiles.length > 0) {
+    throw new Error(
+      `Missing package files for npm publish:\n- ${missingPackageFiles.join("\n- ")}`,
+    );
   }
 
   if (missing.length > 0) {

@@ -82,6 +82,7 @@ The reviewer posts findings to PiComms and GitHub. Fix any critical/warning issu
 - Auth: `GH_TOKEN=$(gh auth token --user gugu91)` prefix for `gh` commands
 - Create PRs with `gh pr create`
 - Merge with `gh pr merge`
+- npm publish readiness lives in `.github/workflows/npm-publish.yml` and `plans/npm-publish.md`. Do not run real publishes, tag, or bump versions without explicit maintainer release approval.
 
 ## Extension patterns
 
