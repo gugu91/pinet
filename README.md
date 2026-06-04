@@ -245,8 +245,10 @@ Safe readiness checks are the default path:
 Real publishes are intentionally harder to trigger. They require a maintainer to
 dispatch from `main` with `dry_run=false`, enter the exact `release_approval`
 phrase shown in the workflow, approve the protected `npm-publish` environment,
-and provide the environment-scoped `NPM_TOKEN`. The publish script still refuses
-placeholder `0.0.0` versions and versions that already exist on npm.
+and provide the environment-scoped `NPM_TOKEN`. That environment is an external
+repository prerequisite that must be configured and verified before any real
+publish attempt. The publish script still refuses placeholder `0.0.0` versions
+and versions that already exist on npm.
 
 Do not publish, tag, or bump package versions as part of readiness-only changes;
 record release notes in `CHANGELOG.md` only when a maintainer approves a real

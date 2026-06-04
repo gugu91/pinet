@@ -133,9 +133,31 @@ test("validatePublishMetadata requires declaration metadata", () => {
   assert.throws(() => validatePublishMetadata(entries, { dryRun: true }), /must include types/);
 });
 
+test("validateBuildOutputs checks package files", async () => {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-package-files-"));
+  await mkdir(path.join(repoRoot, "pinet-core", "dist"), { recursive: true });
+  await writeFile(path.join(repoRoot, "pinet-core", "README.md"), "# pinet-core\n");
+  await writeFile(path.join(repoRoot, "pinet-core", "dist", "index.js"), "export {};\n");
+  await writeFile(path.join(repoRoot, "pinet-core", "dist", "index.d.ts"), "export {};\n");
+
+  await assert.rejects(
+    () =>
+      validateBuildOutputs(repoRoot, [
+        entry("pinet-core", {
+          name: "@gugu910/pi-pinet-core",
+          main: "./dist/index.js",
+          types: "./dist/index.d.ts",
+        }),
+      ]),
+    /LICENSE/,
+  );
+});
+
 test("validateBuildOutputs checks JavaScript exports and declaration outputs", async () => {
   const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-outputs-"));
   await mkdir(path.join(repoRoot, "pinet-core", "dist"), { recursive: true });
+  await writeFile(path.join(repoRoot, "pinet-core", "README.md"), "# pinet-core\n");
+  await writeFile(path.join(repoRoot, "pinet-core", "LICENSE"), "MIT\n");
   await writeFile(path.join(repoRoot, "pinet-core", "dist", "index.js"), "export {};\n");
   await writeFile(path.join(repoRoot, "pinet-core", "dist", "index.d.ts"), "export {};\n");
   await writeFile(path.join(repoRoot, "pinet-core", "dist", "helpers.js"), "export {};\n");

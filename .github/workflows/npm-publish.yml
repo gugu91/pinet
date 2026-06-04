@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ inputs.target }}
+  group: npm-publish-${{ inputs.dry_run && format('dry-run-{0}', inputs.target) || 'live' }}
   cancel-in-progress: false
 
 jobs:

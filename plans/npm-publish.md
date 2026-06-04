@@ -36,7 +36,9 @@ The Slack lane includes the Pinet package closure because `slack-bridge` depends
 
 Every dispatch first runs the readiness job: install with `pnpm install --frozen-lockfile`, build packages in dependency order through `scripts/publish-npm-packages.mjs`, rewrite local `file:../...` workspace dependencies to exact package versions in the CI checkout, verify declared `dist/` JavaScript exports and declaration outputs exist, smoke-test public declaration imports, and run `npm publish --dry-run` in dependency order.
 
-When `dry_run=true`, the workflow stops after that dry-run/readiness job and does not request the `npm-publish` environment or npm token. Real publishes require all of these gates before the publish job can run:
+When `dry_run=true`, the workflow stops after that dry-run/readiness job and does not request the `npm-publish` environment or npm token. Dry-run dispatches are serialized per target. Real publish dispatches share a single global `npm-publish-live` concurrency group because the `pinet` and `slack-bridge` lanes publish overlapping packages.
+
+Real publishes require all of these gates before the publish job can run:
 
 - `dry_run=false` was selected manually.
 - A non-environment preflight job confirms the dispatch ref is `refs/heads/main`.
@@ -70,6 +72,8 @@ Secret names only:
 
 GitHub environment:
 
+- `npm-publish` is an external repository prerequisite, not something this repo can create in source control.
+- Configure or verify the environment before any real publish attempt.
 - `npm-publish` should require maintainer approval before the publish job can access `NPM_TOKEN`.
 - Dry-run/readiness dispatches do not use the environment and do not need the token.
 
