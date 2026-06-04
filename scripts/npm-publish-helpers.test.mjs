@@ -240,6 +240,56 @@ test("validatePublicTypeResolution catches undeclared declaration imports", asyn
   );
 });
 
+test("validatePublicTypeResolution catches declared but unresolvable declaration subpaths", async () => {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-subpath-types-"));
+  const packageRoot = path.join(repoRoot, "example-package");
+  const dependencyRoot = path.join(repoRoot, "node_modules", "resolved-pkg");
+  await mkdir(path.join(packageRoot, "dist"), { recursive: true });
+  await mkdir(dependencyRoot, { recursive: true });
+
+  await writeFile(path.join(packageRoot, "dist", "index.js"), "export {};\n");
+  await writeFile(
+    path.join(packageRoot, "dist", "index.d.ts"),
+    'import type { MissingSubpathType } from "resolved-pkg/missing-subpath";\nexport type Example = MissingSubpathType;\n',
+  );
+  await writeFile(
+    path.join(dependencyRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "resolved-pkg",
+        type: "module",
+        main: "./index.js",
+        types: "./index.d.ts",
+        exports: {
+          ".": {
+            types: "./index.d.ts",
+            default: "./index.js",
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(dependencyRoot, "index.js"), "\n");
+  await writeFile(path.join(dependencyRoot, "index.d.ts"), "export interface RootType {}\n");
+
+  await assert.rejects(
+    () =>
+      validatePublicTypeResolution(repoRoot, [
+        entry("example-package", {
+          name: "example-package",
+          main: "./dist/index.js",
+          types: "./dist/index.d.ts",
+          peerDependencies: {
+            "resolved-pkg": "*",
+          },
+        }),
+      ]),
+    /resolved-pkg\/missing-subpath/s,
+  );
+});
+
 test("parseNpmViewVersionExists distinguishes found, not-found, and lookup errors", () => {
   assert.equal(
     parseNpmViewVersionExists(

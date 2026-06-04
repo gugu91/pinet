@@ -353,6 +353,7 @@ function typeScriptCliPath(repoRoot) {
 export async function validatePublicTypeResolution(repoRoot, entries) {
   const targetNames = new Set(entries.map(({ manifest }) => manifest.name));
   const importedExternalDependencies = new Map();
+  const publicTypeSpecifiers = new Set();
   const declarationErrors = [];
 
   for (const { directory, manifest } of entries) {
@@ -364,6 +365,8 @@ export async function validatePublicTypeResolution(repoRoot, entries) {
       const source = await fs.readFile(declarationFile, "utf8");
       for (const specifier of declarationImports(source)) {
         if (!isBareTypeSpecifier(specifier)) continue;
+
+        publicTypeSpecifiers.add(specifier);
 
         const packageName = packageBaseName(specifier);
         if (targetNames.has(packageName)) continue;
@@ -410,11 +413,16 @@ export async function validatePublicTypeResolution(repoRoot, entries) {
       `${JSON.stringify({ type: "module", private: true }, null, 2)}\n`,
       "utf8",
     );
-    await fs.writeFile(
-      path.join(tempRoot, "index.ts"),
-      entries.map(({ manifest }) => `import ${JSON.stringify(manifest.name)};`).join("\n") + "\n",
-      "utf8",
-    );
+    const smokeImports = [
+      ...entries.map(({ manifest }) => `import ${JSON.stringify(manifest.name)};`),
+      ...[...publicTypeSpecifiers]
+        .sort()
+        .map(
+          (specifier, index) =>
+            `import type * as PublicType${index} from ${JSON.stringify(specifier)};`,
+        ),
+    ];
+    await fs.writeFile(path.join(tempRoot, "index.ts"), `${smokeImports.join("\n")}\n`, "utf8");
     await fs.writeFile(
       path.join(tempRoot, "tsconfig.json"),
       `${JSON.stringify(
