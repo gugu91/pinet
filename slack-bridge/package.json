@@ -50,5 +50,11 @@
     "@gugu910/pi-transport-core": "file:../transport-core",
     "@sinclair/typebox": "^0.34.49"
   },
-  "types": "./dist/index.d.ts"
+  "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0"
+  }
 }

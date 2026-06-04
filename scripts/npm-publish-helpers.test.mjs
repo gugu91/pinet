@@ -11,6 +11,7 @@ import {
   parseNpmViewVersionExists,
   rewriteLocalDependencySpecs,
   validateBuildOutputs,
+  validatePublicTypeResolution,
   validatePublishMetadata,
 } from "./npm-publish-helpers.mjs";
 
@@ -164,6 +165,75 @@ test("validateBuildOutputs checks JavaScript exports and declaration outputs", a
         exports: {
           ".": "./dist/index.js",
           "./helpers": "./dist/helpers.js",
+        },
+      }),
+    ]),
+  );
+});
+
+test("validatePublicTypeResolution catches undeclared declaration imports", async () => {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "npm-publish-types-"));
+  const packageRoot = path.join(repoRoot, "example-package");
+  await mkdir(path.join(packageRoot, "dist"), { recursive: true });
+  await writeFile(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "example-package",
+        type: "module",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(packageRoot, "dist", "index.js"), "export {};\n");
+  await writeFile(
+    path.join(packageRoot, "dist", "index.d.ts"),
+    'import type { MissingType } from "missing-public-types";\nexport type Example = MissingType;\n',
+  );
+
+  await assert.rejects(
+    () =>
+      validatePublicTypeResolution(repoRoot, [
+        entry("example-package", {
+          name: "example-package",
+          main: "./dist/index.js",
+          types: "./dist/index.d.ts",
+        }),
+      ]),
+    /missing-public-types.*does not declare/s,
+  );
+
+  await mkdir(path.join(repoRoot, "node_modules", "missing-public-types"), { recursive: true });
+  await writeFile(
+    path.join(repoRoot, "node_modules", "missing-public-types", "package.json"),
+    `${JSON.stringify(
+      {
+        name: "missing-public-types",
+        type: "module",
+        main: "./index.js",
+        types: "./index.d.ts",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(repoRoot, "node_modules", "missing-public-types", "index.js"), "\n");
+  await writeFile(
+    path.join(repoRoot, "node_modules", "missing-public-types", "index.d.ts"),
+    "export interface MissingType { value: string; }\n",
+  );
+
+  await assert.doesNotReject(() =>
+    validatePublicTypeResolution(repoRoot, [
+      entry("example-package", {
+        name: "example-package",
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+        peerDependencies: {
+          "missing-public-types": "*",
         },
       }),
     ]),
