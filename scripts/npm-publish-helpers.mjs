@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 export const publishTargets = Object.freeze({
@@ -13,6 +15,7 @@ export const publishTargets = Object.freeze({
 });
 
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
+const publicDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 
 export function parseArgs(argv) {
   const args = {
@@ -249,5 +252,207 @@ export async function validateBuildOutputs(repoRoot, entries) {
 
   if (missing.length > 0) {
     throw new Error(`Missing build outputs for npm publish:\n- ${missing.join("\n- ")}`);
+  }
+}
+
+function packagePath(parentDirectory, packageName) {
+  return path.join(parentDirectory, ...packageName.split("/"));
+}
+
+function packageBaseName(specifier) {
+  if (specifier.startsWith("@")) {
+    const [scope, name] = specifier.split("/");
+    return scope && name ? `${scope}/${name}` : specifier;
+  }
+  return specifier.split("/")[0];
+}
+
+function isBareTypeSpecifier(specifier) {
+  return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("node:");
+}
+
+function declaredPublicDependencies(manifest) {
+  const dependencies = new Set();
+  for (const field of publicDependencyFields) {
+    for (const name of Object.keys(manifest[field] ?? {})) {
+      dependencies.add(name);
+    }
+  }
+  return dependencies;
+}
+
+function declarationImports(source) {
+  const specifiers = new Set();
+  const importExportPattern =
+    /(?:import|export)\s+(?:type\s+)?(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
+  const dynamicImportPattern = /import\(["']([^"']+)["']\)/g;
+
+  for (const pattern of [importExportPattern, dynamicImportPattern]) {
+    for (const match of source.matchAll(pattern)) {
+      specifiers.add(match[1]);
+    }
+  }
+
+  return specifiers;
+}
+
+async function collectDeclarationFiles(directory) {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectDeclarationFiles(absolutePath)));
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith(".d.ts")) {
+      files.push(absolutePath);
+    }
+  }
+
+  return files;
+}
+
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findInstalledPackageRoot(repoRoot, packageRoot, packageName) {
+  const candidates = [
+    packagePath(path.join(packageRoot, "node_modules"), packageName),
+    packagePath(path.join(repoRoot, "node_modules"), packageName),
+    packagePath(path.join(repoRoot, "node_modules", ".pnpm", "node_modules"), packageName),
+  ];
+
+  for (const candidate of candidates) {
+    if (await pathExists(path.join(candidate, "package.json"))) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+async function linkPackage(nodeModulesDir, packageName, targetPath) {
+  const linkPath = packagePath(nodeModulesDir, packageName);
+  await fs.mkdir(path.dirname(linkPath), { recursive: true });
+  await fs.rm(linkPath, { recursive: true, force: true });
+  await fs.symlink(targetPath, linkPath, process.platform === "win32" ? "junction" : "dir");
+}
+
+function typeScriptCliPath(repoRoot) {
+  return path.join(repoRoot, "node_modules", "typescript", "bin", "tsc");
+}
+
+export async function validatePublicTypeResolution(repoRoot, entries) {
+  const targetNames = new Set(entries.map(({ manifest }) => manifest.name));
+  const importedExternalDependencies = new Map();
+  const declarationErrors = [];
+
+  for (const { directory, manifest } of entries) {
+    const packageRoot = path.join(repoRoot, directory);
+    const declaredDependencies = declaredPublicDependencies(manifest);
+    const declarationFiles = await collectDeclarationFiles(path.join(packageRoot, "dist"));
+
+    for (const declarationFile of declarationFiles) {
+      const source = await fs.readFile(declarationFile, "utf8");
+      for (const specifier of declarationImports(source)) {
+        if (!isBareTypeSpecifier(specifier)) continue;
+
+        const packageName = packageBaseName(specifier);
+        if (targetNames.has(packageName)) continue;
+
+        if (!declaredDependencies.has(packageName)) {
+          declarationErrors.push(
+            `${manifest.name}: ${path.relative(packageRoot, declarationFile)} imports ${packageName}, but package.json does not declare it in dependencies, optionalDependencies, or peerDependencies`,
+          );
+          continue;
+        }
+
+        const installedRoot = await findInstalledPackageRoot(repoRoot, packageRoot, packageName);
+        if (!installedRoot) {
+          declarationErrors.push(
+            `${manifest.name}: ${packageName} is declared for public types but is not installed for the isolated type-resolution smoke test`,
+          );
+          continue;
+        }
+        importedExternalDependencies.set(packageName, installedRoot);
+      }
+    }
+  }
+
+  if (declarationErrors.length > 0) {
+    throw new Error(
+      `Public declaration dependency validation failed:\n- ${declarationErrors.join("\n- ")}`,
+    );
+  }
+
+  const tempRoot = await fs.mkdtemp(path.join(tmpdir(), "npm-publish-types-"));
+  try {
+    const nodeModulesDir = path.join(tempRoot, "node_modules");
+    await fs.mkdir(nodeModulesDir, { recursive: true });
+
+    for (const { directory, manifest } of entries) {
+      await linkPackage(nodeModulesDir, manifest.name, path.join(repoRoot, directory));
+    }
+    for (const [packageName, installedRoot] of importedExternalDependencies) {
+      await linkPackage(nodeModulesDir, packageName, installedRoot);
+    }
+
+    await fs.writeFile(
+      path.join(tempRoot, "package.json"),
+      `${JSON.stringify({ type: "module", private: true }, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempRoot, "index.ts"),
+      entries.map(({ manifest }) => `import ${JSON.stringify(manifest.name)};`).join("\n") + "\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempRoot, "tsconfig.json"),
+      `${JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            strict: true,
+            noEmit: true,
+            preserveSymlinks: true,
+            skipLibCheck: true,
+            types: [],
+          },
+          include: ["index.ts"],
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const repoTypeScriptCliPath = typeScriptCliPath(repoRoot);
+    const tscPath = (await pathExists(repoTypeScriptCliPath))
+      ? repoTypeScriptCliPath
+      : typeScriptCliPath(process.cwd());
+    const result = spawnSync(process.execPath, [tscPath, "-p", "tsconfig.json"], {
+      cwd: tempRoot,
+      encoding: "utf8",
+    });
+
+    if (result.status !== 0) {
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+      throw new Error(
+        `Public type-resolution smoke test failed with status ${result.status ?? 1}:\n${output}`,
+      );
+    }
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
   }
 }

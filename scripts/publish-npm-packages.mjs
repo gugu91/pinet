@@ -11,6 +11,7 @@ import {
   parseNpmViewVersionExists,
   rewriteLocalDependencySpecs,
   validateBuildOutputs,
+  validatePublicTypeResolution,
   validatePublishMetadata,
   writeJson,
 } from "./npm-publish-helpers.mjs";
@@ -54,6 +55,7 @@ async function main() {
 
   run("pnpm", ["run", "build:packages"]);
   await validateBuildOutputs(repoRoot, entries);
+  await validatePublicTypeResolution(repoRoot, entries);
 
   const originalManifests = entries.map(({ directory, packageJsonPath }) => ({
     packageJsonPath,
