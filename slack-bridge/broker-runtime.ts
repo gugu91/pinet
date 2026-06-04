@@ -440,6 +440,34 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
         }
         ensureActivityLogger().log(entry);
       },
+      emitGithubEventRelay: async (payload) => {
+        if (!activeBroker || !activeSelfId) {
+          return;
+        }
+        const adapter = activeBroker.adapters.find(
+          (candidate) => candidate.name === payload.target.source,
+        );
+        if (!adapter) {
+          throw new Error(
+            `No adapter is registered for GitHub relay source ${payload.target.source}.`,
+          );
+        }
+        await adapter.send({
+          threadId: payload.target.threadId,
+          channel: payload.target.channel,
+          text: payload.text,
+          metadata: payload.metadata,
+        });
+        activeBroker.db.insertMessage(
+          payload.target.threadId,
+          payload.target.source,
+          "outbound",
+          activeSelfId,
+          payload.text,
+          [],
+          payload.metadata,
+        );
+      },
       formatTrackedAgent: (agentId) => deps.formatTrackedAgent(agentId),
       summarizeTrackedAssignmentStatus: (status, prNumber, branch) =>
         deps.summarizeTrackedAssignmentStatus(

@@ -327,6 +327,179 @@ describe("runRalphLoopCycle snooze", () => {
   });
 });
 
+describe("runRalphLoopCycle GitHub event relay", () => {
+  async function runGithubRelayCycle(
+    overrides: {
+      resolvedStatus?: "assigned" | "pr_open" | "pr_merged";
+      nextStatus?: "assigned" | "pr_open" | "pr_merged" | "pr_closed";
+      nextPrNumber?: number | null;
+      safeThread?: boolean;
+    } = {},
+  ) {
+    const state = createRalphLoopState();
+    const logActivity = vi.fn();
+    const emitGithubEventRelay = vi.fn(async () => undefined);
+    const upsertPinetLane = vi.fn();
+    const updateTaskAssignmentProgress = vi.fn();
+    const now = new Date().toISOString();
+    const rawAssignment = {
+      id: 1,
+      agentId: "worker-1",
+      issueNumber: 774,
+      branch: "feat/github-event-relay-774",
+      prNumber: null,
+      status: "assigned",
+      threadId: "a2a:broker:worker",
+      sourceMessageId: null,
+      repoOwner: "gugu91",
+      repoName: "extensions",
+      repoRoot: null,
+      taskKind: "implementation",
+      createdAt: now,
+      updatedAt: now,
+    } as const;
+    const lane = {
+      laneId: "issue-774",
+      name: null,
+      task: null,
+      issueNumber: 774,
+      prNumber: null,
+      threadId: "123.456",
+      ownerAgentId: null,
+      implementationLeadAgentId: null,
+      pmMode: false,
+      state: "active",
+      summary: null,
+      metadata: { consent: "maintainer", github: { owner: "gugu91", repo: "extensions" } },
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+      participants: [],
+    };
+    const db = {
+      getRecentRalphCycles: () => [],
+      getAllAgents: () => [],
+      getPendingInboxCount: () => 0,
+      getOwnedThreadCount: () => 0,
+      getBacklogCount: () => 0,
+      listTaskAssignmentsAwaitingFirstReply: () => [],
+      listTaskAssignments: () => [rawAssignment],
+      getMessagesByIds: () => [],
+      listPinetLanes: () => [lane],
+      upsertPinetLane,
+      updateTaskAssignmentProgress,
+      getThread: (threadId: string) =>
+        overrides.safeThread === false || threadId !== "123.456"
+          ? null
+          : {
+              threadId: "123.456",
+              source: "slack",
+              channel: "C123",
+              ownerAgent: "worker-1",
+              ownerBinding: null,
+              metadata: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+      recordRalphCycle: vi.fn(),
+    };
+    const deps = createLoopDeps({
+      getBrokerDb: () => db as never,
+      getBrokerAgentId: () => "broker-1",
+      getLastMaintenance: () => ({
+        pendingBacklogCount: 0,
+        assignedBacklogCount: 0,
+        reapedAgentIds: [],
+        nudgedAgentIds: [],
+        repairedThreadClaims: 0,
+        anomalies: [],
+      }),
+      logActivity,
+      emitGithubEventRelay,
+      resolveTrackedTaskAssignments: vi.fn(async () => [
+        {
+          ...rawAssignment,
+          status: overrides.resolvedStatus ?? "assigned",
+          prNumber:
+            (overrides.resolvedStatus ?? "assigned") === (overrides.nextStatus ?? "pr_open")
+              ? overrides.nextPrNumber === undefined
+                ? 123
+                : overrides.nextPrNumber
+              : rawAssignment.prNumber,
+          nextStatus: overrides.nextStatus ?? "pr_open",
+          nextPrNumber: overrides.nextPrNumber === undefined ? 123 : overrides.nextPrNumber,
+          branchAheadCount: 0,
+          issueState: "OPEN" as const,
+        },
+      ]),
+    });
+    const ctx = { isIdle: () => true, ui: { notify: vi.fn() } } as unknown as ExtensionContext;
+
+    const originalCwd = process.cwd();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ralph-github-relay-test-"));
+    try {
+      process.chdir(tempDir);
+      await runRalphLoopCycle(ctx, state, deps);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+
+    return { emitGithubEventRelay, logActivity, upsertPinetLane, updateTaskAssignmentProgress };
+  }
+
+  it("emits PR-open relays, merges lane metadata, and updates assignment progress", async () => {
+    const { emitGithubEventRelay, upsertPinetLane, updateTaskAssignmentProgress } =
+      await runGithubRelayCycle();
+
+    expect(updateTaskAssignmentProgress).toHaveBeenCalledWith(1, "pr_open", 123);
+    expect(upsertPinetLane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "issue-774",
+        prNumber: 123,
+        metadata: expect.objectContaining({
+          consent: "maintainer",
+          github: expect.objectContaining({
+            owner: "gugu91",
+            repo: "extensions",
+            repoKey: "gugu91/extensions",
+            prNumber: 123,
+            status: "pr_open",
+          }),
+        }),
+      }),
+    );
+    expect(emitGithubEventRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { threadId: "123.456", source: "slack", channel: "C123" },
+        text: expect.stringContaining("opened/ready for review"),
+        metadata: expect.objectContaining({
+          githubEventRelay: expect.objectContaining({ status: "pr_open", prNumber: 123 }),
+        }),
+      }),
+    );
+  });
+
+  it("skips unchanged assignments to preserve status-transition dedupe", async () => {
+    const { emitGithubEventRelay, upsertPinetLane, updateTaskAssignmentProgress } =
+      await runGithubRelayCycle({ resolvedStatus: "pr_open", nextStatus: "pr_open" });
+
+    expect(updateTaskAssignmentProgress).not.toHaveBeenCalled();
+    expect(upsertPinetLane).not.toHaveBeenCalled();
+    expect(emitGithubEventRelay).not.toHaveBeenCalled();
+  });
+
+  it("skips visible delivery when no safe Slack-backed target is resolvable", async () => {
+    const { emitGithubEventRelay, logActivity, upsertPinetLane } = await runGithubRelayCycle({
+      safeThread: false,
+    });
+
+    expect(upsertPinetLane).toHaveBeenCalled();
+    expect(emitGithubEventRelay).not.toHaveBeenCalled();
+    expect(logActivity.mock.calls.map(([entry]) => entry.title)).toContain("GitHub relay skipped");
+  });
+});
+
 describe("hydrateRalphLoopReportedGhosts", () => {
   it("hydrates the latest persisted ghost ids into a fresh state", () => {
     const state = createRalphLoopState();
