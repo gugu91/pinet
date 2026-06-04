@@ -229,22 +229,22 @@ expectations and the required smoke checklist.
 
 ## npm publish readiness
 
-The publishable Pinet/Slack package lanes are tracked in
+The publishable Pinet/Slack package set is tracked in
 [`plans/npm-publish.md`](plans/npm-publish.md) and executed through the manual
 [`Publish npm packages`](.github/workflows/npm-publish.yml) GitHub Actions
-workflow.
+workflow. The workflow intentionally has no package target selector; it always
+validates or publishes the full set in dependency order.
 
 Safe readiness checks are the default path:
 
 1. Open **Actions → Publish npm packages → Run workflow**.
-2. Choose `target` as `pinet` or `slack-bridge`.
-3. Leave `dry_run=true`.
-4. Confirm the workflow runs `scripts/publish-npm-packages.mjs --dry-run` and
-   does not request npm credentials.
+2. Leave `dry_run=true`.
+3. Confirm the workflow runs `scripts/publish-npm-packages.mjs --dry-run` for
+   the full package set and does not request npm credentials.
 
 Real publishes are intentionally harder to trigger. They require a maintainer to
-dispatch from `main` with `dry_run=false`, enter the exact `release_approval`
-phrase shown in the workflow, approve the protected `npm-publish` environment,
+dispatch from `main` with `dry_run=false`, enter `publish all` as the exact
+`release_approval` phrase, approve the protected `npm-publish` environment,
 and provide the environment-scoped `NPM_TOKEN`. That environment is an external
 repository prerequisite that must be configured and verified before any real
 publish attempt. The publish script still refuses placeholder `0.0.0` versions

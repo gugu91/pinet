@@ -44,7 +44,7 @@ In the current repo bring-up path, enable the adapter with `slack-bridge.imessag
 
 ## Publishing
 
-This package is included in the manual `slack-bridge` npm publish lane tracked in
+This package is included in the full npm publish set tracked in
 [`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
 workflow's default dry-run/readiness path for validation; do not publish, tag, or
 bump versions without explicit maintainer release approval.
