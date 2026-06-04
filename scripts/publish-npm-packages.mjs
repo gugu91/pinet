@@ -26,7 +26,7 @@ function run(command, args, options = {}) {
   });
 
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    throw new Error(`${command} ${args.join(" ")} failed with status ${result.status ?? 1}`);
   }
 }
 
@@ -52,35 +52,50 @@ async function main() {
 
   validatePublishMetadata(entries, { dryRun: args.dryRun });
 
-  run("pnpm", ["run", "build"]);
+  run("pnpm", ["run", "build:packages"]);
   await validateBuildOutputs(repoRoot, entries);
 
-  for (const entry of entries) {
-    await writeJson(entry.packageJsonPath, entry.manifest);
-    for (const rewrite of entry.rewrites) {
-      console.log(`${entry.manifest.name}: ${rewrite}`);
-    }
-  }
+  const originalManifests = entries.map(({ directory, packageJsonPath }) => ({
+    packageJsonPath,
+    manifest: manifests.get(directory).manifest,
+  }));
+  let wrotePatchedManifests = false;
 
-  if (!args.dryRun) {
-    if (!process.env.NPM_TOKEN) {
-      throw new Error("NPM_TOKEN is required for real npm publishing");
-    }
-    assertVersionsNotAlreadyPublished(entries, versionExists);
-  }
-
-  for (const { directory, manifest } of entries) {
-    const publishArgs = ["publish", "--access", "public"];
-    if (args.dryRun) {
-      publishArgs.push("--dry-run");
-    } else {
-      publishArgs.push("--provenance");
+  try {
+    for (const entry of entries) {
+      await writeJson(entry.packageJsonPath, entry.manifest);
+      wrotePatchedManifests = true;
+      for (const rewrite of entry.rewrites) {
+        console.log(`${entry.manifest.name}: ${rewrite}`);
+      }
     }
 
-    console.log(
-      `${args.dryRun ? "Dry-run publishing" : "Publishing"} ${manifest.name}@${manifest.version}`,
-    );
-    run("npm", publishArgs, { cwd: path.join(repoRoot, directory) });
+    if (!args.dryRun) {
+      if (!process.env.NPM_TOKEN) {
+        throw new Error("NPM_TOKEN is required for real npm publishing");
+      }
+      assertVersionsNotAlreadyPublished(entries, versionExists);
+    }
+
+    for (const { directory, manifest } of entries) {
+      const publishArgs = ["publish", "--access", "public"];
+      if (args.dryRun) {
+        publishArgs.push("--dry-run");
+      } else {
+        publishArgs.push("--provenance");
+      }
+
+      console.log(
+        `${args.dryRun ? "Dry-run publishing" : "Publishing"} ${manifest.name}@${manifest.version}`,
+      );
+      run("npm", publishArgs, { cwd: path.join(repoRoot, directory) });
+    }
+  } finally {
+    if (wrotePatchedManifests) {
+      for (const original of originalManifests) {
+        await writeJson(original.packageJsonPath, original.manifest);
+      }
+    }
   }
 }
 

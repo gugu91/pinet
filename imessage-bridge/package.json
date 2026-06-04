@@ -33,5 +33,6 @@
   },
   "dependencies": {
     "@gugu910/pi-transport-core": "file:../transport-core"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }

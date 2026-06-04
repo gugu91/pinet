@@ -151,6 +151,7 @@ export function validatePublishMetadata(entries, { dryRun }) {
       errors.push(`${manifest.name}: publishConfig.access must be public`);
     }
     if (!manifest.main) errors.push(`${manifest.name}: package.json must include main`);
+    if (!manifest.types) errors.push(`${manifest.name}: package.json must include types`);
     if (!manifest.files?.includes("dist/")) {
       errors.push(`${manifest.name}: package files must include dist/`);
     }
@@ -207,18 +208,33 @@ export function assertVersionsNotAlreadyPublished(entries, versionExists) {
   }
 }
 
+function declarationPathForJavaScript(exportedPath) {
+  return exportedPath.endsWith(".js") ? exportedPath.replace(/\.js$/, ".d.ts") : undefined;
+}
+
 export async function validateBuildOutputs(repoRoot, entries) {
   const missing = [];
 
   for (const { directory, manifest } of entries) {
     const packageRoot = path.join(repoRoot, directory);
-    const exportedPaths = new Set([manifest.main]);
+    const exportedPaths = new Set([manifest.main, manifest.types]);
 
     for (const value of Object.values(manifest.exports ?? {})) {
       if (typeof value === "string" && value !== "./package.json") {
         exportedPaths.add(value);
+        const declarationPath = declarationPathForJavaScript(value);
+        if (declarationPath) exportedPaths.add(declarationPath);
+      } else if (value && typeof value === "object") {
+        for (const conditionalValue of Object.values(value)) {
+          if (typeof conditionalValue === "string" && conditionalValue !== "./package.json") {
+            exportedPaths.add(conditionalValue);
+          }
+        }
       }
     }
+
+    const mainDeclarationPath = declarationPathForJavaScript(manifest.main ?? "");
+    if (mainDeclarationPath) exportedPaths.add(mainDeclarationPath);
 
     for (const exportedPath of exportedPaths) {
       if (typeof exportedPath !== "string") continue;

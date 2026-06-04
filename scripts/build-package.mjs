@@ -6,10 +6,12 @@ import ts from "typescript";
 
 const packageDir = process.cwd();
 const packageName = path.basename(packageDir);
+const repoRoot = path.resolve(packageDir, "..");
 const distDir = path.join(packageDir, "dist");
 
 const packageConfigs = {
   "transport-core": {
+    declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
     excludeFiles: new Set(),
     excludePrefixes: [],
@@ -17,6 +19,7 @@ const packageConfigs = {
     importRewrites: [],
   },
   "broker-core": {
+    declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
     excludeFiles: new Set(),
     excludePrefixes: [],
@@ -24,6 +27,7 @@ const packageConfigs = {
     importRewrites: [],
   },
   "pinet-core": {
+    declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
     excludeFiles: new Set(),
     excludePrefixes: [],
@@ -31,6 +35,7 @@ const packageConfigs = {
     importRewrites: [],
   },
   "imessage-bridge": {
+    declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
     excludeFiles: new Set(),
     excludePrefixes: [],
@@ -38,6 +43,7 @@ const packageConfigs = {
     importRewrites: [],
   },
   "slack-bridge": {
+    declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
     excludeFiles: new Set(["vitest.config.ts"]),
     excludePrefixes: [],
@@ -82,6 +88,7 @@ if (!config) {
 
 function shouldInclude(relativePath, localConfig = config) {
   if (!relativePath.endsWith(".ts")) return false;
+  if (relativePath.endsWith(".d.ts")) return false;
   if (relativePath.endsWith(".test.ts")) return false;
   if (localConfig.excludeFiles.has(relativePath)) return false;
   if (localConfig.excludePrefixes.some((prefix) => relativePath.startsWith(prefix))) return false;
@@ -141,6 +148,64 @@ async function copyDirectory(sourceDir, outputDir) {
     if (entry.isFile()) {
       await fs.copyFile(sourcePath, outputPath);
     }
+  }
+}
+
+async function collectAmbientDeclarations() {
+  const typesDir = path.join(repoRoot, "types");
+  try {
+    const entries = await fs.readdir(typesDir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".d.ts"))
+      .map((entry) => path.join(typesDir, entry.name))
+      .sort();
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function emitDeclarations(sourceFiles) {
+  if (!config.declaration) return;
+
+  const rootNames = [
+    ...sourceFiles.map((relativePath) => path.join(packageDir, relativePath)),
+    ...(await collectAmbientDeclarations()),
+  ];
+  const compilerOptions = {
+    allowImportingTsExtensions: true,
+    declaration: true,
+    declarationDir: distDir,
+    emitDeclarationOnly: true,
+    forceConsistentCasingInFileNames: true,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    noEmit: false,
+    outDir: distDir,
+    rootDir: packageDir,
+    skipLibCheck: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+    types: ["node"],
+    verbatimModuleSyntax: true,
+  };
+  const host = ts.createCompilerHost(compilerOptions);
+  const program = ts.createProgram(rootNames, compilerOptions, host);
+  const emitResult = program.emit(undefined, undefined, undefined, true);
+  const diagnostics = [...ts.getPreEmitDiagnostics(program), ...emitResult.diagnostics].filter(
+    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+  );
+
+  if (diagnostics.length > 0) {
+    throw new Error(
+      ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+        getCanonicalFileName: (fileName) => fileName,
+        getCurrentDirectory: () => packageDir,
+        getNewLine: () => "\n",
+      }),
+    );
   }
 }
 
@@ -207,6 +272,8 @@ async function build() {
     await fs.mkdir(path.dirname(item.outputPath), { recursive: true });
     await fs.writeFile(item.outputPath, transpiled.outputText, "utf8");
   }
+
+  await emitDeclarations(sourceFiles);
 
   for (const assetDir of config.assetDirs ?? []) {
     await copyDirectory(path.join(packageDir, assetDir), path.join(distDir, assetDir));
