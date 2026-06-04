@@ -335,6 +335,10 @@ import type {
   InboundMessage as _InboundMessage,
   NormalizedMessageContent as _NormalizedMessageContent,
   OutboundMessage as _OutboundMessage,
+  AdapterCapabilityRequest as _AdapterCapabilityRequest,
+  AdapterCapabilityResult as _AdapterCapabilityResult,
+  AdapterCapabilityEffects as _AdapterCapabilityEffects,
+  AdapterThreadClaimEffect as _AdapterThreadClaimEffect,
   MessageAdapter as _MessageAdapter,
   RuntimeScopeCarrier as _RuntimeScopeCarrier,
   WorkspaceInstallScopeCarrier as _WorkspaceInstallScopeCarrier,
@@ -344,6 +348,10 @@ import type {
 export type InboundMessage = _InboundMessage;
 export type NormalizedMessageContent = _NormalizedMessageContent;
 export type OutboundMessage = _OutboundMessage;
+export type AdapterCapabilityRequest = _AdapterCapabilityRequest;
+export type AdapterCapabilityResult = _AdapterCapabilityResult;
+export type AdapterCapabilityEffects = _AdapterCapabilityEffects;
+export type AdapterThreadClaimEffect = _AdapterThreadClaimEffect;
 export type MessageAdapter = _MessageAdapter;
 export type RuntimeScopeCarrier = _RuntimeScopeCarrier;
 export type WorkspaceInstallScopeCarrier = _WorkspaceInstallScopeCarrier;

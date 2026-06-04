@@ -1979,6 +1979,51 @@ describe("SlackAdapter — send", () => {
     });
   }
 
+  it("invokes Slack API calls through the adapter capability boundary", async () => {
+    fetchMock.mockResolvedValue(mockSlackResponse({ messages: [{ text: "hello" }] }));
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+    });
+
+    const response = await adapter.invokeCapability({
+      capability: "api.call",
+      params: {
+        method: "conversations.history",
+        params: { channel: "C123", limit: 1 },
+      },
+    });
+
+    expect(response.result).toEqual({ ok: true, messages: [{ text: "hello" }] });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://slack.com/api/conversations.history");
+    const body = new URLSearchParams(init.body as string);
+    expect(body.get("channel")).toBe("C123");
+    expect(body.get("limit")).toBe("1");
+  });
+
+  it("returns thread-claim effects for Slack postMessage capability calls", async () => {
+    fetchMock.mockResolvedValue(mockSlackResponse({ ts: "123.456", channel: "C123" }));
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+    });
+
+    const response = await adapter.invokeCapability({
+      capability: "api.call",
+      params: {
+        method: "chat.postMessage",
+        params: { channel: "C123", text: "hello" },
+      },
+    });
+
+    expect(response.effects).toEqual({
+      claimThread: { threadId: "123.456", channel: "C123" },
+    });
+  });
+
   it("calls chat.postMessage with correct body", async () => {
     fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
 
