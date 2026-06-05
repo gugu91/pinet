@@ -3,7 +3,11 @@ import { SlackAdapter } from "./broker/adapters/slack.js";
 import type { Broker, ThreadInfo } from "./broker/index.js";
 import type { PinetRuntimeAdapterFactory } from "./pinet-runtime-composition.js";
 import type { ReactionCommandSettings } from "./reaction-triggers.js";
-import type { ParsedThreadStarted, SlackThreadContext } from "./slack-access.js";
+import type {
+  ParsedSlashCommand,
+  ParsedThreadStarted,
+  SlackThreadContext,
+} from "./slack-access.js";
 import type { SlackBridgeSettings } from "./helpers.js";
 
 export function readStoredSlackThreadContext(
@@ -42,6 +46,10 @@ export interface SlackPinetRuntimeAdapterDeps {
   getAllowedUsers: () => Set<string> | null;
   shouldAllowAllWorkspaceUsers: () => boolean;
   onAppHomeOpened: (userId: string, ctx: ExtensionContext) => Promise<void> | void;
+  onSlashCommand?: (
+    event: ParsedSlashCommand,
+    ctx: ExtensionContext,
+  ) => Promise<string | null> | string | null;
 }
 
 function getKnownSlackThread(
@@ -95,6 +103,9 @@ export function createSlackPinetRuntimeAdapterFactory(
       onAppHomeOpened: async ({ userId }) => {
         await deps.onAppHomeOpened(userId, ctx);
       },
+      onSlashCommand: deps.onSlashCommand
+        ? (event) => deps.onSlashCommand?.(event, ctx) ?? null
+        : undefined,
     });
 
     return {

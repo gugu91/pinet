@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyConfiguredSlashCommands,
   diffManifestScopes,
   formatScopeChangeSummary,
   getDeployConfigError,
@@ -27,6 +28,11 @@ describe("resolveDeployConfig", () => {
       appId: "ASETTINGS",
       appConfigToken: "xoxe-settings",
       appToken: "xapp-settings",
+      settings: {
+        appId: "ASETTINGS",
+        appConfigToken: "xoxe-settings",
+        appToken: "xapp-settings",
+      },
     });
   });
 
@@ -38,6 +44,7 @@ describe("resolveDeployConfig", () => {
       appId: "AENV",
       appConfigToken: "xoxe-env",
       appToken: undefined,
+      settings: {},
     });
   });
 });
@@ -48,10 +55,38 @@ describe("getDeployConfigError", () => {
       manifestPath: "manifest.yaml",
       appId: "A123",
       appToken: "xapp-123",
+      settings: {},
     });
 
     expect(error).toContain("Missing Slack app configuration token");
     expect(error).toContain("xapp token");
+  });
+});
+
+describe("applyConfiguredSlashCommands", () => {
+  it("rewrites slash command names from settings and keeps commands scope", () => {
+    const manifest = applyConfiguredSlashCommands(
+      {
+        features: { slash_commands: [{ command: "/pinet" }] },
+        oauth_config: { scopes: { bot: ["chat:write"] } },
+      },
+      { slackCommandName: "Oathgate" },
+    );
+
+    expect(manifest.features).toEqual({
+      slash_commands: [
+        {
+          command: "/oathgate",
+          description: "Show the Pinet broker roster and current work",
+          usage_hint: "agents list [all]",
+          should_escape: false,
+        },
+      ],
+    });
+    expect((manifest.oauth_config as { scopes: { bot: string[] } }).scopes.bot).toEqual([
+      "chat:write",
+      "commands",
+    ]);
   });
 });
 

@@ -74,12 +74,23 @@ export function buildSlackThreadRuntimeScope(input: {
   );
 }
 
+export interface ParsedSlashCommand {
+  command: string;
+  text: string;
+  channelId: string;
+  userId: string;
+  responseUrl?: string;
+  triggerId?: string;
+  teamId?: string;
+}
+
 export interface ParsedEnvelope {
   envelopeId?: string;
   type: string;
   dedupKey?: string;
   event?: Record<string, unknown>;
   interactivePayload?: Record<string, unknown>;
+  slashCommand?: ParsedSlashCommand;
 }
 
 export function isSlackUserAllowed(allowlist: Set<string> | null, userId: string): boolean {
@@ -112,10 +123,35 @@ export function parseSocketFrame(raw: string): ParsedEnvelope | null {
     if (interactivePayload) {
       result.interactivePayload = interactivePayload;
     }
+    if (data.type === "slash_commands") {
+      const slashCommand = extractSlackSlashCommandPayload(data.payload);
+      if (slashCommand) {
+        result.slashCommand = slashCommand;
+      }
+    }
     return result;
   } catch {
     return null;
   }
+}
+
+function extractSlackSlashCommandPayload(payload: unknown): ParsedSlashCommand | null {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const command = typeof record.command === "string" ? record.command.trim() : "";
+  const text = typeof record.text === "string" ? record.text : "";
+  const channelId = typeof record.channel_id === "string" ? record.channel_id : "";
+  const userId = typeof record.user_id === "string" ? record.user_id : "";
+  if (!command || !channelId || !userId) return null;
+  return {
+    command,
+    text,
+    channelId,
+    userId,
+    ...(typeof record.response_url === "string" ? { responseUrl: record.response_url } : {}),
+    ...(typeof record.trigger_id === "string" ? { triggerId: record.trigger_id } : {}),
+    ...(typeof record.team_id === "string" ? { teamId: record.team_id } : {}),
+  };
 }
 
 export interface ParsedThreadStarted {
@@ -510,6 +546,7 @@ export interface SlackSocketModeClientConfig {
   onMemberJoinedChannel?: (event: { channel: string; isSelf: boolean }) => Promise<void> | void;
   onAppHomeOpened?: (event: ParsedAppHomeOpened) => Promise<void> | void;
   onInteractive?: (event: SlackInteractiveInboxEvent) => Promise<void> | void;
+  onSlashCommand?: (event: ParsedSlashCommand) => Promise<void> | void;
 }
 
 export class SlackSocketModeClient {
@@ -624,6 +661,11 @@ export class SlackSocketModeClient {
         if (normalized) {
           await this.config.onInteractive?.(normalized);
         }
+        return;
+      }
+
+      if (envelope.slashCommand) {
+        await this.config.onSlashCommand?.(envelope.slashCommand);
         return;
       }
 

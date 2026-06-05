@@ -74,6 +74,14 @@ import { createAgentPromptGuidance } from "./agent-prompt-guidance.js";
 import { createAgentEventRuntime } from "./agent-event-runtime.js";
 import { createSessionUiRuntime } from "./session-ui-runtime.js";
 import { createSlackRequestRuntime } from "./slack-request-runtime.js";
+import {
+  formatSlackAgentsDashboard,
+  formatSlackAgentsUsage,
+  isSlackAgentCommand,
+  isSlackAgentsListCommand,
+  resolveSlackAgentCommandNames,
+  shouldIncludeSlackAgentsGhosts,
+} from "./slack-agents-command.js";
 import { createPinetRegistrationGate } from "./pinet-registration-gate.js";
 import { createBrokerRuntimeAccess } from "./broker-runtime-access.js";
 import { createInboxDrainRuntime } from "./inbox-drain-runtime.js";
@@ -621,6 +629,23 @@ export default function (pi: ExtensionAPI) {
   const handleBrokerAppHomeOpened = async (userId: string, ctx: ExtensionContext) => {
     await pinetHomeTabs.publishCurrentPinetHomeTabSafely(userId, ctx, new Date().toISOString());
   };
+  const handleBrokerSlackSlashCommand = async (event: {
+    command: string;
+    text: string;
+  }): Promise<string | null> => {
+    const commandNames = resolveSlackAgentCommandNames(settings, activeSkinTheme);
+    if (!isSlackAgentCommand(event.command, commandNames)) {
+      return null;
+    }
+    if (!isSlackAgentsListCommand(event.command, event.text, commandNames)) {
+      return formatSlackAgentsUsage(commandNames);
+    }
+    const snapshot = await buildCurrentBrokerControlPlaneDashboardSnapshot();
+    if (!snapshot) {
+      return "Pinet broker dashboard data is not available yet. Try again after the broker completes a maintenance cycle.";
+    }
+    return formatSlackAgentsDashboard(snapshot, shouldIncludeSlackAgentsGhosts(event.text));
+  };
   const slackPinetAdapterFactory = createSlackPinetRuntimeAdapterFactory({
     getSettings: () => settings,
     getBotToken: () => botToken!,
@@ -629,6 +654,7 @@ export default function (pi: ExtensionAPI) {
     shouldAllowAllWorkspaceUsers: () =>
       resolveAllowAllWorkspaceUsers(settings, process.env.SLACK_ALLOW_ALL_WORKSPACE_USERS),
     onAppHomeOpened: handleBrokerAppHomeOpened,
+    onSlashCommand: handleBrokerSlackSlashCommand,
   });
 
   const brokerRuntime = createBrokerRuntime({

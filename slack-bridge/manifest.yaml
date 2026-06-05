@@ -11,6 +11,14 @@ features:
   bot_user:
     display_name: Pinet
     always_online: true
+  # Default packaged command for the Pinet app. For Oathgate or another app name,
+  # either edit this command before manual Slack import or run `pnpm deploy:slack`
+  # with slackCommandName/slackCommandNames configured so deployment rewrites it.
+  slash_commands:
+    - command: /pinet
+      description: Show the Pinet broker roster and current work
+      usage_hint: "agents list [all]"
+      should_escape: false
   assistant_view:
     assistant_description: Pi coding agent
     suggested_prompts: []
@@ -23,6 +31,7 @@ oauth_config:
       - channels:history
       - channels:read
       - chat:write
+      - commands
       - files:read
       - files:write
       - bookmarks:read
