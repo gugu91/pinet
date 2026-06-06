@@ -18,25 +18,25 @@ It currently bundles four layers:
 
 The lowest-regret target is **not** to create two peer extensions that both try to own runtime state. The better split is:
 
-- keep **`@gugu910/pi-slack-bridge`** as the published **Slack adapter extension package** and compatibility entrypoint
-- add **`@gugu910/pi-pinet-core`** as a **library package** for broker/runtime/Pinet orchestration
-- continue using **`@gugu910/pi-broker-core`** for transport-neutral broker kernel code, and move more broker primitives there instead of leaving them under `slack-bridge/broker/*`
+- keep **`@pinet/slack-bridge`** as the published **Slack adapter extension package** and compatibility entrypoint
+- add **`@pinet/pinet-core`** as a **library package** for broker/runtime/Pinet orchestration
+- continue using **`@pinet/broker-core`** for transport-neutral broker kernel code, and move more broker primitives there instead of leaving them under `slack-bridge/broker/*`
 
 That keeps the runtime composition model simple:
 
 ```text
 pi session
-  └─ @gugu910/pi-slack-bridge (extension entrypoint / Slack adapter)
-       ├─ @gugu910/pi-pinet-core (runtime orchestration)
-       ├─ @gugu910/pi-broker-core (broker kernel)
-       └─ @gugu910/pi-transport-core (transport contracts)
+  └─ @pinet/slack-bridge (extension entrypoint / Slack adapter)
+       ├─ @pinet/pinet-core (runtime orchestration)
+       ├─ @pinet/broker-core (broker kernel)
+       └─ @pinet/transport-core (transport contracts)
 ```
 
 ## Current topology
 
 ### Workspace/package topology today
 
-- `slack-bridge/` is one package: `@gugu910/pi-slack-bridge`
+- `slack-bridge/` is one package: `@pinet/slack-bridge`
 - package export surface is only:
   - `.` → `./dist/index.js`
   - `./package.json`
@@ -44,10 +44,10 @@ pi session
 - root workspace `pi.extensions` points to `./slack-bridge/index.ts`
 - there is **no `imports` map** in `slack-bridge/package.json`; composition is all internal relative imports
 - `slack-bridge` already depends on:
-  - `@gugu910/pi-broker-core`
-  - `@gugu910/pi-transport-core`
-  - `@gugu910/pi-imessage-bridge`
-- `broker-core/` already exists and `slack-bridge/broker/agent-messaging.ts` is already a shim that re-exports `@gugu910/pi-broker-core/agent-messaging`
+  - `@pinet/broker-core`
+  - `@pinet/transport-core`
+  - `@pinet/imessage-bridge`
+- `broker-core/` already exists and `slack-bridge/broker/agent-messaging.ts` is already a shim that re-exports `@pinet/broker-core/agent-messaging`
 
 ### Runtime wiring today
 
@@ -88,7 +88,7 @@ It directly wires:
 
 ## Recommended package split
 
-### 1) Keep and slim `@gugu910/pi-slack-bridge`
+### 1) Keep and slim `@pinet/slack-bridge`
 
 Purpose: **Slack adapter only**.
 
@@ -104,7 +104,7 @@ Responsibilities:
 - single-player direct Slack runtime
 - top-level extension entrypoint that composes Slack adapter + Pinet core
 
-### 2) Add `@gugu910/pi-pinet-core`
+### 2) Add `@pinet/pinet-core`
 
 Purpose: **runtime orchestration library**.
 
@@ -121,9 +121,9 @@ Responsibilities:
 - shared non-Slack runtime helpers and ports
 
 This package should **not** own a `pi.extensions` entrypoint in phase 1.
-It should be a library used by `@gugu910/pi-slack-bridge`.
+It should be a library used by `@pinet/slack-bridge`.
 
-### 3) Continue expanding `@gugu910/pi-broker-core`
+### 3) Continue expanding `@pinet/broker-core`
 
 Purpose: **transport-neutral broker kernel**.
 
@@ -154,7 +154,7 @@ Making `pinet-core` a library first avoids inventing a second extension-to-exten
 
 Below is the current source inventory bucketed by intent.
 
-### A. Slack-specific / should stay in `@gugu910/pi-slack-bridge`
+### A. Slack-specific / should stay in `@pinet/slack-bridge`
 
 - `activity-log.ts`
 - `broker-thread-owner-hints.ts`
@@ -322,7 +322,7 @@ This is the recommended destination map for the actual extraction.
 
 ### Delete compatibility wrappers after imports are rewritten
 
-These should stop being owned by `slack-bridge` once callers use `@gugu910/pi-broker-core/*` directly.
+These should stop being owned by `slack-bridge` once callers use `@pinet/broker-core/*` directly.
 
 - `slack-bridge/broker/agent-messaging.ts`
 - `slack-bridge/broker/auth.ts`
@@ -347,11 +347,11 @@ These should stop being owned by `slack-bridge` once callers use `@gugu910/pi-br
 - `slack-bridge/broker/schema.ts`
   - retain broker-core base schema where it is, move Pinet-specific Ralph-cycle extension to `pinet-core`
 - `slack-bridge/broker/adapters/types.ts`
-  - replace with direct imports from `@gugu910/pi-transport-core`
+  - replace with direct imports from `@pinet/transport-core`
 
 ## Proposed public API surface
 
-## `@gugu910/pi-pinet-core`
+## `@pinet/pinet-core`
 
 Recommended exported surface:
 
@@ -389,7 +389,7 @@ Recommended exported surface:
 
 This package should **not** export a default extension entrypoint in phase 1.
 
-## `@gugu910/pi-slack-bridge`
+## `@pinet/slack-bridge`
 
 Recommended exported surface:
 
@@ -406,7 +406,7 @@ Recommended exported surface:
   - control-plane canvas publishing helpers
 - Slack manifest / deployment helpers
 
-## `@gugu910/pi-broker-core`
+## `@pinet/broker-core`
 
 Recommended export additions:
 
@@ -422,9 +422,9 @@ It already owns most of the rest of the transport-neutral broker kernel.
 
 Recommended approach: **avoid a package rename for existing Slack users**.
 
-- keep `@gugu910/pi-slack-bridge` as the package users install for Slack
-- do not require users to install `@gugu910/pi-pinet-core` directly in phase 1
-- keep the `pi.extensions` entrypoint in `@gugu910/pi-slack-bridge`
+- keep `@pinet/slack-bridge` as the package users install for Slack
+- do not require users to install `@pinet/pinet-core` directly in phase 1
+- keep the `pi.extensions` entrypoint in `@pinet/slack-bridge`
 
 That makes the split mostly internal at first.
 
@@ -433,7 +433,7 @@ That makes the split mostly internal at first.
 These imports should eventually change:
 
 - from `./broker/*` wrappers
-- to `@gugu910/pi-broker-core/*` or `@gugu910/pi-pinet-core/*`
+- to `@pinet/broker-core/*` or `@pinet/pinet-core/*`
 
 ### For settings/config
 
@@ -607,7 +607,7 @@ The root can continue to load `./slack-bridge/index.ts` while that file becomes 
 
 ### Phase 2 — move broker/runtime core
 
-- create `@gugu910/pi-pinet-core` real exports
+- create `@pinet/pinet-core` real exports
 - move runtime/Pinet modules into `pinet-core/`
 - update imports in `slack-bridge/index.ts`
 
@@ -634,8 +634,8 @@ The root can continue to load `./slack-bridge/index.ts` while that file becomes 
 
 Proceed with the split using this package boundary:
 
-- **`@gugu910/pi-broker-core`** = transport-neutral broker kernel
-- **`@gugu910/pi-pinet-core`** = broker/follower/runtime/Pinet orchestration library
-- **`@gugu910/pi-slack-bridge`** = Slack adapter extension and compatibility package
+- **`@pinet/broker-core`** = transport-neutral broker kernel
+- **`@pinet/pinet-core`** = broker/follower/runtime/Pinet orchestration library
+- **`@pinet/slack-bridge`** = Slack adapter extension and compatibility package
 
 That boundary best matches the current code shape, the prior Pinet planning docs, and the existing partial extraction work already landed under #531 and related refactors.

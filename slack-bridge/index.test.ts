@@ -9,7 +9,7 @@ import * as brokerModule from "./broker/index.js";
 import * as maintenanceModule from "./broker/maintenance.js";
 import { BrokerDB } from "./broker/schema.js";
 import { SlackAdapter } from "./broker/adapters/slack.js";
-import * as imessageModule from "@gugu910/pi-imessage-bridge";
+import * as imessageModule from "@pinet/imessage-bridge";
 import slackBridge from "./index.js";
 
 type ToolDefinition = {

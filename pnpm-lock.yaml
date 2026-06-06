@@ -44,7 +44,7 @@ importers:
 
   broker-core:
     dependencies:
-      "@gugu910/pi-transport-core":
+      "@pinet/transport-core":
         specifier: file:../transport-core
         version: link:../transport-core
 
@@ -69,7 +69,7 @@ importers:
 
   imessage-bridge:
     dependencies:
-      "@gugu910/pi-transport-core":
+      "@pinet/transport-core":
         specifier: file:../transport-core
         version: link:../transport-core
 
@@ -98,10 +98,10 @@ importers:
 
   pinet-core:
     dependencies:
-      "@gugu910/pi-broker-core":
+      "@pinet/broker-core":
         specifier: file:../broker-core
         version: link:../broker-core
-      "@gugu910/pi-transport-core":
+      "@pinet/transport-core":
         specifier: file:../transport-core
         version: link:../transport-core
 
@@ -113,21 +113,25 @@ importers:
 
   slack-bridge:
     dependencies:
-      "@gugu910/pi-broker-core":
+      "@pinet/broker-core":
         specifier: file:../broker-core
         version: link:../broker-core
-      "@gugu910/pi-imessage-bridge":
+      "@pinet/imessage-bridge":
         specifier: file:../imessage-bridge
         version: link:../imessage-bridge
-      "@gugu910/pi-pinet-core":
+      "@pinet/pinet-core":
         specifier: file:../pinet-core
         version: link:../pinet-core
-      "@gugu910/pi-transport-core":
+      "@pinet/transport-core":
         specifier: file:../transport-core
         version: link:../transport-core
       "@sinclair/typebox":
         specifier: ^0.34.49
         version: 0.34.49
+    devDependencies:
+      "@earendil-works/pi-coding-agent":
+        specifier: ^0.74.0
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
 
   transport-core: {}
 

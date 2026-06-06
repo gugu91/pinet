@@ -5,10 +5,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-  PinetReadOptions,
-  PinetReadResult,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+import type { PinetReadOptions, PinetReadResult } from "@pinet/pinet-core/pinet-read-formatting";
 import { dispatchDirectAgentMessage, resolveDirectAgentTarget } from "./broker/agent-messaging.js";
 import { startBroker, type Broker } from "./broker/index.js";
 import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";

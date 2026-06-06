@@ -1,0 +1,153 @@
+name: Publish npm packages
+
+run-name: npm ${{ github.event_name == 'push' && github.ref_name || (inputs.dry_run && 'dry-run' || 'publish') }} all packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run npm publish --dry-run only"
+        required: true
+        type: boolean
+        default: true
+      release_approval:
+        description: "For manual real publishes only: type 'publish all'"
+        required: false
+        type: string
+        default: ""
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'dry-run' || 'live' }}
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    name: Validate npm publish readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate tag release version
+        if: ${{ github.event_name == 'push' }}
+        run: node ./scripts/validate-npm-tag-version.mjs "$GITHUB_REF"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Dry-run publish packages
+        run: >-
+          node ./scripts/publish-npm-packages.mjs
+          --dry-run
+
+  publish-preflight:
+    name: Check real publish gates
+    if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+    needs: readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Guard tag points at current main tip
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          trigger_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          checkout_commit="$(git rev-parse HEAD)"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          if [ "${trigger_commit}" != "${main_commit}" ] || [ "${checkout_commit}" != "${main_commit}" ]; then
+            echo "Tag-triggered npm publishes require the tag commit to equal the current origin/main tip."
+            echo "Trigger commit: ${trigger_commit}"
+            echo "Checked-out commit: ${checkout_commit}"
+            echo "origin/main: ${main_commit}"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Guard manual real publish ref
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "Manual real npm publishes must be dispatched from refs/heads/main. Current ref: $GITHUB_REF"
+          exit 1
+
+      - name: Guard manual real publish approval phrase
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RELEASE_APPROVAL: ${{ inputs.release_approval }}
+        run: |
+          expected="publish all"
+          if [ "${RELEASE_APPROVAL}" != "${expected}" ]; then
+            echo "Manual real npm publishes require release_approval exactly: ${expected}"
+            exit 1
+          fi
+
+      - name: Validate tag release version
+        if: ${{ github.event_name == 'push' }}
+        run: node ./scripts/validate-npm-tag-version.mjs "$GITHUB_REF"
+
+  publish:
+    name: Publish npm packages
+    if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+    needs:
+      - readiness
+      - publish-preflight
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Trusted Publishing context
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "GitHub OIDC is required for npm Trusted Publishing. Check id-token: write and the npm-publish environment."
+            exit 1
+          fi
+
+      - name: Publish packages
+        run: >-
+          node ./scripts/publish-npm-packages.mjs
+          --publish

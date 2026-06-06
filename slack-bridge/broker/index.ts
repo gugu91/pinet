@@ -22,6 +22,8 @@ export type {
   InboxEntry,
   InboundMessage,
   OutboundMessage,
+  AdapterCapabilityRequest,
+  AdapterCapabilityResult,
   MessageAdapter,
   JsonRpcRequest,
   JsonRpcResponse,
@@ -98,7 +100,7 @@ export async function startBroker(options: BrokerOptions = {}): Promise<Broker> 
   const resolvedMeshSecret =
     meshSecret || (meshSecretPath ? loadOrCreateMeshSecret(meshSecretPath) : null);
 
-  const server = new BrokerSocketServer(db, target, undefined, {
+  const server = new BrokerSocketServer(db, target, {
     ...(resolvedMeshSecret ? { meshSecret: resolvedMeshSecret } : {}),
   });
   try {
@@ -119,6 +121,7 @@ export async function startBroker(options: BrokerOptions = {}): Promise<Broker> 
 
     addAdapter(adapter: MessageAdapter): void {
       adapters.push(adapter);
+      server.setOutboundMessageAdapters(adapters);
     },
 
     async stop(): Promise<void> {

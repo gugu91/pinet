@@ -1,10 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { NormalizedMessageContent } from "@gugu910/pi-transport-core";
+import type { NormalizedMessageContent } from "@pinet/transport-core";
 import { Type } from "@sinclair/typebox";
-import {
-  getDefaultIMessageThreadId,
-  normalizeIMessageRecipient,
-} from "@gugu910/pi-imessage-bridge";
+import { getDefaultIMessageThreadId, normalizeIMessageRecipient } from "@pinet/imessage-bridge";
 import type { Broker } from "./broker/index.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 

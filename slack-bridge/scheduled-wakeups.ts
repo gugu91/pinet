@@ -3,4 +3,4 @@ export {
   parseScheduledWakeupDelay,
   resolveScheduledWakeupFireAt,
   type ScheduledWakeupInput,
-} from "@gugu910/pi-pinet-core/scheduled-wakeups";
+} from "@pinet/pinet-core/scheduled-wakeups";

@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as net from "node:net";
-import { BrokerDB as CoreBrokerDB } from "@gugu910/pi-broker-core/schema";
+import { BrokerDB as CoreBrokerDB } from "@pinet/broker-core/schema";
 import { BrokerDB, CURRENT_BROKER_SCHEMA_VERSION } from "./schema.js";
 import { LeaderLock } from "./leader.js";
 import { startBroker, type Broker } from "./index.js";

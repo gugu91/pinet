@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PinetReadResult } from "@gugu910/pi-pinet-core/pinet-read-formatting";
+import type { PinetReadResult } from "@pinet/pinet-core/pinet-read-formatting";
 import { createThreadConfirmationPolicy } from "./thread-confirmations.js";
 import { consumePinetReadConfirmationReplies } from "./pinet-confirmation-replies.js";
 

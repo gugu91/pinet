@@ -704,11 +704,7 @@ function extractSlackCanvasPermalink(response: Record<string, unknown>): string 
   if (canvasLink) return canvasLink;
 
   const file = asSlackObject(response.file);
-  return (
-    asTrimmedSlackString(file?.permalink) ??
-    asTrimmedSlackString(file?.url_private) ??
-    asTrimmedSlackString(file?.url)
-  );
+  return asTrimmedSlackString(file?.permalink);
 }
 
 function isPiAgentSlackMessage(
@@ -1011,6 +1007,111 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     },
   });
 
+  type SlackCanvasFallbackResult = {
+    canvasId: string;
+    permalink?: string;
+    permalinkLookupError?: string;
+    bookmarkId?: string;
+    bookmarkStatus: "added" | "skipped" | "failed";
+    bookmarkError?: string;
+  };
+
+  async function createStandaloneCanvasFallback(input: {
+    channelId: string;
+    channelLabel: string;
+    title?: string;
+    markdown?: string;
+  }): Promise<SlackCanvasFallbackResult> {
+    const fallbackRequest = buildSlackCanvasCreateRequest({
+      kind: "standalone",
+      title: input.title,
+      markdown: input.markdown,
+      channelId: input.channelId,
+    });
+
+    let fallbackResponse: SlackResult;
+    try {
+      fallbackResponse = await slack(fallbackRequest.method, getBotToken(), fallbackRequest.body);
+    } catch (fallbackErr) {
+      const fallbackMessage =
+        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      throw new Error(
+        `Slack channel canvas creation failed with canvas_tab_creation_failed, and standalone fallback creation also failed: ${fallbackMessage}. To recover manually, create a standalone canvas with channel=${input.channelLabel} and update/share it by canvas_id.`,
+      );
+    }
+
+    const fallbackCanvasId = asTrimmedSlackString(fallbackResponse.canvas_id);
+    if (!fallbackCanvasId) {
+      throw new Error(
+        `Slack channel canvas creation failed with canvas_tab_creation_failed, and standalone fallback creation did not return a canvas_id. To recover manually, create a standalone canvas with channel=${input.channelLabel} and update/share it by canvas_id.`,
+      );
+    }
+
+    let permalink = extractSlackCanvasPermalink(fallbackResponse);
+    let permalinkLookupError: string | undefined;
+    if (!permalink) {
+      try {
+        const fileInfo = await slack("files.info", getBotToken(), { file: fallbackCanvasId });
+        permalink = extractSlackCanvasPermalink(fileInfo);
+      } catch (permalinkErr) {
+        permalinkLookupError =
+          permalinkErr instanceof Error ? permalinkErr.message : String(permalinkErr);
+      }
+    }
+
+    let bookmarkId: string | undefined;
+    let bookmarkStatus: "added" | "skipped" | "failed" = "skipped";
+    let bookmarkError: string | undefined;
+    if (permalink) {
+      try {
+        const title =
+          input.title && input.title.trim().length > 0
+            ? input.title.trim()
+            : `Canvas ${fallbackCanvasId}`;
+        const bookmarkResponse = await slack("bookmarks.add", getBotToken(), {
+          channel_id: input.channelId,
+          title,
+          type: "link",
+          link: normalizeSlackBookmarkUrl(permalink),
+          emoji: ":memo:",
+        });
+        const bookmark = asSlackObject(bookmarkResponse.bookmark);
+        bookmarkId = asTrimmedSlackString(bookmark?.id);
+        bookmarkStatus = "added";
+      } catch (bookmarkErr) {
+        bookmarkStatus = "failed";
+        bookmarkError = bookmarkErr instanceof Error ? bookmarkErr.message : String(bookmarkErr);
+      }
+    }
+
+    return {
+      canvasId: fallbackCanvasId,
+      bookmarkStatus,
+      ...(permalink ? { permalink } : {}),
+      ...(permalinkLookupError ? { permalinkLookupError } : {}),
+      ...(bookmarkId ? { bookmarkId } : {}),
+      ...(bookmarkError ? { bookmarkError } : {}),
+    };
+  }
+
+  function buildStandaloneCanvasFallbackBookmarkSummary(input: {
+    channelLabel: string;
+    canvasId: string;
+    permalink?: string;
+    permalinkLookupError?: string;
+    bookmarkId?: string;
+    bookmarkStatus: "added" | "skipped" | "failed";
+    bookmarkError?: string;
+  }): string {
+    if (input.bookmarkStatus === "added") {
+      return ` Bookmarked it in ${input.channelLabel}${input.bookmarkId ? ` as ${input.bookmarkId}` : ""}.`;
+    }
+    if (input.permalink) {
+      return ` Could not bookmark it automatically${input.bookmarkError ? ` (${input.bookmarkError})` : ""}; add ${input.permalink} as a channel bookmark if you need a durable channel link.`;
+    }
+    return ` Slack did not expose a permalink${input.permalinkLookupError ? ` (${input.permalinkLookupError})` : ""}; use canvas_id=${input.canvasId} directly or add a bookmark manually once you have the canvas URL.`;
+  }
+
   async function resolveCanvasTarget(
     canvasId: string | undefined,
     channel: string | undefined,
@@ -1030,7 +1131,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     const resolvedCanvasId = extractSlackChannelCanvasId(info);
     if (!resolvedCanvasId) {
       throw new Error(
-        `Slack did not expose a channel canvas ID in conversations.info for ${channelInput}. Provide canvas_id directly. If channel canvas tab creation failed earlier, use the standalone fallback canvas_id returned by canvas_create; otherwise create a standalone fallback with canvas_create kind='standalone' channel='${channelInput}' and update it by canvas_id.`,
+        `Slack did not expose a channel canvas ID in conversations.info for ${channelInput}. Provide canvas_id directly. If channel canvas tab creation failed earlier, use the standalone fallback canvas_id returned by canvas_create. Otherwise run canvas_create with kind='channel' and channel='${channelInput}'; if Slack rejects channel tab creation, canvas_create will auto-create and bookmark a standalone fallback. Use kind='standalone' only when you intentionally want to skip the channel-tab attempt.`,
       );
     }
 
@@ -2379,6 +2480,9 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       // 4. Create the channel canvas with the RFC/spec
       const canvasTitle = params.canvas_title?.trim() || `${channel.name} RFC`;
       let canvasId: string | null = null;
+      let canvasKind: "channel" | "standalone" | null = null;
+      let canvasFallback: SlackCanvasFallbackResult | null = null;
+      let canvasFailure: string | null = null;
       try {
         const canvasRequest = buildSlackCanvasCreateRequest({
           kind: "channel",
@@ -2388,16 +2492,49 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         });
         const canvasResponse = await slack(canvasRequest.method, getBotToken(), canvasRequest.body);
         canvasId = canvasResponse.canvas_id as string;
-      } catch {
-        // Canvas creation failure is non-fatal — the channel is still usable
+        canvasKind = "channel";
+      } catch (err) {
+        if (
+          isSlackMethodError(err, "conversations.canvases.create", "canvas_tab_creation_failed")
+        ) {
+          try {
+            canvasFallback = await createStandaloneCanvasFallback({
+              channelId: channel.id,
+              channelLabel: `#${channel.name}`,
+              title: canvasTitle,
+              markdown: params.canvas_markdown,
+            });
+            canvasId = canvasFallback.canvasId;
+            canvasKind = "standalone";
+          } catch (fallbackErr) {
+            canvasFailure =
+              fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+          }
+        } else {
+          // Canvas creation failure is non-fatal — the channel is still usable
+          canvasFailure = err instanceof Error ? err.message : String(err);
+        }
       }
 
       const parts = [`Created project channel #${channel.name} (${channel.id})`];
-      if (canvasId) {
+      if (canvasId && canvasKind === "standalone" && canvasFallback) {
+        const bookmarkSummary = buildStandaloneCanvasFallbackBookmarkSummary({
+          channelLabel: `#${channel.name}`,
+          canvasId,
+          permalink: canvasFallback.permalink,
+          permalinkLookupError: canvasFallback.permalinkLookupError,
+          bookmarkId: canvasFallback.bookmarkId,
+          bookmarkStatus: canvasFallback.bookmarkStatus,
+          bookmarkError: canvasFallback.bookmarkError,
+        });
+        parts.push(
+          `Slack could not create the project channel canvas tab (canvas_tab_creation_failed). Created standalone fallback RFC canvas: ${canvasId} — "${canvasTitle}".${bookmarkSummary} Use canvas_update with canvas_id=${canvasId} for future updates.`,
+        );
+      } else if (canvasId) {
         parts.push(`RFC canvas: ${canvasId} — "${canvasTitle}"`);
       } else {
         parts.push(
-          "Canvas creation failed — create it manually with the slack dispatcher action canvas_create.",
+          `Canvas creation failed${canvasFailure ? ` (${canvasFailure})` : ""} — retry with canvas_create kind='channel' channel='#${channel.name}' so the Slack bridge can auto-create/bookmark a standalone fallback if Slack rejects channel tab creation.`,
         );
       }
       if (botInvited) {
@@ -2411,7 +2548,25 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           channel_name: channel.name,
           canvas_id: canvasId,
           canvas_title: canvasTitle,
+          canvas_kind: canvasKind,
           bot_invited: botInvited,
+          ...(canvasFallback
+            ? {
+                canvas_fallback: true,
+                canvas_fallback_reason: "canvas_tab_creation_failed",
+                bookmark_status: canvasFallback.bookmarkStatus,
+                next_action: `canvas_update canvas_id=${canvasFallback.canvasId}`,
+                ...(canvasFallback.permalink ? { permalink: canvasFallback.permalink } : {}),
+                ...(canvasFallback.bookmarkId ? { bookmark_id: canvasFallback.bookmarkId } : {}),
+                ...(canvasFallback.bookmarkError
+                  ? { bookmark_error: canvasFallback.bookmarkError }
+                  : {}),
+                ...(canvasFallback.permalinkLookupError
+                  ? { permalink_lookup_error: canvasFallback.permalinkLookupError }
+                  : {}),
+              }
+            : {}),
+          ...(canvasFailure ? { canvas_error: canvasFailure } : {}),
         },
       };
     },
@@ -3188,94 +3343,45 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           throw err;
         }
 
-        const fallbackRequest = buildSlackCanvasCreateRequest({
-          kind: "standalone",
+        const channelLabel = channelInput ?? channelId;
+        const fallback = await createStandaloneCanvasFallback({
+          channelId,
+          channelLabel,
           title: params.title,
           markdown: params.markdown,
-          channelId,
         });
-        let fallbackResponse: SlackResult;
-        try {
-          fallbackResponse = await slack(
-            fallbackRequest.method,
-            getBotToken(),
-            fallbackRequest.body,
-          );
-        } catch (fallbackErr) {
-          const fallbackMessage =
-            fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-          throw new Error(
-            `Slack channel canvas creation failed with canvas_tab_creation_failed, and standalone fallback creation also failed: ${fallbackMessage}. To recover manually, create a standalone canvas with channel=${channelInput ?? channelId} and update/share it by canvas_id.`,
-          );
-        }
-
-        const fallbackCanvasId = fallbackResponse.canvas_id as string;
-        let permalink = extractSlackCanvasPermalink(fallbackResponse);
-        let permalinkLookupError: string | undefined;
-        if (!permalink) {
-          try {
-            const fileInfo = await slack("files.info", getBotToken(), { file: fallbackCanvasId });
-            permalink = extractSlackCanvasPermalink(fileInfo);
-          } catch (permalinkErr) {
-            permalinkLookupError =
-              permalinkErr instanceof Error ? permalinkErr.message : String(permalinkErr);
-          }
-        }
-
-        let bookmarkId: string | undefined;
-        let bookmarkStatus: "added" | "skipped" | "failed" = "skipped";
-        let bookmarkError: string | undefined;
-        if (permalink) {
-          try {
-            const title =
-              typeof params.title === "string" && params.title.trim().length > 0
-                ? params.title.trim()
-                : `Canvas ${fallbackCanvasId}`;
-            const bookmarkResponse = await slack("bookmarks.add", getBotToken(), {
-              channel_id: channelId,
-              title,
-              type: "link",
-              link: normalizeSlackBookmarkUrl(permalink),
-              emoji: ":memo:",
-            });
-            const bookmark = asSlackObject(bookmarkResponse.bookmark);
-            bookmarkId = asTrimmedSlackString(bookmark?.id);
-            bookmarkStatus = "added";
-          } catch (bookmarkErr) {
-            bookmarkStatus = "failed";
-            bookmarkError =
-              bookmarkErr instanceof Error ? bookmarkErr.message : String(bookmarkErr);
-          }
-        }
-
-        const channelLabel = channelInput ?? channelId;
-        const bookmarkSummary =
-          bookmarkStatus === "added"
-            ? ` Bookmarked it in ${channelLabel}${bookmarkId ? ` as ${bookmarkId}` : ""}.`
-            : permalink
-              ? ` Could not bookmark it automatically${bookmarkError ? ` (${bookmarkError})` : ""}; add ${permalink} as a channel bookmark if you need a durable channel link.`
-              : ` Slack did not expose a permalink${permalinkLookupError ? ` (${permalinkLookupError})` : ""}; use canvas_id=${fallbackCanvasId} directly or add a bookmark manually once you have the canvas URL.`;
+        const bookmarkSummary = buildStandaloneCanvasFallbackBookmarkSummary({
+          channelLabel,
+          canvasId: fallback.canvasId,
+          permalink: fallback.permalink,
+          permalinkLookupError: fallback.permalinkLookupError,
+          bookmarkId: fallback.bookmarkId,
+          bookmarkStatus: fallback.bookmarkStatus,
+          bookmarkError: fallback.bookmarkError,
+        });
 
         return {
           content: [
             {
               type: "text",
-              text: `Slack could not create a channel canvas tab for ${channelLabel} (canvas_tab_creation_failed). Created standalone fallback canvas ${fallbackCanvasId} attached to ${channelLabel}.${bookmarkSummary} Use canvas_update with canvas_id=${fallbackCanvasId} for future updates. Initial content: ${getSlackCanvasSummary(params.markdown)}`,
+              text: `Slack could not create a channel canvas tab for ${channelLabel} (canvas_tab_creation_failed). Created standalone fallback canvas ${fallback.canvasId} attached to ${channelLabel}.${bookmarkSummary} Use canvas_update with canvas_id=${fallback.canvasId} for future updates. Initial content: ${getSlackCanvasSummary(params.markdown)}`,
             },
           ],
           details: {
-            canvas_id: fallbackCanvasId,
+            canvas_id: fallback.canvasId,
             kind: "standalone",
             requested_kind: "channel",
             channel: channelId,
             fallback: true,
             fallback_reason: "canvas_tab_creation_failed",
-            bookmark_status: bookmarkStatus,
-            next_action: `canvas_update canvas_id=${fallbackCanvasId}`,
-            ...(permalink ? { permalink } : {}),
-            ...(bookmarkId ? { bookmark_id: bookmarkId } : {}),
-            ...(bookmarkError ? { bookmark_error: bookmarkError } : {}),
-            ...(permalinkLookupError ? { permalink_lookup_error: permalinkLookupError } : {}),
+            bookmark_status: fallback.bookmarkStatus,
+            next_action: `canvas_update canvas_id=${fallback.canvasId}`,
+            ...(fallback.permalink ? { permalink: fallback.permalink } : {}),
+            ...(fallback.bookmarkId ? { bookmark_id: fallback.bookmarkId } : {}),
+            ...(fallback.bookmarkError ? { bookmark_error: fallback.bookmarkError } : {}),
+            ...(fallback.permalinkLookupError
+              ? { permalink_lookup_error: fallback.permalinkLookupError }
+              : {}),
           },
         };
       }

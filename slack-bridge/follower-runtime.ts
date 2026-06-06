@@ -16,6 +16,7 @@ import {
   resolvePinetMeshAuth,
   resolveRuntimeAgentIdentity,
   syncFollowerInboxEntries,
+  syncTransferredSlackThreadContexts,
 } from "./helpers.js";
 import {
   type FollowerDeliveryState,
@@ -327,6 +328,18 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
           }
 
           if (agentMessages.length > 0) {
+            const transferredThreads = syncTransferredSlackThreadContexts(
+              agentMessages,
+              deps.getThreads(),
+              deps.getAgentOwnerToken(),
+            );
+            if (transferredThreads.threadUpdates.length > 0) {
+              mergeFollowerThreadUpdates(deps.getThreads(), transferredThreads.threadUpdates);
+              if (transferredThreads.changed) {
+                deps.persistState();
+              }
+            }
+
             const pinetPrompt = formatPinetInboxMessages(agentMessages);
             if (deps.deliverFollowUpMessage(pinetPrompt)) {
               markFollowerInboxIdsDelivered(deps.deliveryState, getInboxIds(agentMessages));

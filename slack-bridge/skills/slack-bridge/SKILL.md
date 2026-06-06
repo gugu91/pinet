@@ -1,6 +1,6 @@
 ---
 name: slack-bridge
-description: Warm reference for the @gugu910/pi-slack-bridge Slack dispatcher. Use when building Slack Block Kit messages, modals, canvases, uploads, schedules, pins/bookmarks, or when you need per-action usage patterns beyond slack action=help schemas.
+description: Warm reference for the @pinet/slack-bridge Slack dispatcher. Use when building Slack Block Kit messages, modals, canvases, uploads, schedules, pins/bookmarks, or when you need per-action usage patterns beyond slack action=help schemas.
 ---
 
 # Slack Bridge Warm Reference

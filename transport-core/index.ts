@@ -102,6 +102,11 @@ export interface InboundMessage {
 export interface NormalizedMessageContent {
   text: string;
   markdown?: string;
+  /**
+   * Compatibility/native-rendering escape hatch for Slack Block Kit payloads.
+   * This remains intentionally Slack-shaped for the current publish-readiness
+   * track while a future transport-neutral rich-content model is considered.
+   */
   slackBlocks?: ReadonlyArray<Record<string, unknown>>;
 }
 
@@ -118,10 +123,30 @@ export interface OutboundMessage {
   scope?: RuntimeScopeCarrier;
 }
 
+export interface AdapterThreadClaimEffect {
+  threadId: string;
+  channel?: string;
+}
+
+export interface AdapterCapabilityEffects {
+  claimThread?: AdapterThreadClaimEffect | ReadonlyArray<AdapterThreadClaimEffect>;
+}
+
+export interface AdapterCapabilityRequest {
+  capability: string;
+  params: Record<string, unknown>;
+}
+
+export interface AdapterCapabilityResult {
+  result: Record<string, unknown>;
+  effects?: AdapterCapabilityEffects;
+}
+
 export interface MessageAdapter {
   name: string;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   onInbound(handler: (msg: InboundMessage) => void): void;
   send(msg: OutboundMessage): Promise<void>;
+  invokeCapability?(request: AdapterCapabilityRequest): Promise<AdapterCapabilityResult>;
 }

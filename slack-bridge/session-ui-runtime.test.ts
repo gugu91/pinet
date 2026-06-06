@@ -100,6 +100,43 @@ describe("createSessionUiRuntime", () => {
     expect(drainInbox).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["raw Escape", "\u001b"],
+    ["Kitty CSI-u Escape", "\u001b[27u"],
+    ["Kitty CSI-u Escape with explicit no modifier", "\u001b[27;1u"],
+    ["Kitty CSI-u Escape release", "\u001b[27;1:3u"],
+    ["Kitty CSI-u Escape with Caps Lock", "\u001b[27;65u"],
+    ["xterm modifyOtherKeys Escape", "\u001b[27;1;27~"],
+  ])("gates idle inbox draining after %s input", (_name, data) => {
+    const { deps, drainInbox } = createDeps();
+    const runtime = createSessionUiRuntime(deps);
+    const { ctx } = createContext({ idle: true });
+
+    runtime.notePotentialInterruptInput(data);
+
+    expect(runtime.shouldSuppressAutomaticInboxDrain(Date.now())).toBe(true);
+    expect(runtime.maybeDrainInboxIfIdle(ctx)).toBe(false);
+    expect(drainInbox).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Alt+Escape Kitty CSI-u", "\u001b[27;3u"],
+    ["Ctrl+Escape Kitty CSI-u", "\u001b[27;5u"],
+    ["Alt+Escape modifyOtherKeys", "\u001b[27;3;27~"],
+    ["Alt+a legacy sequence", "\u001ba"],
+    ["arrow sequence", "\u001b[A"],
+  ])("does not gate inbox draining after non-plain Escape-like %s input", (_name, data) => {
+    const { deps, drainInbox } = createDeps();
+    const runtime = createSessionUiRuntime(deps);
+    const { ctx } = createContext({ idle: true });
+
+    runtime.notePotentialInterruptInput(data);
+
+    expect(runtime.shouldSuppressAutomaticInboxDrain(Date.now())).toBe(false);
+    expect(runtime.maybeDrainInboxIfIdle(ctx)).toBe(true);
+    expect(drainInbox).toHaveBeenCalledTimes(1);
+  });
+
   it("schedules an inbox drain retry until the session is truly idle", async () => {
     vi.useFakeTimers();
     try {

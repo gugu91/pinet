@@ -7,7 +7,7 @@ import type {
   PinetReadOptions,
   PinetReadResult,
   PinetUnreadThreadSummary,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+} from "@pinet/pinet-core/pinet-read-formatting";
 import type {
   ClientAgentInfo,
   NormalizedMessageContent,
@@ -44,7 +44,7 @@ export type {
   PinetReadOptions,
   PinetReadResult,
   PinetUnreadThreadSummary,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+} from "@pinet/pinet-core/pinet-read-formatting";
 
 export interface ThreadInfo {
   threadId: string;
@@ -647,17 +647,39 @@ export class BrokerClient {
     return result;
   }
 
-  // ─── Slack proxy (read-through) ──────────────────────
+  // ─── Adapter capabilities ───────────────────────────
 
+  async invokeAdapterCapability(
+    adapter: string,
+    capability: string,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const result = (await this.request("adapter.capability", {
+      adapter,
+      capability,
+      params,
+    })) as Record<string, unknown>;
+    return result;
+  }
+
+  /**
+   * Compatibility wrapper for callers that still need direct Slack API access.
+   * The broker RPC boundary remains adapter-neutral; Slack-specific payloads are
+   * interpreted inside the Slack adapter's api.call capability.
+   */
   async slackProxy(
     method: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const result = (await this.request("slack.proxy", { method, params })) as Record<
-      string,
-      unknown
-    >;
-    return result;
+    try {
+      return await this.invokeAdapterCapability("slack", "api.call", { method, params });
+    } catch (err) {
+      if (!isRpcMethodNotFoundError(err, "adapter.capability")) {
+        throw err;
+      }
+    }
+
+    return (await this.request("slack.proxy", { method, params })) as Record<string, unknown>;
   }
 
   // ─── Events ──────────────────────────────────────────

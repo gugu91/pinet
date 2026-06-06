@@ -1,5 +1,7 @@
 import type { PinetMailClass } from "./mail-classification.js";
 
+export const DEFAULT_EXTERNAL_THREAD_SOURCE = "external";
+
 // ─── Domain types ─────────────────────────────────────────
 
 export type AgentSupervisionState = "root" | "supervised" | "orphaned" | "stopping";
@@ -340,20 +342,28 @@ import {
   buildCompatibilityInstanceScope as _buildCompatibilityInstanceScope,
   buildCompatibilityWorkspaceScope as _buildCompatibilityWorkspaceScope,
   buildRuntimeScopeCarrier as _buildRuntimeScopeCarrier,
-} from "@gugu910/pi-transport-core";
+} from "@pinet/transport-core";
 import type {
   InboundMessage as _InboundMessage,
   NormalizedMessageContent as _NormalizedMessageContent,
   OutboundMessage as _OutboundMessage,
+  AdapterCapabilityRequest as _AdapterCapabilityRequest,
+  AdapterCapabilityResult as _AdapterCapabilityResult,
+  AdapterCapabilityEffects as _AdapterCapabilityEffects,
+  AdapterThreadClaimEffect as _AdapterThreadClaimEffect,
   MessageAdapter as _MessageAdapter,
   RuntimeScopeCarrier as _RuntimeScopeCarrier,
   WorkspaceInstallScopeCarrier as _WorkspaceInstallScopeCarrier,
   InstanceScopeCarrier as _InstanceScopeCarrier,
-} from "@gugu910/pi-transport-core";
+} from "@pinet/transport-core";
 
 export type InboundMessage = _InboundMessage;
 export type NormalizedMessageContent = _NormalizedMessageContent;
 export type OutboundMessage = _OutboundMessage;
+export type AdapterCapabilityRequest = _AdapterCapabilityRequest;
+export type AdapterCapabilityResult = _AdapterCapabilityResult;
+export type AdapterCapabilityEffects = _AdapterCapabilityEffects;
+export type AdapterThreadClaimEffect = _AdapterThreadClaimEffect;
 export type MessageAdapter = _MessageAdapter;
 export type RuntimeScopeCarrier = _RuntimeScopeCarrier;
 export type WorkspaceInstallScopeCarrier = _WorkspaceInstallScopeCarrier;

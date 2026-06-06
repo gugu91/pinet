@@ -830,6 +830,7 @@ describe("registerPinetTools", () => {
       messageId: 41,
       target: "alpha",
       transferredThreadId: "1777798507.674009",
+      transferredThreadChannel: "C123",
     }));
     const deps = createDeps({ sendPinetAgentMessage });
     const tools = registerWithDeps(deps);
@@ -851,9 +852,10 @@ describe("registerPinetTools", () => {
     });
     expect(result.details.status).toBe("succeeded");
     expect(result.details.data.text).toBe(
-      "Pinet message sent to alpha; transferred thread 1777798507.674009.",
+      "Pinet message sent to alpha; transferred Slack thread 1777798507.674009.",
     );
     expect(result.details.data.details.transferredThreadId).toBe("1777798507.674009");
+    expect(result.details.data.details.transferredThreadChannel).toBe("C123");
   });
 
   it("rejects follower thread ownership transfers", async () => {

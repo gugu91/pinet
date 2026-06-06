@@ -120,6 +120,13 @@ This repo now uses pnpm workspaces + Turborepo for **repo-internal monorepo
 tooling**. It is **not** yet a supported root-level `pi install git:...`
 package target.
 
+For the published Pinet Slack bridge pi package, install from npm:
+
+```bash
+pi install npm:@pinet/slack-bridge
+pi install npm:@pinet/slack-bridge@0.1.0 # pinned version
+```
+
 For local development, load individual extensions directly:
 
 ```bash
@@ -153,14 +160,14 @@ caching.
 
 ```
 extensions/
-├── transport-core/     # @gugu910/pi-transport-core
+├── transport-core/     # @pinet/transport-core
 │   ├── index.ts        #   canonical transport message contracts
 │   └── package.json    #   workspace package
 ├── browser-playwright/ # @gugu910/pi-browser-playwright
 │   ├── index.ts        #   Playwright-first single `browser` tool entry point
 │   ├── helpers.ts      #   security defaults + install guidance
 │   └── package.json    #   workspace package + pi manifest
-├── slack-bridge/       # @gugu910/pi-slack-bridge
+├── slack-bridge/       # @pinet/slack-bridge
 │   ├── broker/         #   message routing, socket server, adapters
 │   ├── index.ts        #   extension entry point
 │   └── package.json    #   workspace package + pi manifest
@@ -168,7 +175,7 @@ extensions/
 │   ├── generated/      #   generated typed Slack Web API client
 │   ├── cli.ts          #   CLI wrapper around generated methods
 │   └── package.json    #   workspace package + pi manifest
-├── imessage-bridge/    # @gugu910/pi-imessage-bridge
+├── imessage-bridge/    # @pinet/imessage-bridge
 │   ├── mvp.ts          #   local macOS/iMessage readiness helpers
 │   ├── send.ts         #   AppleScript send-first transport helper
 │   └── package.json    #   standalone workspace package
@@ -226,6 +233,78 @@ where broad Slack/Pinet action families can otherwise bloat every agent turn
 
 See [`plans/test-policy.md`](plans/test-policy.md) for merge-ready test
 expectations and the required smoke checklist.
+
+## npm publish readiness
+
+The publishable Pinet/Slack package set is tracked in
+[`plans/npm-publish.md`](plans/npm-publish.md) and executed through the manual
+[`Publish npm packages`](.github/workflows/npm-publish.yml) GitHub Actions
+workflow. The workflow supports manual dry-run/publish dispatches and release-tag
+publishes from `vX.Y.Z` tags. It intentionally has no package target selector; it
+always validates or publishes the full set in dependency order.
+
+Safe readiness checks are the default path:
+
+1. Open **Actions → Publish npm packages → Run workflow**.
+2. Leave `dry_run=true`.
+3. Confirm the workflow runs `scripts/publish-npm-packages.mjs --dry-run` for
+   the full `@pinet/*` package set and does not request npm credentials.
+
+The same dry-run path can be run locally with `pnpm publish:npm`; it defaults to
+readiness only and has no package target selector. The one-time npm org package
+creation bootstrap path is `pnpm bootstrap:npm`, which also defaults to dry-run
+and prints the full `@pinet/*` package set it would publish.
+
+Real publishes are intentionally harder to trigger. Maintainers can either
+manually dispatch from `main` with `dry_run=false` and `release_approval` exactly
+`publish all`, or push a release tag named `vX.Y.Z` after the version bump has
+merged to the current `main` tip. Tag-triggered publishes validate that the tag
+commit equals the current `origin/main` tip and that all five `@pinet/*` package
+versions equal the tag version before the protected publish job can request the
+`npm-publish` environment. Both real publish paths require maintainer approval of
+the protected `npm-publish` environment. The publish job uses npm Trusted
+Publishing / GitHub OIDC with `npm publish --provenance`; it does not use a
+long-lived npm token. Maintainers must also configure npm Trusted Publishers for
+every package in the npm `pinet` org settings
+(`https://www.npmjs.com/settings/pinet/packages`) before real publish. The live
+GitHub `npm-publish` environment must also be verified out-of-band by a
+maintainer before tag releases are considered ready: it should require approval
+and allow deployments from `main` plus release tags matching `v*.*.*`. That tag
+environment allowance does not replace the workflow guard that requires the tag
+commit to equal the current `origin/main` tip.
+If npm requires packages to exist before Trusted Publishing can be configured,
+a `pinet` org owner/admin may use the guarded local bootstrap script only after
+maintainer-approved versions are set:
+
+```bash
+node ./scripts/bootstrap-npm-packages.mjs \
+  --bootstrap-publish \
+  --confirm "bootstrap @pinet packages"
+```
+
+The maintainer must already be logged in with `npm login` as a `pinet` org
+owner/admin. This repo does not add token automation. Immediately after any
+successful bootstrap, configure Trusted Publishing for every `@pinet/*` package
+and use the GitHub Actions workflow for normal future publishes.
+
+The publish and bootstrap scripts still refuse placeholder `0.0.0` versions and
+versions that already exist on npm.
+
+Normal tag-release procedure:
+
+1. Bump all five `@pinet/*` package versions to the same version, update
+   `pnpm-lock.yaml`, and add a maintainer-approved `CHANGELOG.md` entry.
+2. Open and merge that version-bump PR to `main` after dry-run/readiness is
+   green.
+3. Create and push a `vX.Y.Z` tag on the current `main` tip after the merge. The
+   tag-triggered workflow validates the tag commit equals the current
+   `origin/main` tip and every publishable package version equals `X.Y.Z` before
+   any dry-run/publish step, dry-runs the full set, then waits for `npm-publish`
+   environment approval before publishing.
+
+Do not publish, tag, or bump package versions as part of readiness-only changes;
+record release notes in `CHANGELOG.md` only when a maintainer approves a real
+versioned release.
 
 ## Git workflow
 

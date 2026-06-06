@@ -38,7 +38,13 @@ import {
   DEFAULT_SLACK_THREAD_STATUS,
   SlackThreadStatusManager,
 } from "../../slack-thread-status.js";
-import type { InboundMessage, OutboundMessage, MessageAdapter } from "./types.js";
+import type {
+  AdapterCapabilityRequest,
+  AdapterCapabilityResult,
+  InboundMessage,
+  OutboundMessage,
+  MessageAdapter,
+} from "./types.js";
 
 export {
   classifyMessage,
@@ -183,6 +189,29 @@ export class SlackAdapter implements MessageAdapter {
     this.inboundHandler = handler;
   }
 
+  async invokeCapability(request: AdapterCapabilityRequest): Promise<AdapterCapabilityResult> {
+    if (request.capability !== "api.call") {
+      throw new Error(`Unsupported Slack adapter capability: ${request.capability}`);
+    }
+
+    const method = typeof request.params.method === "string" ? request.params.method.trim() : "";
+    if (!method) {
+      throw new Error("method is required for Slack api.call capability");
+    }
+
+    const body =
+      request.params.params &&
+      typeof request.params.params === "object" &&
+      !Array.isArray(request.params.params)
+        ? (request.params.params as Record<string, unknown>)
+        : {};
+    const result = await this.callSlack(method, this.config.botToken, body);
+    return {
+      result,
+      ...this.buildSlackApiCapabilityEffects(method, body, result),
+    };
+  }
+
   async send(msg: OutboundMessage): Promise<void> {
     const contentSlackBlocks = msg.content?.slackBlocks;
     const slackBlocks =
@@ -224,6 +253,38 @@ export class SlackAdapter implements MessageAdapter {
     }
 
     void this.clearThreadStatus(msg.channel, msg.threadId);
+  }
+
+  private buildSlackApiCapabilityEffects(
+    method: string,
+    body: Record<string, unknown>,
+    result: Record<string, unknown>,
+  ): Pick<AdapterCapabilityResult, "effects"> {
+    if (method !== "chat.postMessage") {
+      return {};
+    }
+
+    const threadTs = typeof body.thread_ts === "string" ? body.thread_ts : "";
+    const messageTs = typeof result.ts === "string" ? result.ts : "";
+    const channel =
+      typeof body.channel === "string"
+        ? body.channel
+        : typeof result.channel === "string"
+          ? result.channel
+          : undefined;
+    const threadId = threadTs || messageTs;
+    if (!threadId) {
+      return {};
+    }
+
+    return {
+      effects: {
+        claimThread: {
+          threadId,
+          ...(channel ? { channel } : {}),
+        },
+      },
+    };
   }
 
   getBotUserId(): string | null {

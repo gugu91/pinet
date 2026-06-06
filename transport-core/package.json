@@ -1,6 +1,6 @@
 {
-  "name": "@gugu910/pi-transport-core",
-  "version": "0.0.0",
+  "name": "@pinet/transport-core",
+  "version": "0.1.2",
   "type": "module",
   "description": "Transport-neutral message contracts for pi transports",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
@@ -30,5 +30,6 @@
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test *.test.ts"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }

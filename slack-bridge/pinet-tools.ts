@@ -5,15 +5,15 @@ import {
   formatPinetReadResultFull,
   type PinetReadOptions,
   type PinetReadResult,
-} from "@gugu910/pi-pinet-core/pinet-read-formatting";
+} from "@pinet/pinet-core/pinet-read-formatting";
 import {
   normalizePinetOutputOptions,
   type PinetOutputOptions,
-} from "@gugu910/pi-pinet-core/output-options";
+} from "@pinet/pinet-core/output-options";
 import {
   parseScheduledWakeupDelay,
   resolveScheduledWakeupFireAt,
-} from "@gugu910/pi-pinet-core/scheduled-wakeups";
+} from "@pinet/pinet-core/scheduled-wakeups";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
@@ -95,7 +95,12 @@ export interface RegisterPinetToolsDeps {
     target: string,
     body: string,
     metadata?: Record<string, unknown>,
-  ) => Promise<{ messageId: number; target: string; transferredThreadId?: string }>;
+  ) => Promise<{
+    messageId: number;
+    target: string;
+    transferredThreadId?: string;
+    transferredThreadChannel?: string;
+  }>;
   sendPinetBroadcastMessage: (
     channel: string,
     body: string,
@@ -611,14 +616,17 @@ function runPinetSendAction(
         {
           type: "text",
           text: output.full
-            ? `Message sent to ${result.target} (id: ${result.messageId})${result.transferredThreadId ? ` and transferred thread ${result.transferredThreadId}` : ""}.`
-            : `Pinet message sent to ${result.target}${result.transferredThreadId ? `; transferred thread ${result.transferredThreadId}` : ""}.`,
+            ? `Message sent to ${result.target} (id: ${result.messageId})${result.transferredThreadId ? ` and transferred Slack thread ${result.transferredThreadId}${result.transferredThreadChannel ? ` (${result.transferredThreadChannel})` : ""}` : ""}.`
+            : `Pinet message sent to ${result.target}${result.transferredThreadId ? `; transferred Slack thread ${result.transferredThreadId}` : ""}.`,
         },
       ],
       details: {
         messageId: result.messageId,
         target: result.target,
         ...(result.transferredThreadId ? { transferredThreadId: result.transferredThreadId } : {}),
+        ...(result.transferredThreadChannel
+          ? { transferredThreadChannel: result.transferredThreadChannel }
+          : {}),
       },
     };
   })();

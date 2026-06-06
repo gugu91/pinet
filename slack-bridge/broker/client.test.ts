@@ -1216,7 +1216,7 @@ describe("BrokerClient — scheduleWakeup", () => {
     client.disconnect();
   });
 });
-describe("BrokerClient — slackProxy", () => {
+describe("BrokerClient — adapter capabilities", () => {
   let mock: MockServer;
 
   beforeEach(async () => {
@@ -1227,7 +1227,38 @@ describe("BrokerClient — slackProxy", () => {
     await mock.close();
   });
 
-  it("sends slack.proxy RPC with method and params", async () => {
+  it("sends adapter.capability RPC with adapter, capability, and params", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    await client.connect();
+
+    const capabilityPromise = client.invokeAdapterCapability("slack", "api.call", {
+      method: "conversations.history",
+      params: {
+        channel: "C123",
+        limit: 10,
+      },
+    });
+
+    await waitFor(() => mock.received.length > 0);
+    const req = JSON.parse(mock.received[0]) as {
+      id: number;
+      method: string;
+      params: { adapter: string; capability: string; params: Record<string, unknown> };
+    };
+    expect(req.method).toBe("adapter.capability");
+    expect(req.params.adapter).toBe("slack");
+    expect(req.params.capability).toBe("api.call");
+    expect(req.params.params.method).toBe("conversations.history");
+
+    mock.respondTo(mock.connections[0], req.id, { messages: [] });
+
+    const result = await capabilityPromise;
+    expect(result).toEqual({ messages: [] });
+
+    client.disconnect();
+  });
+
+  it("maps slackProxy compatibility calls onto adapter.capability", async () => {
     const client = new BrokerClient(mock.connectOpts);
     await client.connect();
 
@@ -1240,13 +1271,52 @@ describe("BrokerClient — slackProxy", () => {
     const req = JSON.parse(mock.received[0]) as {
       id: number;
       method: string;
-      params: { method: string; params: Record<string, unknown> };
+      params: { adapter: string; capability: string; params: Record<string, unknown> };
     };
-    expect(req.method).toBe("slack.proxy");
-    expect(req.params.method).toBe("conversations.history");
-    expect(req.params.params.channel).toBe("C123");
+    expect(req.method).toBe("adapter.capability");
+    expect(req.params.adapter).toBe("slack");
+    expect(req.params.capability).toBe("api.call");
+    expect(req.params.params.method).toBe("conversations.history");
+    expect((req.params.params.params as Record<string, unknown>).channel).toBe("C123");
 
     mock.respondTo(mock.connections[0], req.id, { messages: [] });
+
+    const result = await proxyPromise;
+    expect(result).toEqual({ messages: [] });
+
+    client.disconnect();
+  });
+
+  it("falls back to legacy slack.proxy when an older broker lacks adapter.capability", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    await client.connect();
+
+    const proxyPromise = client.slackProxy("conversations.history", {
+      channel: "C123",
+      limit: 10,
+    });
+
+    await waitFor(() => mock.received.length > 0);
+    const firstReq = JSON.parse(mock.received[0]) as { id: number; method: string };
+    expect(firstReq.method).toBe("adapter.capability");
+    mock.respondError(
+      mock.connections[0],
+      firstReq.id,
+      RPC_METHOD_NOT_FOUND,
+      "Unknown method: adapter.capability",
+    );
+
+    await waitFor(() => mock.received.length > 1);
+    const fallbackReq = JSON.parse(mock.received[1]) as {
+      id: number;
+      method: string;
+      params: { method: string; params: Record<string, unknown> };
+    };
+    expect(fallbackReq.method).toBe("slack.proxy");
+    expect(fallbackReq.params.method).toBe("conversations.history");
+    expect(fallbackReq.params.params.channel).toBe("C123");
+
+    mock.respondTo(mock.connections[0], fallbackReq.id, { messages: [] });
 
     const result = await proxyPromise;
     expect(result).toEqual({ messages: [] });

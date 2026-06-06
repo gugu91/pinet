@@ -1,3 +1,4 @@
+import { DEFAULT_EXTERNAL_THREAD_SOURCE } from "./types.js";
 import type { AgentInfo, BrokerDBInterface, InboundMessage, RoutingDecision } from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -18,6 +19,8 @@ function buildPinetOwnerToken(stableId: string): string {
 }
 
 export interface ThreadOwnerHint {
+  agentId?: string;
+  stableId?: string;
   agentOwner?: string;
   agentName?: string;
 }
@@ -160,32 +163,63 @@ function findBestAgentMention(text: string, candidates: AgentMentionCandidate[])
   return bestMatch;
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeThreadOwnerHint(
+  metadata: Record<string, unknown> | undefined,
+): ThreadOwnerHint | null {
+  const embeddedHint =
+    metadata?.threadOwnerHint &&
+    typeof metadata.threadOwnerHint === "object" &&
+    !Array.isArray(metadata.threadOwnerHint)
+      ? (metadata.threadOwnerHint as Record<string, unknown>)
+      : undefined;
+
+  const agentId = asNonEmptyString(embeddedHint?.agentId ?? metadata?.threadOwnerAgentId);
+  const stableId = asNonEmptyString(embeddedHint?.stableId ?? metadata?.threadOwnerStableId);
+  const agentOwner = asNonEmptyString(embeddedHint?.agentOwner ?? metadata?.threadOwnerAgentOwner);
+  const agentName = asNonEmptyString(embeddedHint?.agentName ?? metadata?.threadOwnerAgentName);
+  const hint: ThreadOwnerHint = {
+    ...(agentId ? { agentId } : {}),
+    ...(stableId ? { stableId } : {}),
+    ...(agentOwner ? { agentOwner } : {}),
+    ...(agentName ? { agentName } : {}),
+  };
+
+  return Object.keys(hint).length > 0 ? hint : null;
+}
+
 function resolveAgentFromThreadOwnerHint(
   metadata: Record<string, unknown> | undefined,
   agents: AgentInfo[],
 ): AgentInfo | null {
-  const hintedOwner =
-    typeof metadata?.threadOwnerAgentOwner === "string" && metadata.threadOwnerAgentOwner
-      ? metadata.threadOwnerAgentOwner
-      : null;
-  if (hintedOwner) {
-    const ownerMatch = agents.find(
-      (agent) => agent.stableId && buildPinetOwnerToken(agent.stableId) === hintedOwner,
-    );
-    if (ownerMatch) {
-      return ownerMatch;
-    }
+  const hint = normalizeThreadOwnerHint(metadata);
+  if (!hint) return null;
+
+  if (hint.agentId) {
+    const idMatch = agents.find((agent) => agent.id === hint.agentId);
+    if (idMatch) return idMatch;
   }
 
-  const hintedName =
-    typeof metadata?.threadOwnerAgentName === "string" && metadata.threadOwnerAgentName
-      ? metadata.threadOwnerAgentName
-      : null;
-  if (!hintedName) {
+  if (hint.stableId) {
+    const stableMatch = agents.find((agent) => agent.stableId === hint.stableId);
+    if (stableMatch) return stableMatch;
+  }
+
+  if (hint.agentOwner) {
+    const ownerMatch = agents.find(
+      (agent) => agent.stableId && buildPinetOwnerToken(agent.stableId) === hint.agentOwner,
+    );
+    if (ownerMatch) return ownerMatch;
+  }
+
+  if (!hint.agentName) {
     return null;
   }
 
-  return findBestAgentMention(hintedName, buildAgentMentionCandidates(agents, false));
+  return findBestAgentMention(hint.agentName, buildAgentMentionCandidates(agents, false));
 }
 
 function resolveRoutableThreadOwner(
@@ -283,7 +317,7 @@ export class MessageRouter {
 
         // Explicit takeovers stay authoritative for the thread. If that owner is
         // unavailable later, require another explicit retarget instead of snapping
-        // back to a stale historical Slack owner hint.
+        // back to a stale historical adapter owner hint.
         return { action: "unrouted" };
       }
 
@@ -297,8 +331,8 @@ export class MessageRouter {
         }
 
         // Owner is gone or no longer routable — clear ownership and stop. Known
-        // Slack-thread replies must not leak to another worker through latest
-        // bot-message owner hints or channel-assignment fallback; a human must
+        // transport-thread replies must not leak to another worker through latest
+        // adapter owner hints or channel-assignment fallback; a human must
         // explicitly retarget the thread if the owner is unavailable.
         this.db.updateThread(msg.threadId, { ownerAgent: null });
         return { action: "unrouted" };
@@ -329,7 +363,7 @@ export class MessageRouter {
 
     // New thread / top-level message: channel assignment can still steer work.
     // Persist that assignment as thread ownership so later generic replies in
-    // the same Slack thread route back to the same agent without another
+    // the same transport thread route back to the same agent without another
     // manual broker/human assignment. Existing known threads stay protected by
     // the `thread` branch above and do not fall back to channel assignment.
     const assignment = this.db.getChannelAssignment(msg.channel);
@@ -369,13 +403,20 @@ export class MessageRouter {
   /**
    * Claim a thread for an agent (first-responder-wins).
    * Optionally provide the transport source and channel to store when creating
-   * a new thread. Defaults to Slack for backward compatibility.
+   * a new thread. Defaults to a neutral external source when callers do not
+   * provide one; Slack call sites should continue passing `source: "slack"`
+   * explicitly through inbound messages or compatibility wrappers.
    * Returns true if the claim succeeded, false if another agent already owns it.
    *
    * Delegates to the DB layer which performs the claim atomically
    * (single SQL statement) to avoid TOCTOU races. (#125)
    */
-  claimThread(threadId: string, agentId: string, channel?: string, source = "slack"): boolean {
+  claimThread(
+    threadId: string,
+    agentId: string,
+    channel?: string,
+    source = DEFAULT_EXTERNAL_THREAD_SOURCE,
+  ): boolean {
     return this.db.claimThread(threadId, agentId, source, channel ?? "");
   }
 

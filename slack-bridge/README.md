@@ -4,15 +4,47 @@ Slack assistant integration for [pi](https://github.com/badlogic/pi-mono) — mu
 
 ## Install
 
-```bash
-pi install npm:@gugu910/pi-slack-bridge
-```
-
-Or with npm:
+Install the latest Pinet Slack bridge pi package:
 
 ```bash
-npm install @gugu910/pi-slack-bridge
+pi install npm:@pinet/slack-bridge
 ```
+
+Or pin an exact published version for reproducible installs:
+
+```bash
+pi install npm:@pinet/slack-bridge@0.1.0
+```
+
+For package managers or local inspection, the npm package is also installable directly:
+
+```bash
+npm install @pinet/slack-bridge
+```
+
+## Package metadata and publishing
+
+This package declares pi package/gallery metadata in [`package.json`](./package.json):
+
+- `keywords` includes `pi-package` for gallery discovery.
+- `pi.extensions` points at the built extension entrypoint, `./dist/index.js`.
+- `pi.skills` points at the bundled skill directory, `./skills`.
+- No `pi.image` or `pi.video` preview is declared yet because this package does
+  not currently include a reviewed gallery image/video asset.
+
+The published tarball is expected to include the package metadata, README,
+Slack app manifest, built `dist/` files, bundled `skills/`, and LICENSE. Verify
+that locally with:
+
+```bash
+cd slack-bridge
+npm pack --dry-run
+```
+
+This package is included in the full npm publish set tracked in
+[`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
+workflow's default dry-run/readiness path for validation; do not publish, tag, or
+bump versions without explicit maintainer release approval.
 
 ## Prerequisites
 
@@ -425,6 +457,10 @@ Startup selection:
 ## Pinet (Multi-Agent Mode)
 
 Pinet supports a broker/follower architecture for coordinating multiple pi agents over Slack.
+
+### Runtime composition boundary
+
+Broker startup is composed as Pinet core plus injected transport adapter factories. `broker-runtime.ts` starts the broker DB/socket/router and skin/agent state, then calls `createAdapterBindings` to attach transports. The packaged Slack bridge passes `createSlackPinetRuntimeAdapterFactory(...)`, while tests use an in-memory non-Slack adapter to demonstrate the same boundary without Slack tokens or Slack-specific metadata. Adapter factories return `MessageAdapter` bindings; the core wires inbound delivery, registers adapters on the broker, and connects them.
 
 ### Quick start
 

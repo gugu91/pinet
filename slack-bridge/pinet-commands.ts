@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parseScheduledWakeupDelay } from "@gugu910/pi-pinet-core/scheduled-wakeups";
+import { parseScheduledWakeupDelay } from "@pinet/pinet-core/scheduled-wakeups";
 import {
   generateAgentName,
   agentOwnsThread,

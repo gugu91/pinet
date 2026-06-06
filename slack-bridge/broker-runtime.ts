@@ -12,10 +12,8 @@ import {
   resolvePinetMeshAuth,
   syncBrokerInboxEntries,
 } from "./helpers.js";
-import { startBroker, type Broker, type ThreadInfo } from "./broker/index.js";
+import { startBroker, type Broker } from "./broker/index.js";
 import type { BrokerDB } from "./broker/schema.js";
-import { SlackAdapter } from "./broker/adapters/slack.js";
-import type { SlackThreadContext } from "./slack-access.js";
 import { DEFAULT_HEARTBEAT_TIMEOUT_MS } from "./broker/socket-server.js";
 import { MessageRouter } from "./broker/router.js";
 import {
@@ -52,6 +50,11 @@ import {
 } from "./ralph-loop.js";
 import { TtlCache } from "./ttl-cache.js";
 import { createBrokerGhostReaper } from "./broker/ghost-reaper.js";
+import {
+  buildPinetRuntimeAdapterBindings,
+  connectPinetRuntimeAdapters,
+  type PinetRuntimeAdapterFactory,
+} from "./pinet-runtime-composition.js";
 
 export interface BrokerRuntimeConnectResult {
   botUserId: string | null;
@@ -62,10 +65,7 @@ export interface BrokerRuntimeConnectResult {
 
 export interface BrokerRuntimeDeps {
   getSettings: () => SlackBridgeSettings;
-  getBotToken: () => string;
-  getAppToken: () => string;
   getAllowedUsers: () => Set<string> | null;
-  shouldAllowAllWorkspaceUsers: () => boolean;
   getBrokerStableId: () => string;
   setBrokerStableId: (stableId: string) => void;
   getActiveSkinTheme: () => string | null;
@@ -89,7 +89,6 @@ export interface BrokerRuntimeDeps {
     selfId: string;
     ctx: ExtensionContext;
   }) => Promise<void> | void;
-  onAppHomeOpened: (userId: string, ctx: ExtensionContext) => Promise<void> | void;
   pushInboxMessages: (messages: InboxMessage[]) => void;
   updateBadge: () => void;
   maybeDrainInboxIfIdle: (ctx: ExtensionContext) => boolean;
@@ -137,6 +136,7 @@ export interface BrokerRuntimeDeps {
   buildCurrentDashboardSnapshot: (
     openedAt?: string,
   ) => Promise<BrokerControlPlaneDashboardSnapshot | null>;
+  createAdapterBindings: readonly PinetRuntimeAdapterFactory[];
 }
 
 function normalizeOptionalSetting(value: string | null | undefined): string | null {
@@ -179,35 +179,6 @@ export interface BrokerRuntime {
     ctx: ExtensionContext,
     openedAt?: string,
   ) => Promise<boolean>;
-}
-
-export function readStoredSlackThreadContext(
-  metadata: Record<string, unknown> | null | undefined,
-): SlackThreadContext | null {
-  const value = metadata?.slackThreadContext;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-
-  const record = value as Record<string, unknown>;
-  if (typeof record.channelId !== "string" || record.channelId.length === 0) return null;
-  if (typeof record.scope !== "object" || record.scope === null || Array.isArray(record.scope)) {
-    return null;
-  }
-
-  return {
-    channelId: record.channelId,
-    ...(typeof record.teamId === "string" && record.teamId.length > 0
-      ? { teamId: record.teamId }
-      : {}),
-    scope: record.scope as SlackThreadContext["scope"],
-  };
-}
-
-export function shouldRouteKnownSlackThread(
-  thread: Pick<ThreadInfo, "source" | "channel" | "metadata"> | null,
-): boolean {
-  if (!thread || thread.source !== "slack") return false;
-  if (!thread.channel.startsWith("D")) return true;
-  return readStoredSlackThreadContext(thread.metadata) !== null;
 }
 
 export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
@@ -548,38 +519,6 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
         ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
         ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
       });
-      const adapter = new SlackAdapter({
-        botToken: deps.getBotToken(),
-        appToken: deps.getAppToken(),
-        allowedUsers: allowedUsers ? [...allowedUsers] : undefined,
-        allowAllWorkspaceUsers: deps.shouldAllowAllWorkspaceUsers(),
-        suggestedPrompts: settings.suggestedPrompts,
-        reactionCommands: settings.reactionCommands,
-        isKnownThread: (threadTs: string) =>
-          shouldRouteKnownSlackThread(broker.db.getThread(threadTs)),
-        getKnownThread: (threadTs: string) => {
-          const thread = broker.db.getThread(threadTs);
-          if (!thread || thread.source !== "slack") return null;
-          return {
-            channelId: thread.channel,
-            context: readStoredSlackThreadContext(thread.metadata),
-          };
-        },
-        rememberKnownThread: (threadTs: string, channelId: string, context) => {
-          const existingMetadata = broker.db.getThread(threadTs)?.metadata ?? {};
-          broker.db.updateThread(threadTs, {
-            source: "slack",
-            channel: channelId,
-            metadata: {
-              ...existingMetadata,
-              ...(context ? { slackThreadContext: context } : {}),
-            },
-          });
-        },
-        onAppHomeOpened: async ({ userId }) => {
-          await deps.onAppHomeOpened(userId, ctx);
-        },
-      });
       let selfId: string | null = null;
       activityLogContext = ctx;
 
@@ -658,12 +597,19 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
         deps.applyLocalAgentIdentity(selfAgent.name, selfAgent.emoji, selfAssignment.personality);
 
         const brokerSelfId = selfId;
-        adapter.onInbound((message) => {
-          void deps.handleInboundMessage({ message, broker, router, selfId: brokerSelfId, ctx });
+        const adapterBindings = await buildPinetRuntimeAdapterBindings(deps.createAdapterBindings, {
+          broker,
+          router,
+          selfId: brokerSelfId,
+          ctx,
         });
-
-        broker.addAdapter(adapter);
-        await adapter.connect();
+        const adapterConnectResult = await connectPinetRuntimeAdapters({
+          broker,
+          bindings: adapterBindings,
+          onInbound: (message) => {
+            void deps.handleInboundMessage({ message, broker, router, selfId: brokerSelfId, ctx });
+          },
+        });
 
         activeBroker = broker;
         activeRouter = router;
@@ -691,17 +637,12 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
         startBrokerScheduledWakeups(ctx);
 
         return {
-          botUserId: adapter.getBotUserId(),
+          botUserId: adapterConnectResult.botUserId,
           recoveredBrokerMessages,
           recoveredTargetedBacklogCount,
           releasedBrokerClaims,
         };
       } catch (error) {
-        try {
-          await adapter.disconnect();
-        } catch {
-          /* best effort */
-        }
         try {
           if (selfId) {
             broker.db.unregisterAgent(selfId);

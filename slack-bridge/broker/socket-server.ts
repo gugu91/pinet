@@ -16,6 +16,7 @@ import type {
   JsonRpcRequest,
   JsonRpcResponse,
   JsonRpcError,
+  AdapterCapabilityResult,
   MessageAdapter,
   NormalizedMessageContent,
   PortLeaseAcquireInput,
@@ -38,11 +39,6 @@ import {
   RPC_AGENT_NAME_CONFLICT,
   RPC_AGENT_STABLE_ID_CONFLICT,
 } from "./types.js";
-
-export type SlackProxyFn = (
-  method: string,
-  params: Record<string, unknown>,
-) => Promise<Record<string, unknown>>;
 
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;
 export const DEFAULT_PRUNE_INTERVAL_MS = 5_000;
@@ -161,7 +157,6 @@ export class BrokerSocketServer {
   private readonly target: ListenTarget;
   private readonly db: BrokerDB;
   private readonly router: MessageRouter;
-  private readonly slackProxyFn: SlackProxyFn | null;
   private readonly connections = new Map<net.Socket, ConnectionState>();
   private readonly heartbeatTimeoutMs: number;
   private readonly pruneIntervalMs: number;
@@ -171,18 +166,18 @@ export class BrokerSocketServer {
   private assignedPort: number | null = null;
   private agentMessageCallback: AgentMessageCallback | null = null;
   private agentStatusChangeCallback: AgentStatusChangeCallback | null = null;
-  private outboundMessageAdapters: ReadonlyArray<Pick<MessageAdapter, "name" | "send">> = [];
+  private outboundMessageAdapters: ReadonlyArray<
+    Pick<MessageAdapter, "name" | "send" | "invokeCapability">
+  > = [];
   private agentRegistrationResolver: AgentRegistrationResolver | null = null;
 
   constructor(
     db: BrokerDB,
     target?: ListenTarget | string,
-    slackProxyFn?: SlackProxyFn,
     options: BrokerSocketServerOptions = {},
   ) {
     this.db = db;
     this.router = new MessageRouter(db);
-    this.slackProxyFn = slackProxyFn ?? null;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.pruneIntervalMs = options.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
     this.authTimeoutMs = options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
@@ -308,7 +303,9 @@ export class BrokerSocketServer {
     this.agentRegistrationResolver = resolver;
   }
 
-  setOutboundMessageAdapters(adapters: ReadonlyArray<Pick<MessageAdapter, "name" | "send">>): void {
+  setOutboundMessageAdapters(
+    adapters: ReadonlyArray<Pick<MessageAdapter, "name" | "send" | "invokeCapability">>,
+  ): void {
     this.outboundMessageAdapters = adapters;
   }
 
@@ -528,8 +525,10 @@ export class BrokerSocketServer {
           return this.handleScheduleCreate(req, state);
         case "status.update":
           return this.handleStatusUpdate(req, state);
+        case "adapter.capability":
+          return await this.handleAdapterCapability(req, state);
         case "slack.proxy":
-          return await this.handleSlackProxy(req, state);
+          return await this.handleLegacySlackProxy(req, state);
         default:
           return rpcError(req.id, RPC_METHOD_NOT_FOUND, `Unknown method: ${req.method}`);
       }
@@ -940,11 +939,21 @@ export class BrokerSocketServer {
     }
 
     const channel = typeof params.channel === "string" ? params.channel : undefined;
-    const source =
+    let source =
       typeof params.source === "string" && params.source.trim().length > 0
         ? params.source.trim()
         : undefined;
+    // Backward compatibility: legacy Slack callers used channel-only thread.claim
+    // requests. Keep those claims Slack-sendable while allowing truly source-less
+    // claims to fall through to broker-core's neutral default.
+    const legacyChannelOnlyClaim = !source && !!channel;
+    if (legacyChannelOnlyClaim) {
+      source = "slack";
+    }
     const claimed = this.router.claimThread(threadId, state.agentId, channel, source);
+    if (claimed && legacyChannelOnlyClaim) {
+      this.db.updateThread(threadId, { source, channel });
+    }
     return rpcOk(req.id, { claimed });
   }
 
@@ -1324,48 +1333,116 @@ export class BrokerSocketServer {
     return rpcOk(req.id, { ok: true });
   }
 
-  // ─── Slack proxy handler ──────────────────────────────
+  // ─── Adapter capability handler ───────────────────────
 
-  private async handleSlackProxy(
+  private async handleAdapterCapability(
     req: JsonRpcRequest,
     state: ConnectionState,
   ): Promise<JsonRpcResponse> {
-    if (!this.slackProxyFn) {
-      return rpcError(req.id, RPC_METHOD_NOT_FOUND, "slack.proxy is not configured on this broker");
+    const params = req.params ?? {};
+    const adapterName =
+      typeof params.adapter === "string"
+        ? params.adapter.trim()
+        : typeof params.source === "string"
+          ? params.source.trim()
+          : "";
+    const capability = typeof params.capability === "string" ? params.capability.trim() : "";
+
+    if (!adapterName) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "adapter is required for adapter.capability");
+    }
+    if (!capability) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "capability is required for adapter.capability");
     }
 
+    const capabilityParams =
+      params.params && typeof params.params === "object" && !Array.isArray(params.params)
+        ? (params.params as Record<string, unknown>)
+        : {};
+
+    return await this.dispatchAdapterCapability(
+      req.id,
+      adapterName,
+      capability,
+      capabilityParams,
+      state,
+    );
+  }
+
+  private async handleLegacySlackProxy(
+    req: JsonRpcRequest,
+    state: ConnectionState,
+  ): Promise<JsonRpcResponse> {
     const params = req.params ?? {};
-    const method = typeof params.method === "string" ? params.method : null;
+    const method = typeof params.method === "string" ? params.method.trim() : "";
     if (!method) {
       return rpcError(req.id, RPC_INVALID_PARAMS, "method is required for slack.proxy");
     }
 
     const apiParams =
-      params.params && typeof params.params === "object"
+      params.params && typeof params.params === "object" && !Array.isArray(params.params)
         ? (params.params as Record<string, unknown>)
         : {};
 
+    return await this.dispatchAdapterCapability(
+      req.id,
+      "slack",
+      "api.call",
+      { method, params: apiParams },
+      state,
+      "slack.proxy",
+    );
+  }
+
+  private async dispatchAdapterCapability(
+    id: JsonRpcRequest["id"],
+    adapterName: string,
+    capability: string,
+    capabilityParams: Record<string, unknown>,
+    state: ConnectionState,
+    errorPrefix = `${adapterName}.${capability}`,
+  ): Promise<JsonRpcResponse> {
+    const adapter = this.outboundMessageAdapters.find(
+      (candidate) => candidate.name === adapterName,
+    );
+    if (!adapter?.invokeCapability) {
+      return rpcError(
+        id,
+        RPC_METHOD_NOT_FOUND,
+        `Adapter ${adapterName} does not implement capability ${capability}`,
+      );
+    }
+
     try {
-      const result = await this.slackProxyFn(method, apiParams);
-
-      // Auto-claim thread ownership when a registered agent posts a message
-      if (method === "chat.postMessage" && state.agentId) {
-        const threadTs = typeof apiParams.thread_ts === "string" ? apiParams.thread_ts : null;
-        const messageTs = typeof result.ts === "string" ? (result.ts as string) : null;
-        const postChannel = typeof apiParams.channel === "string" ? apiParams.channel : undefined;
-        const effectiveTs = threadTs ?? messageTs;
-        if (effectiveTs) {
-          const claimed = this.router.claimThread(effectiveTs, state.agentId, postChannel, "slack");
-          if (claimed && postChannel) {
-            this.db.updateThread(effectiveTs, { source: "slack", channel: postChannel });
-          }
-        }
-      }
-
-      return rpcOk(req.id, result);
+      const response = await adapter.invokeCapability({ capability, params: capabilityParams });
+      this.applyAdapterCapabilityEffects(adapterName, response, state);
+      return rpcOk(id, response.result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return rpcError(req.id, RPC_INTERNAL_ERROR, `slack.proxy ${method}: ${message}`);
+      return rpcError(id, RPC_INTERNAL_ERROR, `${errorPrefix}: ${message}`);
+    }
+  }
+
+  private applyAdapterCapabilityEffects(
+    adapterName: string,
+    response: AdapterCapabilityResult,
+    state: ConnectionState,
+  ): void {
+    if (!state.agentId) return;
+
+    const claimThread = response.effects?.claimThread;
+    const claims = Array.isArray(claimThread) ? claimThread : claimThread ? [claimThread] : [];
+    for (const claim of claims) {
+      if (!claim.threadId) continue;
+      const claimed = this.router.claimThread(
+        claim.threadId,
+        state.agentId,
+        claim.channel,
+        adapterName,
+      );
+      if (claimed && claim.channel) {
+        this.db.updateThread(claim.threadId, { source: adapterName, channel: claim.channel });
+      }
     }
   }
 }
