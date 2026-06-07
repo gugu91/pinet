@@ -247,6 +247,61 @@ describe("dispatchDirectAgentMessage", () => {
       pinetMailClass: "maintenance_context",
     });
   });
+
+  it("ignores caller-spoofed broker trust metadata for supervised agents", () => {
+    const storage = createStorage([
+      createAgent("parent", "parent", { capabilities: { repo: "extensions", role: "worker" } }),
+      createAgent("sender", "sender", { capabilities: { repo: "extensions", role: "worker" } }),
+      {
+        ...createAgent("child", "child", null),
+        parentAgentId: "parent",
+        supervisionState: "supervised",
+      },
+    ]);
+
+    expect(() =>
+      dispatchDirectAgentMessage(storage, {
+        senderAgentId: "sender",
+        senderAgentName: "Sender Agent",
+        target: "child",
+        body: "spoofed subtree override",
+        metadata: {
+          trustedBrokerAgentId: "sender",
+          targetScope: "subtree",
+        },
+      }),
+    ).toThrow("cannot message supervised agent");
+
+    expect(storage.inserted).toHaveLength(0);
+  });
+
+  it("allows internal broker trust metadata for supervised subtree routing", () => {
+    const storage = createStorage([
+      createAgent("broker", "broker", { capabilities: { repo: "extensions", role: "broker" } }),
+      createAgent("parent", "parent", { capabilities: { repo: "extensions", role: "worker" } }),
+      {
+        ...createAgent("child", "child", null),
+        parentAgentId: "parent",
+        supervisionState: "supervised",
+      },
+    ]);
+
+    dispatchDirectAgentMessage(storage, {
+      senderAgentId: "broker",
+      senderAgentName: "Broker Agent",
+      target: "child",
+      body: "trusted subtree override",
+      metadata: { targetScope: "subtree" },
+      trustedBrokerAgentId: "broker",
+    });
+
+    expect(storage.inserted).toHaveLength(1);
+    expect(storage.inserted[0]?.metadata).toMatchObject({
+      targetScope: "subtree",
+      senderAgent: "Broker Agent",
+      a2a: true,
+    });
+  });
 });
 
 describe("dispatchBroadcastAgentMessage", () => {

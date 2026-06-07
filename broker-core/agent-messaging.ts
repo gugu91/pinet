@@ -312,10 +312,11 @@ export function dispatchDirectAgentMessage(
     throw new Error(`Agent not found: ${input.target}`);
   }
   const sender = agents.find((agent) => agent.id === input.senderAgentId) ?? null;
-  const policyMetadata = {
-    ...(input.metadata ?? {}),
-    ...(input.trustedBrokerAgentId ? { trustedBrokerAgentId: input.trustedBrokerAgentId } : {}),
-  };
+  const policyMetadata = { ...(input.metadata ?? {}) };
+  delete policyMetadata.trustedBrokerAgentId;
+  if (input.trustedBrokerAgentId) {
+    policyMetadata.trustedBrokerAgentId = input.trustedBrokerAgentId;
+  }
   if (!canDispatchDirectAgentMessage(agents, sender, target, policyMetadata)) {
     throw new Error(
       `Agent ${input.senderAgentId} cannot message supervised agent ${target.id} without parent/subtree visibility or an explicit broker emergency override.`,

@@ -303,6 +303,10 @@ function buildLauncherScript(input: {
     "PI_CODING_AGENT_SESSION_DIR",
     "PI_OFFLINE",
     "PI_SETTINGS_PATH",
+    "PINET_MESH_SECRET",
+    "PINET_MESH_SECRET_PATH",
+    "SLACK_APP_TOKEN",
+    "SLACK_BOT_TOKEN",
   ];
   const inheritedExports = inheritedEnvKeys
     .map((key) => {
@@ -581,10 +585,6 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     stopHeartbeat();
     const broker = activeBroker;
     const agentId = selfAgentId;
-    activeBroker = null;
-    selfAgentId = null;
-    startedAt = null;
-    activePaths = null;
 
     if (!broker) return;
     try {
@@ -598,6 +598,10 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     } catch {
       // Best effort; callers should be able to continue even if shutdown cleanup is partial.
     } finally {
+      activeBroker = null;
+      selfAgentId = null;
+      startedAt = null;
+      activePaths = null;
       spawnedWorkers.clear();
     }
   }
