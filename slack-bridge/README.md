@@ -494,11 +494,15 @@ Only broker prompt content is replaceable. Broker runtime/tool restrictions rema
 
 ### Multi-agent tools
 
-| Tool    | Description                                                                                                                                                       |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pinet` | Pinet dispatcher with token-efficient `action`-based routing (`help`, `send`, `read`, `free`, `snooze`, `schedule`, `agents`, `lanes`, `ports`, `reload`, `exit`) |
+| Tool    | Description                                                                                                                                                                |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pinet` | Pinet dispatcher with token-efficient `action`-based routing (`help`, `send`, `read`, `free`, `snooze`, `schedule`, `agents`, `lanes`, `ports`, `spawn`, `reload`, `exit`) |
 
-Use the dispatcher for Pinet tool actions: `pinet action=send`, `pinet action=read`, `pinet action=free`, `pinet action=snooze`, `pinet action=schedule`, `pinet action=agents`, `pinet action=lanes`, `pinet action=ports`, `pinet action=reload`, and `pinet action=exit`. Use slash commands for UI lifecycle transitions: `/pinet start`, `/pinet follow`, and `/pinet unfollow`. Dedicated direct Pinet tools (`pinet_message`, `pinet_read`, `pinet_agents`, `pinet_free`, `pinet_schedule`) are no longer registered. Legacy `pinet_*` guardrail patterns still match dispatcher action names, and legacy send policies such as `pinet_send` or `pinet_message` also cover `pinet action=send`, so existing security configs fail closed during migration.
+Use the dispatcher for Pinet tool actions: `pinet action=send`, `pinet action=read`, `pinet action=free`, `pinet action=snooze`, `pinet action=schedule`, `pinet action=agents`, `pinet action=lanes`, `pinet action=ports`, `pinet action=spawn`, `pinet action=reload`, and `pinet action=exit`. Use slash commands for UI lifecycle transitions: `/pinet start`, `/pinet follow`, `/pinet unfollow`, and `/pinet subtree start`. Dedicated direct Pinet tools (`pinet_message`, `pinet_read`, `pinet_agents`, `pinet_free`, `pinet_schedule`) are no longer registered. Legacy `pinet_*` guardrail patterns still match dispatcher action names, and legacy send policies such as `pinet_send` or `pinet_message` also cover `pinet action=send`, so existing security configs fail closed during migration.
+
+Worker-owned subtree brokers let a follower worker supervise its own child mesh without registering those children in the central broker. Run `/pinet subtree start` (alias: `/pinet subbroker start`) from a follower worker. The worker remains connected to the central broker as a normal worker, and it also starts a separate broker socket/database under `~/.pi/pinet-subtrees/<worker>/`. Child workers launched by this worker receive `PINET_SOCKET_PATH`, `PINET_PARENT_AGENT_ID`, `PINET_ROOT_AGENT_ID`, `PINET_LAUNCH_ID`, `PINET_SUBTREE_ROLE`, and related metadata, so they follow the worker's subtree broker instead of the central Pinet broker.
+
+Use `pinet action=spawn args.repo=<repo> args.task=<task> [args.role=<role>] [args.lane_id=<lane>]` or `/pinet subtree spawn repo=<repo> [role=<role>] [lane=<lane>] <task>` to launch a tmux-backed child worker, wait for it to register in the subtree broker, and deliver the task over private Pinet A2A. Use `pinet action=agents args.scope=subtree args.full=true` from the supervising worker to list subtree children, `pinet action=send args.to=<child> args.message=<message>` to reply/control them, `pinet action=read` to read child reports, and `pinet action=exit args.target=<child>` or `/pinet subtree stop` to clean them up. The central broker sees only the supervising worker; the subtree DB contains the child roster and messages.
 
 Dispatcher content defaults to terse CLI-style confirmations/summaries for noisy reads, sends, and agent lists. In default CLI mode, bulky read/agent payloads are also compacted in `data.details` so tool renderers do not surface full message bodies or agent metadata by accident. Pass `args.format="json"` (or `args.f` / `args["-f"]`) for the dispatcher envelope in content with full structured `data.details`, or `args.full=true` / `args["--full"]=true` for verbose text with full structured `data.details`.
 
@@ -518,15 +522,16 @@ RALPH snooze quiets non-urgent empty maintenance cycles without disabling human-
 
 Use `/pinet <action> [args]` for mesh lifecycle and broker operations.
 
-| Command                               | Description                                                                   |
-| ------------------------------------- | ----------------------------------------------------------------------------- |
-| `/pinet start`                        | Start as the mesh broker                                                      |
-| `/pinet follow`                       | Connect as a follower worker                                                  |
-| `/pinet unfollow`                     | Disconnect from the broker                                                    |
-| `/pinet reload <agent>`               | Ask another agent to reload                                                   |
-| `/pinet exit <agent>`                 | Ask another agent to exit                                                     |
-| `/pinet free`                         | Mark this agent as idle                                                       |
-| `/pinet snooze [duration/off/status]` | Quiet empty RALPH cycles while preserving human-triggered wake/route behavior |
+| Command                                    | Description                                                                   |
+| ------------------------------------------ | ----------------------------------------------------------------------------- |
+| `/pinet start`                             | Start as the mesh broker                                                      |
+| `/pinet follow`                            | Connect as a follower worker                                                  |
+| `/pinet unfollow`                          | Disconnect from the broker                                                    |
+| `/pinet reload <agent>`                    | Ask another agent to reload                                                   |
+| `/pinet exit <agent>`                      | Ask another agent to exit                                                     |
+| `/pinet free`                              | Mark this agent as idle                                                       |
+| `/pinet snooze [duration/off/status]`      | Quiet empty RALPH cycles while preserving human-triggered wake/route behavior |
+| `/pinet subtree [start/status/spawn/stop]` | Run this worker as a local subtree broker for child followers                 |
 
 ### Pinet skins
 

@@ -55,6 +55,36 @@ export interface PinetToolsAgentRecord {
   resumableUntil?: string | null;
   outboundCount?: number;
   pendingInboxCount?: number;
+  parentAgentId?: string | null;
+  rootAgentId?: string | null;
+  treeDepth?: number;
+  supervisionState?: string;
+  subtreeRole?: string | null;
+  laneId?: string | null;
+}
+
+export interface PinetSubtreeSpawnInput {
+  task: string;
+  repo: string;
+  role?: string;
+  laneId?: string;
+}
+
+export interface PinetSubtreeSpawnResult {
+  status: "started";
+  launchId: string;
+  sessionName: string;
+  repoPath: string;
+  role: string;
+  laneId: string | null;
+  agentId: string;
+  agentName: string;
+  messageId: number;
+  threadId: string;
+  monitorCommand: string;
+  socketPath: string;
+  dbPath: string;
+  childLaunchEnv: Record<string, string>;
 }
 
 export interface RegisterPinetToolsDeps {
@@ -94,6 +124,9 @@ export interface RegisterPinetToolsDeps {
   readPinetInbox: (options: PinetReadOptions) => Promise<PinetReadResult>;
   listBrokerAgents: () => PinetToolsAgentRecord[];
   listFollowerAgents: (includeGhosts: boolean) => Promise<PinetToolsAgentRecord[]>;
+  listSubtreeAgents?: (includeGhosts: boolean) => PinetToolsAgentRecord[] | null;
+  getSubtreeSelfAgentId?: () => string | null;
+  spawnSubtreeWorker?: (input: PinetSubtreeSpawnInput) => Promise<PinetSubtreeSpawnResult>;
   listPinetLanes: (options: PinetLaneListOptions) => Promise<PinetLaneInfo[]>;
   upsertPinetLane: (input: PinetLaneUpsertInput) => Promise<PinetLaneInfo>;
   setPinetLaneParticipant: (
@@ -116,6 +149,7 @@ interface PinetAgentsRoutingHint {
   role?: string;
   requiredTools?: string[];
   task?: string;
+  scope?: "visible" | "children" | "subtree" | "all";
 }
 
 type PinetDispatcherAction =
@@ -127,6 +161,7 @@ type PinetDispatcherAction =
   | "agents"
   | "lanes"
   | "ports"
+  | "spawn"
   | "reload"
   | "exit"
   | "help";
@@ -179,6 +214,12 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
   ],
   schedule: [{ action: "schedule", args: { delay: "30m", message: "Check queue state" } }],
   agents: [{ action: "agents", args: { repo: "<repo>", role: "worker", full: true } }],
+  spawn: [
+    {
+      action: "spawn",
+      args: { task: "Review PR #123", repo: "extensions", role: "reviewer", lane_id: "issue-123" },
+    },
+  ],
   ports: [
     { action: "ports", args: { op: "acquire", purpose: "preview", ttl_ms: 600000 } },
     { action: "ports", args: { op: "renew", lease_id: "<lease-id>", ttl_ms: 600000 } },
@@ -249,6 +290,7 @@ function normalizeDispatcherAction(value: unknown): PinetDispatcherAction {
     "agents",
     "lanes",
     "ports",
+    "spawn",
     "reload",
     "exit",
   ];
@@ -298,7 +340,8 @@ function classifyPinetError(message: string): PinetDispatcherError {
     message.includes("lease_id") ||
     message.includes("ttl_ms") ||
     message.includes("purpose") ||
-    message.includes("port")
+    message.includes("port") ||
+    message.includes("spawn")
   ) {
     return {
       class: "input",
@@ -618,11 +661,12 @@ function runPinetReadAction(
     }
 
     const result = await deps.readPinetInbox(options);
+    const shouldRenderFull = output.full || Boolean(options.threadId);
     return {
       content: [
         {
           type: "text",
-          text: output.full
+          text: shouldRenderFull
             ? formatPinetReadResultFull(result, options)
             : formatPinetReadResultCompact(result, options),
         },
@@ -729,6 +773,63 @@ function runPinetSnoozeAction(
     const status = deps.snoozeRalphLoop?.({ durationMs, reason: reason || "tool action" });
     if (!status) throw new Error("RALPH snooze is unavailable in this runtime.");
     return { content: [{ type: "text", text: formatRalphSnoozeResult(status) }], details: status };
+  })();
+}
+
+function runPinetSpawnAction(
+  params: Record<string, unknown>,
+  deps: RegisterPinetToolsDeps,
+  toolName: string,
+): Promise<PinetToolResult> {
+  return (async () => {
+    const task = getMaybeString(params, "task");
+    const repo = getMaybeString(params, "repo");
+    const role = getMaybeString(params, "role") ?? "subworker";
+    const laneId = getMaybeString(params, "lane_id");
+    deps.requireToolPolicy(
+      toolName,
+      undefined,
+      `task=${task ?? ""} | repo=${repo ?? ""} | role=${role} | lane_id=${laneId ?? ""}`,
+    );
+    if (!deps.pinetEnabled()) {
+      throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
+    }
+    if (deps.brokerRole() !== "follower") {
+      throw new Error(
+        "spawn is worker-only; the broker should launch top-level followers, not own subtrees.",
+      );
+    }
+    if (!task) throw new Error("spawn requires task");
+    if (!repo) throw new Error("spawn requires repo");
+
+    if (!deps.spawnSubtreeWorker) {
+      throw new Error(
+        "subtree worker launcher is unavailable in this runtime. Start a worker subtree with /pinet subtree start and retry.",
+      );
+    }
+
+    const result = await deps.spawnSubtreeWorker({
+      task,
+      repo,
+      role,
+      ...(laneId ? { laneId } : {}),
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Pinet subtree worker started: ${result.agentName} (${result.agentId}) in tmux session ${result.sessionName}. Task message ${result.messageId} delivered. Monitor: ${result.monitorCommand}`,
+        },
+      ],
+      details: result,
+      compactDetails: {
+        status: result.status,
+        agentId: result.agentId,
+        sessionName: result.sessionName,
+        messageId: result.messageId,
+      },
+      fullDetails: result,
+    };
   })();
 }
 
@@ -852,6 +953,12 @@ function buildCompactAgentDetails(
         brokerManaged: agent.metadata?.brokerManaged === true,
         launchSource: agent.metadata?.launchSource ?? null,
         tmuxSession: agent.metadata?.tmuxSession ?? null,
+        parentAgentId: agent.metadata?.parentAgentId ?? null,
+        rootAgentId: agent.metadata?.rootAgentId ?? null,
+        treeDepth: agent.metadata?.treeDepth ?? 0,
+        supervisionState: agent.metadata?.supervisionState ?? "root",
+        subtreeRole: agent.metadata?.subtreeRole ?? null,
+        laneId: agent.metadata?.laneId ?? null,
         routingScore: agent.routingScore ?? null,
         ...(agent.pendingInboxCount != null && agent.pendingInboxCount > 0
           ? { pendingInboxCount: agent.pendingInboxCount }
@@ -861,6 +968,30 @@ function buildCompactAgentDetails(
       };
     }),
   };
+}
+
+function filterAgentsForHierarchyScope(
+  agents: PinetToolsAgentRecord[],
+  scope: "visible" | "children" | "subtree" | "all",
+  parentAgentId: string | undefined,
+): PinetToolsAgentRecord[] {
+  if (scope === "all" || scope === "visible") return agents;
+  if (!parentAgentId) return [];
+  if (scope === "children") {
+    return agents.filter((agent) => agent.parentAgentId === parentAgentId);
+  }
+
+  const descendants: PinetToolsAgentRecord[] = [];
+  const seen = new Set<string>();
+  const queue = agents.filter((agent) => agent.parentAgentId === parentAgentId);
+  while (queue.length > 0) {
+    const child = queue.shift();
+    if (!child || seen.has(child.id)) continue;
+    seen.add(child.id);
+    descendants.push(child);
+    queue.push(...agents.filter((agent) => agent.parentAgentId === child.id));
+  }
+  return descendants;
 }
 
 function formatCompactAgentList(agents: AgentDisplayInfo[], hint: PinetAgentsRoutingHint): string {
@@ -873,7 +1004,8 @@ function formatCompactAgentList(agents: AgentDisplayInfo[], hint: PinetAgentsRou
       : null,
   ].filter((item): item is string => Boolean(item));
   const hintSuffix = hintParts.length > 0 ? `; hints ${hintParts.join(" · ")}` : "";
-  return `Pinet agents: ${agents.length} visible${hintSuffix}.`;
+  const scopeSuffix = hint.scope && hint.scope !== "visible" ? `; scope=${hint.scope}` : "";
+  return `Pinet agents: ${agents.length} visible${hintSuffix}${scopeSuffix}.`;
 }
 
 function formatPinetLaneSummary(lane: PinetLaneInfo): string {
@@ -1234,10 +1366,23 @@ function runPinetAgentsAction(
   output: PinetOutputOptions,
 ): Promise<PinetToolResult> {
   return (async () => {
+    const scope =
+      params.scope === "children" || params.scope === "subtree" || params.scope === "all"
+        ? params.scope
+        : "visible";
+    const requestedParentAgentId =
+      typeof params.parent_agent === "string" ? params.parent_agent : undefined;
+    const subtreeSelfAgentId = deps.getSubtreeSelfAgentId?.() ?? undefined;
+    const parentAgentId =
+      requestedParentAgentId ??
+      (deps.brokerRole() === "follower" && (scope === "children" || scope === "subtree")
+        ? subtreeSelfAgentId
+        : undefined);
     const hint: PinetAgentsRoutingHint = {
       repo: typeof params.repo === "string" ? params.repo : undefined,
       branch: typeof params.branch === "string" ? params.branch : undefined,
       role: typeof params.role === "string" ? params.role : undefined,
+      ...(scope !== "visible" ? { scope } : {}),
       requiredTools:
         typeof params.required_tools === "string"
           ? params.required_tools
@@ -1251,7 +1396,7 @@ function runPinetAgentsAction(
     deps.requireToolPolicy(
       toolName,
       undefined,
-      `repo=${hint.repo ?? ""} | branch=${hint.branch ?? ""} | role=${hint.role ?? ""} | required_tools=${params.required_tools ?? ""} | task=${hint.task ?? ""} | format=${output.format} | full=${output.full}`,
+      `repo=${hint.repo ?? ""} | branch=${hint.branch ?? ""} | role=${hint.role ?? ""} | scope=${scope} | parent_agent=${parentAgentId ?? ""} | required_tools=${params.required_tools ?? ""} | task=${hint.task ?? ""} | format=${output.format} | full=${output.full}`,
     );
 
     if (!deps.pinetEnabled()) {
@@ -1275,12 +1420,21 @@ function runPinetAgentsAction(
     if (deps.brokerRole() === "broker") {
       rawAgents = deps.listBrokerAgents();
     } else if (deps.brokerRole() === "follower") {
-      rawAgents = await deps.listFollowerAgents(includeGhosts);
+      const wantsLocalSubtree = scope === "children" || scope === "subtree";
+      const subtreeAgents = wantsLocalSubtree ? deps.listSubtreeAgents?.(includeGhosts) : null;
+      if (wantsLocalSubtree && subtreeAgents) {
+        rawAgents = subtreeAgents;
+      } else if (wantsLocalSubtree && deps.listSubtreeAgents && !subtreeAgents) {
+        throw new Error("No active worker-owned subtree broker. Run /pinet subtree start first.");
+      } else {
+        rawAgents = await deps.listFollowerAgents(includeGhosts);
+      }
     } else {
       throw new Error("Pinet is in an unexpected state.");
     }
 
-    const visibleAgents = filterAgentsForMeshVisibility(rawAgents, {
+    const scopedRawAgents = filterAgentsForHierarchyScope(rawAgents, scope, parentAgentId);
+    const visibleAgents = filterAgentsForMeshVisibility(scopedRawAgents, {
       now: nowMs,
       includeGhosts,
       recentDisconnectWindowMs: recentGhostWindowMs,
@@ -1380,6 +1534,20 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
   });
 
   registerAction({
+    name: "spawn",
+    description:
+      "Worker-only: launch a tmux-backed child worker into this worker's active subtree broker and deliver the task over Pinet.",
+    parameters: Type.Object({
+      task: Type.String({ description: "Scoped task prompt for the child worker" }),
+      repo: Type.String({ description: "Repo/workspace scope for the child worker" }),
+      role: Type.Optional(Type.String({ description: "Child subtree role, e.g. reviewer" })),
+      lane_id: Type.Optional(Type.String({ description: "Optional durable Pinet lane id" })),
+      ...PINET_OUTPUT_OPTION_PARAMETERS,
+    }),
+    execute: (_id, params, _output) => runPinetSpawnAction(params, deps, "pinet:spawn"),
+  });
+
+  registerAction({
     name: "reload",
     description: "Ask another connected Pinet agent to reload itself.",
     parameters: Type.Object({
@@ -1436,6 +1604,15 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
           description:
             "Include recently disconnected/resumable agents. Defaults false so graceful exits do not look like actionable ghosts.",
         }),
+      ),
+      scope: Type.Optional(
+        Type.String({
+          description:
+            "Hierarchy filter: visible (default), children, subtree, or all. children/subtree require parent_agent for explicit inspection.",
+        }),
+      ),
+      parent_agent: Type.Optional(
+        Type.String({ description: "Parent agent id for scope=children or scope=subtree" }),
       ),
       ...PINET_OUTPUT_OPTION_PARAMETERS,
     }),
@@ -1560,11 +1737,11 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     label: "Pinet Dispatcher",
     description: "Dispatch Pinet operations by action with compact help and schema discovery.",
     promptSnippet:
-      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, and help. Use /pinet start, /pinet follow, and /pinet unfollow for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
+      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
     parameters: Type.Object({
       action: Type.String({
         description:
-          "Action name: help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit.",
+          "Action name: help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit. Also supports spawn for launching worker-owned subtree children.",
       }),
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {

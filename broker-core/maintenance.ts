@@ -97,7 +97,14 @@ export function runBrokerMaintenancePass(
   const agents = db
     .getAgents()
     .filter((agent) => agent.id !== brokerAgentId)
-    .filter((agent) => agent.metadata?.role !== "broker");
+    .filter((agent) => agent.metadata?.role !== "broker")
+    .filter(
+      (agent) =>
+        !agent.parentAgentId &&
+        agent.supervisionState !== "supervised" &&
+        agent.supervisionState !== "orphaned" &&
+        agent.supervisionState !== "stopping",
+    );
 
   const agentLoads = agents.map((agent) => ({
     agent,
@@ -123,7 +130,7 @@ export function runBrokerMaintenancePass(
     }
 
     const preferredAgent = backlog.preferredAgentId
-      ? (agents.find((agent) => agent.id === backlog.preferredAgentId) ?? null)
+      ? (db.getAgents().find((agent) => agent.id === backlog.preferredAgentId) ?? null)
       : null;
     if (backlog.preferredAgentId && !preferredAgent) {
       const knownPreferredAgent = db.getAgentById(backlog.preferredAgentId);

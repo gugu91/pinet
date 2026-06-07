@@ -4,6 +4,8 @@ export const DEFAULT_EXTERNAL_THREAD_SOURCE = "external";
 
 // ─── Domain types ─────────────────────────────────────────
 
+export type AgentSupervisionState = "root" | "supervised" | "orphaned" | "stopping";
+
 export interface AgentInfo {
   id: string;
   stableId?: string | null;
@@ -15,6 +17,14 @@ export interface AgentInfo {
   lastHeartbeat: string;
   metadata: Record<string, unknown> | null;
   status: "working" | "idle";
+  parentAgentId?: string | null;
+  rootAgentId?: string | null;
+  treeDepth?: number;
+  spawnedByAgentId?: string | null;
+  supervisionState?: AgentSupervisionState;
+  launchId?: string | null;
+  subtreeRole?: string | null;
+  laneId?: string | null;
   disconnectedAt?: string | null;
   resumableUntil?: string | null;
   idleSince?: string | null;

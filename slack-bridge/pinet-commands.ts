@@ -19,6 +19,11 @@ import {
 } from "./slack-scope-diagnostics.js";
 import type { SlackBridgeRuntimeMode } from "./runtime-mode.js";
 import type { RalphSnoozeStatus } from "./ralph-loop.js";
+import type {
+  SubtreeBrokerStatus,
+  SubtreeSpawnInput,
+  SubtreeSpawnResult,
+} from "./subtree-broker-runtime.js";
 
 export interface PinetCommandsDeps {
   // State accessors
@@ -55,6 +60,7 @@ export interface PinetCommandsDeps {
   getBrokerControlPlaneHomeTabViewerIds: () => string[];
   lastBrokerControlPlaneHomeTabRefreshAt: () => string | null;
   lastBrokerControlPlaneHomeTabError: () => string | null;
+  subtreeBrokerStatus: () => SubtreeBrokerStatus;
 
   // Actions
   getPinetRegistrationBlockReason: () => string;
@@ -62,6 +68,12 @@ export interface PinetCommandsDeps {
   connectAsFollower: (ctx: ExtensionContext) => Promise<void>;
   reloadPinetRuntime: (ctx: ExtensionContext) => Promise<void>;
   disconnectFollower: (ctx: ExtensionContext) => Promise<{ unregisterError: string | null }>;
+  startSubtreeBroker: (ctx: ExtensionContext) => Promise<SubtreeBrokerStatus>;
+  stopSubtreeBroker: () => Promise<void>;
+  spawnSubtreeWorker: (
+    ctx: ExtensionContext,
+    input: SubtreeSpawnInput,
+  ) => Promise<SubtreeSpawnResult>;
   sendPinetAgentMessage: (
     target: string,
     body: string,
@@ -85,7 +97,8 @@ export type PinetCommandAction =
   | "status"
   | "logs"
   | "rename"
-  | "snooze";
+  | "snooze"
+  | "subtree";
 
 interface ParsedPinetCommandAction {
   action: PinetCommandAction;
@@ -104,6 +117,11 @@ const PINET_PRIMARY_COMMANDS: Array<{
   { action: "exit", args: "<agent>", description: "Ask another agent to exit" },
   { action: "free", args: "", description: "Mark this agent as idle" },
   { action: "snooze", args: "[duration|off|status]", description: "Quiet empty RALPH cycles" },
+  {
+    action: "subtree",
+    args: "[start|status|spawn|stop]",
+    description: "Run this worker as a subtree broker for child followers",
+  },
 ];
 
 const PINET_SECONDARY_COMMANDS: Array<{
@@ -205,6 +223,9 @@ function normalizePinetCommandAction(rawAction: string): PinetCommandAction | nu
     case "snooze":
     case "quiet":
       return "snooze";
+    case "subtree":
+    case "subbroker":
+      return "subtree";
     case "help":
       return null;
     default:
@@ -250,13 +271,16 @@ export async function runPinetCommandAction(
     case "snooze":
       runPinetSnooze(deps, args, ctx);
       return;
+    case "subtree":
+      await runPinetSubtree(deps, args, ctx);
+      return;
   }
 }
 
 export function registerPinetCommands(pi: ExtensionAPI, deps: PinetCommandsDeps): void {
   pi.registerCommand("pinet", {
     description:
-      "Unified Pinet command surface: start, follow, unfollow, reload, exit, free, snooze, status, logs, rename",
+      "Unified Pinet command surface: start, follow, unfollow, reload, exit, free, snooze, subtree, status, logs, rename",
     handler: async (args, ctx) => {
       const parsed = parsePinetCommandAction(args);
       if (!parsed) {
@@ -487,6 +511,173 @@ function runPinetSnooze(deps: PinetCommandsDeps, args: string, ctx: ExtensionCon
   ctx.ui.notify(formatRalphSnoozeStatus(status), "info");
 }
 
+function formatSubtreeBrokerStatus(status: SubtreeBrokerStatus): string {
+  if (!status.active || !status.paths || !status.selfAgentId) {
+    return "Subtree broker: off\nUse /pinet subtree start from a worker that is already following the central broker.";
+  }
+
+  const envLines = Object.entries(status.childLaunchEnv).map(([key, value]) => `${key}=${value}`);
+  return [
+    "Subtree broker: running",
+    `Self agent: ${status.selfAgentId}`,
+    `Started: ${status.startedAt ?? "unknown"}`,
+    `Socket: ${status.paths.socketPath}`,
+    `Database: ${status.paths.dbPath}`,
+    `Lock: ${status.paths.lockPath}`,
+    `Children: ${status.childCount}`,
+    ...(status.spawnedWorkers.length > 0
+      ? [
+          "Spawned workers:",
+          ...status.spawnedWorkers.map(
+            (worker) =>
+              `- ${worker.sessionName} role=${worker.role} agent=${worker.agentId ?? "pending"} repo=${worker.repoPath}`,
+          ),
+        ]
+      : []),
+    "Child follower environment:",
+    ...envLines,
+    ...(status.childLaunchHint ? ["Child launch hint:", status.childLaunchHint] : []),
+  ].join("\n");
+}
+
+function parseSubtreeSpawnArgs(args: string): SubtreeSpawnInput | null {
+  const tokens = args
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  let repo: string | null = null;
+  let role: string | undefined;
+  let laneId: string | undefined;
+  const taskParts: string[] = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const next = tokens[index + 1];
+    if (token === "--") {
+      taskParts.push(...tokens.slice(index + 1));
+      break;
+    }
+    if (token === "--repo" || token === "repo") {
+      if (!next) return null;
+      repo = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--role" || token === "role") {
+      if (!next) return null;
+      role = next;
+      index += 1;
+      continue;
+    }
+    if (token === "--lane" || token === "--lane-id" || token === "lane" || token === "lane_id") {
+      if (!next) return null;
+      laneId = next;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("repo=")) {
+      repo = token.slice("repo=".length);
+      continue;
+    }
+    if (token.startsWith("role=")) {
+      role = token.slice("role=".length);
+      continue;
+    }
+    if (token.startsWith("lane=")) {
+      laneId = token.slice("lane=".length);
+      continue;
+    }
+    if (token.startsWith("lane_id=")) {
+      laneId = token.slice("lane_id=".length);
+      continue;
+    }
+    taskParts.push(token);
+  }
+
+  const task = taskParts.join(" ").trim();
+  if (!repo || !task) return null;
+  return {
+    repo,
+    task,
+    ...(role ? { role } : {}),
+    ...(laneId ? { laneId } : {}),
+  };
+}
+
+function formatSubtreeSpawnResult(result: SubtreeSpawnResult): string {
+  return [
+    "Subtree worker started",
+    `Agent: ${result.agentName} (${result.agentId})`,
+    `Session: ${result.sessionName}`,
+    `Repo: ${result.repoPath}`,
+    `Role: ${result.role}`,
+    ...(result.laneId ? [`Lane: ${result.laneId}`] : []),
+    `Task message: ${result.messageId}`,
+    `Thread: ${result.threadId}`,
+    `Monitor: ${result.monitorCommand}`,
+  ].join("\n");
+}
+
+async function runPinetSubtree(
+  deps: PinetCommandsDeps,
+  args: string,
+  ctx: ExtensionContext,
+): Promise<void> {
+  const [rawSubcommand = "status"] = args.trim().split(/\s+/);
+  const subcommand = rawSubcommand.toLowerCase();
+
+  if (["status", "show", "info", ""].includes(subcommand)) {
+    ctx.ui.notify(formatSubtreeBrokerStatus(deps.subtreeBrokerStatus()), "info");
+    return;
+  }
+
+  if (["stop", "off", "down"].includes(subcommand)) {
+    await deps.stopSubtreeBroker();
+    ctx.ui.notify("Subtree broker stopped. Spawned child followers were asked to exit.", "info");
+    return;
+  }
+
+  if (deps.runtimeMode() !== "follower" || deps.brokerRole() !== "follower") {
+    ctx.ui.notify(
+      "Subtree broker operations require this session to be running as a Pinet worker/follower. Run /pinet follow first.",
+      "warning",
+    );
+    return;
+  }
+
+  if (["spawn", "child", "worker"].includes(subcommand)) {
+    const spawnInput = parseSubtreeSpawnArgs(args.trim().slice(rawSubcommand.length));
+    if (!spawnInput) {
+      ctx.ui.notify(
+        "Usage: /pinet subtree spawn repo=<repo-or-path> [role=<role>] [lane=<lane>] <task>",
+        "warning",
+      );
+      return;
+    }
+
+    try {
+      const result = await deps.spawnSubtreeWorker(ctx, spawnInput);
+      ctx.ui.notify(formatSubtreeSpawnResult(result), "info");
+    } catch (err) {
+      ctx.ui.notify(`Subtree worker spawn failed: ${errorMsg(err)}`, "error");
+    }
+    return;
+  }
+
+  if (!["start", "on", "broker", "promote"].includes(subcommand)) {
+    ctx.ui.notify("Usage: /pinet subtree [start|status|spawn|stop]", "warning");
+    return;
+  }
+
+  try {
+    const status = await deps.startSubtreeBroker(ctx);
+    ctx.ui.notify(formatSubtreeBrokerStatus(status), "info");
+  } catch (err) {
+    ctx.ui.notify(`Subtree broker start failed: ${errorMsg(err)}`, "error");
+  }
+}
+
 function runPinetStatus(deps: PinetCommandsDeps, ctx: ExtensionContext): void {
   const mode = deps.runtimeMode();
   const ownedCount = [...deps.threads().values()].filter((t) =>
@@ -534,6 +725,13 @@ function runPinetStatus(deps: PinetCommandsDeps, ctx: ExtensionContext): void {
             : []),
         ]
       : [];
+  const subtreeStatus = deps.subtreeBrokerStatus();
+  const subtreeBrokerInfo = subtreeStatus.active
+    ? [
+        `Subtree broker: running (${subtreeStatus.selfAgentId ?? "unknown"})`,
+        ...(subtreeStatus.paths ? [`Subtree socket: ${subtreeStatus.paths.socketPath}`] : []),
+      ]
+    : [];
   ctx.ui.notify(
     [
       `Mode: ${mode}`,
@@ -554,6 +752,7 @@ function runPinetStatus(deps: PinetCommandsDeps, ctx: ExtensionContext): void {
       ...brokerHealthInfo,
       ...ralphSnoozeInfo,
       ...brokerHomeTabInfo,
+      ...subtreeBrokerInfo,
     ].join("\n"),
     "info",
   );

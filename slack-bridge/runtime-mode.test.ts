@@ -43,6 +43,25 @@ describe("isBrokerManagedFollowerLaunch", () => {
     ).toBe(true);
   });
 
+  it("detects subtree-broker-managed follower launches", () => {
+    expect(
+      isBrokerManagedFollowerLaunch({
+        PINET_BROKER_MANAGED: "1",
+        PINET_LAUNCH_SOURCE: "subtree-broker-tmux",
+        PINET_SOCKET_PATH: "/tmp/subtree/pinet.sock",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects broker-managed launches with an explicit non-default socket", () => {
+    expect(
+      isBrokerManagedFollowerLaunch({
+        PINET_BROKER_MANAGED: "1",
+        PINET_SOCKET_PATH: "/tmp/subtree/pinet.sock",
+      }),
+    ).toBe(true);
+  });
+
   it("does not treat other broker-managed metadata as the tmux follower path", () => {
     expect(
       isBrokerManagedFollowerLaunch({

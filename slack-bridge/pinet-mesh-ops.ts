@@ -26,6 +26,12 @@ export interface PinetMeshOpsAgentRecord {
   resumableUntil?: string | null;
   outboundCount?: number;
   pendingInboxCount?: number;
+  parentAgentId?: string | null;
+  rootAgentId?: string | null;
+  treeDepth?: number;
+  supervisionState?: string;
+  subtreeRole?: string | null;
+  laneId?: string | null;
 }
 
 export interface PinetMeshOpsRecordedAssignment {
@@ -88,6 +94,11 @@ export interface PinetMeshOpsDeps {
   getActiveBrokerSelfId: () => string | null;
   getAgentName: () => string;
   getFollowerClient: () => PinetMeshOpsFollowerClientPort | null;
+  sendSubtreeAgentMessage?: (
+    target: string,
+    body: string,
+    metadata?: Record<string, unknown>,
+  ) => Promise<{ messageId: number; target: string; threadId: string } | null>;
   formatTrackedAgent: (agentId: string) => string;
   logActivity: (entry: ActivityLogEntry) => void;
 }
@@ -256,6 +267,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
         target: targetRef,
         body: dispatchBody,
         metadata: dispatchMetadata,
+        trustedBrokerAgentId: selfId,
       });
 
       if (transferThreadId) {
@@ -336,6 +348,15 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
     }
 
     if (deps.getBrokerRole() === "follower") {
+      const subtreeResult = await deps.sendSubtreeAgentMessage?.(
+        targetRef,
+        finalBody,
+        finalMetadata,
+      );
+      if (subtreeResult) {
+        return { messageId: subtreeResult.messageId, target: subtreeResult.target };
+      }
+
       const client = deps.getFollowerClient();
       if (!client) {
         throw new Error("Pinet is in an unexpected state.");
@@ -418,6 +439,12 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       resumableUntil: agent.resumableUntil,
       outboundCount: agent.outboundCount,
       pendingInboxCount: db.getPendingInboxCount(agent.id),
+      parentAgentId: agent.parentAgentId,
+      rootAgentId: agent.rootAgentId,
+      treeDepth: agent.treeDepth,
+      supervisionState: agent.supervisionState,
+      subtreeRole: agent.subtreeRole,
+      laneId: agent.laneId,
     }));
   }
 
@@ -440,6 +467,12 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       resumableUntil: agent.resumableUntil,
       outboundCount: agent.outboundCount,
       pendingInboxCount: agent.pendingInboxCount,
+      parentAgentId: agent.parentAgentId,
+      rootAgentId: agent.rootAgentId,
+      treeDepth: agent.treeDepth,
+      supervisionState: agent.supervisionState,
+      subtreeRole: agent.subtreeRole,
+      laneId: agent.laneId,
     }));
   }
 

@@ -691,6 +691,38 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     client2.disconnect();
   });
 
+  it("agent.message allows parent-child supervision but rejects unrelated supervised-child routing", async () => {
+    const parentReg = await client.register("parent-agent", "🧭");
+
+    const info = server.getConnectInfo();
+    if (info.type !== "tcp") throw new Error("Expected TCP");
+    const childClient = new BrokerClient({ host: info.host, port: info.port });
+    await childClient.connect();
+    const childReg = await childClient.register("child-agent", "🌱", {
+      parentAgentId: parentReg.agentId,
+    });
+
+    const unrelatedClient = new BrokerClient({ host: info.host, port: info.port });
+    await unrelatedClient.connect();
+    await unrelatedClient.register("unrelated-agent", "🪨");
+
+    await expect(client.sendAgentMessage(childReg.agentId, "parent ping")).resolves.toBeGreaterThan(
+      0,
+    );
+    await expect(
+      childClient.sendAgentMessage(parentReg.agentId, "child pong"),
+    ).resolves.toBeGreaterThan(0);
+    await expect(
+      unrelatedClient.sendAgentMessage(childReg.agentId, "side ping", {
+        emergency: true,
+        targetScope: "subtree",
+      }),
+    ).rejects.toThrow("cannot message supervised agent");
+
+    childClient.disconnect();
+    unrelatedClient.disconnect();
+  });
+
   it("agent.message resolves target by ID", async () => {
     await client.register("alpha", "🅰️");
 

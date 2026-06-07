@@ -29,6 +29,11 @@ import {
 } from "./follower-delivery.js";
 import { BrokerClient, DEFAULT_SOCKET_PATH } from "./broker/client.js";
 
+function resolveBrokerSocketPath(): string {
+  const envPath = process.env.PINET_SOCKET_PATH?.trim();
+  return envPath && envPath.length > 0 ? envPath : DEFAULT_SOCKET_PATH;
+}
+
 export type BrokerClientRef = {
   client: BrokerClient;
   pollInterval: ReturnType<typeof setInterval> | null;
@@ -197,7 +202,7 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
     deps.refreshSettings();
     const meshAuth = resolvePinetMeshAuth(deps.getSettings());
     const client = new BrokerClient({
-      path: DEFAULT_SOCKET_PATH,
+      path: resolveBrokerSocketPath(),
       ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
       ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
     });
