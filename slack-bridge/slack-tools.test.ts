@@ -511,6 +511,7 @@ describe("registerSlackTools", () => {
         ts: "123.001",
         user: "Ada",
         preview: expect.stringContaining("status"),
+        files: [],
       }),
     ]);
 
@@ -520,8 +521,92 @@ describe("registerSlackTools", () => {
     });
     expect(full.content?.[0]?.text).toContain(longText);
     expect(full.details?.messages).toEqual([
-      expect.objectContaining({ ts: "123.001", user: "Ada", text: longText }),
+      expect.objectContaining({ ts: "123.001", user: "Ada", text: longText, files: [] }),
     ]);
+  });
+
+  it("downloads Slack read message attachments to temp cache by default", async () => {
+    const { tools, setConversationsReplies, setResolveThreadChannel, setFilesInfoResponse } =
+      setup();
+    setResolveThreadChannel(async () => "C-DB");
+    const messageWithFile = {
+      ts: "123.001",
+      user: "U123",
+      text: "See attached",
+      files: [
+        {
+          id: "F_READ",
+          name: "brief.pdf",
+          mimetype: "application/pdf",
+          filetype: "pdf",
+          pretty_type: "PDF",
+          size: 8,
+          url_private_download: "https://files.slack.com/private/read-brief",
+        },
+      ],
+    };
+    setConversationsReplies([
+      {
+        ok: true,
+        messages: [messageWithFile],
+      } as SlackResult,
+      {
+        ok: true,
+        messages: [messageWithFile],
+      } as SlackResult,
+    ]);
+    setFilesInfoResponse({
+      ok: true,
+      file: {
+        id: "F_READ",
+        name: "brief.pdf",
+        mimetype: "application/pdf",
+        filetype: "pdf",
+        pretty_type: "PDF",
+        size: 8,
+        url_private_download: "https://files.slack.com/private/read-brief",
+      },
+    } as SlackResult);
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.headers).toEqual({ Authorization: "Bearer xoxb-initial" });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        arrayBuffer: async () => Buffer.from("pdf body").buffer,
+        text: async () => "",
+      };
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+
+    try {
+      const response = await tools.get("slack_read")!.execute("tool-read-file", {
+        thread_ts: "123.456",
+      });
+      const text = response.content?.[0]?.text ?? "";
+      expect(text).toContain("[file downloaded] F_READ brief.pdf (PDF) ->");
+      expect(text).toContain("File attachments: 1 downloaded to the local temp cache.");
+      expect(text).not.toContain("files.slack.com/private");
+      expect(response.details).toMatchObject({
+        downloadedFilesCount: 1,
+        failedFilesCount: 0,
+        messages: [
+          expect.objectContaining({
+            files: [
+              expect.objectContaining({
+                fileId: "F_READ",
+                filename: "brief.pdf",
+                downloadStatus: "downloaded",
+                path: expect.stringContaining("pi-slack-files"),
+                sha256: expect.any(String),
+              }),
+            ],
+          }),
+        ],
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("uses compact dispatcher text by default and JSON when requested", async () => {

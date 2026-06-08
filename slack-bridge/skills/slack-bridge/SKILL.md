@@ -177,8 +177,13 @@ message:
 Local path guardrails still apply: paths must resolve inside the current working
 directory or the system temp directory. Binary files are supported.
 
-For inbound Slack-hosted files, use the `slackFiles` metadata from incoming
-messages to get the file ID, then download explicitly:
+For inbound Slack-hosted files, `slack` action `read` downloads attached files to
+the local temp cache by default and returns safe descriptors alongside the
+message metadata. Use `args.download_files=false` when you only need message text
+and file metadata.
+
+Use the explicit `file` action when you have a specific file ID to retry,
+validate, or fetch outside a normal read flow:
 
 ```json
 {
@@ -192,9 +197,11 @@ messages to get the file ID, then download explicitly:
 }
 ```
 
-The result is a safe local descriptor with path, filename, type, size, SHA-256,
-cache expiry, and residual risks. Private Slack download URLs are fetched with
-bot auth but are not returned in normal output.
+Both read-time downloads and the explicit file action download Slack-hosted user
+content into the local temp cache and return safe descriptors: file ID,
+filename/type, local temp path, size, SHA-256, cache directory, expiry, and
+residual risk notes. They must not print private Slack download URLs or raw file
+contents.
 
 ## Modal patterns
 
