@@ -148,7 +148,6 @@ export interface SlackMessageFileMetadata {
   filetype?: string;
   prettyType?: string;
   permalink?: string;
-  urlPrivate?: string;
   mode?: string;
   size?: number;
 }
@@ -167,11 +166,6 @@ export function extractSlackMessageFileMetadata(files: unknown): SlackMessageFil
         ? { prettyType: asString(file.pretty_type) ?? undefined }
         : {}),
       ...(asString(file.permalink) ? { permalink: asString(file.permalink) ?? undefined } : {}),
-      ...(asString(file.url_private_download)
-        ? { urlPrivate: asString(file.url_private_download) ?? undefined }
-        : asString(file.url_private)
-          ? { urlPrivate: asString(file.url_private) ?? undefined }
-          : {}),
       ...(asString(file.mode) ? { mode: asString(file.mode) ?? undefined } : {}),
       ...(typeof file.size === "number" ? { size: file.size } : {}),
     };
@@ -194,7 +188,7 @@ function extractFileContextLines(files: unknown): string[] {
       prettyType,
       file.mode,
       file.id ? `id=${file.id}` : null,
-      file.permalink ?? file.urlPrivate ?? null,
+      file.permalink ?? null,
     ].filter((part): part is string => Boolean(part));
     if (parts.length === 0) continue;
 

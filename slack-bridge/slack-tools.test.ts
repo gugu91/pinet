@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerSlackTools, type SlackPinetDeliveryInput } from "./slack-tools.js";
@@ -221,6 +224,22 @@ describe("registerSlackTools", () => {
         return filesInfoResponse;
       }
 
+      if (method === "files.getUploadURLExternal") {
+        return {
+          ok: true,
+          upload_url: `https://uploads.slack.test/${typeof body?.filename === "string" ? body.filename : "file"}`,
+          file_id: "F_UPLOAD",
+        } as SlackResult;
+      }
+
+      if (method === "files.completeUploadExternal") {
+        return {
+          ok: true,
+          body,
+          files: [{ id: "F_UPLOAD", permalink: "https://slack.test/files/F_UPLOAD" }],
+        } as SlackResult;
+      }
+
       return {
         ok: true,
         token,
@@ -282,6 +301,7 @@ describe("registerSlackTools", () => {
       "modal_update",
       "react",
       "upload",
+      "file",
       "read",
       "presence",
       "export",
@@ -990,6 +1010,49 @@ describe("registerSlackTools", () => {
     expect(response.details?.count).toBe(2);
   });
 
+  it("redacts private Slack file URLs from markdown, plain, and JSON exports", async () => {
+    const { tools, setConversationsReplies, setResolveThreadChannel } = setup();
+    setResolveThreadChannel(async () => "C-DB");
+
+    for (const format of ["markdown", "plain", "json"]) {
+      setConversationsReplies([
+        {
+          ok: true,
+          messages: [
+            {
+              ts: "123.456",
+              user: "U123",
+              text: "attached",
+              files: [
+                {
+                  id: "F_PRIVATE",
+                  title: "private.pdf",
+                  filetype: "pdf",
+                  url_private_download:
+                    "https://files.slack.com/files-pri/T/F_PRIVATE/download/doc",
+                  url_private: "https://files.slack.com/files-pri/T/F_PRIVATE/fallback/doc",
+                },
+              ],
+            },
+          ],
+          response_metadata: { next_cursor: "" },
+        } as SlackResult,
+      ]);
+
+      const response = await tools.get("slack_export")!.execute(`tool-export-redaction-${format}`, {
+        thread_ts: "123.456",
+        format,
+      });
+      const text = response.content?.[0]?.text ?? "";
+
+      expect(text).toContain("F_PRIVATE");
+      expect(text).toContain("private.pdf");
+      expect(text).not.toContain("files-pri");
+      expect(text).not.toContain("url_private");
+      expect(text).not.toContain("download/doc");
+    }
+  });
+
   it("filters exported threads by oldest/latest boundaries", async () => {
     const { tools, setConversationsReplies, setDefaultChannel } = setup();
     setDefaultChannel("docs");
@@ -1188,6 +1251,110 @@ describe("registerSlackTools", () => {
       messageId: 42,
     });
     expect(response.details).not.toHaveProperty("ts");
+  });
+
+  it("passes local file attachments through slack_send Pinet thread delivery", async () => {
+    const { tools, setResolveThreadChannel, setPinetDeliveryAvailable, sendPinetSlackMessage } =
+      setup();
+    setResolveThreadChannel(async () => "D123");
+    setPinetDeliveryAvailable(true);
+
+    await tools.get("slack_send")!.execute("tool-pinet-send-files", {
+      thread_ts: "123.456",
+      text: "See attached binary",
+      files: [{ path: "/tmp/report.bin", filename: "report.bin", title: "Report" }],
+    });
+
+    expect(sendPinetSlackMessage).toHaveBeenCalledWith({
+      threadId: "123.456",
+      channel: "D123",
+      text: "See attached binary",
+      files: [{ path: "/tmp/report.bin", filename: "report.bin", title: "Report" }],
+    });
+  });
+
+  it("sends direct Slack text and a binary file in one threaded external upload", async () => {
+    const { slack, tools, setResolveThreadChannel, setPinetDeliveryAvailable } = setup();
+    setResolveThreadChannel(async () => "D123");
+    setPinetDeliveryAvailable(false);
+    const dir = await mkdtemp(path.join(os.tmpdir(), "slack-send-file-test-"));
+    const filePath = path.join(dir, "payload.bin");
+    await writeFile(filePath, Buffer.from([0, 1, 2, 3]));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => "",
+    }));
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      await tools.get("slack_send")!.execute("tool-direct-send-files", {
+        thread_ts: "123.456",
+        text: "Here is the binary",
+        files: [{ path: filePath, filename: "payload.bin" }],
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    expect(slack).toHaveBeenCalledWith(
+      "files.completeUploadExternal",
+      "xoxb-initial",
+      expect.objectContaining({
+        channel_id: "D123",
+        thread_ts: "123.456",
+        initial_comment: "Here is the binary",
+        files: [{ id: "F_UPLOAD", title: "payload.bin" }],
+      }),
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("downloads Slack-hosted files through slack file action with safe descriptor output", async () => {
+    const { tools, setFilesInfoResponse } = setup();
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "slack-file-action-test-"));
+    setFilesInfoResponse({
+      ok: true,
+      file: {
+        id: "FPDF",
+        name: "brief.pdf",
+        mimetype: "application/pdf",
+        filetype: "pdf",
+        pretty_type: "PDF",
+        size: 8,
+        url_private_download: "https://files.slack.com/private/brief",
+      },
+    } as SlackResult);
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.headers).toEqual({ Authorization: "Bearer xoxb-initial" });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        arrayBuffer: async () => Buffer.from("pdf body").buffer,
+        text: async () => "",
+      };
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    let response: ToolResponse;
+    try {
+      response = await tools.get("slack_file")!.execute("tool-file-download", {
+        op: "download",
+        file_id: "FPDF",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+
+    expect(response!.details).toMatchObject({
+      fileId: "FPDF",
+      filename: "brief.pdf",
+      mimetype: "application/pdf",
+      filetype: "pdf",
+    });
+    expect(JSON.stringify(response!.details)).not.toContain("files.slack.com/private");
   });
 
   it("falls back to direct Slack delivery when Pinet thread delivery fails", async () => {

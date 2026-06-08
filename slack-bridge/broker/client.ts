@@ -11,6 +11,7 @@ import type {
 import type {
   ClientAgentInfo,
   NormalizedMessageContent,
+  OutboundAttachmentFile,
   PortLeaseAcquireInput,
   PortLeaseInfo,
   PortLeaseListOptions,
@@ -470,6 +471,7 @@ export class BrokerClient {
     channel?: string;
     content?: NormalizedMessageContent;
     blocks?: ReadonlyArray<Record<string, unknown>>;
+    files?: ReadonlyArray<OutboundAttachmentFile>;
     agentName?: string;
     agentEmoji?: string;
     agentOwnerToken?: string;
@@ -488,6 +490,7 @@ export class BrokerClient {
       ...(input.channel ? { channel: input.channel } : {}),
       ...(input.content ? { content: input.content } : {}),
       ...(input.blocks && input.blocks.length > 0 ? { blocks: input.blocks } : {}),
+      ...(input.files && input.files.length > 0 ? { files: input.files } : {}),
       ...(input.agentName ? { agentName: input.agentName } : {}),
       ...(input.agentEmoji ? { agentEmoji: input.agentEmoji } : {}),
       ...(input.agentOwnerToken ? { agentOwnerToken: input.agentOwnerToken } : {}),

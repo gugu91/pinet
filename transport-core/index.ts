@@ -110,12 +110,20 @@ export interface NormalizedMessageContent {
   slackBlocks?: ReadonlyArray<Record<string, unknown>>;
 }
 
+export interface OutboundAttachmentFile {
+  path: string;
+  filename?: string;
+  title?: string;
+  filetype?: string;
+}
+
 export interface OutboundMessage {
   threadId: string;
   channel: string;
   text: string;
   content?: NormalizedMessageContent;
   blocks?: ReadonlyArray<Record<string, unknown>>;
+  files?: ReadonlyArray<OutboundAttachmentFile>;
   agentName?: string;
   agentEmoji?: string;
   agentOwnerToken?: string;

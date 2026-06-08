@@ -50,7 +50,7 @@ should use the colon form.
 
 - Thread/channel messaging: `post_channel`, `read`, `read_channel`, `export`
 - Lightweight acknowledgement: `react`
-- Files/snippets: `upload`
+- Files/snippets: `upload`, `file`; `slack_send.files` for text plus attachments in one reply
 - Time-based follow-up: `schedule`
 - People/timing: `presence`
 - Durable channel affordances: `pin`, `bookmark`
@@ -143,6 +143,44 @@ snippets:
   }
 ]
 ````
+
+## File workflows
+
+For outbound local files, use `slack_send` when the message should include both
+text and one or more files in a single Slack reply:
+
+```json
+{
+  "text": "Here is the report and the raw capture.",
+  "thread_ts": "1712345678.000100",
+  "files": [
+    { "path": "./out/report.pdf", "title": "Report" },
+    { "path": "/tmp/capture.bin", "filename": "capture.bin" }
+  ]
+}
+```
+
+Local path guardrails still apply: paths must resolve inside the current working
+directory or the system temp directory. Binary files are supported.
+
+For inbound Slack-hosted files, use the `slackFiles` metadata from incoming
+messages to get the file ID, then download explicitly:
+
+```json
+{
+  "action": "file",
+  "args": {
+    "op": "download",
+    "file_id": "F0123456789",
+    "thread_ts": "1712345678.000100",
+    "message_ts": "1712345678.000200"
+  }
+}
+```
+
+The result is a safe local descriptor with path, filename, type, size, SHA-256,
+cache expiry, and residual risks. Private Slack download URLs are fetched with
+bot auth but are not returned in normal output.
 
 ## Modal patterns
 

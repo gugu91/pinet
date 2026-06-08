@@ -346,6 +346,7 @@ import {
 import type {
   InboundMessage as _InboundMessage,
   NormalizedMessageContent as _NormalizedMessageContent,
+  OutboundAttachmentFile as _OutboundAttachmentFile,
   OutboundMessage as _OutboundMessage,
   AdapterCapabilityRequest as _AdapterCapabilityRequest,
   AdapterCapabilityResult as _AdapterCapabilityResult,
@@ -359,6 +360,7 @@ import type {
 
 export type InboundMessage = _InboundMessage;
 export type NormalizedMessageContent = _NormalizedMessageContent;
+export type OutboundAttachmentFile = _OutboundAttachmentFile;
 export type OutboundMessage = _OutboundMessage;
 export type AdapterCapabilityRequest = _AdapterCapabilityRequest;
 export type AdapterCapabilityResult = _AdapterCapabilityResult;

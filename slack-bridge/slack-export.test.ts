@@ -70,6 +70,7 @@ describe("buildSlackThreadExport", () => {
       text: "Hello <@U456>\n\nSee <https://example.com|design doc>",
       files: [
         {
+          id: "F123",
           title: "incident.md",
           filetype: "markdown",
           permalink: "https://files.example/incident.md",
@@ -102,7 +103,7 @@ describe("buildSlackThreadExport", () => {
     expect(result).toContain("Hello @bob");
     expect(result).toContain("[design doc](https://example.com)");
     expect(result).toContain("Attachments:");
-    expect(result).toContain("incident.md (markdown) — https://files.example/incident.md");
+    expect(result).toContain("incident.md (markdown) id=F123 — https://files.example/incident.md");
     expect(result).toContain("Preview: Root cause analysis");
     expect(result).toContain("**Ship it**");
   });
@@ -134,11 +135,17 @@ describe("buildSlackThreadExport", () => {
 
     const parsed = JSON.parse(result) as {
       format: string;
-      messages: Array<{ author: string; text: string }>;
+      messages: Array<{
+        author: string;
+        text: string;
+        files: Array<{ id?: string; url_private?: string }>;
+      }>;
     };
 
     expect(parsed.format).toBe("json");
     expect(parsed.messages[0]?.author).toBe("alice");
     expect(parsed.messages[0]?.text).toContain("Hello @bob");
+    expect(parsed.messages[0]?.files[0]?.id).toBe("F123");
+    expect(parsed.messages[0]?.files[0]).not.toHaveProperty("url_private");
   });
 });
