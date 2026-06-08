@@ -233,10 +233,18 @@ describe("registerSlackTools", () => {
       }
 
       if (method === "files.completeUploadExternal") {
+        const channelId = typeof body?.channel_id === "string" ? body.channel_id : "C_UPLOAD";
+        const uploadTs = typeof body?.thread_ts === "string" ? body.thread_ts : "1712345678.999999";
         return {
           ok: true,
           body,
-          files: [{ id: "F_UPLOAD", permalink: "https://slack.test/files/F_UPLOAD" }],
+          files: [
+            {
+              id: "F_UPLOAD",
+              permalink: "https://slack.test/files/F_UPLOAD",
+              shares: { public: { [channelId]: [{ ts: uploadTs }] } },
+            },
+          ],
         } as SlackResult;
       }
 
@@ -1311,6 +1319,46 @@ describe("registerSlackTools", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it("sends slack_post_channel text and local files in one external upload", async () => {
+    const { slack, tools } = setup();
+    const dir = await mkdtemp(path.join(os.tmpdir(), "slack-post-channel-file-test-"));
+    const filePath = path.join(dir, "evidence.bin");
+    await writeFile(filePath, Buffer.from([4, 5, 6]));
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => "",
+    }));
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      const response = await tools.get("slack_post_channel")!.execute("tool-post-files", {
+        channel: "deployments",
+        text: "Deploy evidence",
+        files: [{ path: filePath, filename: "evidence.bin", title: "Evidence" }],
+      });
+      expect(response.details).toMatchObject({
+        channel: "resolved:deployments",
+        delivery: "slack",
+        filesCount: 1,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    expect(slack).toHaveBeenCalledWith(
+      "files.completeUploadExternal",
+      "xoxb-initial",
+      expect.objectContaining({
+        channel_id: "resolved:deployments",
+        initial_comment: "Deploy evidence",
+        files: [{ id: "F_UPLOAD", title: "Evidence" }],
+      }),
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("downloads Slack-hosted files through slack file action with safe descriptor output", async () => {
     const { tools, setFilesInfoResponse } = setup();
     const cacheDir = await mkdtemp(path.join(os.tmpdir(), "slack-file-action-test-"));
@@ -1400,12 +1448,14 @@ describe("registerSlackTools", () => {
       channel: "deployments",
       thread_ts: "222.333",
       text: "Threaded status",
+      files: [{ path: "/tmp/status.txt", filename: "status.txt" }],
     });
 
     expect(sendPinetSlackMessage).toHaveBeenCalledWith({
       threadId: "222.333",
       channel: "resolved:deployments",
       text: "Threaded status",
+      files: [{ path: "/tmp/status.txt", filename: "status.txt" }],
     });
     expect(slack).not.toHaveBeenCalledWith(
       "chat.postMessage",
@@ -1416,6 +1466,7 @@ describe("registerSlackTools", () => {
       thread_ts: "222.333",
       channel: "resolved:deployments",
       delivery: "pinet",
+      filesCount: 1,
     });
     expect(response.details).not.toHaveProperty("ts");
   });
@@ -1552,11 +1603,17 @@ describe("registerSlackTools", () => {
     expect(schemaEnvelope.data).toMatchObject({
       action: "post_channel",
       guardrail_tool: "slack:post_channel",
-      examples: [expect.objectContaining({ action: "post_channel" })],
     });
+    expect(schemaEnvelope.data).toEqual(
+      expect.objectContaining({
+        examples: expect.arrayContaining([expect.objectContaining({ action: "post_channel" })]),
+      }),
+    );
     expect(schemaResponse.content?.[0]?.text).toContain("args_schema");
     expect(JSON.stringify(schemaEnvelope.data)).toContain("output_controls");
     expect(JSON.stringify(schemaEnvelope.data)).toContain("response_format");
+    expect(JSON.stringify(schemaEnvelope.data)).toContain("files");
+    expect(JSON.stringify(schemaEnvelope.data)).toContain("Local file path to attach");
 
     const confirmationHelp = await dispatcher.execute("tool-help-confirm", {
       action: "help",

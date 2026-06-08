@@ -50,7 +50,7 @@ should use the colon form.
 
 - Thread/channel messaging: `post_channel`, `read`, `read_channel`, `export`
 - Lightweight acknowledgement: `react`
-- Files/snippets: `upload`, `file`; `slack_send.files` for text plus attachments in one reply
+- Files/snippets: `upload`, `file`; `slack_send.files` and `post_channel.files` for text plus attachments in one message
 - Time-based follow-up: `schedule`
 - People/timing: `presence`
 - Durable channel affordances: `pin`, `bookmark`
@@ -146,8 +146,11 @@ snippets:
 
 ## File workflows
 
-For outbound local files, use `slack_send` when the message should include both
-text and one or more files in a single Slack reply:
+For outbound local files, attach them to the message-posting surface you are
+already using. Use `slack_send.files` for owned assistant-thread replies, and
+`slack` action `post_channel` with `args.files` for explicit channel/thread
+posts. Both use the same file object shape and send text plus files in one Slack
+message:
 
 ```json
 {
@@ -157,6 +160,17 @@ text and one or more files in a single Slack reply:
     { "path": "./out/report.pdf", "title": "Report" },
     { "path": "/tmp/capture.bin", "filename": "capture.bin" }
   ]
+}
+```
+
+```json
+{
+  "action": "post_channel",
+  "args": {
+    "channel": "#deployments",
+    "text": "Here is the deploy evidence.",
+    "files": [{ "path": "/tmp/evidence.png", "filename": "evidence.png" }]
+  }
 }
 ```
 

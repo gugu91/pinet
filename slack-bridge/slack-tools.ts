@@ -147,6 +147,19 @@ const SLACK_OUTPUT_OPTION_PARAMETERS = {
 
 const SLACK_ACTIONS_WITH_FORMAT_ARG = new Set(["export"]);
 
+const SLACK_LOCAL_FILE_ATTACHMENT_PARAMETERS = Type.Array(
+  Type.Object({
+    path: Type.String({
+      description:
+        "Local file path to attach. For safety, only files inside the current working directory or system temp directory are allowed.",
+    }),
+    filename: Type.Optional(Type.String({ description: "Optional Slack filename override" })),
+    title: Type.Optional(Type.String({ description: "Optional Slack title" })),
+    filetype: Type.Optional(Type.String({ description: "Optional Slack filetype override" })),
+  }),
+  { description: "Optional local files to attach to the same Slack message as text." },
+);
+
 interface SlackActionToolDefinition extends ToolDefinition {
   name: string;
   description?: string;
@@ -194,6 +207,14 @@ const SLACK_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
     {
       action: "post_channel",
       args: { channel: "#deployments", text: "Deploy complete" },
+    },
+    {
+      action: "post_channel",
+      args: {
+        channel: "#deployments",
+        text: "Deploy evidence attached",
+        files: [{ path: "/tmp/evidence.png", filename: "evidence.png" }],
+      },
     },
   ],
   read_channel: [{ action: "read_channel", args: { channel: "#deployments", limit: 20 } }],
@@ -702,6 +723,29 @@ function asTrimmedSlackString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function extractSlackUploadMessageTs(
+  response: Record<string, unknown>,
+  channelId: string,
+): string | undefined {
+  const files = Array.isArray(response.files) ? response.files : [];
+  for (const fileValue of files) {
+    const file = asSlackObject(fileValue);
+    const shares = asSlackObject(file?.shares);
+    for (const shareKind of ["public", "private"] as const) {
+      const shareByChannel = asSlackObject(shares?.[shareKind]);
+      const channelShares = shareByChannel?.[channelId];
+      if (!Array.isArray(channelShares)) continue;
+      for (const shareValue of channelShares) {
+        const share = asSlackObject(shareValue);
+        const ts = asTrimmedSlackString(share?.ts);
+        if (ts) return ts;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function extractSlackCanvasPermalink(response: Record<string, unknown>): string | undefined {
   const direct =
     asTrimmedSlackString(response.permalink) ??
@@ -875,7 +919,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           ),
         ),
       );
-      await performSlackUploads({
+      const uploadResult = await performSlackUploads({
         uploads,
         channelId: input.channel,
         ...(input.threadTs ? { threadTs: input.threadTs } : {}),
@@ -883,8 +927,10 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         slack,
         token: getBotToken(),
       });
+      const uploadTs = extractSlackUploadMessageTs(uploadResult.response, input.channel);
       return {
-        threadTs: input.threadTs,
+        ...(uploadTs ? { ts: uploadTs } : {}),
+        threadTs: input.threadTs ?? uploadTs,
         channel: input.channel,
         blocksCount: blocks?.length ?? 0,
         delivery: "slack",
@@ -1891,24 +1937,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           description: "Optional Slack Block Kit blocks JSON array",
         }),
       ),
-      files: Type.Optional(
-        Type.Array(
-          Type.Object({
-            path: Type.String({
-              description:
-                "Local file path to attach. For safety, only files inside the current working directory or system temp directory are allowed.",
-            }),
-            filename: Type.Optional(
-              Type.String({ description: "Optional Slack filename override" }),
-            ),
-            title: Type.Optional(Type.String({ description: "Optional Slack title" })),
-            filetype: Type.Optional(
-              Type.String({ description: "Optional Slack filetype override" }),
-            ),
-          }),
-          { description: "Optional local files to attach to the same Slack reply as text." },
-        ),
-      ),
+      files: Type.Optional(SLACK_LOCAL_FILE_ATTACHMENT_PARAMETERS),
     }),
     async execute(_id, params) {
       requireToolPolicy(
@@ -2726,12 +2755,13 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           description: "Optional Slack Block Kit blocks JSON array",
         }),
       ),
+      files: Type.Optional(SLACK_LOCAL_FILE_ATTACHMENT_PARAMETERS),
     }),
     async execute(_id, params) {
       requireToolPolicy(
         "slack_post_channel",
         params.thread_ts,
-        `channel=${params.channel ?? getDefaultChannel() ?? ""} | thread_ts=${params.thread_ts ?? ""} | text=${params.text} | blocks=${summarizeSlackBlocksForPolicy(params.blocks)}`,
+        `channel=${params.channel ?? getDefaultChannel() ?? ""} | thread_ts=${params.thread_ts ?? ""} | text=${params.text} | blocks=${summarizeSlackBlocksForPolicy(params.blocks)} | files=${Array.isArray(params.files) ? params.files.length : 0}`,
       );
 
       const resolvedThreadChannel = await resolveTrackedThreadChannel(params.thread_ts);
@@ -2750,6 +2780,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         text: params.text,
         ...(params.thread_ts ? { threadTs: params.thread_ts } : {}),
         ...(params.blocks ? { blocks: params.blocks } : {}),
+        ...(params.files ? { files: params.files } : {}),
       });
       const ts = delivery.ts;
       const threadTs = params.thread_ts ?? delivery.threadTs;
@@ -2776,6 +2807,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           channel: channelId,
           blocksCount: delivery.blocksCount,
           delivery: delivery.delivery,
+          filesCount: Array.isArray(params.files) ? params.files.length : 0,
           ...(delivery.adapter ? { adapter: delivery.adapter } : {}),
           ...(delivery.messageId ? { messageId: delivery.messageId } : {}),
           ...(delivery.fallbackReason ? { fallbackReason: delivery.fallbackReason } : {}),
