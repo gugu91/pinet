@@ -2,6 +2,7 @@ import type {
   BrokerMessage,
   MessageAdapter,
   NormalizedMessageContent,
+  OutboundAttachmentFile,
   OutboundMessage,
   ThreadInfo,
 } from "./types.js";
@@ -40,6 +41,7 @@ export interface SendBrokerMessageInput {
   channel?: string;
   content?: NormalizedMessageContent;
   blocks?: ReadonlyArray<Record<string, unknown>>;
+  files?: ReadonlyArray<OutboundAttachmentFile>;
   agentName?: string;
   agentEmoji?: string;
   agentOwnerToken?: string;
@@ -130,6 +132,7 @@ export async function sendBrokerMessage(
     text: messageBody,
     ...(content ? { content } : {}),
     ...(input.blocks && input.blocks.length > 0 ? { blocks: input.blocks } : {}),
+    ...(input.files && input.files.length > 0 ? { files: input.files } : {}),
     ...(input.agentName ? { agentName: input.agentName } : {}),
     ...(input.agentEmoji ? { agentEmoji: input.agentEmoji } : {}),
     ...(input.agentOwnerToken ? { agentOwnerToken: input.agentOwnerToken } : {}),

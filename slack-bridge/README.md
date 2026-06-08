@@ -254,6 +254,7 @@ Cold Slack actions live behind the `slack` dispatcher:
 | `react`                | Add an emoji reaction to a message                                                |
 | `read`                 | Read messages from a thread                                                       |
 | `upload`               | Upload files, snippets, or diffs into Slack                                       |
+| `file`                 | Download Slack-hosted files to a controlled local temp cache by file ID           |
 | `schedule`             | Schedule a message for later delivery                                             |
 | `post_channel`         | Post to a channel (by name or ID)                                                 |
 | `delete`               | Delete a bot-posted message or an entire thread                                   |
@@ -307,7 +308,21 @@ migration.
 - **Uploads are for bulky artifacts.** Use `upload` for logs, screenshots,
   long diffs, and generated files instead of large inline messages. Inline
   uploads require `filename`; path uploads are guarded and must stay within the
-  current working directory or system temp directory.
+  current working directory or system temp directory. `slack_send` also accepts
+  `files: [{ path, filename?, title?, filetype? }]` so one assistant-thread
+  reply can contain both text and local binary attachments in the same Slack
+  file upload message. Slack external file uploads cannot include Block Kit in
+  that same message, so omit `blocks` when sending files or send a separate
+  block-only reply.
+- **Inbound Slack files are fetched explicitly.** Incoming file-share messages
+  preserve safe `slackFiles` metadata such as file ID, name, type, size, and
+  permalink, but private Slack download URLs are not exposed in normal tool
+  output. To inspect raw content, call dispatcher action `file` with
+  `op: "download"`, `file_id`, and optionally `thread_ts`, `message_ts`, and
+  `channel`. The bot fetches the file with Slack bot auth, stores it under the
+  system temp `pi-slack-files` cache with best-effort TTL cleanup, and returns a
+  descriptor containing the local path, filename, type, size, SHA-256, expiry,
+  and residual privacy risks.
 - **Upload host egress note.** The second upload leg goes to Slack file upload
   hosts (`files.slack.com`/`uploads.slack.com`) for the raw payload. In
   environments with restricted egress this can fail with `403` (proxy

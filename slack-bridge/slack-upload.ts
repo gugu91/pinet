@@ -53,10 +53,23 @@ export interface PerformSlackUploadOptions extends SlackUploadDeps {
   upload: PreparedSlackUpload;
   channelId: string;
   threadTs?: string;
+  initialComment?: string;
+}
+
+export interface PerformSlackUploadsOptions extends SlackUploadDeps {
+  uploads: readonly PreparedSlackUpload[];
+  channelId: string;
+  threadTs?: string;
+  initialComment?: string;
 }
 
 export interface CompletedSlackUpload {
   fileId: string;
+  response: SlackResult;
+}
+
+export interface CompletedSlackUploads {
+  fileIds: string[];
   response: SlackResult;
 }
 
@@ -266,14 +279,12 @@ export async function prepareSlackUpload(
   };
 }
 
-export async function performSlackUpload({
-  upload,
-  channelId,
-  threadTs,
-  slack,
-  token,
-  fetchImpl = fetch,
-}: PerformSlackUploadOptions): Promise<CompletedSlackUpload> {
+async function reserveAndUploadSlackFile(
+  upload: PreparedSlackUpload,
+  slack: SlackUploadDeps["slack"],
+  token: string,
+  fetchImpl: NonNullable<SlackUploadDeps["fetchImpl"]>,
+): Promise<{ fileId: string; title: string }> {
   let getUploadResponse: SlackResult;
   try {
     getUploadResponse = await slack(
@@ -349,11 +360,58 @@ export async function performSlackUpload({
     );
   }
 
+  return { fileId, title: upload.title };
+}
+
+export async function performSlackUploads({
+  uploads,
+  channelId,
+  threadTs,
+  initialComment,
+  slack,
+  token,
+  fetchImpl = fetch,
+}: PerformSlackUploadsOptions): Promise<CompletedSlackUploads> {
+  if (uploads.length === 0) {
+    throw new Error("At least one upload is required.");
+  }
+
+  const files = [];
+  for (const upload of uploads) {
+    files.push(await reserveAndUploadSlackFile(upload, slack, token, fetchImpl));
+  }
+
   const response = await slack("files.completeUploadExternal", token, {
-    files: [{ id: fileId, title: upload.title }],
+    files: files.map((file) => ({ id: file.fileId, title: file.title })),
     channel_id: channelId,
     ...(threadTs ? { thread_ts: threadTs } : {}),
+    ...(initialComment ? { initial_comment: initialComment } : {}),
   });
 
+  return { fileIds: files.map((file) => file.fileId), response };
+}
+
+export async function performSlackUpload({
+  upload,
+  channelId,
+  threadTs,
+  initialComment,
+  slack,
+  token,
+  fetchImpl = fetch,
+}: PerformSlackUploadOptions): Promise<CompletedSlackUpload> {
+  const { fileIds, response } = await performSlackUploads({
+    uploads: [upload],
+    channelId,
+    ...(threadTs ? { threadTs } : {}),
+    ...(initialComment ? { initialComment } : {}),
+    slack,
+    token,
+    fetchImpl,
+  });
+  const fileId = fileIds[0];
+  if (!fileId) {
+    throw new Error("Slack upload did not return a file ID.");
+  }
   return { fileId, response };
 }

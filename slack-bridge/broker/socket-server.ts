@@ -19,6 +19,7 @@ import type {
   AdapterCapabilityResult,
   MessageAdapter,
   NormalizedMessageContent,
+  OutboundAttachmentFile,
   PortLeaseAcquireInput,
   PortLeaseListOptions,
   PortLeaseReleaseInput,
@@ -836,6 +837,21 @@ export class BrokerSocketServer {
           (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
         )
       : undefined;
+    const files = Array.isArray(params.files)
+      ? params.files.flatMap((entry): OutboundAttachmentFile[] => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+          const file = entry as Record<string, unknown>;
+          if (typeof file.path !== "string" || file.path.trim().length === 0) return [];
+          return [
+            {
+              path: file.path,
+              ...(typeof file.filename === "string" ? { filename: file.filename } : {}),
+              ...(typeof file.title === "string" ? { title: file.title } : {}),
+              ...(typeof file.filetype === "string" ? { filetype: file.filetype } : {}),
+            },
+          ];
+        })
+      : undefined;
     let content: NormalizedMessageContent | undefined;
     if (params.content !== undefined) {
       if (!params.content || typeof params.content !== "object" || Array.isArray(params.content)) {
@@ -886,6 +902,7 @@ export class BrokerSocketServer {
         ...(channel ? { channel } : {}),
         ...(content ? { content } : {}),
         ...(blocks && blocks.length > 0 ? { blocks } : {}),
+        ...(files && files.length > 0 ? { files } : {}),
         ...(agentName ? { agentName } : {}),
         ...(agentEmoji ? { agentEmoji } : {}),
         ...(agentOwnerToken ? { agentOwnerToken } : {}),

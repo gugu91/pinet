@@ -411,7 +411,6 @@ describe("single-player-runtime", () => {
             title: "Incident notes",
             filetype: "markdown",
             permalink: "https://files.example/incident.md",
-            urlPrivate: "https://files.example/download/F123",
             mode: "snippet",
           },
         ],

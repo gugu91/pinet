@@ -119,7 +119,6 @@ describe("slack message context extraction", () => {
         filetype: "markdown",
         prettyType: "Markdown",
         permalink: "https://files.example/incident.md",
-        urlPrivate: "https://files.example/download/F123",
         mode: "snippet",
         size: 128,
       },

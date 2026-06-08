@@ -1,12 +1,12 @@
 export type SlackExportFormat = "markdown" | "json" | "plain";
 
 export interface SlackExportFileInput {
+  id?: string;
   name?: string;
   title?: string;
   mimetype?: string;
   filetype?: string;
   permalink?: string;
-  urlPrivate?: string;
   preview?: string;
 }
 
@@ -153,15 +153,17 @@ export function formatSlackExportTimestamp(ts?: string): string {
 
 function buildSlackFileSummary(file: SlackExportFileInput): string {
   const label = file.title ?? file.name ?? "attachment";
-  const url = file.permalink ?? file.urlPrivate;
   const type = file.filetype ?? file.mimetype;
   const parts = [`- ${label}`];
 
   if (type) {
     parts.push(`(${type})`);
   }
-  if (url) {
-    parts.push(`— ${url}`);
+  if (file.id) {
+    parts.push(`id=${file.id}`);
+  }
+  if (file.permalink) {
+    parts.push(`— ${file.permalink}`);
   }
 
   let line = parts.join(" ");
@@ -267,11 +269,11 @@ function buildJsonExport(options: BuildSlackThreadExportOptions): string {
         : {}),
       text: convertSlackMrkdwnToMarkdown(message.text ?? "", mentionNames),
       files: (message.files ?? []).map((file) => ({
+        id: file.id,
         title: file.title,
         name: file.name,
         type: file.filetype ?? file.mimetype,
         permalink: file.permalink,
-        url_private: file.urlPrivate,
         preview: file.preview,
       })),
     })),

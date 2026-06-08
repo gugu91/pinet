@@ -39,7 +39,8 @@ import {
 } from "./slack-export.js";
 import { normalizeReactionName } from "./reaction-triggers.js";
 import { resolveScheduledWakeupFireAt } from "./scheduled-wakeups.js";
-import { performSlackUpload, prepareSlackUpload } from "./slack-upload.js";
+import { fetchSlackFileToCache } from "./slack-file-access.js";
+import { performSlackUpload, performSlackUploads, prepareSlackUpload } from "./slack-upload.js";
 import { TtlCache } from "./ttl-cache.js";
 import {
   DEFAULT_SLACK_THREAD_STATUS,
@@ -59,6 +60,7 @@ export interface SlackPinetDeliveryInput {
   channel: string;
   text: string;
   blocks?: ReadonlyArray<Record<string, unknown>>;
+  files?: ReadonlyArray<{ path: string; filename?: string; title?: string; filetype?: string }>;
 }
 
 export interface SlackPinetDeliveryResult {
@@ -162,6 +164,16 @@ const SLACK_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
         content: "diff --git a/example b/example",
         filename: "changes.diff",
         filetype: "diff",
+        thread_ts: "1712345678.000100",
+      },
+    },
+  ],
+  file: [
+    {
+      action: "file",
+      args: {
+        op: "download",
+        file_id: "F0123456789",
         thread_ts: "1712345678.000100",
       },
     },
@@ -306,6 +318,7 @@ function isPinetDeliveryFallbackError(error: unknown): boolean {
     lower.includes("socket") ||
     lower.includes("no transport source") ||
     lower.includes("no transport channel") ||
+    lower.includes("only allows local file paths") ||
     lower.includes("no adapter") ||
     lower.includes("identity is unavailable")
   );
@@ -803,6 +816,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     text: string;
     threadTs?: string;
     blocks?: Array<Record<string, unknown>>;
+    files?: Array<{ path: string; filename?: string; title?: string; filetype?: string }>;
   }): Promise<{
     ts?: string;
     threadTs?: string;
@@ -824,6 +838,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
             channel: input.channel,
             text: input.text,
             ...(blocks ? { blocks } : {}),
+            ...(input.files ? { files: input.files } : {}),
           });
           return {
             threadTs: input.threadTs,
@@ -840,6 +855,43 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       }
     }
 
+    if (input.files && input.files.length > 0) {
+      if (blocks && blocks.length > 0) {
+        throw new Error(
+          "Slack text+file replies use Slack's external upload flow, which does not support Block Kit blocks in the same upload message. Omit blocks or send a separate block-only message.",
+        );
+      }
+      const uploads = await Promise.all(
+        input.files.map((file) =>
+          prepareSlackUpload(
+            {
+              path: file.path,
+              ...(file.filename ? { filename: file.filename } : {}),
+              ...(file.title ? { title: file.title } : {}),
+              ...(file.filetype ? { filetype: file.filetype } : {}),
+            },
+            process.cwd(),
+            os.tmpdir(),
+          ),
+        ),
+      );
+      await performSlackUploads({
+        uploads,
+        channelId: input.channel,
+        ...(input.threadTs ? { threadTs: input.threadTs } : {}),
+        initialComment: input.text,
+        slack,
+        token: getBotToken(),
+      });
+      return {
+        threadTs: input.threadTs,
+        channel: input.channel,
+        blocksCount: blocks?.length ?? 0,
+        delivery: "slack",
+        ...(fallbackReason ? { fallbackReason } : {}),
+      };
+    }
+
     const body: Record<string, unknown> = {
       channel: input.channel,
       text: input.text,
@@ -854,9 +906,10 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     if (input.threadTs) body.thread_ts = input.threadTs;
 
     const response = await slack("chat.postMessage", getBotToken(), body);
-    const ts = (response.message as { ts: string }).ts;
+    const message = isRecord(response.message) ? response.message : null;
+    const ts = typeof message?.ts === "string" ? message.ts : undefined;
     return {
-      ts,
+      ...(ts ? { ts } : {}),
       channel: input.channel,
       blocksCount: blocks?.length ?? 0,
       delivery: "slack",
@@ -930,7 +983,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     name: "slack",
     label: "Slack",
     description:
-      "Dispatcher for non-hot Slack actions: react, read, upload, schedule, presence, export, post_channel, read_channel, confirm_action, delete, pin, bookmark, create_channel, project_create, canvas_comments_read, canvas_create, canvas_update, modal_open, modal_push, modal_update, and help. Use slack_inbox and slack_send for hot-path inbox/reply work.",
+      "Dispatcher for non-hot Slack actions: react, read, upload, file, schedule, presence, export, post_channel, read_channel, confirm_action, delete, pin, bookmark, create_channel, project_create, canvas_comments_read, canvas_create, canvas_update, modal_open, modal_push, modal_update, and help. Use slack_inbox and slack_send for hot-path inbox/reply work.",
     promptSnippet:
       "Run non-hot Slack actions through a compact dispatcher. Use action='help' for the action catalogue or args.topic for a specific schema. Defaults to compact cli output; pass args.format='json' (or args.response_format='json' when the action owns format) or args.full=true for structured/full details.",
     promptGuidelines: [
@@ -942,7 +995,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     parameters: Type.Object({
       action: Type.String({
         description:
-          "Action name: help | react | read | upload | schedule | presence | export | post_channel | read_channel | confirm_action | delete | pin | bookmark | create_channel | project_create | canvas_comments_read | canvas_create | canvas_update | modal_open | modal_push | modal_update",
+          "Action name: help | react | read | upload | file | schedule | presence | export | post_channel | read_channel | confirm_action | delete | pin | bookmark | create_channel | project_create | canvas_comments_read | canvas_create | canvas_update | modal_open | modal_push | modal_update",
       }),
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {
@@ -1300,9 +1353,9 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         name?: string;
         title?: string;
         mimetype?: string;
+        id?: string;
         filetype?: string;
         permalink?: string;
-        urlPrivate?: string;
         preview?: string;
       }>;
     }>;
@@ -1347,17 +1400,12 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         authorName,
         text: typeof message.text === "string" ? message.text : "",
         files: rawFiles.map((file) => ({
+          id: typeof file.id === "string" ? file.id : undefined,
           name: typeof file.name === "string" ? file.name : undefined,
           title: typeof file.title === "string" ? file.title : undefined,
           mimetype: typeof file.mimetype === "string" ? file.mimetype : undefined,
           filetype: typeof file.filetype === "string" ? file.filetype : undefined,
           permalink: typeof file.permalink === "string" ? file.permalink : undefined,
-          urlPrivate:
-            typeof file.url_private_download === "string"
-              ? file.url_private_download
-              : typeof file.url_private === "string"
-                ? file.url_private
-                : undefined,
           preview: typeof file.preview === "string" ? file.preview : undefined,
         })),
       };
@@ -1843,12 +1891,30 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           description: "Optional Slack Block Kit blocks JSON array",
         }),
       ),
+      files: Type.Optional(
+        Type.Array(
+          Type.Object({
+            path: Type.String({
+              description:
+                "Local file path to attach. For safety, only files inside the current working directory or system temp directory are allowed.",
+            }),
+            filename: Type.Optional(
+              Type.String({ description: "Optional Slack filename override" }),
+            ),
+            title: Type.Optional(Type.String({ description: "Optional Slack title" })),
+            filetype: Type.Optional(
+              Type.String({ description: "Optional Slack filetype override" }),
+            ),
+          }),
+          { description: "Optional local files to attach to the same Slack reply as text." },
+        ),
+      ),
     }),
     async execute(_id, params) {
       requireToolPolicy(
         "slack_send",
         params.thread_ts,
-        `thread_ts=${params.thread_ts ?? ""} | text=${params.text} | blocks=${summarizeSlackBlocksForPolicy(params.blocks)}`,
+        `thread_ts=${params.thread_ts ?? ""} | text=${params.text} | blocks=${summarizeSlackBlocksForPolicy(params.blocks)} | files=${Array.isArray(params.files) ? params.files.length : 0}`,
       );
 
       const channel = await resolveSlackSendChannel(params.thread_ts);
@@ -1865,6 +1931,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         text: params.text,
         ...(params.thread_ts ? { threadTs: params.thread_ts } : {}),
         ...(params.blocks ? { blocks: params.blocks } : {}),
+        ...(params.files ? { files: params.files } : {}),
       });
       const ts = delivery.ts;
       const threadTs = params.thread_ts ?? delivery.threadTs;
@@ -1894,6 +1961,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           channel,
           blocksCount: delivery.blocksCount,
           delivery: delivery.delivery,
+          filesCount: Array.isArray(params.files) ? params.files.length : 0,
           ...(delivery.adapter ? { adapter: delivery.adapter } : {}),
           ...(delivery.messageId ? { messageId: delivery.messageId } : {}),
           ...(delivery.fallbackReason ? { fallbackReason: delivery.fallbackReason } : {}),
@@ -2063,6 +2131,72 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           ...(permalink ? { permalink } : {}),
           ...(upload.resolvedPath ? { path: upload.resolvedPath } : {}),
         },
+      };
+    },
+  });
+
+  registerSlackAction({
+    name: "slack_file",
+    label: "Slack File Access",
+    description:
+      "Download a Slack-hosted file from a known file ID, optionally verified against a thread/message, into controlled local temp cache storage without exposing private Slack URLs.",
+    promptSnippet:
+      "Use slack action=file with op=download to turn a Slack-hosted file_id from slackFiles metadata into a safe local file descriptor/path. Private Slack download URLs are never returned.",
+    parameters: Type.Object({
+      op: Type.String({ description: "Operation. Currently only download is supported." }),
+      file_id: Type.String({ description: "Slack file ID, for example F0123456789." }),
+      thread_ts: Type.Optional(
+        Type.String({
+          description:
+            "Optional Slack thread timestamp. When provided, the file must appear in that thread.",
+        }),
+      ),
+      message_ts: Type.Optional(
+        Type.String({
+          description:
+            "Optional Slack message timestamp inside the thread. When provided, the file must appear on that exact message.",
+        }),
+      ),
+      channel: Type.Optional(
+        Type.String({
+          description:
+            "Optional channel name or ID. Omit when thread_ts is tracked by the Slack bridge.",
+        }),
+      ),
+    }),
+    async execute(_id, params) {
+      if (params.op !== "download") {
+        throw new Error("slack file op must be download.");
+      }
+      requireToolPolicy(
+        "slack_file",
+        params.thread_ts,
+        `op=download | file_id=${params.file_id} | thread_ts=${params.thread_ts ?? ""} | message_ts=${params.message_ts ?? ""} | channel=${params.channel ?? ""}`,
+      );
+
+      const channelId = params.thread_ts
+        ? await resolveSlackTargetChannel(params.thread_ts, params.channel)
+        : params.channel
+          ? await resolveChannel(params.channel)
+          : undefined;
+      const descriptor = await fetchSlackFileToCache(
+        params.file_id,
+        {
+          ...(channelId ? { channelId } : {}),
+          ...(params.thread_ts ? { threadTs: params.thread_ts } : {}),
+          ...(params.message_ts ? { messageTs: params.message_ts } : {}),
+        },
+        { slack, token: getBotToken() },
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Downloaded Slack file ${descriptor.fileId} to ${descriptor.path}.`,
+          },
+        ],
+        details: descriptor,
       };
     },
   });

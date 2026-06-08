@@ -1,3 +1,5 @@
+import os from "node:os";
+
 import {
   addSlackReaction,
   buildSlackThreadRuntimeScope,
@@ -38,6 +40,7 @@ import {
   DEFAULT_SLACK_THREAD_STATUS,
   SlackThreadStatusManager,
 } from "../../slack-thread-status.js";
+import { performSlackUploads, prepareSlackUpload } from "../../slack-upload.js";
 import type {
   AdapterCapabilityRequest,
   AdapterCapabilityResult,
@@ -241,7 +244,37 @@ export class SlackAdapter implements MessageAdapter {
       };
     }
 
-    await this.callSlack("chat.postMessage", this.config.botToken, body);
+    if (msg.files && msg.files.length > 0) {
+      if (slackBlocks && slackBlocks.length > 0) {
+        throw new Error(
+          "Slack text+file replies use Slack's external upload flow, which does not support Block Kit blocks in the same upload message. Omit blocks or send a separate block-only message.",
+        );
+      }
+      const uploads = await Promise.all(
+        msg.files.map((file) =>
+          prepareSlackUpload(
+            {
+              path: file.path,
+              ...(file.filename ? { filename: file.filename } : {}),
+              ...(file.title ? { title: file.title } : {}),
+              ...(file.filetype ? { filetype: file.filetype } : {}),
+            },
+            process.cwd(),
+            os.tmpdir(),
+          ),
+        ),
+      );
+      await performSlackUploads({
+        uploads,
+        channelId: msg.channel,
+        threadTs: msg.threadId,
+        initialComment: msg.content?.text ?? msg.text,
+        slack: this.callSlack.bind(this),
+        token: this.config.botToken,
+      });
+    } else {
+      await this.callSlack("chat.postMessage", this.config.botToken, body);
+    }
     if (this.shuttingDown) return;
 
     const pending = this.pendingEyes.get(msg.threadId);
