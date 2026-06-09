@@ -40,7 +40,7 @@ describe("createAgentPromptGuidance", () => {
     expect(result.systemPrompt).toContain("BASE\n\nIDENTITY 1\nIDENTITY 2\nIDENTITY 3");
     expect(result.systemPrompt).toContain("COMMUNICATION STYLE:");
     expect(result.systemPrompt).toContain("For `Cobalt Olive Crane`, aim for a");
-    expect(result.systemPrompt).toContain("Reaction-triggered requests may appear");
+    expect(result.systemPrompt).toContain("Slack emoji reactions are ignored by default");
     expect(result.systemPrompt).not.toContain("PINET SKIN (");
     expect(result.systemPrompt).not.toContain("Pinet BROKER");
     expect(result.systemPrompt).not.toContain("TASK WORKFLOW:");
@@ -48,7 +48,7 @@ describe("createAgentPromptGuidance", () => {
       result.systemPrompt.indexOf("COMMUNICATION STYLE:"),
     );
     expect(result.systemPrompt.indexOf("COMMUNICATION STYLE:")).toBeLessThan(
-      result.systemPrompt.indexOf("Reaction-triggered requests may appear"),
+      result.systemPrompt.indexOf("Slack emoji reactions are ignored by default"),
     );
   });
 

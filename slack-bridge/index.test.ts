@@ -861,7 +861,7 @@ describe("slack-bridge top-level shutdown", () => {
     expect(nextPrompt.startsWith(`${sentinelSystemPrompt}\n\n`)).toBe(true);
     expect(nextPrompt).toContain("First message in a new thread:");
     expect(nextPrompt).toContain("COMMUNICATION STYLE:");
-    expect(nextPrompt).toContain("Reaction-triggered requests may appear");
+    expect(nextPrompt).toContain("Slack emoji reactions are ignored by default");
     const brokerPolicyText = "the Pinet BROKER for a fully autonomous / unchained broker lane";
     expect(nextPrompt).toContain(brokerPolicyText);
     expect(nextPrompt).toContain("🚫 BROKER TOOL RESTRICTION:");
@@ -871,11 +871,11 @@ describe("slack-bridge top-level shutdown", () => {
     expect(nextPrompt.indexOf("COMMUNICATION STYLE:")).toBeGreaterThan(
       nextPrompt.indexOf("First message in a new thread:"),
     );
-    expect(nextPrompt.indexOf("Reaction-triggered requests may appear")).toBeGreaterThan(
+    expect(nextPrompt.indexOf("Slack emoji reactions are ignored by default")).toBeGreaterThan(
       nextPrompt.indexOf("COMMUNICATION STYLE:"),
     );
     expect(nextPrompt.indexOf(brokerPolicyText)).toBeGreaterThan(
-      nextPrompt.indexOf("Reaction-triggered requests may appear"),
+      nextPrompt.indexOf("Slack emoji reactions are ignored by default"),
     );
     expect(nextPrompt.indexOf("🚫 BROKER TOOL RESTRICTION:")).toBeGreaterThan(
       nextPrompt.indexOf(brokerPolicyText),

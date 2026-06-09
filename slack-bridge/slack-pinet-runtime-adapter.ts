@@ -73,6 +73,17 @@ function rememberKnownSlackThread(
   });
 }
 
+export function isAuthorizedReactionThread(
+  broker: Broker,
+  threadTs: string,
+  channelId: string,
+): boolean {
+  const thread = broker.db.getThread(threadTs);
+  if (!thread || thread.source !== "slack" || thread.channel !== channelId) return false;
+  if (thread.ownerAgent) return true;
+  return readStoredSlackThreadContext(thread.metadata) !== null;
+}
+
 export function createSlackPinetRuntimeAdapterFactory(
   deps: SlackPinetRuntimeAdapterDeps,
 ): PinetRuntimeAdapterFactory {
@@ -92,6 +103,8 @@ export function createSlackPinetRuntimeAdapterFactory(
       rememberKnownThread: (threadTs: string, channelId: string, context) => {
         rememberKnownSlackThread(broker, threadTs, channelId, context);
       },
+      isReactionThreadAuthorized: (threadTs: string, channelId: string) =>
+        isAuthorizedReactionThread(broker, threadTs, channelId),
       onAppHomeOpened: async ({ userId }) => {
         await deps.onAppHomeOpened(userId, ctx);
       },

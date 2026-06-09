@@ -308,6 +308,45 @@ describe("single-player-runtime", () => {
     expect(spies.maybeDrainInboxIfIdle).toHaveBeenCalledWith(ctx);
   });
 
+  it("ignores opt-in reactions in uninvoked single-player Slack threads", async () => {
+    const state: TestState = {
+      threads: new Map(),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    const ctx = createContext();
+    const { deps, spies } = createDeps(state, {
+      getReactionCommand: (reactionName) =>
+        reactionName === "white_check_mark" ? { action: "approve", prompt: "Approve." } : undefined,
+      fetchSlackMessageByTs: vi.fn(async () => ({
+        ts: "100.1",
+        thread_ts: "100.0",
+        text: "normal Slack thread",
+        user: "U_TARGET",
+      })),
+    });
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(ctx);
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+    await socketConfig?.onReactionAdded?.({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "white_check_mark",
+      item: { type: "message", channel: "C123", ts: "100.1" },
+      event_ts: "999.1",
+    });
+
+    expect(spies.pushInboxMessage).not.toHaveBeenCalled();
+    expect(spies.addReaction).not.toHaveBeenCalled();
+    expect(spies.persistState).not.toHaveBeenCalled();
+    expect(state.threads.size).toBe(0);
+    expect(state.inbox).toHaveLength(0);
+  });
+
   it("interrupts busy single-player turns from octagonal-sign reactions", async () => {
     const state: TestState = {
       threads: new Map(),
@@ -334,6 +373,12 @@ describe("single-player-runtime", () => {
         user: "U_TARGET",
       })),
       resolveUser: vi.fn(async () => "Alice"),
+    });
+    state.threads.set("100.1", {
+      channelId: "C123",
+      threadTs: "100.1",
+      userId: "U_TARGET",
+      source: "slack",
     });
     const runtime = createSinglePlayerRuntime(deps);
 

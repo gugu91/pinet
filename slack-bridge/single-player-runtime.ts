@@ -288,12 +288,6 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
     try {
       const isInterruptReaction = command.action === "interrupt";
       const reactedMessage = await deps.fetchSlackMessageByTs(item.channel, item.ts);
-      if (!reactedMessage) {
-        const reason = isInterruptReaction
-          ? "identify Slack thread for interrupt reaction"
-          : "fetch reacted message";
-        throw new Error(`Unable to ${reason} ${item.ts} in channel ${item.channel}`);
-      }
 
       const threadTs =
         (reactedMessage?.thread_ts as string | undefined) ??
@@ -301,13 +295,9 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         item.ts;
 
       const threads = deps.getThreads();
-      if (!threads.has(threadTs)) {
-        threads.set(threadTs, {
-          channelId: item.channel,
-          threadTs,
-          userId: (reactedMessage?.user as string | undefined) ?? user,
-          source: "slack",
-        });
+      const threadInfo = threads.get(threadTs);
+      if (!threadInfo || threadInfo.channelId !== item.channel) {
+        return;
       }
 
       const ownership = await ensureLocalThreadOwnership(item.channel, threadTs);
@@ -339,7 +329,9 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
       const reactedMessageText =
         typeof reactedMessage?.text === "string" && reactedMessage.text.trim().length > 0
           ? reactedMessage.text
-          : "(no text)";
+          : reactedMessage
+            ? "(no text)"
+            : "(message text unavailable; Slack did not return the reacted message, so use the channel/thread/message ids for context)";
       const reactionMessage = buildReactionTriggerMessage({
         reactionName,
         command,
@@ -352,7 +344,6 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
       });
 
       ctx.ui.notify(`${reactorName} reacted with :${reactionName}:`, "info");
-      const threadInfo = threads.get(threadTs);
       deps.pushInboxMessage({
         channel: item.channel,
         threadTs,
