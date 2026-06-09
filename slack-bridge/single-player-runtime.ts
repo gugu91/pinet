@@ -301,13 +301,9 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         item.ts;
 
       const threads = deps.getThreads();
-      if (!threads.has(threadTs)) {
-        threads.set(threadTs, {
-          channelId: item.channel,
-          threadTs,
-          userId: (reactedMessage?.user as string | undefined) ?? user,
-          source: "slack",
-        });
+      const threadInfo = threads.get(threadTs);
+      if (!threadInfo) {
+        return;
       }
 
       const ownership = await ensureLocalThreadOwnership(item.channel, threadTs);
@@ -352,7 +348,6 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
       });
 
       ctx.ui.notify(`${reactorName} reacted with :${reactionName}:`, "info");
-      const threadInfo = threads.get(threadTs);
       deps.pushInboxMessage({
         channel: item.channel,
         threadTs,

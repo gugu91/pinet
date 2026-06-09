@@ -78,6 +78,12 @@ export interface SlackAdapterConfig {
     channelId: string,
     context?: ParsedThreadStarted["context"] | null,
   ) => void;
+  /**
+   * Gate reaction-trigger handling after the reacted message thread is known.
+   * Use this to require an already authorized/Pinet-owned thread before an
+   * opt-in reaction command can enqueue work or mutate durable thread state.
+   */
+  isReactionThreadAuthorized?: (threadTs: string, channelId: string) => boolean;
   /** Best-effort callback for Home tab opens. */
   onAppHomeOpened?: (event: ParsedAppHomeOpened) => Promise<void> | void;
 }
@@ -453,17 +459,9 @@ export class SlackAdapter implements MessageAdapter {
         (reactedMessage?.ts as string | undefined) ??
         item.ts;
 
-      if (!this.getThread(threadTs)) {
-        this.threads.set(threadTs, {
-          channelId: item.channel,
-          threadTs,
-          userId: (reactedMessage?.user as string | undefined) ?? userId,
-        });
-        try {
-          this.config.rememberKnownThread?.(threadTs, item.channel, null);
-        } catch {
-          /* best effort — DB cache sync must not break reaction handling */
-        }
+      const existingThread = this.getThread(threadTs);
+      if (!existingThread || !this.isReactionThreadAuthorized(threadTs, item.channel)) {
+        return;
       }
 
       const reactorName = isInterruptReaction
@@ -490,7 +488,6 @@ export class SlackAdapter implements MessageAdapter {
             ? "(no text)"
             : "(message text unavailable; Slack did not return the reacted message, so use the channel/thread/message ids for context)";
 
-      const threadInfo = this.getThread(threadTs);
       const reactionEventTs = (evt.event_ts as string | undefined) ?? item.ts;
       this.inboundHandler?.({
         source: "slack",
@@ -537,7 +534,7 @@ export class SlackAdapter implements MessageAdapter {
         },
         scope: buildSlackThreadRuntimeScope({
           channelId: item.channel,
-          context: threadInfo?.context,
+          context: existingThread.context,
         }),
       });
 
@@ -546,6 +543,10 @@ export class SlackAdapter implements MessageAdapter {
       console.error(`[slack-adapter] reaction trigger failed: ${errorMsg(error)}`);
       await this.addReaction(item.channel, item.ts, "x");
     }
+  }
+
+  private isReactionThreadAuthorized(threadTs: string, channelId: string): boolean {
+    return this.config.isReactionThreadAuthorized?.(threadTs, channelId) ?? true;
   }
 
   private async onMessage(evt: Record<string, unknown>): Promise<void> {

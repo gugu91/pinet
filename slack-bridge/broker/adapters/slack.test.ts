@@ -1576,7 +1576,169 @@ describe("SlackAdapter — reaction triggers", () => {
     });
   }
 
-  it("queues mapped reaction_added events with structured context and acknowledges with ✅", async () => {
+  function seedKnownThread(
+    adapter: SlackAdapter,
+    threadTs: string,
+    channelId: string,
+    userId = "U_TARGET",
+  ): void {
+    (
+      adapter as unknown as {
+        threads: {
+          set: (
+            key: string,
+            value: { channelId: string; threadTs: string; userId: string },
+          ) => void;
+        };
+      }
+    ).threads.set(threadTs, { channelId, threadTs, userId });
+  }
+
+  it("ignores reaction_added events by default without fetching messages or acknowledging", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      throw new Error(`default reaction no-op should not call Slack APIs: ${String(input)}`);
+    });
+
+    const rememberKnownThread = vi.fn();
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      rememberKnownThread,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "eyes",
+      item_user: "U_TARGET",
+      item: {
+        type: "message",
+        channel: "C123",
+        ts: "111.333",
+      },
+      event_ts: "999.000",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(rememberKnownThread).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(adapter.getTrackedThreadIds()).toEqual(new Set());
+  });
+
+  it("ignores opt-in approve reactions in uninvoked Slack threads without remembering or acknowledging", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({
+          messages: [
+            {
+              ts: "111.333",
+              thread_ts: "111.222",
+              text: "Looks good to me",
+              user: "U_TARGET",
+            },
+          ],
+        });
+      }
+      throw new Error(`uninvoked reaction should only fetch the reacted message: ${url}`);
+    });
+
+    const rememberKnownThread = vi.fn();
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      reactionCommands: { white_check_mark: "approve" },
+      rememberKnownThread,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "white_check_mark",
+      item_user: "U_TARGET",
+      item: {
+        type: "message",
+        channel: "C123",
+        ts: "111.333",
+      },
+      event_ts: "999.000",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(rememberKnownThread).not.toHaveBeenCalled();
+    expect(adapter.getTrackedThreadIds()).toEqual(new Set());
+    const endpoints = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(endpoints).toEqual(["https://slack.com/api/conversations.history"]);
+  });
+
+  it("continues to route ordinary Slack text messages when reaction triggers are disabled by default", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const rawBody = typeof init?.body === "string" ? init.body : "";
+      const parsedBody = rawBody.startsWith("{")
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : Object.fromEntries(new URLSearchParams(rawBody));
+
+      if (url.endsWith("/users.info")) {
+        expect(parsedBody.user).toBe("U_ALLOWED");
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      if (url.endsWith("/reactions.add")) {
+        expect(parsedBody).toEqual({ channel: "D1", timestamp: "1.1", name: "eyes" });
+        return mockSlackResponse();
+      }
+
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onMessage: (evt: Record<string, unknown>) => Promise<void> }
+    ).onMessage({
+      type: "message",
+      user: "U_ALLOWED",
+      text: "hello from Slack",
+      channel: "D1",
+      channel_type: "im",
+      ts: "1.1",
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "slack",
+        threadId: "1.1",
+        channel: "D1",
+        userId: "U_ALLOWED",
+        userName: "Alice Example",
+        text: "hello from Slack",
+      }),
+    );
+  });
+
+  it("queues opt-in mapped reaction_added events with structured context and acknowledges with ✅", async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const rawBody = typeof init?.body === "string" ? init.body : "";
@@ -1622,6 +1784,7 @@ describe("SlackAdapter — reaction triggers", () => {
       rememberKnownThread,
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "111.222", "C123");
 
     const handler = vi.fn();
     adapter.onInbound(handler);
@@ -1641,7 +1804,7 @@ describe("SlackAdapter — reaction triggers", () => {
       event_ts: "999.000",
     });
 
-    expect(rememberKnownThread).toHaveBeenCalledWith("111.222", "C123", null);
+    expect(rememberKnownThread).not.toHaveBeenCalled();
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "slack",
@@ -1683,7 +1846,7 @@ describe("SlackAdapter — reaction triggers", () => {
     });
   });
 
-  it("routes octagonal-sign reactions as explicit interrupt controls for the thread owner", async () => {
+  it("routes opt-in octagonal-sign reactions as explicit interrupt controls for the thread owner", async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const rawBody = typeof init?.body === "string" ? init.body : "";
@@ -1724,8 +1887,10 @@ describe("SlackAdapter — reaction triggers", () => {
       botToken: "xoxb-test",
       appToken: "xapp-test",
       allowAllWorkspaceUsers: true,
+      reactionCommands: { octagonal_sign: "interrupt" },
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "111.222", "C123");
 
     const handler = vi.fn();
     adapter.onInbound(handler);
@@ -1767,7 +1932,7 @@ describe("SlackAdapter — reaction triggers", () => {
     );
   });
 
-  it("does not route interrupt controls when Slack cannot identify the reacted message thread", async () => {
+  it("does not route opt-in interrupt controls when Slack cannot identify the reacted message thread", async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url.endsWith("/conversations.history")) {
@@ -1783,6 +1948,7 @@ describe("SlackAdapter — reaction triggers", () => {
       botToken: "xoxb-test",
       appToken: "xapp-test",
       allowAllWorkspaceUsers: true,
+      reactionCommands: { octagonal_sign: "interrupt" },
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
 
@@ -1845,6 +2011,7 @@ describe("SlackAdapter — reaction triggers", () => {
       reactionCommands: { rotating_light: "interrupt" },
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "222.222", "C123");
 
     const handler = vi.fn();
     adapter.onInbound(handler);
@@ -1873,7 +2040,7 @@ describe("SlackAdapter — reaction triggers", () => {
     );
   });
 
-  it("routes arrow-up steering reactions even when Slack cannot fetch the reacted message", async () => {
+  it("routes opt-in arrow-up steering reactions even when Slack cannot fetch the reacted message", async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const rawBody = typeof init?.body === "string" ? init.body : "";
@@ -1905,8 +2072,10 @@ describe("SlackAdapter — reaction triggers", () => {
       botToken: "xoxb-test",
       appToken: "xapp-test",
       allowAllWorkspaceUsers: true,
+      reactionCommands: { arrow_up: "steer" },
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "111.333", "C123");
 
     const handler = vi.fn();
     adapter.onInbound(handler);

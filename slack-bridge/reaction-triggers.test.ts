@@ -24,15 +24,12 @@ describe("normalizeReactionName", () => {
 });
 
 describe("resolveReactionCommands", () => {
-  it("provides default mappings for summary and file-issue triggers", () => {
+  it("returns no reaction mappings by default", () => {
     const commands = resolveReactionCommands(undefined);
-    expect(commands.get("memo")?.action).toBe("summarize");
-    expect(commands.get("bug")?.action).toBe("file-issue");
-    expect(commands.get("arrow_up")?.action).toBe("steer");
-    expect(commands.get("octagonal_sign")?.action).toBe("interrupt");
+    expect(commands.size).toBe(0);
   });
 
-  it("merges custom settings keyed by emoji or alias", () => {
+  it("enables only custom settings keyed by emoji or alias", () => {
     const commands = resolveReactionCommands({
       "👀": "review",
       ":repeat:": { action: "retry", prompt: "Retry the prior response right now." },
@@ -40,6 +37,33 @@ describe("resolveReactionCommands", () => {
 
     expect(commands.get("eyes")?.action).toBe("review");
     expect(commands.get("repeat")?.prompt).toBe("Retry the prior response right now.");
+    expect(commands.has("bug")).toBe(false);
+    expect(commands.has("arrow_up")).toBe(false);
+    expect(commands.has("octagonal_sign")).toBe(false);
+  });
+
+  it("uses preset action and prompt when an opt-in reaction config omits them", () => {
+    const commands = resolveReactionCommands({
+      ":arrow_up:": {},
+    });
+
+    expect(commands.get("arrow_up")).toEqual({
+      action: "steer",
+      prompt:
+        "Treat the reacted-to message as steering. Read the durable message context, then prioritize it as an explicit operator instruction if it is relevant and safe.",
+    });
+  });
+
+  it("uses the configured action prompt when an opt-in preset reaction overrides action", () => {
+    const commands = resolveReactionCommands({
+      ":arrow_up:": { action: "fetch-url" },
+    });
+
+    expect(commands.get("arrow_up")).toEqual({
+      action: "fetch-url",
+      prompt:
+        "If the reacted message contains a URL, fetch the linked page and summarize the important information for the user.",
+    });
   });
 });
 
@@ -76,9 +100,9 @@ describe("buildReactionTriggerMessage", () => {
 });
 
 describe("buildReactionPromptGuidelines", () => {
-  it("explains that reaction-triggered requests are structured inbox messages", () => {
+  it("explains that emoji reactions are ignored unless an opt-in structured request appears", () => {
     const joined = buildReactionPromptGuidelines().join(" ");
+    expect(joined).toContain("Slack emoji reactions are ignored by default");
     expect(joined).toContain("Reaction trigger from Slack");
-    expect(joined).toContain("emoji reactions");
   });
 });

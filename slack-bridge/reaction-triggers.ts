@@ -51,7 +51,7 @@ const REACTION_DISPLAY: Record<string, string> = {
   octagonal_sign: "🛑",
 };
 
-export const DEFAULT_REACTION_COMMANDS: Record<string, ReactionCommandTemplate> = {
+export const REACTION_COMMAND_PRESETS: Record<string, ReactionCommandTemplate> = {
   memo: {
     action: "summarize",
     prompt:
@@ -104,6 +104,11 @@ export const DEFAULT_REACTION_COMMANDS: Record<string, ReactionCommandTemplate> 
   },
 };
 
+// Slack emoji reactions are deliberately no-op by default. Operators must opt in
+// per reaction through settings.reactionCommands before any reaction can enqueue
+// Pinet work, steering, reviews, or interrupt controls.
+export const DEFAULT_REACTION_COMMANDS: Record<string, ReactionCommandTemplate> = {};
+
 function normalizeReactionNameOrNull(input: string): string | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
@@ -129,25 +134,25 @@ export function normalizeReactionName(input: string): string {
 function buildDefaultPromptForAction(action: string): string {
   switch (action) {
     case "summarize":
-      return DEFAULT_REACTION_COMMANDS.memo.prompt;
+      return REACTION_COMMAND_PRESETS.memo.prompt;
     case "file-issue":
-      return DEFAULT_REACTION_COMMANDS.bug.prompt;
+      return REACTION_COMMAND_PRESETS.bug.prompt;
     case "review":
-      return DEFAULT_REACTION_COMMANDS.eyes.prompt;
+      return REACTION_COMMAND_PRESETS.eyes.prompt;
     case "approve":
-      return DEFAULT_REACTION_COMMANDS.white_check_mark.prompt;
+      return REACTION_COMMAND_PRESETS.white_check_mark.prompt;
     case "retry":
-      return DEFAULT_REACTION_COMMANDS.repeat.prompt;
+      return REACTION_COMMAND_PRESETS.repeat.prompt;
     case "steer":
-      return DEFAULT_REACTION_COMMANDS.arrow_up.prompt;
+      return REACTION_COMMAND_PRESETS.arrow_up.prompt;
     case "interrupt":
-      return DEFAULT_REACTION_COMMANDS.octagonal_sign.prompt;
+      return REACTION_COMMAND_PRESETS.octagonal_sign.prompt;
     case "search":
-      return DEFAULT_REACTION_COMMANDS.mag.prompt;
+      return REACTION_COMMAND_PRESETS.mag.prompt;
     case "track":
-      return DEFAULT_REACTION_COMMANDS.pushpin.prompt;
+      return REACTION_COMMAND_PRESETS.pushpin.prompt;
     case "fetch-url":
-      return DEFAULT_REACTION_COMMANDS.globe_with_meridians.prompt;
+      return REACTION_COMMAND_PRESETS.globe_with_meridians.prompt;
     default:
       return `Carry out the "${action}" action for the reacted Slack message or thread, using the included context before you decide what to do.`;
   }
@@ -178,9 +183,17 @@ export function resolveReactionCommands(
 
     if (!config || typeof config !== "object") continue;
 
+    const preset = REACTION_COMMAND_PRESETS[normalizedReaction];
+    const configuredAction = config.action?.trim();
     const action =
-      config.action?.trim() || resolved.get(normalizedReaction)?.action || normalizedReaction;
-    const prompt = config.prompt?.trim() || buildDefaultPromptForAction(action);
+      configuredAction ||
+      resolved.get(normalizedReaction)?.action ||
+      preset?.action ||
+      normalizedReaction;
+    const prompt =
+      config.prompt?.trim() ||
+      (configuredAction ? buildDefaultPromptForAction(action) : preset?.prompt) ||
+      buildDefaultPromptForAction(action);
     resolved.set(normalizedReaction, { action, prompt });
   }
 
@@ -222,7 +235,7 @@ export function buildReactionTriggerMessage(input: ReactionTriggerMessageInput):
 
 export function buildReactionPromptGuidelines(): string[] {
   return [
-    "Reaction-triggered requests may appear in your Slack inbox as structured 'Reaction trigger from Slack:' messages.",
-    "Treat them as explicit user requests keyed off emoji reactions. Use the included action, reacted message text, and thread context to decide what to do.",
+    "Slack emoji reactions are ignored by default and should not be treated as work unless the extension has already delivered an explicit structured 'Reaction trigger from Slack:' inbox message from an authorized Pinet thread.",
+    "If such an opt-in reaction-triggered request appears, treat it as an explicit user instruction tied to the referenced Slack message or thread; never infer work from a plain emoji reaction alone or from reactions in ordinary uninvoked Slack threads.",
   ];
 }

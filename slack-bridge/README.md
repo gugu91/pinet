@@ -234,7 +234,7 @@ Messages queue while the agent is busy. When the agent finishes, it automaticall
 
 ### Reaction triggers
 
-Configured emoji reactions create structured Pinet requests from the reacted-to Slack message. The default set includes `:arrow_up:` / ⬆️ as `steer`, which marks and redelivers the referenced message as steering so the current thread owner sees an unread operator instruction when relevant and safe. The default `:octagonal_sign:` / 🛑 mapping sends an explicit `interrupt` control to the current thread owner; it aborts the active turn when the owner is busy, but does not reload or exit the process. Pinet adds ✅ when it accepts the reaction-triggered request. If it cannot process the reaction at all, it adds ❌; check broker logs for the underlying Slack/API error. When Slack cannot return the reacted message text, Pinet still routes the reaction with channel/thread/message IDs so steering reactions do not fail solely because message lookup was unavailable.
+Slack emoji reactions are ignored by default: they do not enqueue Pinet work, trigger reviews, steer agents, interrupt owners, or cause broker/worker replies. To opt in deliberately, configure `reactionCommands` for the exact emoji aliases that should become structured Pinet requests from the reacted-to Slack message. Even opted-in reactions are accepted only inside an already authorized Pinet thread (for example a thread with a current Pinet owner or persisted Slack assistant-thread context); reactions in ordinary, uninvoked Slack channel threads remain no-op. Pinet adds ✅ only when it accepts an opt-in reaction-triggered request. If it cannot process an opted-in reaction in an authorized thread, it adds ❌; check broker logs for the underlying Slack/API error. When Slack cannot return the reacted message text, Pinet still routes configured non-interrupt reactions with channel/thread/message IDs so steering reactions do not fail solely because message lookup was unavailable.
 
 ### Available tools
 
@@ -357,10 +357,13 @@ migration.
 ...` string from the error, request confirmation, wait for the user's approval
   via `slack_inbox`, then retry the guarded call unchanged. Batched
   multi-thread Slack turns cannot satisfy a single-thread confirmation.
-- **Reaction and interaction triggers are explicit tasks.** Reaction-triggered
-  requests and Block Kit/modal interaction payloads arrive through
-  `slack_inbox` with metadata; treat them as user instructions tied to the
-  referenced Slack thread or message.
+- **Plain emoji reactions are not tasks.** Slack emoji reactions are ignored
+  unless `reactionCommands` explicitly opts that emoji into structured
+  reaction-trigger handling and the reacted message belongs to an already
+  authorized Pinet thread. If an opt-in reaction-triggered request or a Block
+  Kit/modal interaction payload arrives through `slack_inbox` with metadata,
+  treat it as a user instruction tied to the referenced Slack thread or
+  message.
 
 #### Common dispatcher examples
 

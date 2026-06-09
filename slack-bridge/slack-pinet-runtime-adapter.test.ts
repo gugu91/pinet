@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { shouldRouteKnownSlackThread } from "./slack-pinet-runtime-adapter.js";
+import {
+  isAuthorizedReactionThread,
+  shouldRouteKnownSlackThread,
+} from "./slack-pinet-runtime-adapter.js";
 
 describe("Slack Pinet runtime adapter known thread routing", () => {
   it("does not route legacy DM assistant threads without persisted context after cache loss", () => {
@@ -42,6 +45,72 @@ describe("Slack Pinet runtime adapter known thread routing", () => {
         channel: "C123",
         metadata: null,
       }),
+    ).toBe(true);
+  });
+});
+
+describe("Slack Pinet runtime adapter reaction authorization", () => {
+  function brokerWithThread(
+    thread: {
+      source: string;
+      channel: string;
+      ownerAgent: string | null;
+      metadata: Record<string, unknown> | null;
+    } | null,
+  ): Parameters<typeof isAuthorizedReactionThread>[0] {
+    return {
+      db: {
+        getThread: () => thread,
+      },
+    } as unknown as Parameters<typeof isAuthorizedReactionThread>[0];
+  }
+
+  it("rejects reactions for missing/uninvoked Slack threads", () => {
+    expect(isAuthorizedReactionThread(brokerWithThread(null), "111.222")).toBe(false);
+    expect(
+      isAuthorizedReactionThread(
+        brokerWithThread({
+          source: "slack",
+          channel: "C123",
+          ownerAgent: null,
+          metadata: null,
+        }),
+        "111.222",
+      ),
+    ).toBe(false);
+  });
+
+  it("allows reactions only for owned or Slack-context-authorized threads", () => {
+    expect(
+      isAuthorizedReactionThread(
+        brokerWithThread({
+          source: "slack",
+          channel: "C123",
+          ownerAgent: "agent-1",
+          metadata: null,
+        }),
+        "111.222",
+      ),
+    ).toBe(true);
+
+    expect(
+      isAuthorizedReactionThread(
+        brokerWithThread({
+          source: "slack",
+          channel: "D123",
+          ownerAgent: null,
+          metadata: {
+            slackThreadContext: {
+              channelId: "D123",
+              scope: {
+                workspace: { provider: "slack", source: "compatibility" },
+                instance: { source: "compatibility" },
+              },
+            },
+          },
+        }),
+        "111.222",
+      ),
     ).toBe(true);
   });
 });
