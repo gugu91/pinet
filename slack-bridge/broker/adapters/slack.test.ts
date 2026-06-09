@@ -1639,10 +1639,10 @@ describe("SlackAdapter — reaction triggers", () => {
         return mockSlackResponse({
           messages: [
             {
-              ts: "111.333",
-              thread_ts: "111.222",
-              text: "Looks good to me",
-              user: "U_TARGET",
+              ts: "1781022148.120639",
+              thread_ts: "1781022148.120639",
+              text: "Peter posted work that Thomas acknowledged with a check mark",
+              user: "U_PETER",
             },
           ],
         });
@@ -1667,15 +1667,15 @@ describe("SlackAdapter — reaction triggers", () => {
       adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
     ).onReactionAdded({
       type: "reaction_added",
-      user: "U_REACTOR",
+      user: "U_THOMAS",
       reaction: "white_check_mark",
-      item_user: "U_TARGET",
+      item_user: "U_PETER",
       item: {
         type: "message",
-        channel: "C123",
-        ts: "111.333",
+        channel: "C0AN9SP19RN",
+        ts: "1781022148.120639",
       },
-      event_ts: "999.000",
+      event_ts: "1781022150.000000",
     });
 
     expect(handler).not.toHaveBeenCalled();
@@ -1932,7 +1932,7 @@ describe("SlackAdapter — reaction triggers", () => {
     );
   });
 
-  it("does not route opt-in interrupt controls when Slack cannot identify the reacted message thread", async () => {
+  it("ignores opt-in interrupt controls when Slack cannot identify an authorized reacted-message thread", async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url.endsWith("/conversations.history")) {
@@ -1967,13 +1967,10 @@ describe("SlackAdapter — reaction triggers", () => {
     });
 
     expect(handler).not.toHaveBeenCalled();
-    const reactionBody = JSON.parse(
-      String(
-        fetchMock.mock.calls.find(([url]) => String(url).endsWith("/reactions.add"))?.[1]?.body ??
-          "{}",
-      ),
-    ) as Record<string, unknown>;
-    expect(reactionBody).toEqual({ channel: "C123", timestamp: "222.333", name: "x" });
+    expect(adapter.getTrackedThreadIds()).toEqual(new Set());
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://slack.com/api/conversations.history",
+    ]);
   });
 
   it("routes custom interrupt reactions even when nonessential author lookup would fail", async () => {

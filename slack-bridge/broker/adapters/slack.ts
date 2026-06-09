@@ -447,11 +447,6 @@ export class SlackAdapter implements MessageAdapter {
     try {
       const isInterruptReaction = command.action === "interrupt";
       const reactedMessage = await this.fetchMessageByTs(item.channel, item.ts);
-      if (!reactedMessage && isInterruptReaction) {
-        throw new Error(
-          `Unable to identify Slack thread for interrupt reaction ${item.ts} in channel ${item.channel}`,
-        );
-      }
       const reactedMessageFetchStatus = reactedMessage ? "found" : "unavailable";
 
       const threadTs =
@@ -459,8 +454,13 @@ export class SlackAdapter implements MessageAdapter {
         (reactedMessage?.ts as string | undefined) ??
         item.ts;
 
-      const existingThread = this.getThread(threadTs);
-      if (!existingThread || !this.isReactionThreadAuthorized(threadTs, item.channel)) {
+      const cachedThread = this.getCachedThread(threadTs);
+      if (!this.isReactionThreadAuthorized(threadTs, item.channel, cachedThread)) {
+        return;
+      }
+
+      const existingThread = cachedThread ?? this.getThread(threadTs);
+      if (!existingThread || existingThread.channelId !== item.channel) {
         return;
       }
 
@@ -545,8 +545,21 @@ export class SlackAdapter implements MessageAdapter {
     }
   }
 
-  private isReactionThreadAuthorized(threadTs: string, channelId: string): boolean {
-    return this.config.isReactionThreadAuthorized?.(threadTs, channelId) ?? true;
+  private getCachedThread(threadTs: string): SlackThreadInfo | undefined {
+    const cached = this.threads.get(threadTs);
+    if (cached) {
+      this.threads.set(threadTs, cached);
+    }
+    return cached;
+  }
+
+  private isReactionThreadAuthorized(
+    threadTs: string,
+    channelId: string,
+    cachedThread?: SlackThreadInfo,
+  ): boolean {
+    if (cachedThread && cachedThread.channelId !== channelId) return false;
+    return this.config.isReactionThreadAuthorized?.(threadTs, channelId) ?? !!cachedThread;
   }
 
   private async onMessage(evt: Record<string, unknown>): Promise<void> {

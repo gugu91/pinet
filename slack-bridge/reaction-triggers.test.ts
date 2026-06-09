@@ -100,9 +100,11 @@ describe("buildReactionTriggerMessage", () => {
 });
 
 describe("buildReactionPromptGuidelines", () => {
-  it("explains that emoji reactions are ignored unless an opt-in structured request appears", () => {
+  it("explains that emoji reactions are ignored unless an authorized opt-in structured request appears", () => {
     const joined = buildReactionPromptGuidelines().join(" ");
     expect(joined).toContain("Slack emoji reactions are ignored by default");
     expect(joined).toContain("Reaction trigger from Slack");
+    expect(joined).toContain("authorized Pinet thread");
+    expect(joined).toContain("ordinary uninvoked Slack threads");
   });
 });

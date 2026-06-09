@@ -65,8 +65,8 @@ describe("Slack Pinet runtime adapter reaction authorization", () => {
     } as unknown as Parameters<typeof isAuthorizedReactionThread>[0];
   }
 
-  it("rejects reactions for missing/uninvoked Slack threads", () => {
-    expect(isAuthorizedReactionThread(brokerWithThread(null), "111.222")).toBe(false);
+  it("rejects reactions for missing, uninvoked, or channel-mismatched Slack threads", () => {
+    expect(isAuthorizedReactionThread(brokerWithThread(null), "111.222", "C123")).toBe(false);
     expect(
       isAuthorizedReactionThread(
         brokerWithThread({
@@ -76,6 +76,19 @@ describe("Slack Pinet runtime adapter reaction authorization", () => {
           metadata: null,
         }),
         "111.222",
+        "C123",
+      ),
+    ).toBe(false);
+    expect(
+      isAuthorizedReactionThread(
+        brokerWithThread({
+          source: "slack",
+          channel: "C_OTHER",
+          ownerAgent: "agent-1",
+          metadata: null,
+        }),
+        "111.222",
+        "C123",
       ),
     ).toBe(false);
   });
@@ -90,6 +103,7 @@ describe("Slack Pinet runtime adapter reaction authorization", () => {
           metadata: null,
         }),
         "111.222",
+        "C123",
       ),
     ).toBe(true);
 
@@ -101,7 +115,7 @@ describe("Slack Pinet runtime adapter reaction authorization", () => {
           ownerAgent: null,
           metadata: {
             slackThreadContext: {
-              channelId: "D123",
+              channelId: "C_TEAM",
               scope: {
                 workspace: { provider: "slack", source: "compatibility" },
                 instance: { source: "compatibility" },
@@ -110,6 +124,7 @@ describe("Slack Pinet runtime adapter reaction authorization", () => {
           },
         }),
         "111.222",
+        "D123",
       ),
     ).toBe(true);
   });
