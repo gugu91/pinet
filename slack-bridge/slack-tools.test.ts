@@ -436,10 +436,13 @@ describe("registerSlackTools", () => {
       confirm: true,
     });
 
+    // The guarded action must carry the RESOLVED channel id so the string in
+    // guardrail errors, confirm_action registrations, and the post-approval
+    // retry always match (#814).
     expect(requireToolPolicy).toHaveBeenCalledWith(
       "slack:delete",
       undefined,
-      "channel=ops-alerts | thread_ts= | ts=123.789 | thread=false",
+      "channel=resolved:ops-alerts | thread_ts= | ts=123.789 | thread=false",
     );
     expect(slack).toHaveBeenCalledWith("chat.delete", "xoxb-reloaded", {
       channel: "resolved:ops-alerts",
@@ -642,7 +645,7 @@ describe("registerSlackTools", () => {
   });
 
   it("uses thread channel resolution for slack_delete", async () => {
-    const { slack, tools, setResolveThreadChannel } = setup();
+    const { slack, tools, setResolveThreadChannel, requireToolPolicy } = setup();
     setResolveThreadChannel(async (threadTs: string | undefined) => {
       expect(threadTs).toBe("123.456");
       return "C-DB";
@@ -658,6 +661,77 @@ describe("registerSlackTools", () => {
       channel: "C-DB",
       ts: "123.789",
     });
+    expect(requireToolPolicy).toHaveBeenCalledWith(
+      "slack:delete",
+      "123.456",
+      "channel=C-DB | thread_ts=123.456 | ts=123.789 | thread=false",
+    );
+  });
+
+  it("builds the same canonical delete action for omitted and explicit channel phrasings", async () => {
+    const { tools, setResolveThreadChannel, requireToolPolicy } = setup();
+    setResolveThreadChannel(async () => "C-DB");
+
+    await tools.get("slack_delete")!.execute("tool-3c", {
+      ts: "123.789",
+      thread_ts: "123.456",
+      confirm: true,
+    });
+    await tools.get("slack_delete")!.execute("tool-3d", {
+      ts: "123.789",
+      thread_ts: "123.456",
+      channel: "deployments",
+      confirm: true,
+    });
+
+    const actions = requireToolPolicy.mock.calls.map(([, , action]) => action);
+    expect(actions).toHaveLength(2);
+    expect(actions[0]).toBe(actions[1]);
+    expect(actions[0]).toBe("channel=C-DB | thread_ts=123.456 | ts=123.789 | thread=false");
+  });
+
+  it("batch-deletes multiple bot messages under one canonical action", async () => {
+    const { slack, tools, setDefaultChannel, requireToolPolicy } = setup();
+    setDefaultChannel("ops-alerts");
+
+    const response = await tools.get("slack_delete")!.execute("tool-3e", {
+      ts: "123.790, 123.788,123.790",
+      confirm: true,
+    });
+
+    // One normalized (deduped, sorted) canonical action covers the batch, so a
+    // single explicit approval is enough to clean up several bot messages.
+    expect(requireToolPolicy).toHaveBeenCalledWith(
+      "slack:delete",
+      undefined,
+      "channel=resolved:ops-alerts | thread_ts= | ts=123.788,123.790 | thread=false",
+    );
+    const deletes = slack.mock.calls.filter(([method]) => method === "chat.delete");
+    expect(deletes).toEqual([
+      ["chat.delete", "xoxb-initial", { channel: "resolved:ops-alerts", ts: "123.788" }],
+      ["chat.delete", "xoxb-initial", { channel: "resolved:ops-alerts", ts: "123.790" }],
+    ]);
+    expect(response.content?.[0]?.text).toContain("Deleted 2 messages (123.788, 123.790)");
+    expect(response.details).toMatchObject({
+      channel: "resolved:ops-alerts",
+      thread: false,
+      deleted_count: 2,
+      deleted_ts: ["123.788", "123.790"],
+    });
+  });
+
+  it("rejects multiple ts values when thread=true", async () => {
+    const { slack, tools, setDefaultChannel } = setup();
+    setDefaultChannel("ops-alerts");
+
+    await expect(
+      tools.get("slack_delete")!.execute("tool-3f", {
+        ts: "123.788,123.790",
+        thread: true,
+        confirm: true,
+      }),
+    ).rejects.toThrow("When thread=true, ts must be a single thread root timestamp.");
+    expect(slack.mock.calls.filter(([method]) => method === "chat.delete")).toHaveLength(0);
   });
 
   it("reports presence and dnd status for a single user", async () => {

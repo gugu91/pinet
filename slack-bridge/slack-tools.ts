@@ -808,14 +808,48 @@ function isPiAgentSlackMessage(
   return (eventPayload as { agent_owner?: unknown }).agent_owner === agentOwnerToken;
 }
 
+/**
+ * Build the canonical guarded action string for a Slack delete.
+ *
+ * This must be derived from RESOLVED values (resolved channel ID, normalized
+ * ts list) — never raw caller params — so that the string quoted in guardrail
+ * errors, registered via confirm_action, and re-checked on the post-approval
+ * retry always agree regardless of how the caller phrased the request (#814).
+ */
 function summarizeSlackDeleteAction(input: {
-  channel?: string;
-  defaultChannel?: string;
+  channel: string;
   threadTs?: string;
-  ts: string;
+  tsList: string[];
   thread?: boolean;
 }): string {
-  return `channel=${input.channel ?? input.defaultChannel ?? ""} | thread_ts=${input.threadTs ?? ""} | ts=${input.ts} | thread=${input.thread ?? false}`;
+  return `channel=${input.channel} | thread_ts=${input.threadTs ?? ""} | ts=${input.tsList.join(",")} | thread=${input.thread ?? false}`;
+}
+
+/**
+ * Normalize the delete `ts` input into a deterministic target list.
+ *
+ * Multiple comma/whitespace-separated timestamps are allowed for single-message
+ * deletes so one explicit approval can cover one batch of bot-authored cleanup
+ * messages in the same thread (#814). The list is trimmed, deduplicated, and
+ * sorted so the canonical action string is stable across caller phrasings.
+ */
+function parseSlackDeleteTsInput(ts: string, deleteThread: boolean): string[] {
+  const tsList = [
+    ...new Set(
+      ts
+        .split(/[\s,]+/)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+    ),
+  ].sort();
+
+  if (tsList.length === 0) {
+    throw new Error("ts is required.");
+  }
+  if (deleteThread && tsList.length > 1) {
+    throw new Error("When thread=true, ts must be a single thread root timestamp.");
+  }
+  return tsList;
 }
 
 export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDeps): void {
@@ -1348,19 +1382,18 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
   }
 
   async function resolveSlackDeleteTargets(input: {
-    channel?: string;
-    threadTs?: string;
-    ts: string;
+    channelId: string;
+    tsList: string[];
     thread?: boolean;
   }): Promise<{ channelId: string; messageTsList: string[] }> {
-    const channelId = await resolveSlackTargetChannel(input.threadTs, input.channel);
-    const targetTs = input.ts.trim();
+    const { channelId } = input;
+    const targetTs = input.tsList[0];
     if (!targetTs) {
       throw new Error("ts is required.");
     }
 
     if (!input.thread) {
-      return { channelId, messageTsList: [targetTs] };
+      return { channelId, messageTsList: input.tsList };
     }
 
     const messages = await fetchSlackThreadMessages(
@@ -1376,7 +1409,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         : undefined;
     if (!threadRootTs) {
       throw new Error(
-        `Slack did not return a thread rooted at ${targetTs} in channel ${input.channel ?? channelId}.`,
+        `Slack did not return a thread rooted at ${targetTs} in channel ${channelId}.`,
       );
     }
     if (threadRootTs !== targetTs) {
@@ -2956,7 +2989,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     parameters: Type.Object({
       ts: Type.String({
         description:
-          "Timestamp (ts) of the message to delete. When thread=true, this must be the thread root timestamp.",
+          "Timestamp (ts) of the message to delete, or a comma-separated list of bot-posted message timestamps to delete in one confirmed batch. When thread=true, this must be a single thread root timestamp.",
       }),
       channel: Type.Optional(
         Type.String({
@@ -2988,23 +3021,29 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         );
       }
 
+      const deleteThread = params.thread === true;
+      const requestedTsList = parseSlackDeleteTsInput(params.ts, deleteThread);
+
+      // Resolve the actual deletion channel BEFORE the guardrail check so the
+      // canonical action quoted in errors, registered via confirm_action, and
+      // enforced on the post-approval retry is identical regardless of how the
+      // caller phrased channel/ts (#814).
+      const channelId = await resolveSlackTargetChannel(params.thread_ts, params.channel);
+
       requireToolPolicy(
         "slack_delete",
         params.thread_ts,
         summarizeSlackDeleteAction({
-          channel: params.channel,
-          defaultChannel: getDefaultChannel(),
+          channel: channelId,
           threadTs: params.thread_ts,
-          ts: params.ts,
-          thread: params.thread,
+          tsList: requestedTsList,
+          thread: deleteThread,
         }),
       );
 
-      const deleteThread = params.thread === true;
-      const { channelId, messageTsList } = await resolveSlackDeleteTargets({
-        channel: params.channel,
-        threadTs: params.thread_ts,
-        ts: params.ts,
+      const { messageTsList } = await resolveSlackDeleteTargets({
+        channelId,
+        tsList: requestedTsList,
         thread: deleteThread,
       });
 
@@ -3015,7 +3054,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         });
       }
 
-      const targetTs = params.ts.trim();
+      const targetTs = requestedTsList[0];
       const deletedCount = messageTsList.length;
       const channelLabel = params.channel ?? channelId;
 
@@ -3025,7 +3064,9 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
             type: "text",
             text: deleteThread
               ? `Deleted thread rooted at ${targetTs} in channel ${channelLabel} (${deletedCount} message${deletedCount === 1 ? "" : "s"}).`
-              : `Deleted message ${targetTs} from channel ${channelLabel}.`,
+              : deletedCount === 1
+                ? `Deleted message ${targetTs} from channel ${channelLabel}.`
+                : `Deleted ${deletedCount} messages (${messageTsList.join(", ")}) from channel ${channelLabel}.`,
           },
         ],
         details: {
