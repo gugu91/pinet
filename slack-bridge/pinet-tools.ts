@@ -15,6 +15,7 @@ import {
   resolveScheduledWakeupFireAt,
 } from "@pinet/pinet-core/scheduled-wakeups";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
   buildAgentDisplayInfo,
@@ -199,6 +200,16 @@ interface PinetDispatcherEnvelope {
   data: unknown;
   errors: PinetDispatcherError[];
   warnings: string[];
+}
+
+interface PinetRenderContentBlock {
+  type: string;
+  text?: string;
+}
+
+interface PinetRenderResultInput {
+  content?: PinetRenderContentBlock[];
+  details?: unknown;
 }
 
 const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> = {
@@ -472,6 +483,82 @@ function wrapDispatcherEnvelope(
       },
     ],
     details: envelope,
+  };
+}
+
+function isPinetDispatcherEnvelope(value: unknown): value is PinetDispatcherEnvelope {
+  if (!isRecord(value)) return false;
+  if (value.status !== "succeeded" && value.status !== "failed") return false;
+  return Array.isArray(value.errors) && Array.isArray(value.warnings);
+}
+
+function getFirstTextContent(result: PinetRenderResultInput): string {
+  return (
+    result.content?.find((block) => block.type === "text" && typeof block.text === "string")
+      ?.text ?? ""
+  );
+}
+
+function parsePinetDispatcherEnvelopeFromText(text: string): PinetDispatcherEnvelope | null {
+  if (!text.trim().startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isPinetDispatcherEnvelope(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatPrimitiveDetails(details: Record<string, unknown>): string[] {
+  return Object.entries(details).map(([key, value]) => {
+    if (value === null) return `${key}: null`;
+    if (["string", "number", "boolean"].includes(typeof value)) return `${key}: ${String(value)}`;
+    return `${key}: ${JSON.stringify(value)}`;
+  });
+}
+
+function formatPinetEnvelopeExpandedText(envelope: PinetDispatcherEnvelope): string {
+  const lines = [getPinetEnvelopeCliText(envelope), `status: ${envelope.status}`];
+
+  if (envelope.status === "failed") {
+    for (const error of envelope.errors) {
+      lines.push(`error[${error.class}]: ${error.message}`);
+      if (error.hint) lines.push(`hint: ${error.hint}`);
+    }
+  } else if (isRecord(envelope.data)) {
+    const action = typeof envelope.data.action === "string" ? envelope.data.action : undefined;
+    if (action) lines.push(`action: ${action}`);
+
+    const details = envelope.data.details;
+    if (isRecord(details)) {
+      lines.push("details:");
+      lines.push(...formatPrimitiveDetails(details).map((line) => `  ${line}`));
+    }
+  }
+
+  for (const warning of envelope.warnings) {
+    lines.push(`warning: ${warning}`);
+  }
+
+  return lines.join("\n");
+}
+
+export function formatPinetDispatcherResultForDisplay(
+  result: PinetRenderResultInput,
+  expanded: boolean,
+): { status: PinetDispatcherStatus | "unknown"; text: string } {
+  const firstText = getFirstTextContent(result);
+  const envelope = isPinetDispatcherEnvelope(result.details)
+    ? result.details
+    : parsePinetDispatcherEnvelopeFromText(firstText);
+
+  if (!envelope) {
+    return { status: "unknown", text: firstText || "Pinet result." };
+  }
+
+  return {
+    status: envelope.status,
+    text: expanded ? formatPinetEnvelopeExpandedText(envelope) : getPinetEnvelopeCliText(envelope),
   };
 }
 
@@ -1750,6 +1837,44 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
         }),
       ),
     }),
+    renderCall(args, theme) {
+      const action =
+        typeof args.action === "string" && args.action.trim() ? args.action.trim() : "?";
+      let suffix = "";
+      if (isRecord(args.args)) {
+        const topic = typeof args.args.topic === "string" ? args.args.topic.trim() : "";
+        const op = typeof args.args.op === "string" ? args.args.op.trim() : "";
+        if (topic) suffix = ` ${theme.fg("dim", `topic=${topic}`)}`;
+        else if (op) suffix = ` ${theme.fg("dim", `op=${op}`)}`;
+      }
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("pinet"))} ${theme.fg("muted", action)}${suffix}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) {
+        return new Text(theme.fg("warning", "Pinet running…"), 0, 0);
+      }
+
+      const display = formatPinetDispatcherResultForDisplay(result, expanded);
+      const color =
+        display.status === "failed"
+          ? "error"
+          : display.status === "succeeded"
+            ? "success"
+            : "muted";
+      const icon = display.status === "failed" ? "✗" : display.status === "succeeded" ? "✓" : "•";
+      const lines = display.text.split("\n");
+      const first = lines[0] ?? "Pinet result.";
+      const rest = lines.slice(1).map((line) => theme.fg("dim", line));
+      return new Text(
+        [`${theme.fg(color, icon)} ${theme.fg(color, first)}`, ...rest].join("\n"),
+        0,
+        0,
+      );
+    },
     async execute(toolCallId, params) {
       let normalizedAction: PinetDispatcherAction;
       try {

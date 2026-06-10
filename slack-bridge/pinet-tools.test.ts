@@ -1,16 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  formatPinetDispatcherResultForDisplay,
   registerPinetTools,
   type PinetToolsAgentRecord,
   type RegisterPinetToolsDeps,
 } from "./pinet-tools.js";
+
+interface MinimalRenderTheme {
+  fg: (_color: string, text: string) => string;
+  bold: (text: string) => string;
+}
+
+interface MinimalComponent {
+  render(width: number): string[];
+}
 
 type ToolDefinition = {
   name: string;
   promptSnippet?: string;
   parameters?: unknown;
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
+  renderResult?: (
+    result: { content?: Array<{ type: string; text?: string }>; details?: unknown },
+    options: { expanded: boolean; isPartial?: boolean },
+    theme: MinimalRenderTheme,
+    context: unknown,
+  ) => MinimalComponent;
 };
 
 function makeAgent(overrides: Partial<PinetToolsAgentRecord> = {}): PinetToolsAgentRecord {
@@ -309,6 +325,50 @@ describe("registerPinetTools", () => {
     expect(result.content[0]?.text).not.toContain('"errors"');
     expect(result.details.status).toBe("failed");
     expect(result.details.errors[0]?.message).toBe("Unknown Pinet action: skin");
+  });
+
+  it("formats Pinet dispatcher results for human-readable TUI display", async () => {
+    const tools = registerWithDeps(createDeps());
+    const result = (await tools.get("pinet")?.execute("tool-call-schedule-json", {
+      action: "schedule",
+      args: { at: "2026-07-01T00:05:00.000Z", message: "check queue", format: "json" },
+    })) as { content: Array<{ type: string; text: string }>; details: unknown };
+
+    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+
+    const collapsed = formatPinetDispatcherResultForDisplay(result, false);
+    const expanded = formatPinetDispatcherResultForDisplay(result, true);
+
+    expect(collapsed).toEqual({
+      status: "succeeded",
+      text: "Pinet wake-up scheduled for 2026-07-01T00:05:00.000Z.",
+    });
+    expect(expanded.text).toContain("status: succeeded");
+    expect(expanded.text).toContain("action: schedule");
+    expect(expanded.text).toContain("id: 7");
+    expect(expanded.text).not.toContain('"errors"');
+  });
+
+  it("renders Pinet dispatcher results as readable text instead of raw JSON", async () => {
+    const tools = registerWithDeps(createDeps());
+    const pinet = tools.get("pinet");
+    const result = (await pinet?.execute("tool-call-send-json", {
+      action: "send",
+      args: { to: "alpha", message: "dispatch now", format: "json" },
+    })) as { content: Array<{ type: string; text: string }>; details: unknown };
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const collapsed = pinet?.renderResult?.(result, { expanded: false }, theme, {}).render(200);
+    const expanded = pinet?.renderResult?.(result, { expanded: true }, theme, {}).render(200);
+
+    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+    const collapsedText = collapsed?.map((line) => line.trimEnd()).join("\n");
+    const expandedText = expanded?.map((line) => line.trimEnd()).join("\n");
+
+    expect(collapsedText).toBe("✓ Pinet message sent to alpha.");
+    expect(expandedText).toContain("details:");
+    expect(expandedText).toContain("messageId: 17");
+    expect(expandedText).not.toContain('"status"');
   });
 
   it("uses the broker broadcast path for broadcast dispatcher send targets", async () => {
