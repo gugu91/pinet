@@ -1258,7 +1258,49 @@ describe("SlackAdapter — allowlist filtering", () => {
 
     expect(handler).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(adapter.getTrackedThreadIds()).toEqual(new Set(["1.1"]));
+    // Blocked users must not mint known-thread/affinity state (#812).
+    expect(adapter.getTrackedThreadIds()).toEqual(new Set());
+  });
+
+  it("does not track threads or remember known threads for disallowed interactive events", async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new Error("disallowed interactive events should not call Slack APIs");
+    });
+
+    const rememberKnownThread = vi.fn();
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUsers: ["U_ALLOWED"],
+      rememberKnownThread,
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as {
+        emitInteractiveInbound: (normalized: {
+          channel: string;
+          threadTs: string;
+          userId: string;
+          text: string;
+          timestamp: string;
+          metadata: Record<string, unknown>;
+        }) => Promise<void>;
+      }
+    ).emitInteractiveInbound({
+      channel: "C123",
+      threadTs: "42.42",
+      userId: "U_BLOCKED",
+      text: "clicked a button",
+      timestamp: "42.43",
+      metadata: { kind: "block_action" },
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(rememberKnownThread).not.toHaveBeenCalled();
+    expect(adapter.getTrackedThreadIds()).toEqual(new Set());
   });
 
   it("admits inbound DM events when allowAllWorkspaceUsers is explicitly enabled", async () => {
@@ -1782,6 +1824,7 @@ describe("SlackAdapter — reaction triggers", () => {
       allowAllWorkspaceUsers: true,
       reactionCommands: { "👀": "review" },
       rememberKnownThread,
+      isReactionThreadAuthorized: () => true,
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
     seedKnownThread(adapter, "111.222", "C123");
@@ -1888,6 +1931,7 @@ describe("SlackAdapter — reaction triggers", () => {
       appToken: "xapp-test",
       allowAllWorkspaceUsers: true,
       reactionCommands: { octagonal_sign: "interrupt" },
+      isReactionThreadAuthorized: () => true,
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
     seedKnownThread(adapter, "111.222", "C123");
@@ -2006,6 +2050,7 @@ describe("SlackAdapter — reaction triggers", () => {
       appToken: "xapp-test",
       allowAllWorkspaceUsers: true,
       reactionCommands: { rotating_light: "interrupt" },
+      isReactionThreadAuthorized: () => true,
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
     seedKnownThread(adapter, "222.222", "C123");
@@ -2070,6 +2115,7 @@ describe("SlackAdapter — reaction triggers", () => {
       appToken: "xapp-test",
       allowAllWorkspaceUsers: true,
       reactionCommands: { arrow_up: "steer" },
+      isReactionThreadAuthorized: () => true,
     });
     (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
     seedKnownThread(adapter, "111.333", "C123");
@@ -2120,6 +2166,153 @@ describe("SlackAdapter — reaction triggers", () => {
     expect(reactionBodies).toEqual([
       { channel: "C123", timestamp: "111.333", name: "white_check_mark" },
     ]);
+  });
+
+  it("ignores opt-in reactions in adapter-known threads when no explicit authorization gate is configured", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({
+          messages: [
+            {
+              ts: "111.222",
+              thread_ts: "111.222",
+              text: "a thread Pinet has merely seen but never been invoked in",
+              user: "U_TARGET",
+            },
+          ],
+        });
+      }
+      throw new Error(`denied reaction should only fetch the reacted message: ${url}`);
+    });
+
+    const rememberKnownThread = vi.fn();
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      reactionCommands: { eyes: "review" },
+      rememberKnownThread,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "111.222", "C123");
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "eyes",
+      item_user: "U_TARGET",
+      item: { type: "message", channel: "C123", ts: "111.222" },
+      event_ts: "999.000",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(rememberKnownThread).not.toHaveBeenCalled();
+    const endpoints = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(endpoints).toEqual(["https://slack.com/api/conversations.history"]);
+  });
+
+  it("ignores opt-in reactions when the explicit authorization gate denies the thread", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({
+          messages: [
+            {
+              ts: "111.222",
+              thread_ts: "111.222",
+              text: "an uninvoked thread",
+              user: "U_TARGET",
+            },
+          ],
+        });
+      }
+      throw new Error(`denied reaction should only fetch the reacted message: ${url}`);
+    });
+
+    const isReactionThreadAuthorized = vi.fn().mockReturnValue(false);
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      reactionCommands: { eyes: "review" },
+      isReactionThreadAuthorized,
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "111.222", "C123");
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "eyes",
+      item_user: "U_TARGET",
+      item: { type: "message", channel: "C123", ts: "111.222" },
+      event_ts: "999.000",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(isReactionThreadAuthorized).toHaveBeenCalledWith("111.222", "C123");
+    const endpoints = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(endpoints).toEqual(["https://slack.com/api/conversations.history"]);
+  });
+
+  it("fails closed without visible error reactions when the authorization gate throws", async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/conversations.history")) {
+        return mockSlackResponse({
+          messages: [
+            {
+              ts: "111.222",
+              thread_ts: "111.222",
+              text: "an uninvoked thread",
+              user: "U_TARGET",
+            },
+          ],
+        });
+      }
+      throw new Error(`failed authorization must not call Slack write APIs: ${url}`);
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowAllWorkspaceUsers: true,
+      reactionCommands: { eyes: "review" },
+      isReactionThreadAuthorized: () => {
+        throw new Error("broker DB unavailable");
+      },
+    });
+    (adapter as unknown as { botUserId: string | null }).botUserId = "U_BOT";
+    seedKnownThread(adapter, "111.222", "C123");
+
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+
+    await (
+      adapter as unknown as { onReactionAdded: (evt: Record<string, unknown>) => Promise<void> }
+    ).onReactionAdded({
+      type: "reaction_added",
+      user: "U_REACTOR",
+      reaction: "eyes",
+      item_user: "U_TARGET",
+      item: { type: "message", channel: "C123", ts: "111.222" },
+      event_ts: "999.000",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    const endpoints = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(endpoints).toEqual(["https://slack.com/api/conversations.history"]);
   });
 });
 
