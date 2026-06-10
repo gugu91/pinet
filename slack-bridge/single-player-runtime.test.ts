@@ -347,6 +347,61 @@ describe("single-player-runtime", () => {
     expect(state.inbox).toHaveLength(0);
   });
 
+  it("does not let unauthorized messages mint thread state that later admits opt-in reactions", async () => {
+    const state: TestState = {
+      threads: new Map(),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    const ctx = createContext();
+    const { deps, spies } = createDeps(state, {
+      isUserAllowed: (userId: string) => userId === "U_ALLOWED",
+      getReactionCommand: (reactionName) =>
+        reactionName === "eyes" ? { action: "review", prompt: "Review." } : undefined,
+      fetchSlackMessageByTs: vi.fn(async () => ({
+        ts: "200.1",
+        thread_ts: "200.1",
+        text: "posted by an unauthorized user",
+        user: "U_BLOCKED",
+      })),
+    });
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(ctx);
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+
+    // An unauthorized user's DM is rejected and must not track the thread (#812).
+    await socketConfig?.onMessage?.({
+      type: "message",
+      channel: "D200",
+      channel_type: "im",
+      user: "U_BLOCKED",
+      text: "hello from a blocked user",
+      ts: "200.1",
+    });
+
+    expect(state.threads.size).toBe(0);
+    expect(spies.pushInboxMessage).not.toHaveBeenCalled();
+
+    // A later opt-in reaction from an authorized user in that uninvoked thread
+    // must stay ignored because no known-thread state was minted.
+    await socketConfig?.onReactionAdded?.({
+      type: "reaction_added",
+      user: "U_ALLOWED",
+      reaction: "eyes",
+      item: { type: "message", channel: "D200", ts: "200.1" },
+      event_ts: "999.2",
+    });
+
+    expect(spies.pushInboxMessage).not.toHaveBeenCalled();
+    expect(spies.addReaction).not.toHaveBeenCalled();
+    expect(state.threads.size).toBe(0);
+    expect(state.inbox).toHaveLength(0);
+  });
+
   it("interrupts busy single-player turns from octagonal-sign reactions", async () => {
     const state: TestState = {
       threads: new Map(),

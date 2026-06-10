@@ -82,6 +82,12 @@ export interface SlackAdapterConfig {
    * Gate reaction-trigger handling after the reacted message thread is known.
    * Use this to require an already authorized/Pinet-owned thread before an
    * opt-in reaction command can enqueue work or mutate durable thread state.
+   *
+   * Reaction triggers are denied by default: when this callback is not
+   * configured, opt-in reaction commands never route, even for threads the
+   * adapter has merely seen/cached. Authorization must be explicit so that
+   * reactions pass the same invoked/owned-thread admission bar as normal
+   * Slack messages (#812).
    */
   isReactionThreadAuthorized?: (threadTs: string, channelId: string) => boolean;
   /** Best-effort callback for Home tab opens. */
@@ -559,7 +565,20 @@ export class SlackAdapter implements MessageAdapter {
     cachedThread?: SlackThreadInfo,
   ): boolean {
     if (cachedThread && cachedThread.channelId !== channelId) return false;
-    return this.config.isReactionThreadAuthorized?.(threadTs, channelId) ?? !!cachedThread;
+
+    // Deny by default (#812): without an explicit authorization gate, a
+    // merely cached/known thread must never authorize reaction routing.
+    const authorize = this.config.isReactionThreadAuthorized;
+    if (!authorize) return false;
+
+    try {
+      return authorize(threadTs, channelId);
+    } catch (error) {
+      // Authorization failures must fail closed without posting visible
+      // error reactions into threads Pinet does not own.
+      console.error(`[slack-adapter] reaction thread authorization failed: ${errorMsg(error)}`);
+      return false;
+    }
   }
 
   private async onMessage(evt: Record<string, unknown>): Promise<void> {
@@ -584,6 +603,10 @@ export class SlackAdapter implements MessageAdapter {
       return;
     }
 
+    // Check the allowlist before recording any thread state so unauthorized
+    // traffic can never mint known-thread/affinity side effects (#812).
+    if (!isSlackUserAllowed(this.allowlist, userId)) return;
+
     if (!this.getThread(threadTs)) {
       this.threads.set(threadTs, {
         channelId: channel,
@@ -591,8 +614,6 @@ export class SlackAdapter implements MessageAdapter {
         userId,
       });
     }
-
-    if (!isSlackUserAllowed(this.allowlist, userId)) return;
 
     void this.threadStatuses.begin(channel, threadTs, DEFAULT_SLACK_THREAD_STATUS);
     void this.addReaction(channel, messageTs, "eyes");
@@ -632,6 +653,11 @@ export class SlackAdapter implements MessageAdapter {
     timestamp: string;
     metadata: Record<string, unknown>;
   }): Promise<void> {
+    // Check the allowlist before recording in-memory or durable thread state
+    // so unauthorized interactive events cannot mint known-thread/affinity
+    // side effects (#812).
+    if (!isSlackUserAllowed(this.allowlist, normalized.userId)) return;
+
     if (!this.getThread(normalized.threadTs)) {
       this.threads.set(normalized.threadTs, {
         channelId: normalized.channel,
@@ -645,8 +671,6 @@ export class SlackAdapter implements MessageAdapter {
     } catch {
       /* best effort — DB cache sync must not break Slack event handling */
     }
-
-    if (!isSlackUserAllowed(this.allowlist, normalized.userId)) return;
 
     const userName = await this.resolveUser(normalized.userId);
     if (this.shuttingDown) return;

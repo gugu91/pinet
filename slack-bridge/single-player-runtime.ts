@@ -376,10 +376,6 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
     const { threadTs, channel, userId, text, isDM, isChannelMention, messageTs, metadata } =
       classified;
 
-    if (!threads.has(threadTs)) {
-      threads.set(threadTs, { channelId: channel, threadTs, userId, source: "slack" });
-    }
-
     const ownership = await ensureLocalThreadOwnership(channel, threadTs);
     if (ownership !== "continue") {
       return;
@@ -392,6 +388,13 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         text: "Sorry, I can only respond to authorized users. Please contact an admin if you need access.",
       });
       return;
+    }
+
+    // Track the thread only after the allowlist gate so unauthorized traffic
+    // cannot mint known-thread state that later admits replies or opt-in
+    // reaction commands (#812).
+    if (!threads.has(threadTs)) {
+      threads.set(threadTs, { channelId: channel, threadTs, userId, source: "slack" });
     }
 
     if (isDM) {
@@ -448,14 +451,6 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
     ctx: ExtensionContext,
   ): Promise<void> {
     const threads = deps.getThreads();
-    if (!threads.has(normalized.threadTs)) {
-      threads.set(normalized.threadTs, {
-        channelId: normalized.channel,
-        threadTs: normalized.threadTs,
-        userId: normalized.userId,
-        source: "slack",
-      });
-    }
 
     const ownership = await ensureLocalThreadOwnership(normalized.channel, normalized.threadTs);
     if (ownership !== "continue") {
@@ -469,6 +464,17 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         text: "Sorry, I can only respond to authorized users. Please contact an admin if you need access.",
       });
       return;
+    }
+
+    // Track the thread only after the allowlist gate so unauthorized
+    // interactive events cannot mint known-thread state (#812).
+    if (!threads.has(normalized.threadTs)) {
+      threads.set(normalized.threadTs, {
+        channelId: normalized.channel,
+        threadTs: normalized.threadTs,
+        userId: normalized.userId,
+        source: "slack",
+      });
     }
 
     if (normalized.channel.startsWith("D")) {
