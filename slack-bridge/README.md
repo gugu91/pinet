@@ -516,9 +516,11 @@ Only broker prompt content is replaceable. Broker runtime/tool restrictions rema
 
 ### Multi-agent tools
 
-| Tool    | Description                                                                                                                                                                |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pinet` | Pinet dispatcher with token-efficient `action`-based routing (`help`, `send`, `read`, `free`, `snooze`, `schedule`, `agents`, `lanes`, `ports`, `spawn`, `reload`, `exit`) |
+| Tool           | Description                                                                                                                                                                |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pinet`        | Pinet dispatcher with token-efficient `action`-based routing (`help`, `send`, `read`, `free`, `snooze`, `schedule`, `agents`, `lanes`, `ports`, `spawn`, `reload`, `exit`) |
+| `comment_add`  | Legacy PiComms/a2a compatibility shim that sends comment-shaped coordination through Pinet to the visible broker or subtree broker                                         |
+| `comment_list` | Legacy PiComms/a2a compatibility shim that returns this agent's Pinet inbox rows as comment-shaped records without restoring the removed local PiComms store               |
 
 Use the dispatcher for Pinet tool actions: `pinet action=send`, `pinet action=read`, `pinet action=free`, `pinet action=snooze`, `pinet action=schedule`, `pinet action=agents`, `pinet action=lanes`, `pinet action=ports`, `pinet action=spawn`, `pinet action=reload`, and `pinet action=exit`. Use slash commands for UI lifecycle transitions: `/pinet start`, `/pinet follow`, `/pinet unfollow`, and `/pinet subtree start`. Dedicated direct Pinet tools (`pinet_message`, `pinet_read`, `pinet_agents`, `pinet_free`, `pinet_schedule`) are no longer registered. Legacy `pinet_*` guardrail patterns still match dispatcher action names, and legacy send policies such as `pinet_send` or `pinet_message` also cover `pinet action=send`, so existing security configs fail closed during migration.
 
@@ -529,6 +531,8 @@ Use `pinet action=spawn args.repo=<repo> args.task=<task> [args.role=<role>] [ar
 Dispatcher content defaults to terse CLI-style confirmations/summaries for noisy reads, sends, and agent lists. Bulky read/agent payloads are compacted in `data.details` by default, including when `args.format="json"` (or `args.f` / `args["-f"]`) renders the dispatcher envelope in content. Use `args.full=true` / `args["--full"]=true` only when you need verbose text and full structured debug details such as exact message bodies or agent metadata.
 
 Durable Pinet inbox notifications are classified as `steering`, `fwup`, or `maintenance/context` from explicit metadata or message cues. Follower prompts receive compact pointers such as `pinet action=read args.thread_id=...` instead of the full durable message body; agents use `pinet action=read` to retrieve the actual context. Delivery, read/ack state, and mail classification remain separate.
+
+The `comment_add` / `comment_list` tools are compatibility shims for older a2a/PiComms-aware agents and reviewers. They do not re-enable the local `.pi/a2a/comments` store; `comment_add` packages the legacy comment fields into Pinet metadata/body and sends them to the visible broker (or a worker-owned subtree broker), while `comment_list` reads this agent's own Pinet inbox and maps rows into the old comment-shaped response contract. They are registered unconditionally as a temporary migration bridge so older reviewer agents fail less often while the legacy comment callers are phased out.
 
 Scheduled Pinet wake-ups use the same durable read surface: due wake-ups are persisted/stamped as Pinet follow-up mail and surfaced through compact `pinet action=read` pointers rather than direct reminder-body prompts. Wake-up bodies and metadata are treated as mail content only; they do not trigger Pinet remote-control commands such as `/exit`, `/reload`, or structured `pinet:control` JSON.
 

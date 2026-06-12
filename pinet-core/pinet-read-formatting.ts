@@ -40,6 +40,7 @@ export interface PinetUnreadThreadSummary {
 
 export interface PinetReadResult {
   messages: PinetReadMessage[];
+  totalMatching?: number;
   unreadCountBefore: number;
   unreadCountAfter: number;
   unreadThreads: PinetUnreadThreadSummary[];
@@ -48,6 +49,7 @@ export interface PinetReadResult {
 
 export interface PinetReadOptions {
   threadId?: string;
+  legacyThreadId?: string;
   limit?: number;
   unreadOnly?: boolean;
   markRead?: boolean;

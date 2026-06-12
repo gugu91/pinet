@@ -718,6 +718,12 @@ export class BrokerSocketServer {
       return rpcError(req.id, RPC_INVALID_PARAMS, "threadId must be a non-empty string");
     }
 
+    const legacyThreadId =
+      typeof params.legacyThreadId === "string" ? params.legacyThreadId.trim() : undefined;
+    if (params.legacyThreadId !== undefined && !legacyThreadId) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "legacyThreadId must be a non-empty string");
+    }
+
     const limit = params.limit === undefined ? undefined : params.limit;
     if (limit !== undefined && (typeof limit !== "number" || !Number.isFinite(limit))) {
       return rpcError(req.id, RPC_INVALID_PARAMS, "limit must be a finite number");
@@ -737,6 +743,7 @@ export class BrokerSocketServer {
       req.id,
       this.db.readInbox(state.agentId, {
         ...(threadId ? { threadId } : {}),
+        ...(legacyThreadId ? { legacyThreadId } : {}),
         ...(typeof limit === "number" ? { limit } : {}),
         ...(typeof unreadOnly === "boolean" ? { unreadOnly } : {}),
         ...(typeof markRead === "boolean" ? { markRead } : {}),

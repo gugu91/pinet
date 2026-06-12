@@ -1584,6 +1584,46 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("filters inbox reads by legacy a2a compatibility thread before applying read limits", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("a2a:worker:broker", "agent", "", null);
+      db.createThread("a2a:other:broker", "agent", "", null);
+      const legacy = db.insertMessage(
+        "a2a:worker:broker",
+        "agent",
+        "inbound",
+        "worker",
+        "legacy comment",
+        ["broker"],
+        { legacyThreadId: "pr-820-review", a2aCompat: true },
+      );
+      db.insertMessage(
+        "a2a:other:broker",
+        "agent",
+        "inbound",
+        "other",
+        "newer unrelated mail",
+        ["broker"],
+        { legacyThreadId: "other-thread", a2aCompat: true },
+      );
+
+      const read = db.readInbox("broker", {
+        legacyThreadId: "pr-820-review",
+        limit: 1,
+        unreadOnly: false,
+        markRead: false,
+      });
+
+      expect(read.totalMatching).toBe(1);
+      expect(read.messages).toHaveLength(1);
+      expect(read.messages[0].message.id).toBe(legacy.id);
+    } finally {
+      db.close();
+    }
+  });
+
   it("acquires requested and allocated port leases with active uniqueness", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);

@@ -70,6 +70,7 @@ export interface InboxEntry {
 
 export interface InboxReadOptions {
   threadId?: string;
+  legacyThreadId?: string;
   limit?: number;
   unreadOnly?: boolean;
   markRead?: boolean;
@@ -88,6 +89,7 @@ export interface InboxThreadUnreadSummary {
 
 export interface InboxReadResult {
   messages: Array<{ entry: InboxEntry; message: BrokerMessage }>;
+  totalMatching: number;
   unreadCountBefore: number;
   unreadCountAfter: number;
   unreadThreads: InboxThreadUnreadSummary[];

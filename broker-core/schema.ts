@@ -4051,6 +4051,7 @@ export class BrokerDB implements BrokerDBInterface {
     const markRead = options.markRead ?? true;
     const limit = Math.min(Math.max(Math.trunc(options.limit ?? 20), 1), 100);
     const threadId = options.threadId?.trim();
+    const legacyThreadId = options.legacyThreadId?.trim();
     const unreadCountBefore = this.getUnreadInboxCount(agentId);
 
     const clauses = ["i.agent_id = ?"];
@@ -4062,6 +4063,20 @@ export class BrokerDB implements BrokerDBInterface {
       clauses.push("m.thread_id = ?");
       values.push(threadId);
     }
+    if (legacyThreadId) {
+      clauses.push("json_extract(m.metadata, '$.legacyThreadId') = ?");
+      values.push(legacyThreadId);
+    }
+
+    const totalMatchingRow = db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM inbox i
+         JOIN messages m ON m.id = i.message_id
+         WHERE ${clauses.join(" AND ")}`,
+      )
+      .get(...values) as { count?: number } | undefined;
+    const totalMatching = Number(totalMatchingRow?.count ?? 0);
 
     const order = unreadOnly ? "m.created_at ASC, i.id ASC" : "m.created_at DESC, i.id DESC";
     const limitClause = unreadOnly ? "" : "\n         LIMIT ?";
@@ -4164,6 +4179,7 @@ export class BrokerDB implements BrokerDBInterface {
     const unreadThreads = this.getUnreadThreadSummary(agentId);
     return {
       messages: prioritizedMessages,
+      totalMatching,
       unreadCountBefore,
       unreadCountAfter,
       unreadThreads,
