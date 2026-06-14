@@ -14,8 +14,22 @@ import {
 import type { ReactionCommandSettings } from "./reaction-triggers.js";
 import { buildPinetReadPointer } from "./broker-inbound-persistence.js";
 import { matchesToolPattern } from "./guardrails.js";
+import { isLoopbackTcpHost } from "./broker/raw-tcp-loopback.js";
 
 // ─── Settings ────────────────────────────────────────────
+
+export interface SlackBridgeRemoteBrokerSettings {
+  /** Enable explicit loopback TCP broker listen/connect settings. Disabled by default. */
+  enabled?: boolean;
+  /** Loopback host for broker-mode TCP listen. Defaults to 127.0.0.1 when listenPort is set. */
+  listenHost?: string;
+  /** Broker-mode TCP listen port. Port 0 is allowed for tests/ephemeral local use. */
+  listenPort?: number;
+  /** Loopback host for follower-mode TCP connect. Defaults to 127.0.0.1 when connectPort is set. */
+  connectHost?: string;
+  /** Follower-mode TCP connect port. */
+  connectPort?: number;
+}
 
 export interface SlackBridgeSettings {
   botToken?: string;
@@ -43,6 +57,7 @@ export interface SlackBridgeSettings {
   agentEmoji?: string;
   meshSecret?: string;
   meshSecretPath?: string;
+  remoteBroker?: SlackBridgeRemoteBrokerSettings;
   imessage?: {
     enabled?: boolean;
   };
@@ -56,6 +71,11 @@ export interface SlackBridgeSettings {
 export interface ResolvedPinetMeshAuthSettings {
   meshSecret: string | null;
   meshSecretPath: string | null;
+}
+
+export interface ResolvedPinetRemoteBrokerEndpoint {
+  host: string;
+  port: number;
 }
 
 function normalizeOptionalSetting(value?: string | null): string | null {
@@ -106,6 +126,91 @@ export function resolvePinetMeshAuth(
     meshSecret: envMeshSecret,
     meshSecretPath: envMeshSecret ? null : envMeshSecretPath,
   };
+}
+
+function normalizeRemoteBrokerHost(value: string | undefined, fieldName: string): string {
+  const host = normalizeOptionalSetting(value) ?? "127.0.0.1";
+  if (isLoopbackTcpHost(host)) {
+    return host;
+  }
+
+  throw new Error(
+    `slack-bridge.remoteBroker.${fieldName} must be a loopback host. Non-loopback raw TCP broker endpoints are not supported; use SSH or Tailscale SSH local forwarding instead.`,
+  );
+}
+
+function normalizeRemoteBrokerPort(
+  value: number | undefined,
+  fieldName: string,
+  options: { allowZero: boolean },
+): number | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  const min = options.allowZero ? 0 : 1;
+  if (Number.isInteger(value) && value >= min && value <= 65535) {
+    return value;
+  }
+
+  throw new Error(
+    `slack-bridge.remoteBroker.${fieldName} must be an integer between ${min} and 65535.`,
+  );
+}
+
+export function resolvePinetRemoteBrokerListenEndpoint(
+  settings: SlackBridgeSettings,
+): ResolvedPinetRemoteBrokerEndpoint | null {
+  const remoteBroker = settings.remoteBroker;
+  if (remoteBroker?.enabled !== true) {
+    return null;
+  }
+
+  const port = normalizeRemoteBrokerPort(remoteBroker.listenPort, "listenPort", {
+    allowZero: true,
+  });
+  if (port === null) {
+    return null;
+  }
+
+  return {
+    host: normalizeRemoteBrokerHost(remoteBroker.listenHost, "listenHost"),
+    port,
+  };
+}
+
+export function resolvePinetRemoteBrokerConnectEndpoint(
+  settings: SlackBridgeSettings,
+): ResolvedPinetRemoteBrokerEndpoint | null {
+  const remoteBroker = settings.remoteBroker;
+  if (remoteBroker?.enabled !== true) {
+    return null;
+  }
+
+  const port = normalizeRemoteBrokerPort(remoteBroker.connectPort, "connectPort", {
+    allowZero: false,
+  });
+  if (port === null) {
+    return null;
+  }
+
+  return {
+    host: normalizeRemoteBrokerHost(remoteBroker.connectHost, "connectHost"),
+    port,
+  };
+}
+
+export function assertPinetRemoteBrokerMeshAuth(
+  meshAuth: ResolvedPinetMeshAuthSettings,
+  mode: "listen" | "connect",
+): void {
+  if (meshAuth.meshSecret || meshAuth.meshSecretPath) {
+    return;
+  }
+
+  throw new Error(
+    `slack-bridge.remoteBroker ${mode} requires meshSecret or meshSecretPath. Keep mesh auth enabled inside SSH-forwarded loopback TCP connections.`,
+  );
 }
 
 export function loadSettings(settingsPath?: string): SlackBridgeSettings {
