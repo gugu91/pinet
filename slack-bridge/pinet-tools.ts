@@ -224,7 +224,7 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
     { action: "snooze", args: { op: "clear" } },
   ],
   schedule: [{ action: "schedule", args: { delay: "30m", message: "Check queue state" } }],
-  agents: [{ action: "agents", args: { repo: "<repo>", role: "worker", full: true } }],
+  agents: [{ action: "agents", args: { repo: "<repo>", role: "worker" } }],
   spawn: [
     {
       action: "spawn",
@@ -237,7 +237,7 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
     { action: "ports", args: { op: "list", include_inactive: true } },
   ],
   lanes: [
-    { action: "lanes", args: { op: "list", full: true } },
+    { action: "lanes", args: { op: "list" } },
     {
       action: "lanes",
       args: {
@@ -260,10 +260,14 @@ const PINET_OUTPUT_OPTION_PARAMETERS = {
   full: Type.Optional(
     Type.Boolean({
       description:
-        "Include full verbose text/details; default cli output keeps data.details compact.",
+        "Include full verbose text/details. JSON format alone keeps data.details compact.",
     }),
   ),
 };
+
+const PINET_COMPACT_LIST_LIMIT = 10;
+const PINET_COMPACT_AGENT_TEXT_LIMIT = 5;
+const PINET_EXPANDED_DETAIL_LIMIT = 10;
 
 function getRecordString(
   record: Record<string, unknown> | null | undefined,
@@ -406,7 +410,7 @@ function formatPinetHelpCliText(data: Record<string, unknown>): string | null {
       typeof data.description === "string" && data.description.trim()
         ? ` — ${data.description.trim()}`
         : "";
-    return `Pinet ${data.action}${description}. Use args.format="json" or args.full=true for schema/details; JSON/full output can fill context quickly.`;
+    return `Pinet ${data.action}${description}. Use args.format="json" for the compact envelope, or args.full=true for verbose schema/debug details.`;
   }
 
   return null;
@@ -421,7 +425,7 @@ function getPinetEnvelopeCliText(envelope: PinetDispatcherEnvelope): string {
     if (helpText) return helpText;
 
     const action = typeof envelope.data.action === "string" ? ` ${envelope.data.action}` : "";
-    return `Pinet${action} succeeded. Use args.format="json" or args.full=true for details; JSON/full output can fill context quickly.`;
+    return `Pinet${action} succeeded. Use args.format="json" for the compact envelope, or args.full=true for verbose details.`;
   }
 
   const errors = envelope.errors.map((error) => error.message).filter(Boolean);
@@ -432,7 +436,7 @@ function getPinetEnvelopeCliText(envelope: PinetDispatcherEnvelope): string {
     return `Pinet ${envelope.status}: ${errors.join("; ")}${hints.length > 0 ? ` Hint: ${hints.join(" ")}` : ""}`;
   }
 
-  return `Pinet ${envelope.status}. Use args.format="json" or args.full=true for details; JSON/full output can fill context quickly.`;
+  return `Pinet ${envelope.status}. Use args.format="json" for the compact envelope, or args.full=true for verbose details.`;
 }
 
 function getTolerantPinetOutputOptions(value: unknown): PinetOutputOptions {
@@ -478,7 +482,7 @@ function wrapDispatcherEnvelope(
       {
         type: "text",
         text: shouldRenderStructuredPinetEnvelope(envelope, output)
-          ? JSON.stringify(envelope, null, 2)
+          ? JSON.stringify(envelope, null, output.full ? 2 : 0)
           : getPinetEnvelopeCliText(envelope),
       },
     ],
@@ -509,12 +513,63 @@ function parsePinetDispatcherEnvelopeFromText(text: string): PinetDispatcherEnve
   }
 }
 
-function formatPrimitiveDetails(details: Record<string, unknown>): string[] {
-  return Object.entries(details).map(([key, value]) => {
-    if (value === null) return `${key}: null`;
-    if (["string", "number", "boolean"].includes(typeof value)) return `${key}: ${String(value)}`;
-    return `${key}: ${JSON.stringify(value)}`;
-  });
+function formatDisplayValue(value: unknown): string {
+  if (value === null) return "null";
+  if (["string", "number", "boolean"].includes(typeof value)) return String(value);
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  if (isRecord(value)) {
+    const preferredKeys = [
+      "id",
+      "agentId",
+      "name",
+      "status",
+      "health",
+      "repo",
+      "role",
+      "threadId",
+      "messageId",
+      "sender",
+      "preview",
+      "laneId",
+      "state",
+      "leaseId",
+      "host",
+      "port",
+      "purpose",
+      "expiresAt",
+    ];
+    const parts = preferredKeys
+      .map((key) => {
+        const item = value[key];
+        if (item === null || item === undefined || Array.isArray(item) || isRecord(item)) {
+          return null;
+        }
+        return `${key}=${String(item)}`;
+      })
+      .filter((item): item is string => Boolean(item));
+    if (parts.length > 0) return parts.slice(0, 8).join(" · ");
+    return `${Object.keys(value).length} field${Object.keys(value).length === 1 ? "" : "s"}`;
+  }
+  return String(value);
+}
+
+function formatStructuredDetails(details: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(details)) {
+    if (Array.isArray(value)) {
+      lines.push(`${key}: ${value.length} item${value.length === 1 ? "" : "s"}`);
+      for (const [index, item] of value.slice(0, PINET_EXPANDED_DETAIL_LIMIT).entries()) {
+        lines.push(`${key}[${index}]: ${formatDisplayValue(item)}`);
+      }
+      const truncated = value.length - Math.min(value.length, PINET_EXPANDED_DETAIL_LIMIT);
+      if (truncated > 0) {
+        lines.push(`${key}: … ${truncated} more item${truncated === 1 ? "" : "s"}`);
+      }
+      continue;
+    }
+    lines.push(`${key}: ${formatDisplayValue(value)}`);
+  }
+  return lines;
 }
 
 function formatPinetEnvelopeExpandedText(envelope: PinetDispatcherEnvelope): string {
@@ -532,7 +587,7 @@ function formatPinetEnvelopeExpandedText(envelope: PinetDispatcherEnvelope): str
     const details = envelope.data.details;
     if (isRecord(details)) {
       lines.push("details:");
-      lines.push(...formatPrimitiveDetails(details).map((line) => `  ${line}`));
+      lines.push(...formatStructuredDetails(details).map((line) => `  ${line}`));
     }
   }
 
@@ -563,8 +618,8 @@ export function formatPinetDispatcherResultForDisplay(
 }
 
 function selectPinetResultDetails(result: PinetToolResult, output: PinetOutputOptions): unknown {
-  if (output.format === "json" || output.full) {
-    return result.details ?? null;
+  if (output.full) {
+    return result.fullDetails ?? result.details ?? null;
   }
   if (result.compactDetails !== undefined) {
     return result.compactDetails;
@@ -575,6 +630,7 @@ function selectPinetResultDetails(result: PinetToolResult, output: PinetOutputOp
 function buildPinetDispatcherHelpEnvelope(
   args: Record<string, unknown>,
   actions: Map<string, PinetActionDefinition>,
+  output: PinetOutputOptions,
 ): PinetDispatcherEnvelope {
   const topic =
     typeof args.topic === "string" && args.topic.trim()
@@ -588,14 +644,20 @@ function buildPinetDispatcherHelpEnvelope(
         action: definition.name,
         description: definition.description,
         guardrail_tool: `pinet:${definition.name}`,
-        args_schema: definition.parameters,
-        examples: PINET_DISPATCHER_EXAMPLES[definition.name] ?? [],
+        ...(output.full
+          ? {
+              args_schema: definition.parameters,
+              examples: PINET_DISPATCHER_EXAMPLES[definition.name] ?? [],
+            }
+          : {}),
       }))
       .sort((a, b) => a.action.localeCompare(b.action));
 
     return buildPinetDispatcherEnvelope("succeeded", {
       actions: catalog,
-      note: "Use args.topic to inspect a single action schema.",
+      note: output.full
+        ? "Use args.topic to inspect a single action schema."
+        : "Use args.topic to inspect a single action schema; add args.full=true for the full catalog schemas/examples.",
     });
   }
 
@@ -690,6 +752,18 @@ function runPinetSendAction(
           messageIds: result.messageIds,
           recipients: result.recipients,
         },
+        compactDetails: {
+          channel: result.channel,
+          messageCount: result.messageIds.length,
+          recipientCount: result.recipients.length,
+          recipients: result.recipients.slice(0, PINET_COMPACT_LIST_LIMIT),
+          recipientsTruncated: Math.max(0, result.recipients.length - PINET_COMPACT_LIST_LIMIT),
+        },
+        fullDetails: {
+          channel: result.channel,
+          messageIds: result.messageIds,
+          recipients: result.recipients,
+        },
       };
     }
 
@@ -748,7 +822,7 @@ function runPinetReadAction(
     }
 
     const result = await deps.readPinetInbox(options);
-    const shouldRenderFull = output.full || Boolean(options.threadId);
+    const shouldRenderFull = output.full;
     return {
       content: [
         {
@@ -867,6 +941,7 @@ function runPinetSpawnAction(
   params: Record<string, unknown>,
   deps: RegisterPinetToolsDeps,
   toolName: string,
+  output: PinetOutputOptions,
 ): Promise<PinetToolResult> {
   return (async () => {
     const task = getMaybeString(params, "task");
@@ -905,15 +980,18 @@ function runPinetSpawnAction(
       content: [
         {
           type: "text",
-          text: `Pinet subtree worker started: ${result.agentName} (${result.agentId}) in tmux session ${result.sessionName}. Task message ${result.messageId} delivered. Monitor: ${result.monitorCommand}`,
+          text: output.full
+            ? `Pinet subtree worker started: ${result.agentName} (${result.agentId}) in tmux session ${result.sessionName}. Task message ${result.messageId} delivered. Monitor: ${result.monitorCommand}`
+            : `Pinet subtree worker started: ${result.agentName} (${result.agentId}). Task message ${result.messageId} delivered.`,
         },
       ],
       details: result,
       compactDetails: {
         status: result.status,
         agentId: result.agentId,
-        sessionName: result.sessionName,
+        agentName: result.agentName,
         messageId: result.messageId,
+        threadId: result.threadId,
       },
       fullDetails: result,
     };
@@ -1019,14 +1097,26 @@ function getAgentRole(agent: AgentDisplayInfo): string | undefined {
   return getRecordString(agent.metadata, "role");
 }
 
+function truncatePinetDetailText(value: string | null | undefined, maxLength = 160): string | null {
+  if (!value) return null;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (!collapsed) return null;
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
 function buildCompactAgentDetails(
   agents: AgentDisplayInfo[],
   hint: PinetAgentsRoutingHint,
 ): Record<string, unknown> {
+  const shownAgents = agents.slice(0, PINET_COMPACT_LIST_LIMIT);
   return {
     count: agents.length,
+    total: agents.length,
+    shown: shownAgents.length,
+    truncated: Math.max(0, agents.length - shownAgents.length),
     hint,
-    agents: agents.map((agent) => {
+    agents: shownAgents.map((agent) => {
       const capabilityTags = agent.capabilityTags ?? [];
       return {
         id: agent.id,
@@ -1038,10 +1128,7 @@ function buildCompactAgentDetails(
         branch: getAgentBranch(agent) ?? null,
         role: getAgentRole(agent) ?? null,
         brokerManaged: agent.metadata?.brokerManaged === true,
-        launchSource: agent.metadata?.launchSource ?? null,
-        tmuxSession: agent.metadata?.tmuxSession ?? null,
         parentAgentId: agent.metadata?.parentAgentId ?? null,
-        rootAgentId: agent.metadata?.rootAgentId ?? null,
         treeDepth: agent.metadata?.treeDepth ?? 0,
         supervisionState: agent.metadata?.supervisionState ?? "root",
         subtreeRole: agent.metadata?.subtreeRole ?? null,
@@ -1081,6 +1168,23 @@ function filterAgentsForHierarchyScope(
   return descendants;
 }
 
+function formatCompactAgentRow(agent: AgentDisplayInfo): string {
+  const parts = [
+    agent.status,
+    agent.health ?? null,
+    getAgentRepo(agent) ? `repo=${getAgentRepo(agent)}` : null,
+    getAgentBranch(agent) ? `branch=${getAgentBranch(agent)}` : null,
+    getAgentRole(agent) ? `role=${getAgentRole(agent)}` : null,
+    agent.metadata?.subtreeRole ? `subtree=${agent.metadata.subtreeRole}` : null,
+    agent.metadata?.laneId ? `lane=${agent.metadata.laneId}` : null,
+    agent.pendingInboxCount != null && agent.pendingInboxCount > 0
+      ? `pending=${agent.pendingInboxCount}`
+      : null,
+    agent.routingScore != null ? `score=${agent.routingScore}` : null,
+  ].filter((item): item is string => Boolean(item));
+  return `- ${agent.emoji} ${agent.name} (${agent.id}): ${parts.join("; ")}`;
+}
+
 function formatCompactAgentList(agents: AgentDisplayInfo[], hint: PinetAgentsRoutingHint): string {
   const hintParts = [
     hint.repo ? `repo=${hint.repo}` : null,
@@ -1092,7 +1196,19 @@ function formatCompactAgentList(agents: AgentDisplayInfo[], hint: PinetAgentsRou
   ].filter((item): item is string => Boolean(item));
   const hintSuffix = hintParts.length > 0 ? `; hints ${hintParts.join(" · ")}` : "";
   const scopeSuffix = hint.scope && hint.scope !== "visible" ? `; scope=${hint.scope}` : "";
-  return `Pinet agents: ${agents.length} visible${hintSuffix}${scopeSuffix}.`;
+  const header = `Pinet agents: ${agents.length} visible${hintSuffix}${scopeSuffix}.`;
+  const hasRoutingContext = hintParts.length > 0 || Boolean(scopeSuffix);
+  if (!hasRoutingContext || agents.length === 0) return header;
+
+  const shownAgents = agents.slice(0, PINET_COMPACT_AGENT_TEXT_LIMIT);
+  const lines = [header, ...shownAgents.map(formatCompactAgentRow)];
+  const truncated = agents.length - shownAgents.length;
+  if (truncated > 0) {
+    lines.push(
+      `… ${truncated} more agent${truncated === 1 ? "" : "s"}; narrow filters or use args.full=true.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function formatPinetLaneSummary(lane: PinetLaneInfo): string {
@@ -1175,6 +1291,48 @@ function getMaybeMetadata(
   const value = params.metadata;
   if (value === null) return null;
   return isRecord(value) ? value : undefined;
+}
+
+function buildCompactPortLeaseDetails(leases: PortLeaseInfo[]): Record<string, unknown> {
+  const shownLeases = leases.slice(0, PINET_COMPACT_LIST_LIMIT);
+  return {
+    leaseCount: leases.length,
+    total: leases.length,
+    shown: shownLeases.length,
+    truncated: Math.max(0, leases.length - shownLeases.length),
+    leases: shownLeases.map((lease) => ({
+      leaseId: lease.id,
+      host: lease.host,
+      port: lease.port,
+      status: lease.status,
+      purpose: lease.purpose,
+      ownerAgentId: lease.ownerAgentId ?? null,
+      expiresAt: lease.expiresAt,
+    })),
+  };
+}
+
+function buildCompactLaneDetails(lanes: PinetLaneInfo[]): Record<string, unknown> {
+  const shownLanes = lanes.slice(0, PINET_COMPACT_LIST_LIMIT);
+  return {
+    laneCount: lanes.length,
+    total: lanes.length,
+    shown: shownLanes.length,
+    truncated: Math.max(0, lanes.length - shownLanes.length),
+    lanes: shownLanes.map((lane) => ({
+      laneId: lane.laneId,
+      state: lane.state,
+      name: truncatePinetDetailText(lane.name),
+      issueNumber: lane.issueNumber,
+      prNumber: lane.prNumber,
+      ownerAgentId: lane.ownerAgentId,
+      implementationLeadAgentId: lane.implementationLeadAgentId,
+      pmMode: lane.pmMode,
+      participantCount: lane.participants.length,
+      summary: truncatePinetDetailText(lane.summary),
+      lastActivityAt: lane.lastActivityAt,
+    })),
+  };
 }
 
 function formatPortLeaseSummary(lease: PortLeaseInfo): string {
@@ -1297,7 +1455,7 @@ function runPinetPortsAction(
       return {
         content: [{ type: "text", text: `Pinet port leases expired: ${leases.length}.` }],
         details: { leases },
-        compactDetails: { leaseCount: leases.length, leases: leases.slice(0, 10) },
+        compactDetails: buildCompactPortLeaseDetails(leases),
         fullDetails: { leases },
       };
     }
@@ -1318,7 +1476,7 @@ function runPinetPortsAction(
       return {
         content: [{ type: "text", text: formatPortLeases(leases, output.full) }],
         details: { leases },
-        compactDetails: { leaseCount: leases.length, leases: leases.slice(0, 10) },
+        compactDetails: buildCompactPortLeaseDetails(leases),
         fullDetails: { leases },
       };
     }
@@ -1356,7 +1514,7 @@ function runPinetLanesAction(
       return {
         content: [{ type: "text", text: formatPinetLanes(lanes, output.full) }],
         details: { lanes },
-        compactDetails: { laneCount: lanes.length, lanes: lanes.slice(0, 10) },
+        compactDetails: buildCompactLaneDetails(lanes),
         fullDetails: { lanes },
       };
     }
@@ -1631,7 +1789,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
       lane_id: Type.Optional(Type.String({ description: "Optional durable Pinet lane id" })),
       ...PINET_OUTPUT_OPTION_PARAMETERS,
     }),
-    execute: (_id, params, _output) => runPinetSpawnAction(params, deps, "pinet:spawn"),
+    execute: (_id, params, output) => runPinetSpawnAction(params, deps, "pinet:spawn", output),
   });
 
   registerAction({
@@ -1824,7 +1982,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     label: "Pinet Dispatcher",
     description: "Dispatch Pinet operations by action with compact help and schema discovery.",
     promptSnippet:
-      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" or args.full=true for explicit detail, but avoid JSON/full unless needed because it can fill context quickly.',
+      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" for the compact envelope or args.full=true for verbose/debug detail.',
     parameters: Type.Object({
       action: Type.String({
         description:
@@ -1833,7 +1991,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {
           description:
-            'Action arguments. Add format="cli"|"json" (or f/"-f") and full=true (or "--full": true) for explicit presentation control. Default cli keeps data.details compact; format="json" or full=true exposes full structured details and can fill context quickly, so use it only when needed.',
+            'Action arguments. Add format="cli"|"json" (or f/"-f") for presentation, and full=true (or "--full": true) only for verbose/debug details. Default cli and non-full json keep data.details compact.',
         }),
       ),
     }),
@@ -1912,7 +2070,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
           );
         }
         return wrapDispatcherEnvelope(
-          buildPinetDispatcherHelpEnvelope(args, actionDefinitions),
+          buildPinetDispatcherHelpEnvelope(args, actionDefinitions, output),
           output,
         );
       }
