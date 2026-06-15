@@ -345,7 +345,7 @@ describe("registerPinetTools", () => {
 
     expect(collapsed).toEqual({
       status: "succeeded",
-      text: "Pinet wake-up scheduled for 2026-07-01T00:05:00.000Z.",
+      text: "Pinet wake-up scheduled for 2026-07-01T00:05:00.000Z (id 7).",
     });
     expect(expanded.text).toContain("status: succeeded");
     expect(expanded.text).toContain("action: schedule");
@@ -1085,7 +1085,9 @@ describe("registerPinetTools", () => {
     };
 
     expect(scheduleBrokerWakeup).toHaveBeenCalledWith("2026-04-14T12:05:00.000Z", "check queue");
-    expect(result.details.data.text).toBe("Pinet wake-up scheduled for 2026-04-14T12:05:00.000Z.");
+    expect(result.details.data.text).toBe(
+      "Pinet wake-up scheduled for 2026-04-14T12:05:00.000Z (id 7).",
+    );
     expect(result.details.data.details).toEqual({ id: 7, fireAt: "2026-04-14T12:05:00.000Z" });
   });
 
@@ -1653,8 +1655,8 @@ describe("registerPinetTools", () => {
     expect(expanded).toContain("line three");
   });
 
-  it("summarizes arrays in expanded fallback details instead of dumping JSON", async () => {
-    const readPinetInbox = vi.fn(async () => ({
+  function makeReadResult() {
+    return {
       messages: [
         {
           inboxId: 31,
@@ -1691,14 +1693,64 @@ describe("registerPinetTools", () => {
       unreadCountAfter: 0,
       unreadThreads: [],
       markedReadIds: [31, 32],
-    }));
+    };
+  }
+
+  it("renders pinet read messages as rows when expanded but stays compact collapsed", async () => {
+    const readPinetInbox = vi.fn(async () => makeReadResult());
     const tools = registerWithDeps(createDeps({ readPinetInbox }));
     const pinet = tools.get("pinet");
     const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
 
-    const result = (await pinet?.execute("tool-call-read-fallback", {
+    const result = (await pinet?.execute("tool-call-read-rows", {
       action: "read",
       args: { unread_only: true },
+    })) as { content?: Array<{ type: string; text?: string }>; details?: unknown };
+
+    const collapsed = pinet
+      ?.renderResult?.(result, { expanded: false }, theme, {})
+      .render(200)
+      .join("\n");
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .join("\n");
+
+    // Collapsed keeps the one-line summary (no per-message bodies).
+    expect(collapsed).toContain("Pinet read: 2 unread messages");
+    expect(collapsed).not.toContain("please inspect #594");
+    // Expanded shows the per-message rows, not a JSON wall.
+    expect(expanded).toContain("please inspect #594");
+    expect(expanded).toContain("and #595");
+    expect(expanded).not.toContain("[{");
+    expect(expanded).not.toContain('"inboxId"');
+  });
+
+  it("summarizes arrays in expanded fallback details instead of dumping JSON", async () => {
+    const lease = (id: string) => ({
+      id,
+      purpose: "preview",
+      port: 49152,
+      host: "127.0.0.1",
+      ownerAgentId: "agent-1",
+      pid: null,
+      status: "expired" as const,
+      metadata: null,
+      acquiredAt: "2026-05-01T00:00:00.000Z",
+      renewedAt: "2026-05-01T00:00:00.000Z",
+      expiresAt: "2026-05-01T00:10:00.000Z",
+      releasedAt: null,
+    });
+    const expirePortLeases = vi.fn(async () => [lease("lease-1"), lease("lease-2")]);
+    const tools = registerWithDeps(createDeps({ expirePortLeases }));
+    const pinet = tools.get("pinet");
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    // ports op=expire has no custom expanded view, so it exercises the hardened
+    // fallback which summarizes arrays rather than emitting a JSON wall.
+    const result = (await pinet?.execute("tool-call-ports-expire", {
+      action: "ports",
+      args: { op: "expire" },
     })) as { content?: Array<{ type: string; text?: string }>; details?: unknown };
 
     const expanded = pinet
@@ -1706,11 +1758,96 @@ describe("registerPinetTools", () => {
       .render(200)
       .join("\n");
 
-    // Read has no custom expanded view in PR1, so it uses the hardened fallback
-    // which summarizes arrays rather than emitting a JSON wall.
-    expect(expanded).toContain("messages: 2 items");
+    expect(expanded).toContain("leases: 2 items");
     expect(expanded).not.toContain("[{");
-    expect(expanded).not.toContain('"inboxId"');
-    expect(expanded).not.toContain('"preview"');
+    expect(expanded).not.toContain('"expiresAt"');
+  });
+
+  it("renders pinet ports list rows on expand but a count when collapsed", async () => {
+    const listPortLeases = vi.fn(async () => [
+      {
+        id: "lease-1",
+        purpose: "preview",
+        port: 49152,
+        host: "127.0.0.1",
+        ownerAgentId: "agent-1",
+        pid: null,
+        status: "active" as const,
+        metadata: null,
+        acquiredAt: "2026-05-01T00:00:00.000Z",
+        renewedAt: "2026-05-01T00:00:00.000Z",
+        expiresAt: "2026-05-01T00:10:00.000Z",
+        releasedAt: null,
+      },
+    ]);
+    const tools = registerWithDeps(createDeps({ listPortLeases }));
+    const pinet = tools.get("pinet");
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const result = (await pinet?.execute("tool-call-ports-list-rows", {
+      action: "ports",
+      args: { op: "list" },
+    })) as { content?: Array<{ type: string; text?: string }>; details?: unknown };
+
+    const collapsed = pinet
+      ?.renderResult?.(result, { expanded: false }, theme, {})
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .join("\n");
+
+    expect(collapsed).toBe("✓ Pinet port leases: 1.");
+    expect(expanded).toContain("127.0.0.1:49152");
+    expect(expanded).toContain("lease=lease-1");
+    expect(expanded).not.toContain("leases: 1 item");
+  });
+
+  it("renders pinet lanes rows on expand but a count when collapsed", async () => {
+    const listPinetLanes = vi.fn(async () => [
+      {
+        laneId: "issue-688",
+        name: "Dispatcher UX",
+        task: null,
+        issueNumber: 688,
+        prNumber: null,
+        threadId: null,
+        ownerAgentId: "agent-1",
+        implementationLeadAgentId: null,
+        pmMode: true,
+        state: "active" as const,
+        summary: null,
+        metadata: null,
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        lastActivityAt: "2026-05-01T00:00:00.000Z",
+        participants: [],
+      },
+    ]);
+    const tools = registerWithDeps(createDeps({ listPinetLanes }));
+    const pinet = tools.get("pinet");
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const result = (await pinet?.execute("tool-call-lanes-list-rows", {
+      action: "lanes",
+      args: { op: "list" },
+    })) as { content?: Array<{ type: string; text?: string }>; details?: unknown };
+
+    const collapsed = pinet
+      ?.renderResult?.(result, { expanded: false }, theme, {})
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .join("\n");
+
+    expect(collapsed).toBe("✓ Pinet lanes: 1 tracked.");
+    expect(expanded).toContain("issue-688");
+    expect(expanded).toContain("[active]");
+    expect(expanded).toContain("#688");
   });
 });

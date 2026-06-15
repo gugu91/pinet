@@ -901,6 +901,10 @@ function runPinetReadAction(
       details: result,
       compactDetails: buildCompactPinetReadDetails(result),
       fullDetails: result,
+      // When the model/CLI text is the compact one-liner, give the operator the
+      // full per-message rows on expand. In full/thread mode `text` already
+      // carries the rich view, so no separate expanded body is needed.
+      ...(shouldRenderFull ? {} : { expandedText: formatPinetReadResultFull(result, options) }),
     };
   })();
 }
@@ -1125,7 +1129,7 @@ function runPinetScheduleAction(
             type: "text",
             text: output.full
               ? `Wake-up scheduled for ${wakeup.fireAt} (id: ${wakeup.id}).`
-              : `Pinet wake-up scheduled for ${wakeup.fireAt}.`,
+              : `Pinet wake-up scheduled for ${wakeup.fireAt} (id ${wakeup.id}).`,
           },
         ],
         details: wakeup,
@@ -1140,7 +1144,7 @@ function runPinetScheduleAction(
             type: "text",
             text: output.full
               ? `Wake-up scheduled for ${wakeup.fireAt} (id: ${wakeup.id}).`
-              : `Pinet wake-up scheduled for ${wakeup.fireAt}.`,
+              : `Pinet wake-up scheduled for ${wakeup.fireAt} (id ${wakeup.id}).`,
           },
         ],
         details: wakeup,
@@ -1603,6 +1607,10 @@ function runPinetPortsAction(
         details: { leases },
         compactDetails: buildCompactPortLeaseDetails(leases),
         fullDetails: { leases },
+        // Compact text is a count; show the per-lease rows on expand.
+        ...(output.full || leases.length === 0
+          ? {}
+          : { expandedText: formatPortLeases(leases, true) }),
       };
     }
 
@@ -1641,6 +1649,10 @@ function runPinetLanesAction(
         details: { lanes },
         compactDetails: buildCompactLaneDetails(lanes),
         fullDetails: { lanes },
+        // Compact text is a count; show the per-lane rows on expand.
+        ...(output.full || lanes.length === 0
+          ? {}
+          : { expandedText: formatPinetLanes(lanes, true) }),
       };
     }
 
