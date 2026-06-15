@@ -369,10 +369,15 @@ describe("registerPinetTools", () => {
     const collapsedText = collapsed?.map((line) => line.trimEnd()).join("\n");
     const expandedText = expanded?.map((line) => line.trimEnd()).join("\n");
 
-    expect(collapsedText).toBe("✓ Pinet message sent to alpha.");
-    expect(expandedText).toContain("details:");
-    expect(expandedText).toContain("messageId: 17");
+    // Collapsed shows the target plus a capped, operator-facing message preview.
+    expect(collapsedText).toBe("✓ Pinet message sent to alpha · “dispatch now”.");
+    // Expanded shows the sent envelope and full body, not a JSON wall.
+    expect(expandedText).toContain("to: alpha");
+    expect(expandedText).toContain("message id: 17");
+    expect(expandedText).toContain("message (1 line, 12 chars):");
+    expect(expandedText).toContain("dispatch now");
     expect(expandedText).not.toContain('"status"');
+    expect(expandedText).not.toContain("details:");
   });
 
   it("uses the broker broadcast path for broadcast dispatcher send targets", async () => {
@@ -405,7 +410,9 @@ describe("registerPinetTools", () => {
     };
 
     expect(sendPinetBroadcastMessage).toHaveBeenCalledWith("#extensions", "hello mesh");
-    expect(result.details.data.text).toBe("Pinet broadcast sent to #extensions (2 recipients).");
+    expect(result.details.data.text).toBe(
+      "Pinet broadcast sent to #extensions (2 recipients) · “hello mesh”.",
+    );
     expect(result.details.data.details).toEqual({
       channel: "#extensions",
       messageCount: 2,
@@ -946,6 +953,8 @@ describe("registerPinetTools", () => {
     expect(result.details.data.action).toBe("send");
     expect(result.details.data.text).toBe("Pinet message sent to alpha.");
     expectJsonStatus(result.content[0]?.text, "succeeded");
+    expect(result.content[0]?.text).not.toContain('"display"');
+    expect(result.content[0]?.text).not.toContain("dispatch now");
   });
 
   it("passes broker thread ownership transfers through pinet send metadata", async () => {
@@ -1448,8 +1457,10 @@ describe("registerPinetTools", () => {
       };
     };
 
-    expect(result.content[0]?.text).toContain("Pinet agents: 1 visible; hints repo=extensions.");
-    expect(result.content[0]?.text).toContain("Golden Chalk Rabbit");
+    expect(result.content[0]?.text).toBe(
+      "Pinet agents: 1 visible (0 working, 1 idle); hints repo=extensions.",
+    );
+    expect(result.content[0]?.text).not.toContain("Golden Chalk Rabbit");
     expect(result.details.data.text).not.toContain("pid:");
     expect(result.details.data.details.agents[0]?.name).toBe("Golden Chalk Rabbit");
     expect(result.details.data.details.agents[0]?.repo).toBe("extensions");
@@ -1489,6 +1500,7 @@ describe("registerPinetTools", () => {
     };
 
     expect(compact.content[0]?.text).not.toContain("very long persona");
+    expect(compact.content[0]?.text).not.toContain('"display"');
     expect(compactEnvelope.data.details.agents[0]?.metadata).toBeUndefined();
     expect(compactEnvelope.data.details.agents[0]?.personality).toBeUndefined();
     expect(compactEnvelope.data.details.agents[0]?.tmuxSession).toBeUndefined();
@@ -1500,35 +1512,205 @@ describe("registerPinetTools", () => {
 
     expect(full.content[0]?.text).toContain("very long persona");
     expect(full.content[0]?.text).toContain("pinet-secret-session");
+    expect(full.content[0]?.text).not.toContain('"display"');
   });
 
-  it("renders expanded Pinet agent details without raw nested JSON", async () => {
+  it("keeps pinet send format=json free of renderer-only display and message body", async () => {
+    const sendPinetAgentMessage = vi.fn(async () => ({ messageId: 99, target: "beta" }));
+    const tools = registerWithDeps(createDeps({ sendPinetAgentMessage }));
+
+    const result = (await tools.get("pinet")?.execute("tool-call-send-json-display-contract", {
+      action: "send",
+      args: { to: "beta", message: "sensitive body for tui only", format: "json" },
+    })) as { content: Array<{ text: string }>; details: { data: { details: unknown } } };
+
+    expect(result.content[0]?.text).not.toContain('"display"');
+    expect(result.content[0]?.text).not.toContain("sensitive body for tui only");
+    expect(JSON.stringify(result.details.data.details)).not.toContain(
+      "sensitive body for tui only",
+    );
+  });
+
+  it("renders pinet agents as a human table when expanded instead of raw JSON", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
 
-    const listBrokerAgents = vi.fn(() =>
-      Array.from({ length: 12 }, (_, index) =>
-        makeAgent({
-          id: `agent-${index}`,
-          name: `Agent ${index}`,
-          metadata: { repo: "extensions", role: "worker" },
-        }),
-      ),
-    );
+    const listBrokerAgents = vi.fn(() => [
+      makeAgent({
+        id: "a0f208e9-3de9-4c06",
+        name: "Aurora Emerald Cobra",
+        emoji: "🐍",
+        status: "working",
+        metadata: { repo: "garage-demo-may-26", branch: "main", role: "worker" },
+      }),
+      makeAgent({
+        id: "50131fcf-909f-4a35",
+        name: "Crystal Coral Bear",
+        emoji: "🐻",
+        status: "idle",
+        metadata: { repo: "projects", role: "worker" },
+      }),
+    ]);
     const tools = registerWithDeps(createDeps({ listBrokerAgents }));
     const pinet = tools.get("pinet");
-    const result = (await pinet?.execute("tool-call-agents-render", {
-      action: "agents",
-      args: { repo: "extensions", format: "json" },
-    })) as { content: Array<{ type: string; text: string }>; details: unknown };
     const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
 
-    const expanded = pinet?.renderResult?.(result, { expanded: true }, theme, {}).render(240);
-    const expandedText = expanded?.map((line) => line.trimEnd()).join("\n") ?? "";
+    const result = (await pinet?.execute("tool-call-agents-table", {
+      action: "agents",
+      args: {},
+    })) as {
+      content?: Array<{ type: string; text?: string }>;
+      details?: unknown;
+      expandedText?: string;
+    };
 
-    expect(expandedText).toContain("agents: 10 items");
-    expect(expandedText).toContain("agents[0]: id=agent-0");
-    expect(expandedText).not.toContain('[{"');
-    expect(expandedText.length).toBeLessThan(8_000);
+    const collapsed = pinet
+      ?.renderResult?.(result, { expanded: false }, theme, {})
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .map((line) => line.trimEnd())
+      .join("\n");
+
+    expect(collapsed).toBe("✓ Pinet agents: 2 visible (1 working, 1 idle).");
+    // Expanded shows a scannable per-agent table, not a JSON wall.
+    expect(expanded).toContain("Aurora Emerald Cobra");
+    expect(expanded).toContain("a0f208e9");
+    expect(expanded).toContain("garage-demo-may-26/main");
+    expect(expanded).toContain("working");
+    expect(expanded).toContain("Crystal Coral Bear");
+    expect(expanded).not.toContain("capabilityTags");
+    expect(expanded).not.toContain("routingScore");
+    expect(expanded).not.toContain('[{"id"');
+    expect(expanded).not.toContain("status: succeeded");
+  });
+
+  it("caps long pinet send previews and shows the body when expanded", async () => {
+    const longMessage = "L".repeat(200);
+    const sendPinetAgentMessage = vi.fn(async () => ({ messageId: 99, target: "beta" }));
+    const tools = registerWithDeps(createDeps({ sendPinetAgentMessage }));
+    const pinet = tools.get("pinet");
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const result = (await pinet?.execute("tool-call-send-long", {
+      action: "send",
+      args: { to: "beta", message: longMessage },
+    })) as {
+      content?: Array<{ type: string; text?: string }>;
+      details?: unknown;
+      expandedText?: string;
+    };
+
+    const collapsed = pinet
+      ?.renderResult?.(result, { expanded: false }, theme, {})
+      .render(200)
+      .join("\n");
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .join("\n");
+
+    // Collapsed preview is capped (ellipsis) and never echoes the full body.
+    expect(collapsed).toContain("…");
+    expect(collapsed).not.toContain("L".repeat(100));
+    // Expanded shows the envelope plus the (capped) body with a char count.
+    expect(expanded).toContain("to: beta");
+    expect(expanded).toContain("message id: 99");
+    expect(expanded).toContain("200 chars");
+  });
+
+  it("reports multi-line pinet send line counts in collapsed and expanded views", async () => {
+    const multiline = "line one\nline two\nline three";
+    const sendPinetAgentMessage = vi.fn(async () => ({ messageId: 7, target: "gamma" }));
+    const tools = registerWithDeps(createDeps({ sendPinetAgentMessage }));
+    const pinet = tools.get("pinet");
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const result = (await pinet?.execute("tool-call-send-multiline", {
+      action: "send",
+      args: { to: "gamma", message: multiline },
+    })) as {
+      content?: Array<{ type: string; text?: string }>;
+      details?: unknown;
+      expandedText?: string;
+    };
+
+    const collapsed = pinet
+      ?.renderResult?.(result, { expanded: false }, theme, {})
+      .render(200)
+      .join("\n");
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .join("\n");
+
+    expect(collapsed).toContain("(3 lines)");
+    expect(expanded).toContain("message (3 lines, 28 chars):");
+    expect(expanded).toContain("line one");
+    expect(expanded).toContain("line three");
+  });
+
+  it("summarizes arrays in expanded fallback details instead of dumping JSON", async () => {
+    const readPinetInbox = vi.fn(async () => ({
+      messages: [
+        {
+          inboxId: 31,
+          delivered: true,
+          readAt: null,
+          message: {
+            id: 44,
+            threadId: "a2a:broker:worker",
+            source: "agent",
+            direction: "inbound",
+            sender: "broker",
+            body: "please inspect #594",
+            metadata: { a2a: true },
+            createdAt: "2026-04-25T11:59:00.000Z",
+          },
+        },
+        {
+          inboxId: 32,
+          delivered: true,
+          readAt: null,
+          message: {
+            id: 45,
+            threadId: "a2a:broker:worker",
+            source: "agent",
+            direction: "inbound",
+            sender: "broker",
+            body: "and #595",
+            metadata: { a2a: true },
+            createdAt: "2026-04-25T12:00:00.000Z",
+          },
+        },
+      ],
+      unreadCountBefore: 2,
+      unreadCountAfter: 0,
+      unreadThreads: [],
+      markedReadIds: [31, 32],
+    }));
+    const tools = registerWithDeps(createDeps({ readPinetInbox }));
+    const pinet = tools.get("pinet");
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const result = (await pinet?.execute("tool-call-read-fallback", {
+      action: "read",
+      args: { unread_only: true },
+    })) as { content?: Array<{ type: string; text?: string }>; details?: unknown };
+
+    const expanded = pinet
+      ?.renderResult?.(result, { expanded: true }, theme, {})
+      .render(200)
+      .join("\n");
+
+    // Read has no custom expanded view in PR1, so it uses the hardened fallback
+    // which summarizes arrays rather than emitting a JSON wall.
+    expect(expanded).toContain("messages: 2 items");
+    expect(expanded).not.toContain("[{");
+    expect(expanded).not.toContain('"inboxId"');
+    expect(expanded).not.toContain('"preview"');
   });
 });
