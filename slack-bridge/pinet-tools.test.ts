@@ -12,6 +12,10 @@ interface MinimalRenderTheme {
   bold: (text: string) => string;
 }
 
+function expectJsonStatus(text: string | undefined, status: "succeeded" | "failed"): void {
+  expect(JSON.parse(text ?? "{}").status).toBe(status);
+}
+
 interface MinimalComponent {
   render(width: number): string[];
 }
@@ -238,7 +242,7 @@ describe("registerPinetTools", () => {
     expect(pinet?.promptSnippet).toContain("lanes, ports, reload");
     expect(pinet?.promptSnippet).not.toContain("skin");
     expect(pinet?.promptSnippet).toContain('args.format="json"');
-    expect(pinet?.promptSnippet).toContain("fill context quickly");
+    expect(pinet?.promptSnippet).toContain("verbose/debug detail");
     expect(JSON.stringify(pinet?.parameters)).toContain(
       "help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit",
     );
@@ -334,7 +338,7 @@ describe("registerPinetTools", () => {
       args: { at: "2026-07-01T00:05:00.000Z", message: "check queue", format: "json" },
     })) as { content: Array<{ type: string; text: string }>; details: unknown };
 
-    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+    expectJsonStatus(result.content[0]?.text, "succeeded");
 
     const collapsed = formatPinetDispatcherResultForDisplay(result, false);
     const expanded = formatPinetDispatcherResultForDisplay(result, true);
@@ -361,7 +365,7 @@ describe("registerPinetTools", () => {
     const collapsed = pinet?.renderResult?.(result, { expanded: false }, theme, {}).render(200);
     const expanded = pinet?.renderResult?.(result, { expanded: true }, theme, {}).render(200);
 
-    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+    expectJsonStatus(result.content[0]?.text, "succeeded");
     const collapsedText = collapsed?.map((line) => line.trimEnd()).join("\n");
     const expandedText = expanded?.map((line) => line.trimEnd()).join("\n");
 
@@ -390,7 +394,12 @@ describe("registerPinetTools", () => {
       details: {
         data: {
           text: string;
-          details: { channel: string; messageIds: number[]; recipients: string[] };
+          details: {
+            channel: string;
+            messageCount: number;
+            recipientCount: number;
+            recipients: string[];
+          };
         };
       };
     };
@@ -399,8 +408,10 @@ describe("registerPinetTools", () => {
     expect(result.details.data.text).toBe("Pinet broadcast sent to #extensions (2 recipients).");
     expect(result.details.data.details).toEqual({
       channel: "#extensions",
-      messageIds: [21, 22],
+      messageCount: 2,
+      recipientCount: 2,
       recipients: ["Worker One", "Worker Two"],
+      recipientsTruncated: 0,
     });
   });
 
@@ -451,16 +462,17 @@ describe("registerPinetTools", () => {
     })) as {
       details: {
         status: "succeeded";
-        data: { text: string; details: { markedReadIds: number[]; messageCount: number } };
+        data: { text: string; details: { markedReadCount: number; messageCount: number } };
       };
     };
 
     expect(readPinetInbox).toHaveBeenCalledWith({ threadId: "a2a:broker:worker", limit: 5 });
     expect(result.details.data.text).toContain(
-      "Pinet read (unread) from thread a2a:broker:worker: 1 message.",
+      "Pinet read: 1 unread message; unread 2→1; marked 1; 1 unread thread.",
     );
-    expect(result.details.data.text).toContain("please inspect #594");
-    expect(result.details.data.details.markedReadIds).toEqual([31]);
+    expect(result.details.data.text).toContain("broker: please inspect #594");
+    expect(result.details.data.text).not.toContain("Unread before:");
+    expect(result.details.data.details.markedReadCount).toBe(1);
     expect(result.details.data.details.messageCount).toBe(1);
   });
 
@@ -500,7 +512,9 @@ describe("registerPinetTools", () => {
       details: {
         data: {
           text: string;
-          details: { messages: Array<{ preview: string; message?: { body?: string } }> };
+          details: {
+            messages: Array<{ id: number; preview?: string; message?: { body?: string } }>;
+          };
           compact_details?: unknown;
           full_details?: unknown;
         };
@@ -510,15 +524,56 @@ describe("registerPinetTools", () => {
     expect(result.content[0]?.text).toBe("Pinet read: 1 unread message; unread 1→0; marked 1.");
     expect(result.content[0]?.text).not.toContain(longBody);
     expect(result.details.data.text).not.toContain(longBody);
-    expect(result.details.data.details.messages[0]?.preview).toContain("…");
-    expect(result.details.data.details.messages[0]?.preview).not.toContain("keep exact body");
+    expect(result.details.data.details.messages[0]?.id).toBe(44);
+    expect(result.details.data.details.messages[0]?.preview).toBeUndefined();
     expect(result.details.data.details.messages[0]?.message?.body).toBeUndefined();
+    expect(JSON.stringify(result.details.data.details)).not.toContain(longBody);
     expect(result.details.data.compact_details).toBeUndefined();
     expect(result.details.data.full_details).toBeUndefined();
   });
 
-  it("keeps pinet read format=json structured details backward-compatible", async () => {
-    const body = "exact json body";
+  it("keeps default thread reads bounded with previews instead of exact bodies", async () => {
+    const longBody = `thread context ${"dense detail ".repeat(40)}final exact suffix`;
+    const readPinetInbox = vi.fn(async () => ({
+      messages: [
+        {
+          inboxId: 31,
+          delivered: true,
+          readAt: "2026-04-25T12:00:00.000Z",
+          message: {
+            id: 44,
+            threadId: "a2a:broker:worker",
+            source: "agent" as const,
+            direction: "inbound" as const,
+            sender: "broker",
+            body: longBody,
+            metadata: { a2a: true, priority: "high" },
+            createdAt: "2026-04-25T11:59:00.000Z",
+          },
+        },
+      ],
+      unreadCountBefore: 1,
+      unreadCountAfter: 0,
+      unreadThreads: [],
+      markedReadIds: [31],
+    }));
+    const tools = registerWithDeps(createDeps({ readPinetInbox }));
+
+    const result = (await tools.get("pinet")?.execute("tool-call-read-thread-compact", {
+      action: "read",
+      args: { thread_id: "a2a:broker:worker" },
+    })) as { content: Array<{ text: string }>; details: { data: { text: string } } };
+
+    expect(result.content[0]?.text.length).toBeLessThan(500);
+    expect(result.content[0]?.text).toContain("thread context dense detail");
+    expect(result.content[0]?.text).toContain("args.full=true args.unread_only=false");
+    expect(result.content[0]?.text).not.toContain("final exact suffix");
+    expect(result.content[0]?.text).not.toContain("Unread before:");
+    expect(result.details.data.text).not.toContain(longBody);
+  });
+
+  it("keeps pinet read format=json structured details compact by default", async () => {
+    const body = `exact json ${"body detail ".repeat(30)}final suffix`;
     const readPinetInbox = vi.fn(async () => ({
       messages: [
         {
@@ -550,10 +605,16 @@ describe("registerPinetTools", () => {
       args: { thread_id: "a2a:broker:worker", f: "json" },
     })) as { content: Array<{ text: string }> };
     const envelope = JSON.parse(result.content[0]?.text ?? "{}") as {
-      data: { details: { messages: Array<{ message: { body: string } }> } };
+      data: {
+        details: { messages: Array<{ id: number; preview?: string; message?: { body: string } }> };
+      };
     };
 
-    expect(envelope.data.details.messages[0]?.message.body).toBe(body);
+    expect(envelope.data.details.messages[0]?.id).toBe(44);
+    expect(envelope.data.details.messages[0]?.preview).toBeUndefined();
+    expect(envelope.data.details.messages[0]?.message).toBeUndefined();
+    expect(result.content[0]?.text).not.toContain(body);
+    expect(result.content[0]?.text).not.toContain("\n");
   });
 
   it("shows exact Pinet read bodies only with explicit full output", async () => {
@@ -679,7 +740,7 @@ describe("registerPinetTools", () => {
     );
   });
 
-  it("preserves explicit JSON output for action-dispatched help", async () => {
+  it("keeps action-dispatched help format=json compact by default", async () => {
     const tools = registerWithDeps(createDeps());
 
     const result = (await tools.get("pinet")?.execute("tool-call-dispatch-help-json", {
@@ -687,8 +748,9 @@ describe("registerPinetTools", () => {
       args: { format: "json" },
     })) as { content: Array<{ text: string }> };
 
-    expect(result.content[0]?.text).toContain('"status": "succeeded"');
-    expect(result.content[0]?.text).toContain('"args_schema"');
+    expectJsonStatus(result.content[0]?.text, "succeeded");
+    expect(result.content[0]?.text).not.toContain('"args_schema"');
+    expect(result.content[0]?.text).toContain("full catalog schemas/examples");
   });
 
   it("preserves explicit full output for action-dispatched help", async () => {
@@ -699,7 +761,7 @@ describe("registerPinetTools", () => {
       args: { full: true },
     })) as { content: Array<{ text: string }> };
 
-    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+    expectJsonStatus(result.content[0]?.text, "succeeded");
     expect(result.content[0]?.text).toContain('"args_schema"');
   });
 
@@ -715,13 +777,13 @@ describe("registerPinetTools", () => {
       args: { format: "yaml", full: true },
     })) as { content: Array<{ text: string }> };
 
-    expect(jsonResult.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(jsonResult.content[0]?.text, "failed");
     expect(jsonResult.content[0]?.text).toContain('"full must be a boolean when provided."');
-    expect(fullResult.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(fullResult.content[0]?.text, "failed");
     expect(fullResult.content[0]?.text).toContain('"format must be');
   });
 
-  it("warns compact help topic callers that JSON/full output can fill context quickly", async () => {
+  it("points compact help topic callers to JSON/full discovery", async () => {
     const tools = registerWithDeps(createDeps());
 
     const result = (await tools.get("pinet")?.execute("tool-call-dispatch-help-topic", {
@@ -729,7 +791,7 @@ describe("registerPinetTools", () => {
       args: { topic: "read" },
     })) as { content: Array<{ text: string }> };
 
-    expect(result.content[0]?.text).toContain("JSON/full output can fill context quickly");
+    expect(result.content[0]?.text).toContain('Use args.format="json" for the compact envelope');
   });
 
   it("routes action-dispatched port lease acquire", async () => {
@@ -747,7 +809,7 @@ describe("registerPinetTools", () => {
         format: "json",
       },
     })) as {
-      details: { status: string; data: { details: { lease: { port: number } } } };
+      details: { status: string; data: { details: { port: number; lease?: unknown } } };
     };
 
     expect(acquirePortLease).toHaveBeenCalledWith({
@@ -757,7 +819,8 @@ describe("registerPinetTools", () => {
       maxPort: 52010,
     });
     expect(result.details.status).toBe("succeeded");
-    expect(result.details.data.details.lease.port).toBe(52000);
+    expect(result.details.data.details.port).toBe(52000);
+    expect(result.details.data.details.lease).toBeUndefined();
   });
 
   it("routes action-dispatched port lease list", async () => {
@@ -793,7 +856,7 @@ describe("registerPinetTools", () => {
       args: { theme: "foundation", format: "json" },
     })) as { content: Array<{ text: string }> };
 
-    expect(result.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(result.content[0]?.text, "failed");
     expect(result.content[0]?.text).toContain('"errors"');
   });
 
@@ -805,7 +868,7 @@ describe("registerPinetTools", () => {
       args: { theme: "foundation", full: true },
     })) as { content: Array<{ text: string }> };
 
-    expect(result.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(result.content[0]?.text, "failed");
     expect(result.content[0]?.text).toContain('"errors"');
   });
 
@@ -817,7 +880,7 @@ describe("registerPinetTools", () => {
       args: { message: "dispatch now", full: true },
     })) as { content: Array<{ text: string }> };
 
-    expect(result.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(result.content[0]?.text, "failed");
     expect(result.content[0]?.text).toContain('"to is required"');
   });
 
@@ -833,9 +896,9 @@ describe("registerPinetTools", () => {
       args: { to: "alpha", message: "dispatch now", format: "yaml", full: true },
     })) as { content: Array<{ text: string }> };
 
-    expect(jsonResult.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(jsonResult.content[0]?.text, "failed");
     expect(jsonResult.content[0]?.text).toContain('"full must be a boolean when provided."');
-    expect(fullResult.content[0]?.text).toContain('"status": "failed"');
+    expectJsonStatus(fullResult.content[0]?.text, "failed");
     expect(fullResult.content[0]?.text).toContain('"format must be');
   });
 
@@ -882,7 +945,7 @@ describe("registerPinetTools", () => {
     expect(result.details.status).toBe("succeeded");
     expect(result.details.data.action).toBe("send");
     expect(result.details.data.text).toBe("Pinet message sent to alpha.");
-    expect(result.content[0]?.text).toContain('"status": "succeeded"');
+    expectJsonStatus(result.content[0]?.text, "succeeded");
   });
 
   it("passes broker thread ownership transfers through pinet send metadata", async () => {
@@ -1327,10 +1390,31 @@ describe("registerPinetTools", () => {
       role: "reviewer",
     });
     expect(result.details.data.text).toContain("Pinet subtree worker started");
+    expect(result.details.data.text).toContain("Monitor: tmux attach");
     expect(result.details.data.details).toMatchObject({
       status: "started",
       agentId: "child-1",
     });
+  });
+
+  it("keeps default subtree spawn output free of monitor commands", async () => {
+    const spawnSubtreeWorker = vi.fn(createDeps().spawnSubtreeWorker);
+    const tools = registerWithDeps(
+      createDeps({ brokerRole: () => "follower", spawnSubtreeWorker }),
+    );
+
+    const result = (await tools.get("pinet")?.execute("tool-call-spawn-compact", {
+      action: "spawn",
+      args: { task: "Review PR #761", repo: "extensions", role: "reviewer" },
+    })) as {
+      content: Array<{ text: string }>;
+      details: { data: { text: string; details: { monitorCommand?: string; agentId: string } } };
+    };
+
+    expect(result.content[0]?.text).toContain("Pinet subtree worker started: Child Worker");
+    expect(result.content[0]?.text).not.toContain("tmux attach");
+    expect(result.details.data.details.agentId).toBe("child-1");
+    expect(result.details.data.details.monitorCommand).toBeUndefined();
   });
 
   it("keeps pinet agents default cli details compact", async () => {
@@ -1351,7 +1435,12 @@ describe("registerPinetTools", () => {
           text: string;
           details: {
             count: number;
-            agents: Array<{ name: string; repo: string | null; metadata?: unknown }>;
+            agents: Array<{
+              name: string;
+              repo: string | null;
+              metadata?: unknown;
+              tmuxSession?: string;
+            }>;
             hint: { repo?: string };
           };
           compact_details?: unknown;
@@ -1359,13 +1448,87 @@ describe("registerPinetTools", () => {
       };
     };
 
-    expect(result.content[0]?.text).toBe("Pinet agents: 1 visible; hints repo=extensions.");
-    expect(result.content[0]?.text).not.toContain("Golden Chalk Rabbit");
+    expect(result.content[0]?.text).toContain("Pinet agents: 1 visible; hints repo=extensions.");
+    expect(result.content[0]?.text).toContain("Golden Chalk Rabbit");
     expect(result.details.data.text).not.toContain("pid:");
     expect(result.details.data.details.agents[0]?.name).toBe("Golden Chalk Rabbit");
     expect(result.details.data.details.agents[0]?.repo).toBe("extensions");
     expect(result.details.data.details.agents[0]?.metadata).toBeUndefined();
+    expect(result.details.data.details.agents[0]?.tmuxSession).toBeUndefined();
     expect(result.details.data.details.hint.repo).toBe("extensions");
     expect(result.details.data.compact_details).toBeUndefined();
+  });
+
+  it("keeps pinet agents format=json compact unless full is requested", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
+
+    const listBrokerAgents = vi.fn(() => [
+      makeAgent({
+        metadata: {
+          repo: "extensions",
+          role: "worker",
+          personality: "very long persona ".repeat(30),
+          capabilities: { tools: ["read", "edit"], tags: ["implementation"] },
+          tmuxSession: "pinet-secret-session",
+        },
+      }),
+    ]);
+    const tools = registerWithDeps(createDeps({ listBrokerAgents }));
+
+    const compact = (await tools.get("pinet")?.execute("tool-call-agents-json-compact", {
+      action: "agents",
+      args: { repo: "extensions", format: "json" },
+    })) as { content: Array<{ text: string }> };
+    const compactEnvelope = JSON.parse(compact.content[0]?.text ?? "{}") as {
+      data: {
+        details: {
+          agents: Array<{ metadata?: unknown; personality?: string; tmuxSession?: string }>;
+        };
+      };
+    };
+
+    expect(compact.content[0]?.text).not.toContain("very long persona");
+    expect(compactEnvelope.data.details.agents[0]?.metadata).toBeUndefined();
+    expect(compactEnvelope.data.details.agents[0]?.personality).toBeUndefined();
+    expect(compactEnvelope.data.details.agents[0]?.tmuxSession).toBeUndefined();
+
+    const full = (await tools.get("pinet")?.execute("tool-call-agents-json-full", {
+      action: "agents",
+      args: { repo: "extensions", format: "json", full: true },
+    })) as { content: Array<{ text: string }> };
+
+    expect(full.content[0]?.text).toContain("very long persona");
+    expect(full.content[0]?.text).toContain("pinet-secret-session");
+  });
+
+  it("renders expanded Pinet agent details without raw nested JSON", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
+
+    const listBrokerAgents = vi.fn(() =>
+      Array.from({ length: 12 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          metadata: { repo: "extensions", role: "worker" },
+        }),
+      ),
+    );
+    const tools = registerWithDeps(createDeps({ listBrokerAgents }));
+    const pinet = tools.get("pinet");
+    const result = (await pinet?.execute("tool-call-agents-render", {
+      action: "agents",
+      args: { repo: "extensions", format: "json" },
+    })) as { content: Array<{ type: string; text: string }>; details: unknown };
+    const theme: MinimalRenderTheme = { fg: (_color, text) => text, bold: (text) => text };
+
+    const expanded = pinet?.renderResult?.(result, { expanded: true }, theme, {}).render(240);
+    const expandedText = expanded?.map((line) => line.trimEnd()).join("\n") ?? "";
+
+    expect(expandedText).toContain("agents: 10 items");
+    expect(expandedText).toContain("agents[0]: id=agent-0");
+    expect(expandedText).not.toContain('[{"');
+    expect(expandedText.length).toBeLessThan(8_000);
   });
 });

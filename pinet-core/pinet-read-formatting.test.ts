@@ -44,10 +44,18 @@ function makeReadResult(body = "please inspect issue context"): PinetReadResult 
 }
 
 describe("Pinet read formatting", () => {
-  it("keeps default read output compact", () => {
+  it("keeps default read output compact with bounded thread previews", () => {
     expect(formatPinetReadResultCompact(makeReadResult(), { threadId: "a2a:broker:worker" })).toBe(
-      "Pinet read: 1 unread message; unread 2→1; marked 1; 1 unread thread.",
+      "Pinet read: 1 unread message; unread 2→1; marked 1; 1 unread thread.\n- [steering] [agent/a2a:broker:worker #44] broker: please inspect issue context",
     );
+  });
+
+  it("points truncated compact thread previews to the exact-body retry", () => {
+    const compact = formatPinetReadResultCompact(makeReadResult("dense detail ".repeat(40)), {
+      threadId: "a2a:broker:worker",
+    });
+
+    expect(compact).toContain("args.full=true args.unread_only=false");
   });
 
   it("preserves the full read text for explicit verbose output", () => {
@@ -59,13 +67,30 @@ describe("Pinet read formatting", () => {
     expect(full).toContain("Marked read: 31.");
   });
 
-  it("returns compact details without dropping backward-compatible full bodies", () => {
+  it("returns lean compact details without duplicating body previews", () => {
     const body = `please inspect ${"important context ".repeat(20)}and keep exact body`;
     const compactDetails = buildCompactPinetReadDetails(makeReadResult(body)) as {
-      messages: Array<{ preview: string }>;
+      summary: string;
+      messageCount: number;
+      unreadBefore: number;
+      unreadAfter: number;
+      markedReadCount: number;
+      exactBodies: string;
+      messages: Array<{ id: number; threadId: string; preview?: string; message?: unknown }>;
     };
 
-    expect(compactDetails.messages[0]?.preview).not.toBe(body);
-    expect(compactDetails.messages[0]?.preview).toContain("please inspect important context");
+    expect(compactDetails.summary).toBe("1 msg; unread 2→1; marked 1; 1 unread thread");
+    expect(compactDetails.messageCount).toBe(1);
+    expect(compactDetails.unreadBefore).toBe(2);
+    expect(compactDetails.unreadAfter).toBe(1);
+    expect(compactDetails.markedReadCount).toBe(1);
+    expect(compactDetails.exactBodies).toBe("args.full=true args.unread_only=false");
+    expect(compactDetails.messages[0]).toMatchObject({
+      id: 44,
+      threadId: "a2a:broker:worker",
+    });
+    expect(compactDetails.messages[0]?.preview).toBeUndefined();
+    expect(compactDetails.messages[0]?.message).toBeUndefined();
+    expect(JSON.stringify(compactDetails)).not.toContain(body);
   });
 });
