@@ -299,8 +299,9 @@ describe("packaged default broker prompt", () => {
     expect(defaultPrompt).toContain("Never echo tokens");
   });
 
-  // This exercises the real package build, including declaration emit; CI can exceed Vitest's
-  // default 5s test timeout even though the build path is expected for publish readiness.
+  // This exercises the real package build, including declaration emit; loaded worktrees and
+  // pre-push runs can exceed Vitest's default 5s timeout even though the build path is expected
+  // for publish readiness.
   it("copies prompt assets into dist/prompts so the packaged tmux.md is loadable", async () => {
     await execFileAsync("node", ["../scripts/build-package.mjs"], { cwd: process.cwd() });
 
@@ -314,5 +315,5 @@ describe("packaged default broker prompt", () => {
 
     expect(result.source).toBe("packaged");
     expect(result.content).toContain("PRIORITIZED ISSUE GATE");
-  }, 20_000);
+  }, 60_000);
 });

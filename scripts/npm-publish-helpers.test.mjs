@@ -26,6 +26,24 @@ function entry(directory, manifest) {
   };
 }
 
+function publishManifest(directory, overrides = {}) {
+  return {
+    name: `@pinet/${directory}`,
+    version: "0.1.0",
+    license: "MIT",
+    repository: {
+      type: "git",
+      url: "git+https://github.com/gugu91/extensions.git",
+      directory,
+    },
+    publishConfig: { access: "public" },
+    main: "./dist/index.js",
+    types: "./dist/index.d.ts",
+    files: ["README.md", "LICENSE", "dist/"],
+    ...overrides,
+  };
+}
+
 test("getPublishPackages returns the full publish set in dependency order", () => {
   assert.deepEqual(getPublishPackages(), [
     "transport-core",
@@ -150,17 +168,7 @@ test("rewriteLocalDependencySpecs rejects local dependencies outside the publish
 });
 
 test("validatePublishMetadata blocks placeholder versions for real publish only", () => {
-  const entries = [
-    entry("pinet-core", {
-      name: "@pinet/pinet-core",
-      version: "0.0.0",
-      license: "MIT",
-      publishConfig: { access: "public" },
-      main: "./dist/index.js",
-      types: "./dist/index.d.ts",
-      files: ["README.md", "LICENSE", "dist/"],
-    }),
-  ];
+  const entries = [entry("pinet-core", publishManifest("pinet-core", { version: "0.0.0" }))];
 
   assert.doesNotThrow(() => validatePublishMetadata(entries, { dryRun: true }));
   assert.throws(
@@ -171,14 +179,7 @@ test("validatePublishMetadata blocks placeholder versions for real publish only"
 
 test("validatePublishMetadata requires declaration metadata", () => {
   const entries = [
-    entry("pinet-core", {
-      name: "@pinet/pinet-core",
-      version: "0.0.0",
-      license: "MIT",
-      publishConfig: { access: "public" },
-      main: "./dist/index.js",
-      files: ["README.md", "LICENSE", "dist/"],
-    }),
+    entry("pinet-core", publishManifest("pinet-core", { version: "0.0.0", types: undefined })),
   ];
 
   assert.throws(() => validatePublishMetadata(entries, { dryRun: true }), /must include types/);
@@ -186,20 +187,37 @@ test("validatePublishMetadata requires declaration metadata", () => {
 
 test("validatePublishMetadata requires npm org pinet package names", () => {
   const entries = [
-    entry("pinet-core", {
-      name: "@gugu910/pi-pinet-core",
-      version: "0.0.0",
-      license: "MIT",
-      publishConfig: { access: "public" },
-      main: "./dist/index.js",
-      types: "./dist/index.d.ts",
-      files: ["README.md", "LICENSE", "dist/"],
-    }),
+    entry(
+      "pinet-core",
+      publishManifest("pinet-core", { name: "@gugu910/pi-pinet-core", version: "0.0.0" }),
+    ),
   ];
 
   assert.throws(
     () => validatePublishMetadata(entries, { dryRun: true }),
     /package name must be @pinet\/pinet-core/,
+  );
+});
+
+test("validatePublishMetadata blocks incorrect GitHub package links", () => {
+  const entries = [
+    entry(
+      "slack-bridge",
+      publishManifest("slack-bridge", {
+        repository: {
+          type: "git",
+          url: "git+https://github.com/gugu910/extensions.git",
+          directory: "wrong-directory",
+        },
+        homepage: "https://github.com/gugu910/extensions#readme",
+        bugs: { url: "https://github.com/gugu910/extensions/issues" },
+      }),
+    ),
+  ];
+
+  assert.throws(
+    () => validatePublishMetadata(entries, { dryRun: true }),
+    /repository\.url must be git\+https:\/\/github\.com\/gugu91\/extensions\.git[\s\S]*repository\.directory must be slack-bridge[\s\S]*homepage must be https:\/\/github\.com\/gugu91\/extensions#readme[\s\S]*bugs\.url must be https:\/\/github\.com\/gugu91\/extensions\/issues/,
   );
 });
 
