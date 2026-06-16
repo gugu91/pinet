@@ -175,6 +175,13 @@ interface PinetToolResult {
   details?: unknown;
   compactDetails?: unknown;
   fullDetails?: unknown;
+  // Renderer-only, human-readable expanded body for the Pi TUI. Never sent to
+  // the model and never part of the machine `data.details` contract. When set,
+  // the expanded tool card shows this instead of JSON-dumping `data.details`.
+  expandedText?: string;
+  // Optional model/machine-safe text when the operator-facing content includes
+  // previews that must stay out of `format=json` serialized envelopes.
+  machineText?: string;
 }
 
 interface PinetActionDefinition {
@@ -210,6 +217,8 @@ interface PinetRenderContentBlock {
 interface PinetRenderResultInput {
   content?: PinetRenderContentBlock[];
   details?: unknown;
+  expandedText?: string;
+  displayText?: string;
 }
 
 const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> = {
@@ -266,8 +275,6 @@ const PINET_OUTPUT_OPTION_PARAMETERS = {
 };
 
 const PINET_COMPACT_LIST_LIMIT = 10;
-const PINET_COMPACT_AGENT_TEXT_LIMIT = 5;
-const PINET_EXPANDED_DETAIL_LIMIT = 10;
 
 function getRecordString(
   record: Record<string, unknown> | null | undefined,
@@ -473,9 +480,13 @@ function shouldRenderStructuredPinetEnvelope(
 function wrapDispatcherEnvelope(
   envelope: PinetDispatcherEnvelope,
   output: PinetOutputOptions = { format: "cli", full: false },
+  expandedText?: string,
+  displayText?: string,
 ): {
   content: Array<{ type: "text"; text: string }>;
   details: PinetDispatcherEnvelope;
+  expandedText?: string;
+  displayText?: string;
 } {
   return {
     content: [
@@ -487,6 +498,8 @@ function wrapDispatcherEnvelope(
       },
     ],
     details: envelope,
+    ...(expandedText ? { expandedText } : {}),
+    ...(displayText ? { displayText } : {}),
   };
 }
 
@@ -513,81 +526,102 @@ function parsePinetDispatcherEnvelopeFromText(text: string): PinetDispatcherEnve
   }
 }
 
-function formatDisplayValue(value: unknown): string {
+function summarizeDetailValue(value: unknown): string {
   if (value === null) return "null";
-  if (["string", "number", "boolean"].includes(typeof value)) return String(value);
-  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
-  if (isRecord(value)) {
-    const preferredKeys = [
-      "id",
-      "agentId",
-      "name",
-      "status",
-      "health",
-      "repo",
-      "role",
-      "threadId",
-      "messageId",
-      "sender",
-      "preview",
-      "laneId",
-      "state",
-      "leaseId",
-      "host",
-      "port",
-      "purpose",
-      "expiresAt",
-    ];
-    const parts = preferredKeys
-      .map((key) => {
-        const item = value[key];
-        if (item === null || item === undefined || Array.isArray(item) || isRecord(item)) {
-          return null;
+  if (Array.isArray(value)) {
+    return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return "{}";
+    const inline = entries
+      .slice(0, 6)
+      .map(([key, nested]) => {
+        if (nested === null || ["string", "number", "boolean"].includes(typeof nested)) {
+          return `${key}=${String(nested)}`;
         }
-        return `${key}=${String(item)}`;
+        return `${key}=…`;
       })
-      .filter((item): item is string => Boolean(item));
-    if (parts.length > 0) return parts.slice(0, 8).join(" · ");
-    return `${Object.keys(value).length} field${Object.keys(value).length === 1 ? "" : "s"}`;
+      .join(", ");
+    return `{ ${inline}${entries.length > 6 ? ", …" : ""} }`;
   }
   return String(value);
 }
 
-function formatStructuredDetails(details: Record<string, unknown>): string[] {
-  const lines: string[] = [];
-  for (const [key, value] of Object.entries(details)) {
-    if (Array.isArray(value)) {
-      lines.push(`${key}: ${value.length} item${value.length === 1 ? "" : "s"}`);
-      for (const [index, item] of value.slice(0, PINET_EXPANDED_DETAIL_LIMIT).entries()) {
-        lines.push(`${key}[${index}]: ${formatDisplayValue(item)}`);
-      }
-      const truncated = value.length - Math.min(value.length, PINET_EXPANDED_DETAIL_LIMIT);
-      if (truncated > 0) {
-        lines.push(`${key}: … ${truncated} more item${truncated === 1 ? "" : "s"}`);
-      }
-      continue;
-    }
-    lines.push(`${key}: ${formatDisplayValue(value)}`);
-  }
-  return lines;
+// Renders `data.details` as compact key lines. Arrays and nested objects are
+// summarized (count / inlined keys) so the expanded view never JSON-dumps a
+// wall of structured data into the operator's TUI.
+function formatPrimitiveDetails(details: Record<string, unknown>): string[] {
+  return Object.entries(details).map(([key, value]) => `${key}: ${summarizeDetailValue(value)}`);
 }
 
-function formatPinetEnvelopeExpandedText(envelope: PinetDispatcherEnvelope): string {
-  const lines = [getPinetEnvelopeCliText(envelope), `status: ${envelope.status}`];
+const PINET_SEND_PREVIEW_MAX = 80;
+const PINET_SEND_BODY_MAX = 600;
+
+// Single-line, whitespace-collapsed, length-capped preview of a sent message.
+// Operator-facing only; kept short so model/CLI text stays compact.
+function formatMessagePreview(message: string, maxLength = PINET_SEND_PREVIEW_MAX): string {
+  const collapsed = message.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function countMessageLines(message: string): number {
+  if (message.length === 0) return 0;
+  return message.split(/\r?\n/).length;
+}
+
+// Capped multi-line body for the expanded TUI card. Preserves line breaks so the
+// operator can see structure, but truncates very long bodies.
+function capMessageBody(message: string, maxLength = PINET_SEND_BODY_MAX): string {
+  if (message.length <= maxLength) return message;
+  return `${message.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function formatSentMessageSuffix(message: string): string {
+  const preview = formatMessagePreview(message);
+  if (!preview) return "";
+  const lines = countMessageLines(message);
+  return ` · “${preview}”${lines > 1 ? ` (${lines} lines)` : ""}`;
+}
+
+function buildSentMessageExpandedText(
+  fields: Array<[string, string | number | undefined]>,
+  message: string,
+): string {
+  const lines = fields
+    .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
+    .map(([label, value]) => `${label}: ${value}`);
+  const chars = message.length;
+  const lineCount = countMessageLines(message);
+  lines.push(`message (${lineCount} line${lineCount === 1 ? "" : "s"}, ${chars} chars):`);
+  lines.push(capMessageBody(message));
+  return lines.join("\n");
+}
+
+function formatPinetEnvelopeExpandedText(
+  envelope: PinetDispatcherEnvelope,
+  expandedText?: string,
+): string {
+  const lines = [getPinetEnvelopeCliText(envelope)];
 
   if (envelope.status === "failed") {
+    lines.push(`status: ${envelope.status}`);
     for (const error of envelope.errors) {
       lines.push(`error[${error.class}]: ${error.message}`);
       if (error.hint) lines.push(`hint: ${error.hint}`);
     }
+  } else if (expandedText && expandedText.trim().length > 0) {
+    lines.push(...expandedText.split("\n"));
   } else if (isRecord(envelope.data)) {
+    lines.push(`status: ${envelope.status}`);
     const action = typeof envelope.data.action === "string" ? envelope.data.action : undefined;
     if (action) lines.push(`action: ${action}`);
 
     const details = envelope.data.details;
     if (isRecord(details)) {
       lines.push("details:");
-      lines.push(...formatStructuredDetails(details).map((line) => `  ${line}`));
+      lines.push(...formatPrimitiveDetails(details).map((line) => `  ${line}`));
     }
   }
 
@@ -613,7 +647,9 @@ export function formatPinetDispatcherResultForDisplay(
 
   return {
     status: envelope.status,
-    text: expanded ? formatPinetEnvelopeExpandedText(envelope) : getPinetEnvelopeCliText(envelope),
+    text: expanded
+      ? formatPinetEnvelopeExpandedText(envelope, result.expandedText)
+      : (result.displayText ?? getPinetEnvelopeCliText(envelope)),
   };
 }
 
@@ -733,10 +769,13 @@ function runPinetSendAction(
       );
     }
 
+    const previewSuffix = formatSentMessageSuffix(message);
+
     if (deps.brokerRole() === "broker" && isBroadcastChannelTarget(to)) {
       const result = deps.sendPinetBroadcastMessage(to, message);
       const preview = result.recipients.slice(0, 5).join(", ");
       const suffix = result.recipients.length > 5 ? ", …" : "";
+      const recipientList = result.recipients.join(", ");
 
       return {
         content: [
@@ -744,7 +783,7 @@ function runPinetSendAction(
             type: "text",
             text: output.full
               ? `Broadcast sent to ${result.channel} (${result.recipients.length} agents: ${preview}${suffix}).`
-              : `Pinet broadcast sent to ${result.channel} (${result.recipients.length} recipients).`,
+              : `Pinet broadcast sent to ${result.channel} (${result.recipients.length} recipients)${previewSuffix}.`,
           },
         ],
         details: {
@@ -764,6 +803,17 @@ function runPinetSendAction(
           messageIds: result.messageIds,
           recipients: result.recipients,
         },
+        machineText: output.full
+          ? `Broadcast sent to ${result.channel} (${result.recipients.length} agents: ${preview}${suffix}).`
+          : `Pinet broadcast sent to ${result.channel} (${result.recipients.length} recipients).`,
+        expandedText: buildSentMessageExpandedText(
+          [
+            ["to", result.channel],
+            ["recipients", `${result.recipients.length} (${recipientList})`],
+            ["message ids", result.messageIds.join(", ")],
+          ],
+          message,
+        ),
       };
     }
 
@@ -772,13 +822,16 @@ function runPinetSendAction(
           threadOwnershipTransfer: { mode: "transfer", threadId: transferThreadId },
         })
       : await deps.sendPinetAgentMessage(to, message);
+    const transferSuffix = result.transferredThreadId
+      ? ` (${result.transferredThreadChannel})`
+      : "";
     return {
       content: [
         {
           type: "text",
           text: output.full
             ? `Message sent to ${result.target} (id: ${result.messageId})${result.transferredThreadId ? ` and transferred Slack thread ${result.transferredThreadId}${result.transferredThreadChannel ? ` (${result.transferredThreadChannel})` : ""}` : ""}.`
-            : `Pinet message sent to ${result.target}${result.transferredThreadId ? `; transferred Slack thread ${result.transferredThreadId}` : ""}.`,
+            : `Pinet message sent to ${result.target}${result.transferredThreadId ? `; transferred Slack thread ${result.transferredThreadId}` : ""}${previewSuffix}.`,
         },
       ],
       details: {
@@ -789,6 +842,19 @@ function runPinetSendAction(
           ? { transferredThreadChannel: result.transferredThreadChannel }
           : {}),
       },
+      machineText: output.full
+        ? `Message sent to ${result.target} (id: ${result.messageId})${result.transferredThreadId ? ` and transferred Slack thread ${result.transferredThreadId}${result.transferredThreadChannel ? ` (${result.transferredThreadChannel})` : ""}` : ""}.`
+        : `Pinet message sent to ${result.target}${result.transferredThreadId ? `; transferred Slack thread ${result.transferredThreadId}` : ""}.`,
+      expandedText: buildSentMessageExpandedText(
+        [
+          ["to", result.target],
+          ["message id", result.messageId],
+          result.transferredThreadId
+            ? ["transferred thread", `${result.transferredThreadId}${transferSuffix}`]
+            : ["transferred thread", undefined],
+        ],
+        message,
+      ),
     };
   })();
 }
@@ -1168,21 +1234,19 @@ function filterAgentsForHierarchyScope(
   return descendants;
 }
 
-function formatCompactAgentRow(agent: AgentDisplayInfo): string {
+function formatAgentStatusBreakdown(agents: AgentDisplayInfo[]): string {
+  if (agents.length === 0) return "";
+  const working = agents.filter((agent) => agent.status === "working").length;
+  const idle = agents.length - working;
+  const ghost = agents.filter((agent) => agent.health === "ghost").length;
+  const stale = agents.filter((agent) => agent.health === "stale").length;
   const parts = [
-    agent.status,
-    agent.health ?? null,
-    getAgentRepo(agent) ? `repo=${getAgentRepo(agent)}` : null,
-    getAgentBranch(agent) ? `branch=${getAgentBranch(agent)}` : null,
-    getAgentRole(agent) ? `role=${getAgentRole(agent)}` : null,
-    agent.metadata?.subtreeRole ? `subtree=${agent.metadata.subtreeRole}` : null,
-    agent.metadata?.laneId ? `lane=${agent.metadata.laneId}` : null,
-    agent.pendingInboxCount != null && agent.pendingInboxCount > 0
-      ? `pending=${agent.pendingInboxCount}`
-      : null,
-    agent.routingScore != null ? `score=${agent.routingScore}` : null,
+    `${working} working`,
+    `${idle} idle`,
+    ghost > 0 ? `${ghost} ghost` : null,
+    stale > 0 ? `${stale} stale` : null,
   ].filter((item): item is string => Boolean(item));
-  return `- ${agent.emoji} ${agent.name} (${agent.id}): ${parts.join("; ")}`;
+  return ` (${parts.join(", ")})`;
 }
 
 function formatCompactAgentList(agents: AgentDisplayInfo[], hint: PinetAgentsRoutingHint): string {
@@ -1196,18 +1260,79 @@ function formatCompactAgentList(agents: AgentDisplayInfo[], hint: PinetAgentsRou
   ].filter((item): item is string => Boolean(item));
   const hintSuffix = hintParts.length > 0 ? `; hints ${hintParts.join(" · ")}` : "";
   const scopeSuffix = hint.scope && hint.scope !== "visible" ? `; scope=${hint.scope}` : "";
-  const header = `Pinet agents: ${agents.length} visible${hintSuffix}${scopeSuffix}.`;
-  const hasRoutingContext = hintParts.length > 0 || Boolean(scopeSuffix);
-  if (!hasRoutingContext || agents.length === 0) return header;
+  const breakdown = formatAgentStatusBreakdown(agents);
+  return `Pinet agents: ${agents.length} visible${breakdown}${hintSuffix}${scopeSuffix}.`;
+}
 
-  const shownAgents = agents.slice(0, PINET_COMPACT_AGENT_TEXT_LIMIT);
-  const lines = [header, ...shownAgents.map(formatCompactAgentRow)];
-  const truncated = agents.length - shownAgents.length;
-  if (truncated > 0) {
-    lines.push(
-      `… ${truncated} more agent${truncated === 1 ? "" : "s"}; narrow filters or use args.full=true.`,
+interface PinetAgentsExpandedRow {
+  name: string;
+  id: string;
+  state: string;
+  where: string;
+  laneOrRole: string;
+  inbox: string;
+}
+
+const PINET_AGENTS_EXPANDED_MAX_ROWS = 30;
+
+// Compact, aligned per-agent rows for the expanded TUI card. Avoids JSON dumps;
+// shows name/id/status-health/repo-branch/lane-or-role/pending-inbox + flags.
+function formatPinetAgentsExpanded(agents: AgentDisplayInfo[]): string {
+  if (agents.length === 0) return "(no agents connected)";
+
+  const shown = agents.slice(0, PINET_AGENTS_EXPANDED_MAX_ROWS);
+  const rows: PinetAgentsExpandedRow[] = shown.map((agent) => {
+    const name = `${agent.emoji} ${agent.name}`;
+    const id = agent.id.length > 8 ? agent.id.slice(0, 8) : agent.id;
+    const healthSuffix = agent.health && agent.health !== "healthy" ? `/${agent.health}` : "";
+    const stuckSuffix = agent.stuck ? " stuck" : "";
+    const state = `${agent.status}${healthSuffix}${stuckSuffix}`;
+    const repo = getAgentRepo(agent);
+    const branch = getAgentBranch(agent);
+    const where = repo ? `${repo}${branch ? `/${branch}` : ""}` : (branch ?? "—");
+    const laneId = typeof agent.metadata?.laneId === "string" ? agent.metadata.laneId : undefined;
+    const role = getAgentRole(agent);
+    const laneOrRole = laneId ? `lane:${laneId}` : (role ?? "");
+    const inbox =
+      agent.pendingInboxCount != null && agent.pendingInboxCount > 0
+        ? `inbox:${agent.pendingInboxCount}`
+        : "";
+    return { name, id, state, where, laneOrRole, inbox };
+  });
+
+  const clip = (value: string, width: number): string =>
+    value.length <= width ? value : `${value.slice(0, Math.max(0, width - 1))}…`;
+  const pad = (value: string, width: number): string =>
+    value.length >= width ? value : `${value}${" ".repeat(width - value.length)}`;
+  const colWidth = (pick: (row: PinetAgentsExpandedRow) => string, cap: number): number =>
+    Math.min(
+      cap,
+      rows.reduce((max, row) => Math.max(max, pick(row).length), 0),
     );
+
+  const nameW = colWidth((row) => row.name, 28);
+  const idW = colWidth((row) => row.id, 8);
+  const stateW = colWidth((row) => row.state, 20);
+  const whereW = colWidth((row) => row.where, 30);
+  const laneW = colWidth((row) => row.laneOrRole, 18);
+
+  const lines = rows.map((row) =>
+    [
+      pad(clip(row.name, nameW), nameW),
+      pad(row.id, idW),
+      pad(clip(row.state, stateW), stateW),
+      pad(clip(row.where, whereW), whereW),
+      pad(clip(row.laneOrRole, laneW), laneW),
+      row.inbox,
+    ]
+      .join("  ")
+      .trimEnd(),
+  );
+
+  if (agents.length > shown.length) {
+    lines.push(`… +${agents.length - shown.length} more`);
   }
+
   return lines.join("\n");
 }
 
@@ -1695,6 +1820,7 @@ function runPinetAgentsAction(
       details: { agents, hint },
       compactDetails: buildCompactAgentDetails(agents, hint),
       fullDetails: { agents, hint },
+      expandedText: formatPinetAgentsExpanded(agents),
     };
   })();
 }
@@ -2123,13 +2249,20 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
 
       try {
         const result = await definition.execute(toolCallId, params.args, output);
+        const expandedText =
+          typeof result.expandedText === "string" && result.expandedText.trim().length > 0
+            ? result.expandedText
+            : undefined;
+        const displayText = result.content[0]?.text ?? "";
         return wrapDispatcherEnvelope(
           buildPinetDispatcherEnvelope("succeeded", {
             action: definition.name,
-            text: result.content[0]?.text ?? "",
+            text: output.format === "json" ? (result.machineText ?? displayText) : displayText,
             details: selectPinetResultDetails(result, output),
           }),
           output,
+          expandedText,
+          displayText,
         );
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
