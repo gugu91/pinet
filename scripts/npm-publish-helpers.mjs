@@ -22,6 +22,9 @@ const publishPackageNamesByDirectory = new Map(
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const publicDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const requiredPackageFiles = ["README.md", "LICENSE", "dist/"];
+const expectedRepositoryUrl = "git+https://github.com/gugu91/extensions.git";
+const expectedHomepageUrl = "https://github.com/gugu91/extensions#readme";
+const expectedBugsUrl = "https://github.com/gugu91/extensions/issues";
 
 export function parseArgs(argv) {
   const args = {
@@ -220,6 +223,18 @@ export function validatePublishMetadata(entries, { dryRun }) {
     }
     if (!manifest.version) errors.push(`${directory}: package.json must include version`);
     if (manifest.private === true) errors.push(`${manifest.name}: package must not be private`);
+    if (manifest.repository?.type !== "git" || manifest.repository?.url !== expectedRepositoryUrl) {
+      errors.push(`${manifest.name}: repository.url must be ${expectedRepositoryUrl}`);
+    }
+    if (manifest.repository?.directory !== directory) {
+      errors.push(`${manifest.name}: repository.directory must be ${directory}`);
+    }
+    if (manifest.homepage && manifest.homepage !== expectedHomepageUrl) {
+      errors.push(`${manifest.name}: homepage must be ${expectedHomepageUrl}`);
+    }
+    if (manifest.bugs?.url && manifest.bugs.url !== expectedBugsUrl) {
+      errors.push(`${manifest.name}: bugs.url must be ${expectedBugsUrl}`);
+    }
     if (manifest.publishConfig?.access !== "public") {
       errors.push(`${manifest.name}: publishConfig.access must be public`);
     }
