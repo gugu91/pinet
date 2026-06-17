@@ -1278,7 +1278,7 @@ describe("BrokerDB", () => {
     expect(db.getThread("t-unrouted")?.ownerAgent).toBeNull();
   });
 
-  it("requeueUndeliveredMessages moves pending slack work back into backlog", () => {
+  it("requeueUndeliveredMessages keeps pending Slack work targeted to its original recipient", () => {
     db.registerAgent("worker-1", "Worker", "🤖", 1);
     db.createThread("t-requeue", "slack", "C1", "worker-1");
     db.insertMessage("t-requeue", "slack", "inbound", "U1", "hello", ["worker-1"], {
@@ -1291,7 +1291,7 @@ describe("BrokerDB", () => {
     expect(db.getInbox("worker-1")).toHaveLength(0);
     expect(db.getPendingBacklog()).toHaveLength(1);
     expect(db.getPendingBacklog()[0].threadId).toBe("t-requeue");
-    expect(db.getPendingBacklog()[0].preferredAgentId).toBeNull();
+    expect(db.getPendingBacklog()[0].preferredAgentId).toBe("worker-1");
   });
 
   it("requeueUndeliveredMessages also requeues pending agent-to-agent work", () => {
@@ -1320,8 +1320,9 @@ describe("BrokerDB", () => {
     expect(db.getPendingBacklog()[0].preferredAgentId).toBe("worker-1");
   });
 
-  it("maintenance requeues messages orphaned in a disconnected agent inbox", () => {
+  it("maintenance requeues disconnected Slack owner work without assigning it to another worker", () => {
     db.registerAgent("worker-1", "Worker", "🤖", 1);
+    db.registerAgent("worker-2", "Other Worker", "🦊", 2);
     db.createThread("t-orphan", "slack", "C1", "worker-1");
     // Use disconnectAgent with 0ms window so resumable_until expires immediately
     db.disconnectAgent("worker-1", 0);
@@ -1347,14 +1348,20 @@ describe("BrokerDB", () => {
     });
 
     expect(result.reapedAgentIds).toContain("worker-1");
+    expect(result.assignedBacklogCount).toBe(0);
     expect(db.getAgentById("worker-1")).not.toBeNull();
     expect(db.getInbox("worker-1")).toHaveLength(0);
+    expect(db.getInbox("worker-2")).toHaveLength(0);
     expect(db.getPendingBacklog()).toHaveLength(1);
-    expect(db.getPendingBacklog()[0].threadId).toBe("t-orphan");
+    expect(db.getPendingBacklog()[0]).toMatchObject({
+      threadId: "t-orphan",
+      preferredAgentId: "worker-1",
+      assignedAgentId: null,
+    });
     expect(db.getThread("t-orphan")?.ownerAgent).toBeNull();
   });
 
-  it("maintenance purge requeues inbox work before deleting expired disconnected agents", () => {
+  it("maintenance purge drops expired targeted Slack work instead of assigning it elsewhere", () => {
     db.registerAgent("gone", "Gone", "⚪️", 4);
     db.createThread("t-gone-maint", "slack", "C1", "gone");
     db.insertMessage("t-gone-maint", "slack", "inbound", "U1", "recover me too", ["gone"], {
@@ -1367,14 +1374,28 @@ describe("BrokerDB", () => {
       .prepare("UPDATE agents SET disconnected_at = ?, resumable_until = NULL WHERE id = ?")
       .run(new Date(Date.now() - 2 * 60 * 60_000).toISOString(), "gone");
 
-    runBrokerMaintenancePass(db, {
+    const result = runBrokerMaintenancePass(db, {
       staleAfterMs: 15_000,
       now: Date.parse("2026-04-01T00:00:10.000Z"),
     });
 
+    const backlogRow = sqlite
+      .prepare(
+        "SELECT status, reason, preferred_agent_id FROM unrouted_backlog WHERE thread_id = ?",
+      )
+      .get("t-gone-maint") as
+      | { status: string; reason: string; preferred_agent_id: string | null }
+      | undefined;
+
     expect(db.getAgentById("gone")).toBeNull();
     expect(db.getInbox("gone")).toHaveLength(0);
-    expect(db.getPendingBacklog().map((entry) => entry.threadId)).toContain("t-gone-maint");
+    expect(db.getPendingBacklog()).toHaveLength(0);
+    expect(backlogRow).toEqual({
+      status: "dropped",
+      reason: "preferred_agent_missing",
+      preferred_agent_id: "gone",
+    });
+    expect(result.anomalies).toContain("dropped 1 undeliverable targeted backlog entry");
     expect(db.getThread("t-gone-maint")?.ownerAgent).toBeNull();
   });
 

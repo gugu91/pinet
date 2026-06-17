@@ -4399,7 +4399,7 @@ export class BrokerDB implements BrokerDBInterface {
     for (const row of rows) {
       const metadata = row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : {};
       const channel = typeof metadata.channel === "string" ? metadata.channel : "";
-      const preferredAgentId = row.source === "agent" ? row.target_agent_id : null;
+      const preferredAgentId = row.target_agent_id || null;
       this.upsertBacklogEntry(
         row.message_id,
         row.thread_id,
