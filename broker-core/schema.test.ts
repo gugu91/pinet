@@ -853,6 +853,123 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("skips stale persisted Slack inbox rows during worker replay", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      const staleTimestamp = String((Date.now() - 15 * 60 * 1000 - 1_000) / 1000);
+      db.createThread("thread-stale", "slack", "C123", "agent-a");
+      db.queueMessage("agent-a", {
+        source: "slack",
+        threadId: "thread-stale",
+        channel: "C123",
+        userId: "U1",
+        text: "old Slack reply",
+        timestamp: staleTimestamp,
+      });
+
+      expect(db.getInbox("agent-a")).toEqual([]);
+      expect(db.getUnreadInboxCount("agent-a")).toBe(0);
+      expect(db.readInbox("agent-a", { markRead: false }).messages).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps fresh persisted Slack inbox rows during worker replay", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      const freshTimestamp = String((Date.now() - 14 * 60 * 1000) / 1000);
+      db.createThread("thread-fresh", "slack", "C123", "agent-a");
+      db.queueMessage("agent-a", {
+        source: "slack",
+        threadId: "thread-fresh",
+        channel: "C123",
+        userId: "U1",
+        text: "fresh Slack reply",
+        timestamp: freshTimestamp,
+      });
+
+      const inbox = db.getInbox("agent-a");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].message.body).toBe("fresh Slack reply");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("drops stale persisted Slack backlog before reassignment", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      const staleTimestamp = String((Date.now() - 15 * 60 * 1000 - 1_000) / 1000);
+      const backlog = db.queueUnroutedMessage({
+        source: "slack",
+        threadId: "thread-backlog-stale",
+        channel: "C123",
+        userId: "U1",
+        userName: "User One",
+        text: "old backlog Slack reply",
+        timestamp: staleTimestamp,
+      });
+
+      expect(db.getPendingBacklog()).toEqual([]);
+      expect(db.assignBacklogEntry(backlog.id, "agent-a")).toBeNull();
+      expect(db.getBacklogCount("pending")).toBe(0);
+      expect(db.getBacklogCount("dropped")).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not drop non-Slack persisted inbox rows with old timestamps", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      const staleTimestamp = String((Date.now() - 15 * 60 * 1000 - 1_000) / 1000);
+      db.createThread("a2a:sender:agent-a", "agent", "", "agent-a");
+      db.queueMessage("agent-a", {
+        source: "agent",
+        threadId: "a2a:sender:agent-a",
+        channel: "",
+        userId: "sender",
+        text: "old A2A message",
+        timestamp: staleTimestamp,
+        metadata: { a2a: true },
+      });
+
+      const inbox = db.getInbox("agent-a");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].message.body).toBe("old A2A message");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not requeue stale Slack inbox rows into backlog", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      const staleTimestamp = String((Date.now() - 15 * 60 * 1000 - 1_000) / 1000);
+      db.createThread("thread-requeue-stale", "slack", "C123", "agent-a");
+      db.queueMessage("agent-a", {
+        source: "slack",
+        threadId: "thread-requeue-stale",
+        channel: "C123",
+        userId: "U1",
+        text: "old Slack reply before disconnect",
+        timestamp: staleTimestamp,
+      });
+
+      expect(db.requeueUndeliveredMessages("agent-a")).toBe(0);
+      expect(db.getPendingBacklog()).toEqual([]);
+      expect(db.getUnreadInboxCount("agent-a")).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("stamps worker-routed Slack inbox mail with an explicit class", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);

@@ -274,6 +274,39 @@ function getStringMetadataValue(
 }
 
 const INTERNAL_AGENT_SOURCE = "agent";
+const STALE_SLACK_MESSAGE_MAX_AGE_MS = 15 * 60 * 1000;
+// Slack ts values are epoch seconds. Small fixture/sentinel values are treated
+// as ambiguous instead of stale so replay filtering only applies to plausible
+// real Slack event timestamps.
+const MIN_PLAUSIBLE_SLACK_TIMESTAMP_SECONDS = 1_000_000_000;
+
+function parseSlackTimestampMs(timestamp: string | null | undefined): number | null {
+  if (!timestamp) return null;
+  const seconds = Number(timestamp);
+  if (!Number.isFinite(seconds) || seconds < MIN_PLAUSIBLE_SLACK_TIMESTAMP_SECONDS) {
+    return null;
+  }
+  return Math.trunc(seconds * 1000);
+}
+
+function getSlackMessageAgeMs(
+  source: string,
+  timestamp: string | null | undefined,
+  nowMs = Date.now(),
+): number | null {
+  if (source !== "slack") return null;
+  const timestampMs = parseSlackTimestampMs(timestamp);
+  return timestampMs === null ? null : nowMs - timestampMs;
+}
+
+function isStaleSlackMessageTimestamp(
+  source: string,
+  timestamp: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  const ageMs = getSlackMessageAgeMs(source, timestamp, nowMs);
+  return ageMs !== null && ageMs > STALE_SLACK_MESSAGE_MAX_AGE_MS;
+}
 
 function isExternalTransportSource(source: string): boolean {
   return source.trim().length > 0 && source !== INTERNAL_AGENT_SOURCE;
@@ -2699,6 +2732,7 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   getPendingBacklog(limit = 50): BacklogEntry[] {
+    this.dropStaleSlackDeliveryRows();
     const db = this.getDb();
     const rows = db
       .prepare(
@@ -2712,6 +2746,9 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   getBacklogCount(status: BacklogEntry["status"] = "pending"): number {
+    if (status === "pending") {
+      this.dropStaleSlackDeliveryRows();
+    }
     const db = this.getDb();
     const row = db
       .prepare("SELECT COUNT(*) AS count FROM unrouted_backlog WHERE status = ?")
@@ -2772,6 +2809,7 @@ export class BrokerDB implements BrokerDBInterface {
     const db = this.getDb();
 
     return this.withTransaction(() => {
+      this.dropStaleSlackDeliveryRows(agentId);
       const row = db
         .prepare("SELECT * FROM unrouted_backlog WHERE id = ? AND status = 'pending'")
         .get(id) as BacklogRow | undefined;
@@ -2821,6 +2859,7 @@ export class BrokerDB implements BrokerDBInterface {
   }
 
   recoverPendingTargetedBacklog(agentId: string): number {
+    this.dropStaleSlackDeliveryRows(agentId);
     const agent = this.getAgentRowById(agentId);
     if (!agent || agent.disconnected_at) {
       return 0;
@@ -3930,7 +3969,110 @@ export class BrokerDB implements BrokerDBInterface {
     return row ? rowToBrokerMessage(row) : null;
   }
 
+  private dropStaleSlackDeliveryRows(agentId?: string): {
+    inboxCount: number;
+    backlogCount: number;
+  } {
+    const db = this.getDb();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    const agentClause = agentId ? " AND i.agent_id = ?" : "";
+    const inboxRows = db
+      .prepare(
+        `SELECT i.id AS inbox_id,
+                i.agent_id AS agent_id,
+                i.message_id AS message_id,
+                m.source AS source,
+                m.metadata AS metadata,
+                m.external_ts AS external_ts
+           FROM inbox i
+           JOIN messages m ON m.id = i.message_id
+          WHERE (i.delivered = 0 OR i.read_at IS NULL)
+            AND m.direction = 'inbound'
+            AND m.source = 'slack'${agentClause}`,
+      )
+      .all(...(agentId ? [agentId] : [])) as Array<{
+      inbox_id: number;
+      agent_id: string;
+      message_id: number;
+      source: string;
+      metadata: string | null;
+      external_ts: string | null;
+    }>;
+
+    const staleInboxRows = inboxRows.filter((row) => {
+      const metadata = parseJsonMetadata(row.metadata);
+      const timestamp =
+        getStringMetadataValue(metadata, ["timestamp", "ts", "externalTs", "external_ts"]) ??
+        row.external_ts;
+      return isStaleSlackMessageTimestamp(row.source, timestamp, nowMs);
+    });
+
+    const markInboxStale = db.prepare(
+      "UPDATE inbox SET delivered = 1, read_at = COALESCE(read_at, ?) WHERE id = ?",
+    );
+    for (const row of staleInboxRows) {
+      markInboxStale.run(now, row.inbox_id);
+      this.completeTargetedBacklogAssignment(row.message_id, row.agent_id);
+    }
+
+    const backlogRows = tableExists(db, "unrouted_backlog")
+      ? (db
+          .prepare(
+            `SELECT b.id AS backlog_id,
+                    m.source AS source,
+                    m.metadata AS metadata,
+                    m.external_ts AS external_ts
+               FROM unrouted_backlog b
+               JOIN messages m ON m.id = b.message_id
+              WHERE b.status = 'pending'
+                AND m.direction = 'inbound'
+                AND m.source = 'slack'`,
+          )
+          .all() as Array<{
+          backlog_id: number;
+          source: string;
+          metadata: string | null;
+          external_ts: string | null;
+        }>)
+      : [];
+
+    const staleBacklogIds = backlogRows
+      .filter((row) => {
+        const metadata = parseJsonMetadata(row.metadata);
+        const timestamp =
+          getStringMetadataValue(metadata, ["timestamp", "ts", "externalTs", "external_ts"]) ??
+          row.external_ts;
+        return isStaleSlackMessageTimestamp(row.source, timestamp, nowMs);
+      })
+      .map((row) => row.backlog_id);
+
+    if (staleBacklogIds.length > 0) {
+      const dropBacklog = db.prepare(
+        `UPDATE unrouted_backlog
+            SET status = 'dropped',
+                reason = 'stale_slack_message',
+                assigned_agent_id = NULL,
+                updated_at = ?
+          WHERE id = ?
+            AND status = 'pending'`,
+      );
+      for (const id of staleBacklogIds) {
+        dropBacklog.run(now, id);
+      }
+    }
+
+    if (staleInboxRows.length > 0 || staleBacklogIds.length > 0) {
+      console.info(
+        `[broker-core] skipped stale Slack delivery rows older than 15m: inbox=${staleInboxRows.length} backlog=${staleBacklogIds.length}`,
+      );
+    }
+
+    return { inboxCount: staleInboxRows.length, backlogCount: staleBacklogIds.length };
+  }
+
   private dropStaleTransportInboxRows(agentId: string): number {
+    this.dropStaleSlackDeliveryRows(agentId);
     const db = this.getDb();
     const rows = db
       .prepare(
@@ -4375,7 +4517,8 @@ export class BrokerDB implements BrokerDBInterface {
            m.id AS message_id,
            m.thread_id AS thread_id,
            m.source AS source,
-           m.metadata AS metadata
+           m.metadata AS metadata,
+           m.external_ts AS external_ts
          FROM inbox i
          JOIN messages m ON m.id = i.message_id
          WHERE i.agent_id = ?
@@ -4389,6 +4532,7 @@ export class BrokerDB implements BrokerDBInterface {
       thread_id: string;
       source: string;
       metadata: string | null;
+      external_ts: string | null;
     }>;
 
     if (rows.length === 0) {
@@ -4396,8 +4540,23 @@ export class BrokerDB implements BrokerDBInterface {
     }
 
     const markDelivered = db.prepare("UPDATE inbox SET delivered = 1 WHERE id = ?");
+    const markStaleRead = db.prepare(
+      "UPDATE inbox SET delivered = 1, read_at = COALESCE(read_at, ?) WHERE id = ?",
+    );
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    let requeuedCount = 0;
+    let staleCount = 0;
     for (const row of rows) {
       const metadata = row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : {};
+      const timestamp =
+        getStringMetadataValue(metadata, ["timestamp", "ts", "externalTs", "external_ts"]) ??
+        row.external_ts;
+      if (isStaleSlackMessageTimestamp(row.source, timestamp, nowMs)) {
+        markStaleRead.run(now, row.inbox_id);
+        staleCount += 1;
+        continue;
+      }
       const channel = typeof metadata.channel === "string" ? metadata.channel : "";
       const preferredAgentId = row.target_agent_id || null;
       this.upsertBacklogEntry(
@@ -4410,9 +4569,16 @@ export class BrokerDB implements BrokerDBInterface {
         null,
       );
       markDelivered.run(row.inbox_id);
+      requeuedCount += 1;
     }
 
-    return rows.length;
+    if (staleCount > 0) {
+      console.info(
+        `[broker-core] skipped stale Slack requeue rows older than 15m: inbox=${staleCount}`,
+      );
+    }
+
+    return requeuedCount;
   }
 
   private getBacklogById(id: number): BacklogEntry | null {
