@@ -74,6 +74,7 @@ import { createAgentPromptGuidance } from "./agent-prompt-guidance.js";
 import { createAgentEventRuntime } from "./agent-event-runtime.js";
 import { createSessionUiRuntime } from "./session-ui-runtime.js";
 import { createSlackRequestRuntime } from "./slack-request-runtime.js";
+import { getSlackMessageAgeMs, isStaleSlackMessage } from "./stale-slack-messages.js";
 import {
   formatSlackAgentsDashboard,
   formatSlackAgentsUsage,
@@ -698,6 +699,14 @@ export default function (pi: ExtensionAPI) {
       getMeshRoleFromMetadata(metadata ?? undefined, fallbackRole),
     handleInboundMessage: async ({ message, broker, router, selfId, ctx }) => {
       try {
+        if (isStaleSlackMessage(message)) {
+          const ageMs = getSlackMessageAgeMs(message);
+          console.info(
+            `[slack-bridge] skipped stale Slack inbound message older than 15m: channel=${message.channel} thread=${message.threadId} ts=${message.timestamp} age_ms=${ageMs ?? "unknown"}`,
+          );
+          return;
+        }
+
         const ownerHint =
           message.source === "slack" && message.threadId && message.channel
             ? await resolveBrokerThreadOwnerHint(message.channel, message.threadId)
