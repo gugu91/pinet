@@ -9,6 +9,43 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.0] - 2026-06-17
+
+Pinet v0.2.0 is the first coordinated `@pinet/*` package release cut from the current `main` branch. It intentionally includes only work already merged through PR #829 and aligns all publishable Pinet packages on the same version.
+
+### Version verification
+
+- `pi-extensions` — `0.2.0` (private repo package)
+- `@pinet/transport-core` — `0.2.0`
+- `@pinet/broker-core` — `0.2.0`
+- `@pinet/pinet-core` — `0.2.0`
+- `@pinet/imessage-bridge` — `0.2.0`
+- `@pinet/slack-bridge` — `0.2.0`
+
+### Release highlights
+
+- Adds worker-owned Pinet subtree broker support for safer distributed worker coordination.
+- Improves Slack/Pinet operator surfaces: raw Slack file access, channel-post file handling, compact dispatcher output by default, expanded human-readable Pinet tables, send previews, and the app-name agents slash command.
+- Hardens Slack reaction-trigger routing, including ignoring reaction triggers by default, denying uninvoked-thread reaction routing, and canonicalizing guarded delete actions from resolved targets.
+- Guards npm package GitHub metadata for the public package set.
+- Preserves Slack/external requeue affinity so disconnected-owner follow-ups do not drift to unrelated idle workers.
+- Tightens broker cleanup prompt policy for safer maintenance behavior.
+
+### Included pull requests since v0.1.2
+
+- [#766](https://github.com/gugu91/extensions/pull/766) — feat(pinet): support worker-owned subtree brokers
+- [#807](https://github.com/gugu91/extensions/pull/807) — feat(slack): support raw Slack file access
+- [#808](https://github.com/gugu91/extensions/pull/808) — fix(slack): support files on channel posts
+- [#810](https://github.com/gugu91/extensions/pull/810) — fix(slack-bridge): ignore Slack reaction triggers by default
+- [#813](https://github.com/gugu91/extensions/pull/813) — fix(slack-bridge): deny reaction routing in uninvoked threads
+- [#815](https://github.com/gugu91/extensions/pull/815) — fix(slack-bridge): canonicalize guarded delete actions from resolved targets
+- [#826](https://github.com/gugu91/extensions/pull/826) — fix: guard npm package GitHub metadata
+- [#825](https://github.com/gugu91/extensions/pull/825) — fix(pinet): keep dispatcher output compact by default
+- [#823](https://github.com/gugu91/extensions/pull/823) — feat(pinet): human-readable expanded agents table + send preview (#763, #762)
+- [#805](https://github.com/gugu91/extensions/pull/805) — feat(slack): add app-name agents slash command
+- [#828](https://github.com/gugu91/extensions/pull/828) — fix(pinet): preserve Slack requeue affinity
+- [#829](https://github.com/gugu91/extensions/pull/829) — Tighten broker cleanup prompt policy
+
 ## [0.1.4] - 2026-04-23
 
 Pinet v0.1.4 is a focused patch release for `@gugu910/pi-slack-bridge` that fixes Slack external file-upload requests to use the form encoding Slack expects. The runtime behavior change is intentionally narrow: `slack_upload` should stop failing with `invalid_arguments` when it calls `files.getUploadURLExternal` and `files.completeUploadExternal`.
