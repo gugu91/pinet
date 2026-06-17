@@ -287,6 +287,8 @@ describe("packaged default broker prompt", () => {
     expect(defaultPrompt).toContain("WORKER CAP AND TMUX HYGIENE");
     expect(defaultPrompt).toContain("pruning, not by recycling old context into new lanes");
     expect(defaultPrompt).toContain("Start at most one fresh worker per new lane");
+    expect(defaultPrompt).toContain("immediate duplicate-owner anomaly");
+    expect(defaultPrompt).toContain("resolve duplicate owners immediately");
     expect(defaultPrompt).toContain("TMUX HYGIENE");
     expect(defaultPrompt).toContain("do not recycle unrelated idle workers as a shortcut");
     expect(defaultPrompt).toContain(
