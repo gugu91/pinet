@@ -281,7 +281,7 @@ describe("packaged default broker prompt", () => {
     );
     expect(defaultPrompt).toContain("Mac mini");
     expect(defaultPrompt).toContain("WORKER GRACE PERIOD");
-    expect(defaultPrompt).toContain("short ten-minute grace period");
+    expect(defaultPrompt).toContain("one-hour grace period");
     expect(defaultPrompt).toContain("route follow-up");
     expect(defaultPrompt).toContain("fail closed: report the worker as a cleanup candidate");
     expect(defaultPrompt).toContain("WORKER CAP AND TMUX HYGIENE");
