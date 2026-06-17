@@ -3,11 +3,15 @@ import * as path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
+import { resolveSlackAgentCommandNames } from "./slack-agents-command.js";
 
 export interface SlackBridgeSettings {
   appId?: string;
   appToken?: string;
   appConfigToken?: string;
+  skinTheme?: string;
+  slackCommandName?: string;
+  slackCommandNames?: string[];
 }
 
 const execFile = promisify(execFileCallback);
@@ -24,6 +28,7 @@ export interface ResolvedDeployConfig {
   appId?: string;
   appConfigToken?: string;
   appToken?: string;
+  settings: SlackBridgeSettings;
 }
 
 export interface DeployResult {
@@ -176,6 +181,7 @@ export function resolveDeployConfig(
     appId: settings.appId ?? env.SLACK_APP_ID,
     appConfigToken: settings.appConfigToken ?? env.SLACK_APP_CONFIG_TOKEN ?? env.SLACK_CONFIG_TOKEN,
     appToken: settings.appToken ?? env.SLACK_APP_TOKEN,
+    settings,
   };
 }
 
@@ -201,6 +207,38 @@ export function getDeployConfigError(config: ResolvedDeployConfig): string | nul
   }
 
   return messages.length > 0 ? messages.join(" ") : null;
+}
+
+export function applyConfiguredSlashCommands(
+  manifest: Record<string, unknown>,
+  settings: SlackBridgeSettings,
+): Record<string, unknown> {
+  const commandNames = resolveSlackAgentCommandNames(settings);
+  const features = asRecord(manifest.features) ?? {};
+  const oauthConfig = asRecord(manifest.oauth_config) ?? {};
+  const scopes = asRecord(oauthConfig.scopes) ?? {};
+  const botScopes = readScopeList(manifest, "bot");
+  const nextBotScopes = botScopes.includes("commands") ? botScopes : [...botScopes, "commands"];
+
+  return {
+    ...manifest,
+    features: {
+      ...features,
+      slash_commands: commandNames.map((command) => ({
+        command,
+        description: "Show the Pinet broker roster and current work",
+        usage_hint: "agents list [all]",
+        should_escape: false,
+      })),
+    },
+    oauth_config: {
+      ...oauthConfig,
+      scopes: {
+        ...scopes,
+        bot: nextBotScopes,
+      },
+    },
+  };
 }
 
 async function parseManifestYaml(manifestPath: string): Promise<Record<string, unknown>> {
@@ -273,7 +311,10 @@ export async function deploySlackManifest(config: ResolvedDeployConfig): Promise
 
   const appId = config.appId as string;
   const appConfigToken = config.appConfigToken as string;
-  const manifest = await parseManifestYaml(config.manifestPath);
+  const manifest = applyConfiguredSlashCommands(
+    await parseManifestYaml(config.manifestPath),
+    config.settings,
+  );
   const previousManifest = await exportRemoteManifest(appId, appConfigToken);
 
   await validateManifest(manifest, appConfigToken);

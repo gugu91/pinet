@@ -107,6 +107,32 @@ describe("parseSocketFrame", () => {
       actions: [{ action_id: "review.approve" }],
     });
   });
+
+  it("extracts Slack slash command payloads", () => {
+    const frame = JSON.stringify({
+      envelope_id: "env-1",
+      type: "slash_commands",
+      payload: {
+        command: "/pinet",
+        text: "agents list all",
+        channel_id: "C123",
+        user_id: "U123",
+        response_url: "https://hooks.slack.com/commands/T/1/x",
+        trigger_id: "trigger-1",
+        team_id: "T123",
+      },
+    });
+
+    expect(parseSocketFrame(frame)?.slashCommand).toEqual({
+      command: "/pinet",
+      text: "agents list all",
+      channelId: "C123",
+      userId: "U123",
+      responseUrl: "https://hooks.slack.com/commands/T/1/x",
+      triggerId: "trigger-1",
+      teamId: "T123",
+    });
+  });
 });
 
 // ─── extractThreadStarted ────────────────────────────────
@@ -707,6 +733,212 @@ describe("SlackAdapter", () => {
       isKnownThread: () => false,
     });
     expect(adapter.name).toBe("slack");
+  });
+
+  it("handles authorized slash commands with an ephemeral Slack response", async () => {
+    const onSlashCommand = vi.fn(() => "Pinet agents: 1 shown");
+    const adapter = new SlackAdapter({
+      ...baseConfig,
+      onSlashCommand,
+    });
+    const callSlack = vi
+      .spyOn(
+        adapter as unknown as {
+          callSlack: (
+            method: string,
+            token: string,
+            body?: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+        },
+        "callSlack",
+      )
+      .mockResolvedValue({ ok: true });
+
+    await (
+      adapter as unknown as {
+        onSlashCommand: (event: {
+          command: string;
+          text: string;
+          channelId: string;
+          userId: string;
+        }) => Promise<void>;
+      }
+    ).onSlashCommand({
+      command: "/pinet",
+      text: "agents list",
+      channelId: "C123",
+      userId: "U123",
+    });
+
+    expect(onSlashCommand).toHaveBeenCalledWith({
+      command: "/pinet",
+      text: "agents list",
+      channelId: "C123",
+      userId: "U123",
+    });
+    expect(callSlack).toHaveBeenCalledWith("chat.postEphemeral", "xoxb-test-token", {
+      channel: "C123",
+      user: "U123",
+      text: "Pinet agents: 1 shown",
+    });
+  });
+
+  it("prefers Slack slash command response_url when present", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("ok", {
+        status: 200,
+      }),
+    );
+    const adapter = new SlackAdapter({
+      ...baseConfig,
+      onSlashCommand: () => "Pinet agents: 1 shown",
+    });
+    const callSlack = vi.spyOn(
+      adapter as unknown as {
+        callSlack: (
+          method: string,
+          token: string,
+          body?: Record<string, unknown>,
+        ) => Promise<Record<string, unknown>>;
+      },
+      "callSlack",
+    );
+
+    await (
+      adapter as unknown as {
+        onSlashCommand: (event: {
+          command: string;
+          text: string;
+          channelId: string;
+          userId: string;
+          responseUrl: string;
+        }) => Promise<void>;
+      }
+    ).onSlashCommand({
+      command: "/pinet",
+      text: "agents list",
+      channelId: "C123",
+      userId: "U123",
+      responseUrl: "https://hooks.slack.com/commands/T/1/x",
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith("https://hooks.slack.com/commands/T/1/x", {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ response_type: "ephemeral", text: "Pinet agents: 1 shown" }),
+      signal: expect.any(AbortSignal) as AbortSignal,
+    });
+    expect(callSlack).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("falls back to chat.postEphemeral when Slack slash command response_url fails", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("no", {
+        status: 500,
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const adapter = new SlackAdapter({
+      ...baseConfig,
+      onSlashCommand: () => "Pinet agents: 1 shown",
+    });
+    const callSlack = vi
+      .spyOn(
+        adapter as unknown as {
+          callSlack: (
+            method: string,
+            token: string,
+            body?: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+        },
+        "callSlack",
+      )
+      .mockResolvedValue({ ok: true });
+
+    await (
+      adapter as unknown as {
+        onSlashCommand: (event: {
+          command: string;
+          text: string;
+          channelId: string;
+          userId: string;
+          responseUrl: string;
+        }) => Promise<void>;
+      }
+    ).onSlashCommand({
+      command: "/pinet",
+      text: "agents list",
+      channelId: "C123",
+      userId: "U123",
+      responseUrl: "https://hooks.slack.com/commands/T/1/x",
+    });
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(callSlack).toHaveBeenCalledWith("chat.postEphemeral", "xoxb-test-token", {
+      channel: "C123",
+      user: "U123",
+      text: "Pinet agents: 1 shown",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[slack-adapter] Slash command response_url failed: HTTP 500",
+    );
+    fetchSpy.mockRestore();
+    consoleError.mockRestore();
+  });
+
+  it("uses chat.postEphemeral directly for slash command error responses", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("ok", {
+        status: 200,
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const adapter = new SlackAdapter({
+      ...baseConfig,
+      onSlashCommand: () => {
+        throw new Error("boom");
+      },
+    });
+    const callSlack = vi
+      .spyOn(
+        adapter as unknown as {
+          callSlack: (
+            method: string,
+            token: string,
+            body?: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+        },
+        "callSlack",
+      )
+      .mockResolvedValue({ ok: true });
+
+    await (
+      adapter as unknown as {
+        onSlashCommand: (event: {
+          command: string;
+          text: string;
+          channelId: string;
+          userId: string;
+          responseUrl: string;
+        }) => Promise<void>;
+      }
+    ).onSlashCommand({
+      command: "/pinet",
+      text: "agents list",
+      channelId: "C123",
+      userId: "U123",
+      responseUrl: "https://hooks.slack.com/commands/T/1/x",
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(callSlack).toHaveBeenCalledWith("chat.postEphemeral", "xoxb-test-token", {
+      channel: "C123",
+      user: "U123",
+      text: "Slack command failed: boom",
+    });
+    fetchSpy.mockRestore();
+    consoleError.mockRestore();
   });
 
   it("records known threads on assistant_thread_started without claiming ownership", async () => {

@@ -60,9 +60,10 @@ bump versions without explicit maintainer release approval.
 2. Choose **From a manifest**
 3. Select your workspace
 4. Paste the contents of [`manifest.yaml`](./manifest.yaml) from this directory
-5. Click **Create**
+5. If the Slack app is not named Pinet, change `features.slash_commands[0].command` before creating the app (for example, Oathgate uses `/oathgate` instead of the packaged `/pinet` default)
+6. Click **Create**
 
-The manifest configures Socket Mode, the assistant view, all required bot scopes, and event subscriptions automatically.
+The manifest configures Socket Mode, the assistant view, all required bot scopes, event subscriptions, and the packaged Pinet slash-command default automatically.
 
 ### 2. Generate tokens
 
@@ -81,13 +82,13 @@ These are included in the manifest, but for reference:
 app_mentions:read    assistant:write      bookmarks:read
 bookmarks:write      canvases:read        canvases:write
 channels:history     channels:read        chat:write
-files:read           files:write          groups:history
+commands             files:read           files:write          groups:history
 groups:read          im:history           im:read
 im:write             pins:read            pins:write
 reactions:read       reactions:write      users:read
 ```
 
-`files:read` is required because Slack exposes canvas comment pagination through `files.info`, even when the target is first validated via canvas-specific APIs.
+`commands` is required for the Slack slash-command surface (`/<app> agents list [all]`). `files:read` is required because Slack exposes canvas comment pagination through `files.info`, even when the target is first validated via canvas-specific APIs.
 
 Slack thread shimmer/status updates use `assistant.threads.setStatus`; Slack's 2026 scope update allows this method with the existing `chat:write` bot scope, so no new `assistant:write` scope is needed for status-only support.
 
@@ -198,6 +199,8 @@ Slack access is now **default-deny** unless you configure one of these explicitl
 | `ralphSnoozeAfterEmptyCycles`  | no       | Broker RALPH auto-snooze trigger after N empty cycles; defaults to `0` (disabled), valid range `0`-`100`              |
 | `ralphSnoozeDurationMs`        | no       | Broker RALPH auto-snooze duration in milliseconds; defaults to `1800000` (30 minutes), valid range `60000`-`86400000` |
 | `skinTheme`                    | no       | Pinet presentation skin selected at broker startup/reload (`default`, `foundation`, `cosmere`, or free-form)          |
+| `slackCommandName`             | no       | Slack web app slash command name for `agents list`; defaults to `/pinet`, or `/oathgate` for Oathgate/Cosmere skins   |
+| `slackCommandNames`            | no       | Optional list of accepted/deployed Slack slash command aliases when one app needs multiple command names              |
 | `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                     |
 | `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file               |
 | `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                    |
@@ -436,12 +439,13 @@ The `canvas_comments_read` dispatcher action is intentionally narrow:
 
 ### Slash commands
 
-| Command           | Description                                                |
-| ----------------- | ---------------------------------------------------------- |
-| `/pinet <action>` | Unified Pinet command surface; run `/pinet help` for usage |
-| `/pinet status`   | Show connection status, threads, and agent identity        |
-| `/pinet rename`   | Change the agent's display name                            |
-| `/pinet logs`     | Show recent broker activity log entries                    |
+| Command                    | Description                                                |
+| -------------------------- | ---------------------------------------------------------- |
+| `/pinet <action>`          | Unified Pinet command surface; run `/pinet help` for usage |
+| `/pinet status`            | Show connection status, threads, and agent identity        |
+| `/pinet rename`            | Change the agent's display name                            |
+| `/pinet logs`              | Show recent broker activity log entries                    |
+| `/<app> agents list [all]` | Slack-native broker roster, workload, task, and lane view  |
 
 ## Runtime modes
 
@@ -538,7 +542,7 @@ RALPH snooze quiets non-urgent empty maintenance cycles without disabling human-
 
 ### Pinet command surface
 
-Use `/pinet <action> [args]` for mesh lifecycle and broker operations.
+Use `/pinet <action> [args]` for mesh lifecycle and broker operations. In the Slack web app, use `/<app> agents list [all]` for the Slack-native broker roster/current-work view: `/pinet agents list` for the Pinet app, or `/oathgate agents list` for an Oathgate-named app. Set `slackCommandName` (or `slackCommandNames`) in `slack-bridge` settings before deploying the manifest when the Slack command should match a non-default app name.
 
 | Command                                    | Description                                                                   |
 | ------------------------------------------ | ----------------------------------------------------------------------------- |
@@ -603,7 +607,7 @@ pnpm test
 pnpm deploy:slack
 ```
 
-Requires `appId` and `appConfigToken` in settings (or `SLACK_APP_ID` / `SLACK_APP_CONFIG_TOKEN` env vars).
+Requires `appId` and `appConfigToken` in settings (or `SLACK_APP_ID` / `SLACK_APP_CONFIG_TOKEN` env vars). The deploy path rewrites `features.slash_commands` from `slackCommandName` / `slackCommandNames` (or the configured `skinTheme`) before validating and uploading, so set `slackCommandName: "/oathgate"` for an Oathgate app and leave it unset for the packaged Pinet `/pinet` default.
 
 ### Architecture
 

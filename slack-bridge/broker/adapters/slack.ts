@@ -14,6 +14,7 @@ import {
   setSlackSuggestedPrompts,
   SlackSocketModeClient,
   type ParsedAppHomeOpened,
+  type ParsedSlashCommand,
   type ParsedThreadContextChanged,
   type ParsedThreadStarted,
 } from "../../slack-access.js";
@@ -92,6 +93,8 @@ export interface SlackAdapterConfig {
   isReactionThreadAuthorized?: (threadTs: string, channelId: string) => boolean;
   /** Best-effort callback for Home tab opens. */
   onAppHomeOpened?: (event: ParsedAppHomeOpened) => Promise<void> | void;
+  /** Best-effort callback for Slack slash commands handled by the broker process. */
+  onSlashCommand?: (event: ParsedSlashCommand) => Promise<string | null> | string | null;
 }
 
 interface SlackThreadInfo {
@@ -178,6 +181,7 @@ export class SlackAdapter implements MessageAdapter {
       onMemberJoinedChannel: (event) => this.onMemberJoined(event),
       onAppHomeOpened: (event) => this.onAppHomeOpened(event),
       onInteractive: (event) => this.emitInteractiveInbound(event),
+      onSlashCommand: (event) => this.onSlashCommand(event),
       onError: (error) => {
         if (!isAbortError(error)) {
           console.error(`[slack-adapter] Socket Mode: ${errorMsg(error)}`);
@@ -394,6 +398,61 @@ export class SlackAdapter implements MessageAdapter {
       this.config.rememberKnownThread?.(parsed.threadTs, existing.channelId, existing.context);
     } catch {
       /* best effort — DB cache sync must not break Slack event handling */
+    }
+  }
+
+  private async sendSlashCommandResponse(
+    event: ParsedSlashCommand,
+    text: string,
+    options: { useResponseUrl?: boolean } = {},
+  ): Promise<void> {
+    if (options.useResponseUrl !== false && event.responseUrl) {
+      try {
+        const response = await this.slackRequests.run((signal) =>
+          fetch(event.responseUrl!, {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ response_type: "ephemeral", text }),
+            signal,
+          }),
+        );
+        if (response.ok) {
+          return;
+        }
+        console.error(`[slack-adapter] Slash command response_url failed: HTTP ${response.status}`);
+      } catch (error) {
+        console.error(`[slack-adapter] Slash command response_url failed: ${errorMsg(error)}`);
+      }
+    }
+
+    await this.callSlack("chat.postEphemeral", this.config.botToken, {
+      channel: event.channelId,
+      user: event.userId,
+      text,
+    });
+  }
+
+  private async onSlashCommand(event: ParsedSlashCommand): Promise<void> {
+    if (this.shuttingDown || !this.config.onSlashCommand) return;
+
+    if (!isSlackUserAllowed(this.allowlist, event.userId)) {
+      await this.sendSlashCommandResponse(
+        event,
+        "Sorry, I can only respond to authorized users. Please contact an admin if you need access.",
+      );
+      return;
+    }
+
+    try {
+      const responseText = await this.config.onSlashCommand(event);
+      if (responseText && !this.shuttingDown) {
+        await this.sendSlashCommandResponse(event, responseText);
+      }
+    } catch (error) {
+      console.error(`[slack-adapter] Slash command failed: ${errorMsg(error)}`);
+      await this.sendSlashCommandResponse(event, `Slack command failed: ${errorMsg(error)}`, {
+        useResponseUrl: false,
+      });
     }
   }
 

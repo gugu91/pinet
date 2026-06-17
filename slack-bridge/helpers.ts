@@ -37,6 +37,8 @@ export interface SlackBridgeSettings {
   ralphSnoozeAfterEmptyCycles?: number;
   ralphSnoozeDurationMs?: number;
   skinTheme?: string;
+  slackCommandName?: string;
+  slackCommandNames?: string[];
   agentName?: string;
   agentEmoji?: string;
   meshSecret?: string;
