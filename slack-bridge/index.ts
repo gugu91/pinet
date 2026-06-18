@@ -1304,6 +1304,15 @@ export default function (pi: ExtensionAPI) {
       snoozeRalphLoop: (input) => brokerRuntime.snoozeRalphLoop(input),
       clearRalphSnooze: () => brokerRuntime.clearRalphSnooze(),
     },
+    pinetA2ACompatTools: {
+      pinetEnabled: () => pinetEnabled,
+      brokerRole: () => brokerRole,
+      requireToolPolicy,
+      sendPinetAgentMessage,
+      readPinetInbox,
+      listBrokerAgents,
+      listFollowerAgents,
+    },
     iMessageTools: {
       pinetEnabled: () => pinetEnabled,
       brokerRole: () => brokerRole,

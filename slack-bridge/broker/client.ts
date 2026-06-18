@@ -428,6 +428,7 @@ export class BrokerClient {
   async readInbox(options: PinetReadOptions = {}): Promise<PinetReadResult> {
     const result = (await this.request("inbox.read", {
       ...(options.threadId ? { threadId: options.threadId } : {}),
+      ...(options.legacyThreadId ? { legacyThreadId: options.legacyThreadId } : {}),
       ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
       ...(typeof options.unreadOnly === "boolean" ? { unreadOnly: options.unreadOnly } : {}),
       ...(typeof options.markRead === "boolean" ? { markRead: options.markRead } : {}),
@@ -436,6 +437,7 @@ export class BrokerClient {
         entry: { id: number; delivered: boolean; readAt: string | null };
         message: InboxItem["message"];
       }>;
+      totalMatching?: number;
       unreadCountBefore: number;
       unreadCountAfter: number;
       unreadThreads: PinetUnreadThreadSummary[];
@@ -449,6 +451,7 @@ export class BrokerClient {
         readAt: item.entry.readAt,
         message: item.message,
       })),
+      ...(typeof result.totalMatching === "number" ? { totalMatching: result.totalMatching } : {}),
       unreadCountBefore: result.unreadCountBefore,
       unreadCountAfter: result.unreadCountAfter,
       unreadThreads: result.unreadThreads,
