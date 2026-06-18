@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { summarizePinetStableId } from "./pinet-session-formatting.js";
+import type { AgentSessionSummary } from "./broker/types.js";
 import type { PinetReadOptions, PinetReadResult } from "@pinet/pinet-core/pinet-read-formatting";
 import { dispatchDirectAgentMessage, resolveDirectAgentTarget } from "./broker/agent-messaging.js";
 import { startBroker, type Broker } from "./broker/index.js";
@@ -61,6 +63,8 @@ export interface SubtreeAgentRecord {
   name: string;
   id: string;
   pid?: number;
+  stableId?: string | null;
+  session?: AgentSessionSummary | null;
   status: "working" | "idle";
   metadata: Record<string, unknown> | null;
   lastHeartbeat: string;
@@ -341,6 +345,8 @@ function toSubtreeAgentRecord(db: Broker["db"], agent: AgentInfo): SubtreeAgentR
     name: agent.name,
     id: agent.id,
     pid: agent.pid,
+    stableId: agent.stableId ?? null,
+    session: summarizePinetStableId(agent.stableId),
     status: agent.status,
     metadata: agent.metadata,
     lastHeartbeat: agent.lastHeartbeat,

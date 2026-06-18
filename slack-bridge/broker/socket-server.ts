@@ -9,8 +9,10 @@ import { MessageRouter } from "./router.js";
 import { dispatchDirectAgentMessage } from "./agent-messaging.js";
 import { sendBrokerMessage } from "./message-send.js";
 import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { summarizePinetStableId } from "../pinet-session-formatting.js";
 import type {
   AgentInfo,
+  AgentSessionSearchOptions,
   BrokerMessage,
   ClientAgentInfo,
   JsonRpcRequest,
@@ -61,8 +63,10 @@ export type AgentStatusChangeCallback = (agentId: string, status: "working" | "i
 
 function toClientAgentInfo(agent: AgentInfo): ClientAgentInfo {
   const { stableId, ...clientAgent } = agent;
-  void stableId;
-  return clientAgent;
+  return {
+    ...clientAgent,
+    session: summarizePinetStableId(stableId),
+  };
 }
 
 export type AgentRegistrationResolver = (input: {
@@ -496,6 +500,8 @@ export class BrokerSocketServer {
           return this.handleThreadsList(req, state);
         case "agents.list":
           return this.handleAgentsList(req);
+        case "agent.sessions.search":
+          return this.handleAgentSessionsSearch(req, state);
         case "thread.claim":
           return this.handleThreadClaim(req, state);
         case "resolveThread":
@@ -940,6 +946,41 @@ export class BrokerSocketServer {
       }),
     );
     return rpcOk(req.id, agents);
+  }
+
+  private handleAgentSessionsSearch(req: JsonRpcRequest, state: ConnectionState): JsonRpcResponse {
+    if (!state.agentId) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
+    }
+
+    const caller = this.db.getAgentById(state.agentId);
+    const metadataRole =
+      typeof caller?.metadata?.role === "string" ? caller.metadata.role.trim().toLowerCase() : "";
+    const capabilities =
+      caller?.metadata?.capabilities &&
+      typeof caller.metadata.capabilities === "object" &&
+      !Array.isArray(caller.metadata.capabilities)
+        ? (caller.metadata.capabilities as Record<string, unknown>)
+        : null;
+    const capabilityRole =
+      typeof capabilities?.role === "string" ? capabilities.role.trim().toLowerCase() : "";
+    if (metadataRole !== "broker" && capabilityRole !== "broker") {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "agent.sessions.search requires a broker agent");
+    }
+
+    const params = req.params ?? {};
+    const options: AgentSessionSearchOptions = {
+      ...(typeof params.agentName === "string" ? { agentName: params.agentName } : {}),
+      ...(typeof params.agentId === "string" ? { agentId: params.agentId } : {}),
+      ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}),
+      ...(typeof params.repo === "string" ? { repo: params.repo } : {}),
+      ...(typeof params.worktreePath === "string" ? { worktreePath: params.worktreePath } : {}),
+      ...(typeof params.tmuxSession === "string" ? { tmuxSession: params.tmuxSession } : {}),
+      ...(typeof params.since === "string" ? { since: params.since } : {}),
+      ...(typeof params.until === "string" ? { until: params.until } : {}),
+      ...(typeof params.limit === "number" ? { limit: params.limit } : {}),
+    };
+    return rpcOk(req.id, this.db.searchAgentSessions(options));
   }
 
   // ─── Thread claim handler ─────────────────────────────

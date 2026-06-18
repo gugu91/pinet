@@ -9,6 +9,8 @@ import type {
   PinetUnreadThreadSummary,
 } from "@pinet/pinet-core/pinet-read-formatting";
 import type {
+  AgentSessionSearchInfo,
+  AgentSessionSearchOptions,
   ClientAgentInfo,
   NormalizedMessageContent,
   OutboundAttachmentFile,
@@ -59,6 +61,7 @@ export interface ThreadInfo {
 }
 
 export type AgentInfo = ClientAgentInfo;
+export type { AgentSessionSearchInfo, AgentSessionSearchOptions };
 
 export interface ScheduledWakeupInfo {
   id: number;
@@ -648,6 +651,24 @@ export class BrokerClient {
       includeDisconnected ? { includeDisconnected: true } : undefined,
     )) as AgentInfo[];
     return result;
+  }
+
+  async searchAgentSessions(
+    options: AgentSessionSearchOptions = {},
+  ): Promise<AgentSessionSearchInfo[]> {
+    try {
+      return (await this.request(
+        "agent.sessions.search",
+        options as unknown as Record<string, unknown>,
+      )) as AgentSessionSearchInfo[];
+    } catch (err) {
+      if (isRpcMethodNotFoundError(err, "agent.sessions.search")) {
+        throw new Error(
+          "Broker does not support Pinet session search (`agent.sessions.search`). Upgrade the broker before using pinet action=sessions.",
+        );
+      }
+      throw err;
+    }
   }
 
   // ─── Adapter capabilities ───────────────────────────

@@ -7,7 +7,15 @@ import {
   isBroadcastChannelTarget,
   type AgentMessageStorage,
 } from "./broker/agent-messaging.js";
-import type { AgentInfo, TaskAssignmentInfo, TaskAssignmentKind } from "./broker/types.js";
+import type {
+  AgentInfo,
+  AgentSessionSearchInfo,
+  AgentSessionSearchOptions,
+  AgentSessionSummary,
+  TaskAssignmentInfo,
+  TaskAssignmentKind,
+} from "./broker/types.js";
+import { summarizePinetStableId } from "./pinet-session-formatting.js";
 import type { ActivityLogEntry } from "./activity-log.js";
 import { extractTaskAssignmentsFromMessage } from "./task-assignments.js";
 
@@ -18,6 +26,8 @@ export interface PinetMeshOpsAgentRecord {
   name: string;
   id: string;
   pid?: number;
+  stableId?: string | null;
+  session?: AgentSessionSummary | null;
   status: "working" | "idle";
   metadata: Record<string, unknown> | null;
   lastHeartbeat: string;
@@ -47,6 +57,7 @@ export interface PinetMeshOpsTransferableThread {
 
 export interface PinetMeshOpsBrokerDbPort extends AgentMessageStorage {
   getAllAgents: () => AgentInfo[];
+  searchAgentSessions: (options?: AgentSessionSearchOptions) => AgentSessionSearchInfo[];
   getPendingInboxCount: (agentId: string) => number;
   getThread: (threadId: string) => PinetMeshOpsTransferableThread | null;
   transferThreadOwnership: (
@@ -85,6 +96,7 @@ export interface PinetMeshOpsFollowerClientPort {
   ) => Promise<number>;
   scheduleWakeup: (fireAt: string, message: string) => Promise<{ id: number; fireAt: string }>;
   listAgents: (includeGhosts: boolean) => Promise<PinetMeshOpsFollowerAgentRecord[]>;
+  searchAgentSessions: (options: AgentSessionSearchOptions) => Promise<AgentSessionSearchInfo[]>;
 }
 
 export interface PinetMeshOpsDeps {
@@ -128,6 +140,7 @@ export interface PinetMeshOps {
   ) => Promise<{ id: number; fireAt: string }>;
   listBrokerAgents: () => PinetMeshOpsAgentRecord[];
   listFollowerAgents: (includeGhosts: boolean) => Promise<PinetMeshOpsAgentRecord[]>;
+  searchPinetSessions: (options: AgentSessionSearchOptions) => Promise<AgentSessionSearchInfo[]>;
 }
 
 function prepareOutgoingPinetAgentMessage(
@@ -431,6 +444,8 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       name: agent.name,
       id: agent.id,
       pid: agent.pid,
+      stableId: agent.stableId ?? null,
+      session: summarizePinetStableId(agent.stableId),
       status: agent.status,
       metadata: agent.metadata,
       lastHeartbeat: agent.lastHeartbeat,
@@ -459,6 +474,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       name: agent.name,
       id: agent.id,
       pid: agent.pid,
+      session: agent.session ?? null,
       status: agent.status ?? "idle",
       metadata: agent.metadata,
       lastHeartbeat: agent.lastHeartbeat,
@@ -476,6 +492,24 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
     }));
   }
 
+  async function searchPinetSessions(
+    options: AgentSessionSearchOptions,
+  ): Promise<AgentSessionSearchInfo[]> {
+    if (deps.getBrokerRole() === "broker") {
+      const db = deps.getActiveBrokerDb();
+      if (!db) {
+        throw new Error("Broker agent identity is unavailable.");
+      }
+      return db.searchAgentSessions(options);
+    }
+
+    const client = deps.getFollowerClient();
+    if (!client) {
+      throw new Error("Pinet is in an unexpected state.");
+    }
+    return await client.searchAgentSessions(options);
+  }
+
   return {
     sendPinetAgentMessage,
     sendPinetBroadcastMessage,
@@ -483,5 +517,6 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
     scheduleFollowerWakeup,
     listBrokerAgents,
     listFollowerAgents,
+    searchPinetSessions,
   };
 }

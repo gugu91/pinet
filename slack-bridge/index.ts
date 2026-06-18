@@ -913,6 +913,7 @@ export default function (pi: ExtensionAPI) {
     scheduleFollowerWakeup,
     listBrokerAgents,
     listFollowerAgents,
+    searchPinetSessions,
   } = pinetMeshOps;
 
   async function listPinetLanes(options: PinetLaneListOptions) {
@@ -1283,6 +1284,7 @@ export default function (pi: ExtensionAPI) {
       readPinetInbox,
       listBrokerAgents,
       listFollowerAgents,
+      searchPinetSessions,
       listSubtreeAgents: (includeGhosts) => subtreeBrokerRuntime.listAgents(includeGhosts),
       getSubtreeSelfAgentId: () => subtreeBrokerRuntime.getStatus().selfAgentId,
       spawnSubtreeWorker: async (input) => {

@@ -14,6 +14,8 @@ import {
 import type { ReactionCommandSettings } from "./reaction-triggers.js";
 import { buildPinetReadPointer } from "./broker-inbound-persistence.js";
 import { matchesToolPattern } from "./guardrails.js";
+import { getPinetSessionPath, summarizePinetStableId } from "./pinet-session-formatting.js";
+import type { AgentSessionSummary } from "./broker/types.js";
 
 // ─── Settings ────────────────────────────────────────────
 
@@ -958,6 +960,8 @@ export interface AgentDisplayInfo {
   name: string;
   id: string;
   pid?: number;
+  stableId?: string | null;
+  session?: AgentSessionSummary | null;
   status: "working" | "idle";
   metadata?: {
     cwd?: string;
@@ -1012,6 +1016,8 @@ export interface AgentVisibilityInput {
   name: string;
   id: string;
   pid?: number;
+  stableId?: string | null;
+  session?: AgentSessionSummary | null;
   status: "working" | "idle";
   metadata?: Record<string, unknown> | null;
   lastHeartbeat?: string;
@@ -1315,6 +1321,8 @@ export function buildAgentDisplayInfo(
     name: agent.name,
     id: agent.id,
     ...(agent.pid != null ? { pid: agent.pid } : {}),
+    ...(agent.stableId !== undefined ? { stableId: agent.stableId } : {}),
+    session: agent.session ?? summarizePinetStableId(agent.stableId),
     status: agent.status,
     metadata:
       metadata || hasHierarchyMetadata
@@ -2652,7 +2660,16 @@ export function formatAgentList(agents: AgentDisplayInfo[], homedir: string): st
         : "";
       const stuckTag = a.stuck ? " [stuck]" : "";
       const pid = a.pid != null ? ` pid:${a.pid}` : "";
-      let line = `${a.emoji} ${a.name} (${a.id}) \u2014 ${a.status}${statusFlavor}${health}${stuckTag}${pid}`;
+      const sessionRef = a.session?.ref ? ` session:${a.session.ref}` : "";
+      let line = `${a.emoji} ${a.name} (${a.id}) \u2014 ${a.status}${statusFlavor}${health}${stuckTag}${pid}${sessionRef}`;
+
+      if (a.stableId) {
+        const sessionPath = getPinetSessionPath(a.stableId);
+        line += `\n   stable: ${a.stableId}`;
+        if (sessionPath) {
+          line += `\n   jsonl: ${sessionPath}`;
+        }
+      }
 
       const meta = a.metadata;
       if (meta && (meta.cwd || meta.branch || meta.host || meta.gitProbeFailed)) {

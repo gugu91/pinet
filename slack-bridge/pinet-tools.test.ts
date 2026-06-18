@@ -75,6 +75,40 @@ function createDeps(overrides: Partial<RegisterPinetToolsDeps> = {}): RegisterPi
     }),
     listBrokerAgents: () => [makeAgent()],
     listFollowerAgents: async (_includeGhosts: boolean) => [makeAgent({ id: "agent-2" })],
+    searchPinetSessions: async () => [
+      {
+        agentId: "agent-1",
+        agentName: "Golden Chalk Rabbit",
+        emoji: "🐇",
+        pid: 101,
+        status: "idle",
+        stableId: "test-host:session:/Users/alice/.pi/agent/sessions/session-123.jsonl",
+        connectedAt: "2026-05-01T00:00:00.000Z",
+        lastSeen: "2026-05-01T00:05:00.000Z",
+        lastHeartbeat: "2026-05-01T00:05:00.000Z",
+        disconnectedAt: null,
+        resumableUntil: null,
+        idleSince: "2026-05-01T00:00:00.000Z",
+        lastActivity: null,
+        cwd: "/Users/alice/projects/extensions",
+        repo: "extensions",
+        repoRoot: "/Users/alice/projects/extensions",
+        worktreePath: "/Users/alice/projects/extensions/.worktrees/issue-719",
+        branch: "fix/pinet-worker-session-lookup-719",
+        tmuxSession: "pinet-extensions-worker",
+        brokerManaged: true,
+        brokerManagedBy: "broker-1",
+        launchSource: "broker-tmux",
+        parentAgentId: null,
+        rootAgentId: null,
+        treeDepth: 0,
+        supervisionState: "root",
+        subtreeRole: null,
+        laneId: "issue-719",
+        relatedThreadIds: ["a2a:broker-1:agent-1", "slack-thread-1"],
+        matchedBy: ["agent_name"],
+      },
+    ],
     listSubtreeAgents: () => null,
     getSubtreeSelfAgentId: () => null,
     spawnSubtreeWorker: async (input) => ({
@@ -239,12 +273,12 @@ describe("registerPinetTools", () => {
     const pinet = tools.get("pinet");
 
     expect(pinet?.promptSnippet).toContain("Use this compact dispatcher for Pinet actions");
-    expect(pinet?.promptSnippet).toContain("lanes, ports, reload");
+    expect(pinet?.promptSnippet).toContain("agents, sessions, lanes");
     expect(pinet?.promptSnippet).not.toContain("skin");
     expect(pinet?.promptSnippet).toContain('args.format="json"');
     expect(pinet?.promptSnippet).toContain("verbose/debug detail");
     expect(JSON.stringify(pinet?.parameters)).toContain(
-      "help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit",
+      "help, send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, or exit",
     );
   });
 
@@ -741,6 +775,7 @@ describe("registerPinetTools", () => {
         expect.objectContaining({ action: "free", guardrail_tool: "pinet:free" }),
         expect.objectContaining({ action: "schedule", guardrail_tool: "pinet:schedule" }),
         expect.objectContaining({ action: "agents", guardrail_tool: "pinet:agents" }),
+        expect.objectContaining({ action: "sessions", guardrail_tool: "pinet:sessions" }),
         expect.objectContaining({ action: "lanes", guardrail_tool: "pinet:lanes" }),
         expect.objectContaining({ action: "ports", guardrail_tool: "pinet:ports" }),
       ]),
@@ -1515,6 +1550,94 @@ describe("registerPinetTools", () => {
     expect(full.content[0]?.text).toContain("very long persona");
     expect(full.content[0]?.text).toContain("pinet-secret-session");
     expect(full.content[0]?.text).not.toContain('"display"');
+  });
+
+  it("surfaces broker-safe session refs in pinet agents without leaking paths by default", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
+
+    const listBrokerAgents = vi.fn(() => [
+      makeAgent({
+        stableId: "test-host:session:/Users/alice/.pi/agent/sessions/secret-session.jsonl",
+      }),
+    ]);
+    const tools = registerWithDeps(createDeps({ listBrokerAgents }));
+
+    const compact = (await tools.get("pinet")?.execute("tool-call-agents-session-compact", {
+      action: "agents",
+      args: { format: "json" },
+    })) as { content: Array<{ text: string }> };
+    const compactEnvelope = JSON.parse(compact.content[0]?.text ?? "{}") as {
+      data: { details: { agents: Array<{ session: string | null; stableId?: string }> } };
+    };
+
+    expect(compactEnvelope.data.details.agents[0]?.session).toMatch(/^session:/);
+    expect(compactEnvelope.data.details.agents[0]?.stableId).toBeUndefined();
+    expect(compact.content[0]?.text).not.toContain("/Users/alice");
+    expect(compact.content[0]?.text).not.toContain("secret-session.jsonl");
+
+    const full = (await tools.get("pinet")?.execute("tool-call-agents-session-full", {
+      action: "agents",
+      args: { full: true },
+    })) as { details: { data: { text: string } } };
+
+    expect(full.details.data.text).toContain("session:session:");
+    expect(full.details.data.text).toContain(
+      "stable: test-host:session:/Users/alice/.pi/agent/sessions/secret-session.jsonl",
+    );
+    expect(full.details.data.text).toContain(
+      "jsonl: /Users/alice/.pi/agent/sessions/secret-session.jsonl",
+    );
+  });
+
+  it("searches Pinet sessions with redacted defaults and exact full locators", async () => {
+    const searchPinetSessions = vi.fn(createDeps().searchPinetSessions);
+    const tools = registerWithDeps(createDeps({ searchPinetSessions }));
+
+    const compact = (await tools.get("pinet")?.execute("tool-call-sessions-compact", {
+      action: "sessions",
+      args: { agent_name: "Frozen Hazel Whale" },
+    })) as {
+      content: Array<{ text: string }>;
+      details: {
+        data: {
+          details: { sessions: Array<{ session: string | null; stableId?: string }> };
+        };
+      };
+    };
+
+    expect(searchPinetSessions).toHaveBeenCalledWith({ agentName: "Frozen Hazel Whale" });
+    expect(compact.content[0]?.text).toContain("Pinet sessions: 1 match");
+    expect(compact.content[0]?.text).toContain("session:session:");
+    expect(compact.content[0]?.text).toContain("Use args.full=true");
+    expect(compact.content[0]?.text).not.toContain("/Users/alice");
+    expect(compact.details.data.details.sessions[0]?.session).toMatch(/^session:/);
+    expect(compact.details.data.details.sessions[0]?.stableId).toBeUndefined();
+
+    const full = (await tools.get("pinet")?.execute("tool-call-sessions-full", {
+      action: "sessions",
+      args: { agent_name: "Frozen Hazel Whale", full: true },
+    })) as {
+      content: Array<{ text: string }>;
+      details: {
+        data: {
+          details: { sessions: Array<{ stableId: string | null; jsonlPath?: string }> };
+        };
+      };
+    };
+
+    expect(full.content[0]?.text).toContain(
+      "stableId: test-host:session:/Users/alice/.pi/agent/sessions/session-123.jsonl",
+    );
+    expect(full.content[0]?.text).toContain(
+      "jsonl: /Users/alice/.pi/agent/sessions/session-123.jsonl",
+    );
+    expect(full.details.data.details.sessions[0]?.stableId).toBe(
+      "test-host:session:/Users/alice/.pi/agent/sessions/session-123.jsonl",
+    );
+    expect(full.details.data.details.sessions[0]?.jsonlPath).toBe(
+      "/Users/alice/.pi/agent/sessions/session-123.jsonl",
+    );
   });
 
   it("keeps pinet send format=json free of renderer-only display and message body", async () => {

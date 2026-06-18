@@ -33,7 +33,65 @@ export interface AgentInfo {
   pendingInboxCount?: number;
 }
 
-export type ClientAgentInfo = Omit<AgentInfo, "stableId">;
+export type AgentSessionKind = "session" | "leaf" | "cwd" | "broker" | "unknown";
+
+export interface AgentSessionSummary {
+  kind: AgentSessionKind;
+  /** Broker-safe, path-free stable session reference such as "session:1a2b3c4d5e6f". */
+  ref: string;
+  host?: string | null;
+  hasPath?: boolean;
+}
+
+export type ClientAgentInfo = Omit<AgentInfo, "stableId"> & {
+  /** Redacted session indicator. Raw stableId/session paths are intentionally not exposed here. */
+  session?: AgentSessionSummary | null;
+};
+
+export interface AgentSessionSearchOptions {
+  agentName?: string;
+  agentId?: string;
+  threadId?: string;
+  repo?: string;
+  worktreePath?: string;
+  tmuxSession?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+export interface AgentSessionSearchInfo {
+  agentId: string;
+  agentName: string;
+  emoji: string;
+  pid: number;
+  status: "working" | "idle";
+  stableId: string | null;
+  connectedAt: string;
+  lastSeen: string;
+  lastHeartbeat: string;
+  disconnectedAt: string | null;
+  resumableUntil: string | null;
+  idleSince: string | null;
+  lastActivity: string | null;
+  cwd: string | null;
+  repo: string | null;
+  repoRoot: string | null;
+  worktreePath: string | null;
+  branch: string | null;
+  tmuxSession: string | null;
+  brokerManaged: boolean;
+  brokerManagedBy: string | null;
+  launchSource: string | null;
+  parentAgentId: string | null;
+  rootAgentId: string | null;
+  treeDepth: number;
+  supervisionState: AgentSupervisionState;
+  subtreeRole: string | null;
+  laneId: string | null;
+  relatedThreadIds: string[];
+  matchedBy: string[];
+}
 
 export interface ThreadInfo {
   threadId: string;
@@ -381,6 +439,7 @@ export interface BrokerDBInterface {
   getAgentById(agentId: string): AgentInfo | null;
   getAgentByStableId(stableId: string): AgentInfo | null;
   getAgents(): AgentInfo[];
+  searchAgentSessions?(options?: AgentSessionSearchOptions): AgentSessionSearchInfo[];
   getChannelAssignment(channel: string): ChannelAssignment | null;
   acquirePortLease?(input: PortLeaseAcquireInput): PortLeaseInfo;
   renewPortLease?(input: PortLeaseRenewInput): PortLeaseInfo;

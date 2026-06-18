@@ -432,12 +432,84 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const names = agents.map((a) => a.name).sort();
     expect(names).toEqual(["agent-alpha", "agent-beta"]);
     expect(agents.every((agent) => !("stableId" in agent))).toBe(true);
+    expect(agents.find((agent) => agent.name === "agent-alpha")?.session?.ref).toMatch(/^session:/);
+    expect(JSON.stringify(agents)).not.toContain("/tmp/alpha");
     expect(agents.find((agent) => agent.name === "agent-alpha")?.outboundCount).toBe(1);
     expect(agents.find((agent) => agent.name === "agent-alpha")?.pendingInboxCount).toBe(0);
     expect(agents.find((agent) => agent.name === "agent-beta")?.outboundCount).toBe(0);
     expect(agents.find((agent) => agent.name === "agent-beta")?.pendingInboxCount).toBe(1);
 
     client2.disconnect();
+  });
+
+  it("searches live and historical worker sessions by display name and thread", async () => {
+    const stableId = "test-host:session:/Users/alice/.pi/agent/sessions/frozen-hazel-whale.jsonl";
+    const brokerReg = await client.register("session-broker", "🛰️", { role: "broker" });
+    const info = server.getConnectInfo();
+    if (info.type !== "tcp") throw new Error("Expected TCP");
+    const worker = new BrokerClient({ host: info.host, port: info.port });
+    await worker.connect();
+    const reg = await worker.register(
+      "Frozen Hazel Whale",
+      "🐋",
+      {
+        repo: "extensions",
+        repoRoot: "/Users/alice/projects/extensions",
+        cwd: "/Users/alice/projects/extensions/.worktrees/frozen",
+        branch: "candidate-review",
+        tmuxSession: "pinet-frozen-hazel-whale",
+        brokerManaged: true,
+        launchSource: "broker-tmux",
+      },
+      stableId,
+    );
+    const threadId = `a2a:${brokerReg.agentId}:${reg.agentId}`;
+    await worker.claimThread(threadId);
+
+    let byName = await client.searchAgentSessions({ agentName: "Frozen Hazel Whale" });
+    expect(byName).toHaveLength(1);
+    expect(byName[0]).toMatchObject({
+      agentId: reg.agentId,
+      agentName: "Frozen Hazel Whale",
+      stableId,
+      repo: "extensions",
+      branch: "candidate-review",
+      tmuxSession: "pinet-frozen-hazel-whale",
+      brokerManaged: true,
+    });
+    expect(byName[0].relatedThreadIds).toContain(threadId);
+
+    worker.disconnect();
+    await waitFor(() => Boolean(db.getAgentById(reg.agentId)?.disconnectedAt), 1000);
+
+    const unregisteredInspector = new BrokerClient({ host: info.host, port: info.port });
+    await unregisteredInspector.connect();
+    await expect(
+      unregisteredInspector.searchAgentSessions({ agentName: "Frozen Hazel Whale" }),
+    ).rejects.toThrow("Not registered");
+    unregisteredInspector.disconnect();
+
+    const workerInspector = new BrokerClient({ host: info.host, port: info.port });
+    await workerInspector.connect();
+    await workerInspector.register("worker-inspector", "👀", { role: "worker" });
+    await expect(
+      workerInspector.searchAgentSessions({ agentName: "Frozen Hazel Whale" }),
+    ).rejects.toThrow("agent.sessions.search requires a broker agent");
+    workerInspector.disconnect();
+
+    const inspector = new BrokerClient({ host: info.host, port: info.port });
+    await inspector.connect();
+    await inspector.register("session-inspector", "🔎", { role: "broker" });
+
+    byName = await inspector.searchAgentSessions({ agentName: "Frozen Hazel Whale" });
+    expect(byName).toHaveLength(1);
+    expect(byName[0].disconnectedAt).toBeTruthy();
+    expect(byName[0].stableId).toBe(stableId);
+
+    const byThread = await inspector.searchAgentSessions({ threadId });
+    expect(byThread.map((session) => session.agentId)).toContain(reg.agentId);
+
+    inspector.disconnect();
   });
 
   it("invokes status change callbacks when a client explicitly marks itself free", async () => {
