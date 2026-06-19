@@ -6,6 +6,7 @@ import {
   type PinetControlCommand,
   type PinetRemoteControlRequestResult,
   type SlackBridgeSettings,
+  assertPinetRemoteBrokerMeshAuth,
   buildFollowerRuntimeDiagnostic,
   buildPinetOwnerToken,
   extractPinetControlCommand,
@@ -14,6 +15,7 @@ import {
   getFollowerReconnectUiUpdate,
   partitionFollowerInboxEntries,
   resolvePinetMeshAuth,
+  resolvePinetRemoteBrokerConnectEndpoint,
   resolveRuntimeAgentIdentity,
   syncFollowerInboxEntries,
   syncTransferredSlackThreadContexts,
@@ -200,12 +202,26 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
 
   async function connect(ctx: ExtensionContext): Promise<BrokerClientRef> {
     deps.refreshSettings();
-    const meshAuth = resolvePinetMeshAuth(deps.getSettings());
-    const client = new BrokerClient({
-      path: resolveBrokerSocketPath(),
-      ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
-      ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
-    });
+    const settings = deps.getSettings();
+    const meshAuth = resolvePinetMeshAuth(settings);
+    const remoteBrokerConnect = resolvePinetRemoteBrokerConnectEndpoint(settings);
+    if (remoteBrokerConnect) {
+      assertPinetRemoteBrokerMeshAuth(meshAuth, "connect");
+    }
+    const client = new BrokerClient(
+      remoteBrokerConnect
+        ? {
+            host: remoteBrokerConnect.host,
+            port: remoteBrokerConnect.port,
+            ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
+            ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+          }
+        : {
+            path: resolveBrokerSocketPath(),
+            ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
+            ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+          },
+    );
 
     async function registerFollowerRuntime(): Promise<void> {
       deps.refreshSettings();

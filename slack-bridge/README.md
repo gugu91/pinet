@@ -151,6 +151,61 @@ Behavior and precedence:
 - A follower started with `meshSecretPath` does **not** create the file. If the configured file is missing, follow fails with a clear error telling you to point at an existing file, provide `meshSecret` directly, or leave both unset to disable shared-secret auth.
 - A follower configured for mesh auth will fail closed against an older/no-auth broker with a clear compatibility error. It will **not** silently retry as an unauthenticated follower.
 
+### Remote followers over SSH-forwarded loopback TCP
+
+Remote Pinet following is disabled by default. The supported first slice keeps
+raw broker TCP on loopback only and relies on SSH or Tailscale SSH to carry the
+socket stream between hosts. Do **not** expose the broker socket on a public IP
+or non-loopback private IP; non-loopback raw TCP hosts are rejected until a
+secure remote transport such as mTLS exists.
+
+Broker host settings:
+
+```json
+{
+  "slack-bridge": {
+    "runtimeMode": "broker",
+    "meshSecretPath": "/Users/alice/.config/pi/pinet.secret",
+    "remoteBroker": {
+      "enabled": true,
+      "listenHost": "127.0.0.1",
+      "listenPort": 4567
+    }
+  }
+}
+```
+
+Remote follower settings:
+
+```json
+{
+  "slack-bridge": {
+    "runtimeMode": "follower",
+    "meshSecretPath": "/Users/alice/.config/pi/pinet.secret",
+    "remoteBroker": {
+      "enabled": true,
+      "connectHost": "127.0.0.1",
+      "connectPort": 4567
+    }
+  }
+}
+```
+
+Then establish a local port forward from the remote follower machine to the
+broker host:
+
+```bash
+ssh -N -L 4567:127.0.0.1:4567 broker-host
+```
+
+With Tailscale SSH, use the tailnet machine name in place of `broker-host`.
+The follower still connects to its own local `127.0.0.1:4567`; SSH carries that
+connection to the broker's loopback listener. Keep `meshSecretPath` or
+`meshSecret` enabled as defense in depth inside the SSH tunnel. The runtime fails closed when a `remoteBroker` listen/connect endpoint is configured without either `meshSecret` or `meshSecretPath` (including env fallbacks).
+
+Set `remoteBroker.enabled` to `false` or remove the `remoteBroker` block to
+return broker/follower mode to the default Unix socket behavior.
+
 ### Full settings reference
 
 ```json
@@ -168,6 +223,13 @@ Behavior and precedence:
     "ralphSnoozeAfterEmptyCycles": 0,
     "ralphSnoozeDurationMs": 1800000,
     "meshSecretPath": "/Users/alice/.config/pi/pinet.secret",
+    "remoteBroker": {
+      "enabled": false,
+      "listenHost": "127.0.0.1",
+      "listenPort": 4567,
+      "connectHost": "127.0.0.1",
+      "connectPort": 4567
+    },
     "suggestedPrompts": [{ "title": "Status", "message": "What are you working on?" }],
     "security": {
       "readOnly": false,
@@ -203,6 +265,11 @@ Slack access is now **default-deny** unless you configure one of these explicitl
 | `slackCommandNames`            | no       | Optional list of accepted/deployed Slack slash command aliases when one app needs multiple command names              |
 | `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                     |
 | `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file               |
+| `remoteBroker.enabled`         | no       | Opt in to explicit loopback TCP broker listen/connect settings for SSH-forwarded remote following; default `false`    |
+| `remoteBroker.listenHost`      | no       | Broker-mode TCP listen host; loopback only, defaults to `127.0.0.1` when `listenPort` is set                          |
+| `remoteBroker.listenPort`      | no       | Broker-mode TCP listen port; when unset, broker mode keeps using the default Unix socket                              |
+| `remoteBroker.connectHost`     | no       | Follower-mode TCP connect host; loopback only, defaults to `127.0.0.1` when `connectPort` is set                      |
+| `remoteBroker.connectPort`     | no       | Follower-mode TCP connect port; when unset, follower mode keeps using the default Unix socket                         |
 | `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                    |
 | `security.readOnly`            | no       | Runtime-block write-capable tools for Slack-triggered turns, including core tools like `bash`, `edit`, and `write`    |
 | `security.requireConfirmation` | no       | Runtime-require Slack approval before matching tools execute; core tools need a specific Slack thread context         |

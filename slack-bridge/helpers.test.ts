@@ -4,7 +4,10 @@ import * as path from "node:path";
 import * as os from "node:os";
 import {
   loadSettings,
+  assertPinetRemoteBrokerMeshAuth,
   resolvePinetMeshAuth,
+  resolvePinetRemoteBrokerConnectEndpoint,
+  resolvePinetRemoteBrokerListenEndpoint,
   resolveAllowAllWorkspaceUsers,
   buildAllowlist,
   describeSlackUserAccess,
@@ -324,6 +327,83 @@ describe("resolvePinetMeshAuth", () => {
       meshSecret: null,
       meshSecretPath: "/settings/secret",
     });
+  });
+});
+
+describe("resolvePinetRemoteBroker endpoints", () => {
+  it("keeps remote broker TCP disabled by default", () => {
+    expect(resolvePinetRemoteBrokerListenEndpoint({})).toBeNull();
+    expect(resolvePinetRemoteBrokerConnectEndpoint({})).toBeNull();
+    expect(
+      resolvePinetRemoteBrokerListenEndpoint({
+        remoteBroker: { enabled: false, listenHost: "127.0.0.1", listenPort: 4567 },
+      }),
+    ).toBeNull();
+  });
+
+  it("resolves explicit loopback listen and connect endpoints", () => {
+    expect(
+      resolvePinetRemoteBrokerListenEndpoint({
+        remoteBroker: { enabled: true, listenHost: " localhost ", listenPort: 4567 },
+      }),
+    ).toEqual({ host: "localhost", port: 4567 });
+    expect(
+      resolvePinetRemoteBrokerConnectEndpoint({
+        remoteBroker: { enabled: true, connectHost: "::1", connectPort: 7654 },
+      }),
+    ).toEqual({ host: "::1", port: 7654 });
+  });
+
+  it("defaults configured endpoints to 127.0.0.1", () => {
+    expect(
+      resolvePinetRemoteBrokerListenEndpoint({ remoteBroker: { enabled: true, listenPort: 0 } }),
+    ).toEqual({ host: "127.0.0.1", port: 0 });
+    expect(
+      resolvePinetRemoteBrokerConnectEndpoint({
+        remoteBroker: { enabled: true, connectPort: 4567 },
+      }),
+    ).toEqual({ host: "127.0.0.1", port: 4567 });
+  });
+
+  it("rejects non-loopback raw TCP hosts", () => {
+    expect(() =>
+      resolvePinetRemoteBrokerListenEndpoint({
+        remoteBroker: { enabled: true, listenHost: "0.0.0.0", listenPort: 4567 },
+      }),
+    ).toThrow(/loopback host/i);
+    expect(() =>
+      resolvePinetRemoteBrokerConnectEndpoint({
+        remoteBroker: { enabled: true, connectHost: "broker.example.com", connectPort: 4567 },
+      }),
+    ).toThrow(/loopback host/i);
+  });
+
+  it("rejects invalid ports", () => {
+    expect(() =>
+      resolvePinetRemoteBrokerListenEndpoint({
+        remoteBroker: { enabled: true, listenPort: -1 },
+      }),
+    ).toThrow(/between 0 and 65535/);
+    expect(() =>
+      resolvePinetRemoteBrokerConnectEndpoint({
+        remoteBroker: { enabled: true, connectPort: 0 },
+      }),
+    ).toThrow(/between 1 and 65535/);
+  });
+
+  it("requires mesh auth when a remote broker TCP endpoint is used", () => {
+    expect(() =>
+      assertPinetRemoteBrokerMeshAuth({ meshSecret: null, meshSecretPath: null }, "listen"),
+    ).toThrow(/requires meshSecret or meshSecretPath/);
+    expect(() =>
+      assertPinetRemoteBrokerMeshAuth({ meshSecret: "secret", meshSecretPath: null }, "listen"),
+    ).not.toThrow();
+    expect(() =>
+      assertPinetRemoteBrokerMeshAuth(
+        { meshSecret: null, meshSecretPath: "/tmp/pinet.secret" },
+        "connect",
+      ),
+    ).not.toThrow();
   });
 });
 

@@ -8,8 +8,10 @@ import {
   buildPinetOwnerToken,
   buildPinetSkinAssignment,
   DEFAULT_PINET_SKIN_THEME,
+  assertPinetRemoteBrokerMeshAuth,
   normalizePinetSkinTheme,
   resolvePinetMeshAuth,
+  resolvePinetRemoteBrokerListenEndpoint,
   syncBrokerInboxEntries,
 } from "./helpers.js";
 import { startBroker, type Broker } from "./broker/index.js";
@@ -514,8 +516,21 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
     async connect(ctx: ExtensionContext): Promise<BrokerRuntimeConnectResult> {
       const settings = deps.getSettings();
       const meshAuth = resolvePinetMeshAuth(settings);
+      const remoteBrokerListen = resolvePinetRemoteBrokerListenEndpoint(settings);
+      if (remoteBrokerListen) {
+        assertPinetRemoteBrokerMeshAuth(meshAuth, "listen");
+      }
       const allowedUsers = deps.getAllowedUsers();
       const broker = await startBroker({
+        ...(remoteBrokerListen
+          ? {
+              listenTarget: {
+                type: "tcp" as const,
+                host: remoteBrokerListen.host,
+                port: remoteBrokerListen.port,
+              },
+            }
+          : {}),
         ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
         ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
       });
