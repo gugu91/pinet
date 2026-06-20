@@ -17,6 +17,18 @@ import { matchesToolPattern } from "./guardrails.js";
 
 // ─── Settings ────────────────────────────────────────────
 
+export interface SlackIngressGuardSettings {
+  requireMention?: {
+    /** Slack channel IDs where every actionable message must explicitly mention the bot. */
+    channels?: string[];
+    /** Require mention in Pinet-owned threads once anyone outside trustedUsers + the bot participates. */
+    mixedParticipantThreads?: {
+      enabled?: boolean;
+      trustedUsers?: string[];
+    };
+  };
+}
+
 export interface SlackBridgeSettings {
   botToken?: string;
   appToken?: string;
@@ -24,6 +36,7 @@ export interface SlackBridgeSettings {
   appConfigToken?: string;
   allowedUsers?: string[];
   allowAllWorkspaceUsers?: boolean;
+  ingressGuard?: SlackIngressGuardSettings;
   defaultChannel?: string;
   logChannel?: string;
   logLevel?: "errors" | "actions" | "verbose";

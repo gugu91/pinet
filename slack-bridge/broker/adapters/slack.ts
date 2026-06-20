@@ -25,6 +25,7 @@ import {
   buildAllowlist,
   buildPinetControlMessage,
   buildPinetControlMetadata,
+  type SlackIngressGuardSettings,
 } from "../../helpers.js";
 import {
   buildReactionTriggerMessage,
@@ -64,6 +65,7 @@ export interface SlackAdapterConfig {
   appToken: string;
   allowedUsers?: string[];
   allowAllWorkspaceUsers?: boolean;
+  ingressGuard?: SlackIngressGuardSettings;
   suggestedPrompts?: { title: string; message: string }[];
   reactionCommands?: ReactionCommandSettings;
   /** Check whether a thread_ts belongs to a known thread in the broker DB. */
@@ -91,6 +93,8 @@ export interface SlackAdapterConfig {
    * Slack messages (#812).
    */
   isReactionThreadAuthorized?: (threadTs: string, channelId: string) => boolean;
+  /** Check whether a known Slack thread is Pinet-owned for mixed-participant mention gating. */
+  isPinetOwnedThread?: (threadTs: string, channelId: string) => boolean;
   /** Best-effort callback for Home tab opens. */
   onAppHomeOpened?: (event: ParsedAppHomeOpened) => Promise<void> | void;
   /** Best-effort callback for Slack slash commands handled by the broker process. */
@@ -109,6 +113,7 @@ export const SLACK_THREAD_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const SLACK_PENDING_ATTENTION_MAX_THREADS = 1000;
 export const SLACK_PENDING_ATTENTION_TTL_MS = 2 * 60 * 60 * 1000;
 export const SLACK_PENDING_ATTENTION_MAX_MESSAGES_PER_THREAD = 50;
+export const SLACK_INGRESS_GUARD_THREAD_PARTICIPANT_LIMIT = 200;
 
 export class SlackAdapter implements MessageAdapter {
   readonly name = "slack";
@@ -640,6 +645,113 @@ export class SlackAdapter implements MessageAdapter {
     }
   }
 
+  private messageMentionsBot(evt: Record<string, unknown>): boolean {
+    if (!this.botUserId) return false;
+    const text = typeof evt.text === "string" ? evt.text : "";
+    return text.includes(`<@${this.botUserId}>`) || text.includes(`<@${this.botUserId}|`);
+  }
+
+  private requiresMentionInChannel(channelId: string): boolean {
+    const channels = this.config.ingressGuard?.requireMention?.channels ?? [];
+    return channels.some((channel) => channel.trim() === channelId);
+  }
+
+  private async shouldRequireMentionForMixedParticipantThread(input: {
+    evt: Record<string, unknown>;
+    channel: string;
+    threadTs: string;
+    userId: string;
+    isDM: boolean;
+  }): Promise<boolean> {
+    const config = this.config.ingressGuard?.requireMention?.mixedParticipantThreads;
+    if (!config?.enabled || input.isDM || typeof input.evt.thread_ts !== "string") {
+      return false;
+    }
+
+    if (!this.isPinetOwnedThreadForIngressGuard(input.threadTs, input.channel)) {
+      return false;
+    }
+
+    const participants = await this.fetchThreadParticipantUserIds(
+      input.channel,
+      input.threadTs,
+      input.userId,
+    );
+    if (!participants) {
+      // Fail closed for this guard: if we cannot inspect the thread makeup,
+      // require an explicit mention before Pinet acts in a configured mixed-thread posture.
+      return true;
+    }
+
+    const trustedUsers = new Set(
+      (config.trustedUsers ?? []).map((user) => user.trim()).filter(Boolean),
+    );
+    for (const participant of participants) {
+      if (this.botUserId && participant === this.botUserId) continue;
+      if (trustedUsers.has(participant)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  private isPinetOwnedThreadForIngressGuard(threadTs: string, channelId: string): boolean {
+    const isOwned = this.config.isPinetOwnedThread;
+    if (isOwned) {
+      try {
+        return isOwned(threadTs, channelId);
+      } catch (error) {
+        console.error(`[slack-adapter] Pinet-owned thread check failed: ${errorMsg(error)}`);
+        return false;
+      }
+    }
+
+    const thread = this.getThread(threadTs);
+    return !!thread && thread.channelId === channelId;
+  }
+
+  private async fetchThreadParticipantUserIds(
+    channelId: string,
+    threadTs: string,
+    currentUserId: string,
+  ): Promise<Set<string> | null> {
+    const participants = new Set<string>();
+    if (currentUserId) participants.add(currentUserId);
+
+    try {
+      const response = await this.callSlack("conversations.replies", this.config.botToken, {
+        channel: channelId,
+        ts: threadTs,
+        limit: SLACK_INGRESS_GUARD_THREAD_PARTICIPANT_LIMIT,
+      });
+      const messages = Array.isArray(response.messages) ? response.messages : [];
+      for (const message of messages) {
+        if (!message || typeof message !== "object" || Array.isArray(message)) continue;
+        const userId = (message as Record<string, unknown>).user;
+        if (typeof userId === "string" && userId.length > 0) {
+          participants.add(userId);
+        }
+      }
+      return participants;
+    } catch (error) {
+      console.error(
+        `[slack-adapter] failed to inspect Slack thread participants: ${errorMsg(error)}`,
+      );
+      return null;
+    }
+  }
+
+  private async shouldRequireExplicitMention(input: {
+    evt: Record<string, unknown>;
+    channel: string;
+    threadTs: string;
+    userId: string;
+    isDM: boolean;
+  }): Promise<boolean> {
+    if (!this.config.ingressGuard?.requireMention) return false;
+    if (this.requiresMentionInChannel(input.channel)) return true;
+    return this.shouldRequireMentionForMixedParticipantThread(input);
+  }
+
   private async onMessage(evt: Record<string, unknown>): Promise<void> {
     if (this.shuttingDown) return;
 
@@ -665,6 +777,13 @@ export class SlackAdapter implements MessageAdapter {
     // Check the allowlist before recording any thread state so unauthorized
     // traffic can never mint known-thread/affinity side effects (#812).
     if (!isSlackUserAllowed(this.allowlist, userId)) return;
+
+    if (
+      !this.messageMentionsBot(evt) &&
+      (await this.shouldRequireExplicitMention({ evt, channel, threadTs, userId, isDM }))
+    ) {
+      return;
+    }
 
     if (!this.getThread(threadTs)) {
       this.threads.set(threadTs, {

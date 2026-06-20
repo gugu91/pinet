@@ -1827,6 +1827,287 @@ describe("SlackAdapter — allowlist filtering", () => {
   });
 });
 
+// ─── SlackAdapter — ingress guard ───────────────────────
+
+describe("SlackAdapter — ingress guard", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    fetchMock = vi.fn<typeof fetch>();
+    globalThis.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  function mockSlackResponse(data: Record<string, unknown> = {}) {
+    return new Response(JSON.stringify({ ok: true, ...data }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  function parseSlackBody(init?: RequestInit): Record<string, string> {
+    const rawBody = typeof init?.body === "string" ? init.body : "";
+    if (rawBody.startsWith("{")) {
+      return JSON.parse(rawBody) as Record<string, string>;
+    }
+    return Object.fromEntries(new URLSearchParams(rawBody));
+  }
+
+  function adapterMessagePort(adapter: SlackAdapter) {
+    return adapter as unknown as {
+      botUserId: string | null;
+      onMessage: (evt: Record<string, unknown>) => Promise<void>;
+    };
+  }
+
+  function installSuccessfulRoutingFetchMock(participants: Record<string, unknown>[] = []) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = parseSlackBody(init);
+      if (url.endsWith("/conversations.replies")) {
+        expect(body.channel).toBe("C_MIXED");
+        expect(body.ts).toBe("200.100");
+        return mockSlackResponse({ messages: participants });
+      }
+      if (url.endsWith("/users.info")) {
+        return mockSlackResponse({
+          user: { real_name: body.user === "U_ALICE" ? "Alice" : "Thomas" },
+        });
+      }
+      if (url.endsWith("/reactions.add") || url.endsWith("/assistant.threads.setStatus")) {
+        return mockSlackResponse();
+      }
+      throw new Error(`unexpected Slack API call: ${url}`);
+    });
+  }
+
+  it("requires an explicit bot mention in configured external-party channels", async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new Error("ignored messages must not call Slack APIs");
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUsers: ["U_THOMAS"],
+      ingressGuard: { requireMention: { channels: ["C_EXT"] } },
+      isKnownThread: (threadTs) => threadTs === "100.100",
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+    const port = adapterMessagePort(adapter);
+    port.botUserId = "U_BOT";
+
+    await port.onMessage({
+      type: "message",
+      user: "U_THOMAS",
+      text: "plain follow-up for the external party",
+      channel: "C_EXT",
+      channel_type: "channel",
+      thread_ts: "100.100",
+      ts: "100.200",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(adapter.getTrackedThreadIds()).toEqual(new Set());
+  });
+
+  it("keeps sender authorization orthogonal to configured channel mention requirements", async () => {
+    installSuccessfulRoutingFetchMock();
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUsers: ["U_THOMAS", "U_ALICE"],
+      ingressGuard: { requireMention: { channels: ["C_EXT"] } },
+      isKnownThread: (threadTs) => threadTs === "100.100",
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+    const port = adapterMessagePort(adapter);
+    port.botUserId = "U_BOT";
+
+    await port.onMessage({
+      type: "message",
+      user: "U_ALICE",
+      text: "allowed but not invoked",
+      channel: "C_EXT",
+      channel_type: "channel",
+      thread_ts: "100.100",
+      ts: "100.200",
+    });
+    expect(handler).not.toHaveBeenCalled();
+
+    await port.onMessage({
+      type: "message",
+      user: "U_ALICE",
+      text: "<@U_BOT> allowed and invoked",
+      channel: "C_EXT",
+      channel_type: "channel",
+      thread_ts: "100.100",
+      ts: "100.300",
+    });
+
+    await waitForAssertion(() => {
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+    expect(handler.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        userId: "U_ALICE",
+        threadId: "100.100",
+        channel: "C_EXT",
+        text: "<@U_BOT> allowed and invoked",
+      }),
+    );
+  });
+
+  it("requires a bot mention in Pinet-owned threads with untrusted participants", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = parseSlackBody(init);
+      if (url.endsWith("/conversations.replies")) {
+        expect(body.channel).toBe("C_MIXED");
+        expect(body.ts).toBe("200.100");
+        return mockSlackResponse({
+          messages: [{ user: "U_THOMAS" }, { user: "U_EXTERNAL" }, { user: "U_BOT" }],
+        });
+      }
+      throw new Error(
+        "mixed-thread messages without invocation must not call write/user Slack APIs",
+      );
+    });
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUsers: ["U_THOMAS"],
+      ingressGuard: {
+        requireMention: {
+          mixedParticipantThreads: { enabled: true, trustedUsers: ["U_THOMAS"] },
+        },
+      },
+      isKnownThread: (threadTs) => threadTs === "200.100",
+      isPinetOwnedThread: (threadTs, channelId) =>
+        threadTs === "200.100" && channelId === "C_MIXED",
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+    const port = adapterMessagePort(adapter);
+    port.botUserId = "U_BOT";
+
+    await port.onMessage({
+      type: "message",
+      user: "U_THOMAS",
+      text: "continuing the customer thread, not invoking Pinet",
+      channel: "C_MIXED",
+      channel_type: "channel",
+      thread_ts: "200.100",
+      ts: "200.200",
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    await waitForAssertion(() => {
+      const endpoints = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(endpoints).toEqual(["https://slack.com/api/conversations.replies"]);
+    });
+  });
+
+  it("keeps trusted-only Pinet-owned threads usable without a bot mention", async () => {
+    installSuccessfulRoutingFetchMock([{ user: "U_THOMAS" }, { user: "U_BOT" }]);
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUsers: ["U_THOMAS"],
+      ingressGuard: {
+        requireMention: {
+          mixedParticipantThreads: { enabled: true, trustedUsers: ["U_THOMAS"] },
+        },
+      },
+      isKnownThread: (threadTs) => threadTs === "200.100",
+      isPinetOwnedThread: (threadTs, channelId) =>
+        threadTs === "200.100" && channelId === "C_MIXED",
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+    const port = adapterMessagePort(adapter);
+    port.botUserId = "U_BOT";
+
+    await port.onMessage({
+      type: "message",
+      user: "U_THOMAS",
+      text: "normal trusted follow-up",
+      channel: "C_MIXED",
+      channel_type: "channel",
+      thread_ts: "200.100",
+      ts: "200.200",
+    });
+
+    await waitForAssertion(() => {
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+    expect(handler.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        userId: "U_THOMAS",
+        threadId: "200.100",
+        channel: "C_MIXED",
+        text: "normal trusted follow-up",
+      }),
+    );
+  });
+
+  it("accepts an explicit bot mention in mixed-participant Pinet-owned threads", async () => {
+    installSuccessfulRoutingFetchMock([{ user: "U_THOMAS" }, { user: "U_EXTERNAL" }]);
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      allowedUsers: ["U_THOMAS"],
+      ingressGuard: {
+        requireMention: {
+          mixedParticipantThreads: { enabled: true, trustedUsers: ["U_THOMAS"] },
+        },
+      },
+      isKnownThread: (threadTs) => threadTs === "200.100",
+      isPinetOwnedThread: (threadTs, channelId) =>
+        threadTs === "200.100" && channelId === "C_MIXED",
+    });
+    const handler = vi.fn();
+    adapter.onInbound(handler);
+    const port = adapterMessagePort(adapter);
+    port.botUserId = "U_BOT";
+
+    await port.onMessage({
+      type: "message",
+      user: "U_THOMAS",
+      text: "<@U_BOT> please help here",
+      channel: "C_MIXED",
+      channel_type: "channel",
+      thread_ts: "200.100",
+      ts: "200.200",
+    });
+
+    await waitForAssertion(() => {
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+    expect(handler.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        userId: "U_THOMAS",
+        threadId: "200.100",
+        channel: "C_MIXED",
+        text: "<@U_BOT> please help here",
+      }),
+    );
+  });
+});
+
 // ─── SlackAdapter — send (mocked fetch) ─────────────────
 
 describe("SlackAdapter — reaction triggers", () => {
