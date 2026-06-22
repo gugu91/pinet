@@ -2776,6 +2776,27 @@ describe("SlackAdapter — send", () => {
     expect(body.metadata).toBeUndefined();
   });
 
+  it("renders Markdown bold in Slack-bound text while preserving literals", async () => {
+    fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+    });
+
+    await adapter.send({
+      threadId: "1.1",
+      channel: "C1",
+      text: "Please review **bold text**; math 4*3; glob src/**/*.ts; code `**literal**`.",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.text).toBe(
+      "Please review *bold text*; math 4*3; glob src/**/*.ts; code `**literal**`.",
+    );
+  });
+
   it("prefers transport-aware Slack blocks when present", async () => {
     fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
 
@@ -2810,7 +2831,7 @@ describe("SlackAdapter — send", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.text).toBe("plain fallback");
+    expect(body.text).toBe("*plain fallback*");
     expect(body.blocks).toEqual(slackBlocks);
   });
 
