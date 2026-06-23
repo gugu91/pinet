@@ -9,3 +9,4 @@ packages:
   - nvim-bridge
   - neon-psql
   - openai-execution-shaping
+  - compaction-worker

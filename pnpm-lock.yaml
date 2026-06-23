@@ -67,6 +67,12 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  compaction-worker:
+    devDependencies:
+      "@mariozechner/pi-coding-agent":
+        specifier: ^0.65.2
+        version: 0.65.2(ws@8.20.0)(zod@4.3.6)
+
   imessage-bridge:
     dependencies:
       "@pinet/transport-core":
@@ -139,6 +145,18 @@ importers:
   transport-core: {}
 
 packages:
+  "@anthropic-ai/sdk@0.73.0":
+    resolution:
+      {
+        integrity: sha512-URURVzhxXGJDGUGFunIOtBlSl7KWvZiAAKY/ttTkZAkXT9bTPqdk2eK0b8qqSxXpikh3QKPnPYpiyX98zf5ebw==,
+      }
+    hasBin: true
+    peerDependencies:
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      zod:
+        optional: true
+
   "@anthropic-ai/sdk@0.91.1":
     resolution:
       {
@@ -671,6 +689,53 @@ packages:
         integrity: sha512-D3F+UrU9CR7roJt0zDLp6Oc+4/KlLDIrN4frH+6V90SJNW2KKUec1oCQIPaaDjCqeOsQyX9dyqYbImIQIM45PA==,
       }
     engines: { node: ">= 10" }
+
+  "@mariozechner/jiti@2.6.5":
+    resolution:
+      {
+        integrity: sha512-faGUlTcXka5l7rv0lP3K3vGW/ejRuOS24RR2aSFWREUQqzjgdsuWNo/IiPqL3kWRGt6Ahl2+qcDAwtdeWeuGUw==,
+      }
+    hasBin: true
+
+  "@mariozechner/pi-agent-core@0.65.2":
+    resolution:
+      {
+        integrity: sha512-GYOrX5aRUpSDMPtKR174Tv72CWH92anqlRuiGn8PV05OowPAahT99JoxvZEP4fcKANBdHsyDfMMwFYpPhvPBUQ==,
+      }
+    engines: { node: ">=20.0.0" }
+    deprecated: please use @earendil-works/pi-agent-core instead going forward
+
+  "@mariozechner/pi-ai@0.65.2":
+    resolution:
+      {
+        integrity: sha512-XCbXncmh10Q89tvS0880Ms6pv3DTxFTEtanfVHEPXKQBi0FBYnrkAlOnP5VRU8vCfe18P1AMNsWCndsCBUqY7g==,
+      }
+    engines: { node: ">=20.0.0" }
+    deprecated: please use @earendil-works/pi-ai instead going forward
+    hasBin: true
+
+  "@mariozechner/pi-coding-agent@0.65.2":
+    resolution:
+      {
+        integrity: sha512-/rpFzPQ+CishxrSwJHSSRZBQHHWy2K3Rbu/iV0HcMq/hl9cSI2ygpwjVTRbPW+NuP1tHxVV3AMxz69VLAs5Ztg==,
+      }
+    engines: { node: ">=20.6.0" }
+    deprecated: please use @earendil-works/pi-coding-agent instead going forward
+    hasBin: true
+
+  "@mariozechner/pi-tui@0.65.2":
+    resolution:
+      {
+        integrity: sha512-LBPbIBASjCF4QLrc/dwmPdBzVMsbkDhzmBIAFgglX5rZBnGRppB7ekSA+1kb5pdxDpDn8IbxJX+bl7ZaeqZqxw==,
+      }
+    engines: { node: ">=20.0.0" }
+    deprecated: please use @earendil-works/pi-tui instead going forward
+
+  "@mistralai/mistralai@1.14.1":
+    resolution:
+      {
+        integrity: sha512-IiLmmZFCCTReQgPAT33r7KQ1nYo5JPdvGkrkZqA8qQ2qB1GHgs5LoP5K2ICyrjnpw2n8oSxMM/VP+liiKcGNlQ==,
+      }
 
   "@mistralai/mistralai@2.2.1":
     resolution:
@@ -1544,10 +1609,27 @@ packages:
       }
     engines: { node: ">= 14" }
 
+  ajv-formats@3.0.1:
+    resolution:
+      {
+        integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==,
+      }
+    peerDependencies:
+      ajv: ^8.0.0
+    peerDependenciesMeta:
+      ajv:
+        optional: true
+
   ajv@6.12.6:
     resolution:
       {
         integrity: sha512-j3fVLgvTo527anyYyJOGTYJbG+vnnQYvE0m5mmkc1TK+nxAppkCLMIL0aZ4dblVCNoGShhm+kzE4ZUykBoMg4g==,
+      }
+
+  ajv@8.20.0:
+    resolution:
+      {
+        integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==,
       }
 
   ansi-escapes@7.3.0:
@@ -2102,6 +2184,12 @@ packages:
         integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==,
       }
 
+  fast-uri@3.1.2:
+    resolution:
+      {
+        integrity: sha512-rVjf7ArG3LTk+FS6Yw81V1DLuZl1bRbNrev6Tmd/9RaroeeRRJhAt7jg/6YFxbvAQXUCavSoZhPPj6oOx+5KjQ==,
+      }
+
   fast-xml-builder@1.1.5:
     resolution:
       {
@@ -2535,6 +2623,12 @@ packages:
     resolution:
       {
         integrity: sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==,
+      }
+
+  json-schema-traverse@1.0.0:
+    resolution:
+      {
+        integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==,
       }
 
   json-stable-stringify-without-jsonify@1.0.1:
@@ -3181,6 +3275,13 @@ packages:
       }
     engines: { node: ">=0.10.0" }
 
+  require-from-string@2.0.2:
+    resolution:
+      {
+        integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==,
+      }
+    engines: { node: ">=0.10.0" }
+
   resolve-from@4.0.0:
     resolution:
       {
@@ -3316,6 +3417,12 @@ packages:
     resolution:
       {
         integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==,
+      }
+
+  std-env@3.10.0:
+    resolution:
+      {
+        integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==,
       }
 
   std-env@4.0.0:
@@ -3730,6 +3837,13 @@ packages:
       }
     engines: { node: ">=10" }
 
+  yoctocolors@2.1.2:
+    resolution:
+      {
+        integrity: sha512-CzhO+pFNo8ajLM2d2IW/R93ipy99LWjtwblvC1RsoSUMZgyLbYFr221TnSNT7GjGdYui6P459mw9JH/g/zW2ug==,
+      }
+    engines: { node: ">=18" }
+
   zod-to-json-schema@3.25.2:
     resolution:
       {
@@ -3745,6 +3859,12 @@ packages:
       }
 
 snapshots:
+  "@anthropic-ai/sdk@0.73.0(zod@4.3.6)":
+    dependencies:
+      json-schema-to-ts: 3.1.1
+    optionalDependencies:
+      zod: 4.3.6
+
   "@anthropic-ai/sdk@0.91.1(zod@4.3.6)":
     dependencies:
       json-schema-to-ts: 3.1.1
@@ -4372,6 +4492,99 @@ snapshots:
       "@mariozechner/clipboard-win32-x64-msvc": 0.3.2
     optional: true
 
+  "@mariozechner/jiti@2.6.5":
+    dependencies:
+      std-env: 3.10.0
+      yoctocolors: 2.1.2
+
+  "@mariozechner/pi-agent-core@0.65.2(ws@8.20.0)(zod@4.3.6)":
+    dependencies:
+      "@mariozechner/pi-ai": 0.65.2(ws@8.20.0)(zod@4.3.6)
+    transitivePeerDependencies:
+      - "@modelcontextprotocol/sdk"
+      - aws-crt
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+      - ws
+      - zod
+
+  "@mariozechner/pi-ai@0.65.2(ws@8.20.0)(zod@4.3.6)":
+    dependencies:
+      "@anthropic-ai/sdk": 0.73.0(zod@4.3.6)
+      "@aws-sdk/client-bedrock-runtime": 3.1034.0
+      "@google/genai": 1.50.1
+      "@mistralai/mistralai": 1.14.1
+      "@sinclair/typebox": 0.34.49
+      ajv: 8.20.0
+      ajv-formats: 3.0.1(ajv@8.20.0)
+      chalk: 5.6.2
+      openai: 6.26.0(ws@8.20.0)(zod@4.3.6)
+      partial-json: 0.1.7
+      proxy-agent: 6.5.0
+      undici: 7.25.0
+      zod-to-json-schema: 3.25.2(zod@4.3.6)
+    transitivePeerDependencies:
+      - "@modelcontextprotocol/sdk"
+      - aws-crt
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+      - ws
+      - zod
+
+  "@mariozechner/pi-coding-agent@0.65.2(ws@8.20.0)(zod@4.3.6)":
+    dependencies:
+      "@mariozechner/jiti": 2.6.5
+      "@mariozechner/pi-agent-core": 0.65.2(ws@8.20.0)(zod@4.3.6)
+      "@mariozechner/pi-ai": 0.65.2(ws@8.20.0)(zod@4.3.6)
+      "@mariozechner/pi-tui": 0.65.2
+      "@silvia-odwyer/photon-node": 0.3.4
+      ajv: 8.20.0
+      chalk: 5.6.2
+      cli-highlight: 2.1.11
+      diff: 8.0.4
+      extract-zip: 2.0.1
+      file-type: 21.3.4
+      glob: 13.0.6
+      hosted-git-info: 9.0.2
+      ignore: 7.0.5
+      marked: 15.0.12
+      minimatch: 10.2.5
+      proper-lockfile: 4.1.2
+      strip-ansi: 7.1.2
+      undici: 7.25.0
+      yaml: 2.8.2
+    optionalDependencies:
+      "@mariozechner/clipboard": 0.3.5
+    transitivePeerDependencies:
+      - "@modelcontextprotocol/sdk"
+      - aws-crt
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+      - ws
+      - zod
+
+  "@mariozechner/pi-tui@0.65.2":
+    dependencies:
+      "@types/mime-types": 2.1.4
+      chalk: 5.6.2
+      get-east-asian-width: 1.4.0
+      marked: 15.0.12
+      mime-types: 3.0.2
+    optionalDependencies:
+      koffi: 2.16.1
+
+  "@mistralai/mistralai@1.14.1":
+    dependencies:
+      ws: 8.20.0
+      zod: 4.3.6
+      zod-to-json-schema: 3.25.2(zod@4.3.6)
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   "@mistralai/mistralai@2.2.1":
     dependencies:
       ws: 8.20.0
@@ -4992,12 +5205,23 @@ snapshots:
 
   agent-base@7.1.4: {}
 
+  ajv-formats@3.0.1(ajv@8.20.0):
+    optionalDependencies:
+      ajv: 8.20.0
+
   ajv@6.12.6:
     dependencies:
       fast-deep-equal: 3.1.3
       fast-json-stable-stringify: 2.1.0
       json-schema-traverse: 0.4.1
       uri-js: 4.4.1
+
+  ajv@8.20.0:
+    dependencies:
+      fast-deep-equal: 3.1.3
+      fast-uri: 3.1.2
+      json-schema-traverse: 1.0.0
+      require-from-string: 2.0.2
 
   ansi-escapes@7.3.0:
     dependencies:
@@ -5299,6 +5523,8 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
+  fast-uri@3.1.2: {}
+
   fast-xml-builder@1.1.5:
     dependencies:
       path-expression-matcher: 1.5.0
@@ -5541,6 +5767,8 @@ snapshots:
       ts-algebra: 2.0.0
 
   json-schema-traverse@0.4.1: {}
+
+  json-schema-traverse@1.0.0: {}
 
   json-stable-stringify-without-jsonify@1.0.1: {}
 
@@ -5892,6 +6120,8 @@ snapshots:
 
   require-directory@2.1.1: {}
 
+  require-from-string@2.0.2: {}
+
   resolve-from@4.0.0: {}
 
   restore-cursor@5.1.0:
@@ -5971,6 +6201,8 @@ snapshots:
     optional: true
 
   stackback@0.0.2: {}
+
+  std-env@3.10.0: {}
 
   std-env@4.0.0: {}
 
@@ -6184,6 +6416,8 @@ snapshots:
       fd-slicer: 1.1.0
 
   yocto-queue@0.1.0: {}
+
+  yoctocolors@2.1.2: {}
 
   zod-to-json-schema@3.25.2(zod@4.3.6):
     dependencies:
