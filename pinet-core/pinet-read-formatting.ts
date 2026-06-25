@@ -206,7 +206,12 @@ export function formatPinetReadResultCompact(
     `Pinet read: ${result.messages.length} ${mode} message${result.messages.length === 1 ? "" : "s"}; unread ${result.unreadCountBefore}→${result.unreadCountAfter}${markedSuffix}${unreadThreadSuffix}.`,
   ];
 
-  if (options.threadId && result.messages.length > 0) {
+  // Show capped per-message previews for both thread-scoped and inbox-wide
+  // compact reads. Restricting previews to thread-scoped reads (the previous
+  // behavior) left inbox-wide `pinet action=read` callers with only the counts
+  // header, which pushed agents toward `full=true` just to see what arrived.
+  // The 3-message + 96-char cap already keeps the output bounded.
+  if (result.messages.length > 0) {
     const shownMessages = result.messages.slice(0, COMPACT_READ_TEXT_MESSAGE_LIMIT);
     lines.push(...shownMessages.map(formatCompactMessagePreview));
     const truncated = result.messages.length - shownMessages.length;
@@ -214,7 +219,9 @@ export function formatPinetReadResultCompact(
       lines.push(`… ${truncated} more message${truncated === 1 ? "" : "s"}.`);
     }
     if (truncated > 0 || shownMessages.some(isMessageBodyTruncated)) {
-      lines.push("Use args.full=true args.unread_only=false for exact bodies.");
+      // Stated as a diagnostic affordance rather than a directive so we don't
+      // actively push routine reads toward `full=true`.
+      lines.push("args.full=true args.unread_only=false returns verbatim bodies.");
     }
   }
 

@@ -225,7 +225,10 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
   send: [{ action: "send", args: { to: "@worker", message: "Please review PR #123" } }],
   read: [
     { action: "read", args: { thread_id: "a2a:<broker>:<worker>", limit: 20 } },
-    { action: "read", args: { unread_only: false, mark_read: false, full: true } },
+    // Compact non-`full` peek at the latest messages without consuming unread
+    // state. Use args.full=true only when verbatim bodies are actually needed
+    // — the default compact read already includes capped per-message previews.
+    { action: "read", args: { unread_only: false, mark_read: false, limit: 5 } },
   ],
   free: [{ action: "free", args: { note: "Wrapped up <issue>" } }],
   snooze: [
