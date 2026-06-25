@@ -528,8 +528,18 @@ describe("registerPinetTools", () => {
       };
     };
 
-    expect(result.content[0]?.text).toBe("Pinet read: 1 unread message; unread 1→0; marked 1.");
+    // Header summary line stays stable; inbox-wide compact reads now include the
+    // same capped per-message preview previously gated behind `thread_id`.
+    expect(result.content[0]?.text?.split("\n")[0]).toBe(
+      "Pinet read: 1 unread message; unread 1→0; marked 1.",
+    );
+    expect(result.content[0]?.text).toContain(
+      "- [steering] [agent/a2a:broker:worker #44] broker: please inspect important context",
+    );
+    // Preview must be truncated; raw long body stays out of the compact text.
+    expect(result.content[0]?.text).toContain("…");
     expect(result.content[0]?.text).not.toContain(longBody);
+    expect(result.content[0]?.text).not.toContain("keep exact body");
     expect(result.details.data.text).not.toContain(longBody);
     expect(result.details.data.details.messages[0]?.id).toBe(44);
     expect(result.details.data.details.messages[0]?.preview).toBeUndefined();
@@ -1716,10 +1726,13 @@ describe("registerPinetTools", () => {
       .render(200)
       .join("\n");
 
-    // Collapsed keeps the one-line summary (no per-message bodies).
+    // Collapsed keeps the header summary line and, since inbox-wide compact
+    // reads now include the same capped per-message previews as thread-scoped
+    // reads, surfaces them dimmed below the header so callers can act without
+    // expanding or opting into `full=true`.
     expect(collapsed).toContain("Pinet read: 2 unread messages");
-    expect(collapsed).not.toContain("please inspect #594");
-    // Expanded shows the per-message rows, not a JSON wall.
+    expect(collapsed).toContain("please inspect #594");
+    // Expanded shows the per-message rows in the rich view, not a JSON wall.
     expect(expanded).toContain("please inspect #594");
     expect(expanded).toContain("and #595");
     expect(expanded).not.toContain("[{");

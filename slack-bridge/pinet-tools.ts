@@ -224,8 +224,16 @@ interface PinetRenderResultInput {
 const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> = {
   send: [{ action: "send", args: { to: "@worker", message: "Please review PR #123" } }],
   read: [
+    // Routine inbox drain: defaults are `unread_only: true` + `mark_read: true`,
+    // so this returns and consumes only this agent's unread rows. The compact
+    // output already includes capped per-message previews; no `full=true` needed.
+    { action: "read", args: { limit: 20 } },
+    // Same defaults, scoped to one thread.
     { action: "read", args: { thread_id: "a2a:<broker>:<worker>", limit: 20 } },
-    { action: "read", args: { unread_only: false, mark_read: false, full: true } },
+    // Non-destructive latest-history peek (does NOT mark anything read or
+    // change unread state). Use only when you need to revisit recently-read
+    // context, not as a routine inbox read.
+    { action: "read", args: { unread_only: false, mark_read: false, limit: 5 } },
   ],
   free: [{ action: "free", args: { note: "Wrapped up <issue>" } }],
   snooze: [
@@ -1867,7 +1875,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
   registerAction({
     name: "read",
     description:
-      "Read this agent's durable SQLite-backed Pinet inbox context with unread/read semantics. Ordinary workers only see rows addressed to their own agent identity; broker coordination visibility is limited to broker-addressed inbox rows.",
+      "Read this agent's durable SQLite-backed Pinet inbox context with unread/read semantics. Defaults to draining unread rows (`unread_only: true`, `mark_read: true`) with compact per-message previews — no `full=true` required for routine reads. Override `unread_only`/`mark_read` only for a non-destructive latest-history peek. Ordinary workers only see rows addressed to their own agent identity; broker coordination visibility is limited to broker-addressed inbox rows.",
     parameters: Type.Object({
       thread_id: Type.Optional(
         Type.String({

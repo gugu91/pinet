@@ -50,12 +50,24 @@ describe("Pinet read formatting", () => {
     );
   });
 
-  it("points truncated compact thread previews to the exact-body retry", () => {
+  it("includes the same per-message preview on inbox-wide compact reads (no thread_id)", () => {
+    // Regression: previously compact mode only emitted previews when a
+    // `thread_id` was supplied, which left inbox-wide `pinet action=read`
+    // callers with only the counts header and pushed agents toward `full=true`.
+    const compact = formatPinetReadResultCompact(makeReadResult(), {});
+    expect(compact).toContain(
+      "- [steering] [agent/a2a:broker:worker #44] broker: please inspect issue context",
+    );
+  });
+
+  it("mentions full=true as a verbatim affordance, not as a directive, when previews truncate", () => {
     const compact = formatPinetReadResultCompact(makeReadResult("dense detail ".repeat(40)), {
       threadId: "a2a:broker:worker",
     });
 
-    expect(compact).toContain("args.full=true args.unread_only=false");
+    expect(compact).toContain("args.full=true args.unread_only=false returns verbatim bodies.");
+    // Make sure the previous directive wording does not creep back in.
+    expect(compact).not.toContain("Use args.full=true args.unread_only=false for exact bodies.");
   });
 
   it("preserves the full read text for explicit verbose output", () => {
