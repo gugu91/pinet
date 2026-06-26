@@ -9,6 +9,30 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.2] - 2026-06-26
+
+Pinet v0.2.2 keeps the coordinated `@pinet/*` package set aligned and fixes proactive compaction interrupting active model/tool loops.
+
+### Version verification
+
+- `pi-extensions` — `0.2.2` (private repo package)
+- `@pinet/transport-core` — `0.2.2`
+- `@pinet/broker-core` — `0.2.2`
+- `@pinet/pinet-core` — `0.2.2`
+- `@pinet/imessage-bridge` — `0.2.2`
+- `@pinet/slack-bridge` — `0.2.2`
+- `@pinet/model-aware-compaction` — `0.2.2`
+
+### Release highlights
+
+- Defers model-aware proactive compaction until `agent_end`, after the complete model/tool loop has settled.
+- Prevents manual compaction from aborting the model continuation that consumes a completed tool result.
+- Adds lifecycle regression coverage without injecting a synthetic continuation message.
+
+### Included pull requests since v0.2.1
+
+- [#846](https://github.com/gugu91/extensions/pull/846) — fix: compact after agent loop settles
+
 ## [0.2.1] - 2026-06-26
 
 Pinet v0.2.1 keeps the coordinated `@pinet/*` package set aligned and adds `@pinet/model-aware-compaction` as its sixth package.
