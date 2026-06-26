@@ -41,6 +41,7 @@ import {
   DEFAULT_SLACK_THREAD_STATUS,
   SlackThreadStatusManager,
 } from "../../slack-thread-status.js";
+import { renderMarkdownForSlackMrkdwn } from "../../slack-markdown.js";
 import { performSlackUploads, prepareSlackUpload } from "../../slack-upload.js";
 import type {
   AdapterCapabilityRequest,
@@ -239,9 +240,12 @@ export class SlackAdapter implements MessageAdapter {
         : msg.blocks && msg.blocks.length > 0
           ? msg.blocks
           : undefined;
+    const renderedText = renderMarkdownForSlackMrkdwn(
+      msg.content?.markdown ?? msg.content?.text ?? msg.text,
+    );
     const body: Record<string, unknown> = {
       channel: msg.channel,
-      text: msg.content?.text ?? msg.text,
+      text: renderedText,
       thread_ts: msg.threadId,
       ...(slackBlocks ? { blocks: slackBlocks } : {}),
     };
@@ -284,7 +288,7 @@ export class SlackAdapter implements MessageAdapter {
         uploads,
         channelId: msg.channel,
         threadTs: msg.threadId,
-        initialComment: msg.content?.text ?? msg.text,
+        initialComment: renderedText,
         slack: this.callSlack.bind(this),
         token: this.config.botToken,
       });
