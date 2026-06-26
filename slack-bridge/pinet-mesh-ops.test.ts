@@ -140,6 +140,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     message,
   }));
   const getPendingInboxCount = vi.fn((agentId: string) => (agentId === "worker-1" ? 2 : 0));
+  const searchAgentSessions = vi.fn(() => []);
   const logActivity = vi.fn((_entry: ActivityLogEntry) => undefined);
 
   const db: PinetMeshOpsBrokerDbPort = {
@@ -148,6 +149,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     createThread,
     insertMessage,
     getAllAgents: () => agents,
+    searchAgentSessions,
     getPendingInboxCount,
     transferThreadOwnership,
     recordTaskAssignment,
@@ -178,6 +180,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     recordTaskAssignment,
     scheduleWakeup,
     getPendingInboxCount,
+    searchAgentSessions,
     logActivity,
   };
 }
@@ -187,6 +190,7 @@ function createFollowerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     async (_target: string, _body: string, _metadata?: Record<string, unknown>) => 17,
   );
   const scheduleWakeup = vi.fn(async (fireAt: string, _message: string) => ({ id: 9, fireAt }));
+  const searchAgentSessions = vi.fn(async () => []);
   const listAgents = vi.fn(async (_includeGhosts: boolean) => [
     {
       id: "worker-2",
@@ -206,6 +210,7 @@ function createFollowerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     sendAgentMessage,
     scheduleWakeup,
     listAgents,
+    searchAgentSessions,
   };
 
   const deps: PinetMeshOpsDeps = {
@@ -226,6 +231,7 @@ function createFollowerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     sendAgentMessage,
     scheduleWakeup,
     listAgents,
+    searchAgentSessions,
   };
 }
 

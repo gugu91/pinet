@@ -1016,6 +1016,84 @@ describe("BrokerClient — listThreads / listAgents", () => {
 
     client.disconnect();
   });
+
+  it("searches agent sessions via RPC", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    await client.connect();
+
+    const sessionsPromise = client.searchAgentSessions({ agentName: "Frozen Hazel Whale" });
+
+    await waitFor(() => mock.received.length > 0);
+    const req = JSON.parse(mock.received[0]) as {
+      id: number;
+      method: string;
+      params?: { agentName?: string };
+    };
+    expect(req.method).toBe("agent.sessions.search");
+    expect(req.params?.agentName).toBe("Frozen Hazel Whale");
+
+    const sessions = [
+      {
+        agentId: "a1",
+        agentName: "Frozen Hazel Whale",
+        emoji: "🐋",
+        pid: 1000,
+        status: "idle",
+        stableId: "host:session:/tmp/frozen.jsonl",
+        connectedAt: "2026-01-01T00:00:00Z",
+        lastSeen: "2026-01-01T00:01:00Z",
+        lastHeartbeat: "2026-01-01T00:01:00Z",
+        disconnectedAt: null,
+        resumableUntil: null,
+        idleSince: null,
+        lastActivity: null,
+        cwd: null,
+        repo: "extensions",
+        repoRoot: null,
+        worktreePath: null,
+        branch: "main",
+        tmuxSession: null,
+        brokerManaged: false,
+        brokerManagedBy: null,
+        launchSource: null,
+        parentAgentId: null,
+        rootAgentId: null,
+        treeDepth: 0,
+        supervisionState: "root",
+        subtreeRole: null,
+        laneId: null,
+        relatedThreadIds: ["a2a:broker:a1"],
+        matchedBy: ["agent_name"],
+      },
+    ];
+    mock.respondTo(mock.connections[0], req.id, sessions);
+
+    await expect(sessionsPromise).resolves.toEqual(sessions);
+
+    client.disconnect();
+  });
+
+  it("explains when the broker is too old for session search", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    await client.connect();
+
+    const sessionsPromise = client.searchAgentSessions({ agentName: "Frozen Hazel Whale" });
+
+    await waitFor(() => mock.received.length > 0);
+    const req = JSON.parse(mock.received[0]) as { id: number; method: string };
+    expect(req.method).toBe("agent.sessions.search");
+
+    mock.respondError(
+      mock.connections[0],
+      req.id,
+      RPC_METHOD_NOT_FOUND,
+      "Unknown method: agent.sessions.search",
+    );
+
+    await expect(sessionsPromise).rejects.toThrow("Broker does not support Pinet session search");
+
+    client.disconnect();
+  });
 });
 
 describe("BrokerClient — resolveThread", () => {

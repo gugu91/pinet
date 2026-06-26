@@ -29,6 +29,9 @@ import { DEFAULT_HEARTBEAT_TIMEOUT_MS } from "./broker/socket-server.js";
 import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
 import type { RalphSnoozeStatus } from "./ralph-loop.js";
 import type {
+  AgentSessionSearchInfo,
+  AgentSessionSearchOptions,
+  AgentSessionSummary,
   PortLeaseAcquireInput,
   PortLeaseInfo,
   PortLeaseListOptions,
@@ -42,12 +45,21 @@ import type {
   PinetLaneState,
   PinetLaneUpsertInput,
 } from "./broker/types.js";
+import {
+  buildPinetSessionCompactDetails,
+  buildPinetSessionFullDetails,
+  getPinetSessionFilename,
+  getPinetSessionPath,
+  summarizePinetStableId,
+} from "./pinet-session-formatting.js";
 
 export interface PinetToolsAgentRecord {
   emoji: string;
   name: string;
   id: string;
   pid?: number;
+  stableId?: string | null;
+  session?: AgentSessionSummary | null;
   status: "working" | "idle";
   metadata: Record<string, unknown> | null;
   lastHeartbeat: string;
@@ -125,6 +137,7 @@ export interface RegisterPinetToolsDeps {
   readPinetInbox: (options: PinetReadOptions) => Promise<PinetReadResult>;
   listBrokerAgents: () => PinetToolsAgentRecord[];
   listFollowerAgents: (includeGhosts: boolean) => Promise<PinetToolsAgentRecord[]>;
+  searchPinetSessions: (options: AgentSessionSearchOptions) => Promise<AgentSessionSearchInfo[]>;
   listSubtreeAgents?: (includeGhosts: boolean) => PinetToolsAgentRecord[] | null;
   getSubtreeSelfAgentId?: () => string | null;
   spawnSubtreeWorker?: (input: PinetSubtreeSpawnInput) => Promise<PinetSubtreeSpawnResult>;
@@ -160,6 +173,7 @@ type PinetDispatcherAction =
   | "snooze"
   | "schedule"
   | "agents"
+  | "sessions"
   | "lanes"
   | "ports"
   | "spawn"
@@ -242,6 +256,10 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
   ],
   schedule: [{ action: "schedule", args: { delay: "30m", message: "Check queue state" } }],
   agents: [{ action: "agents", args: { repo: "<repo>", role: "worker" } }],
+  sessions: [
+    { action: "sessions", args: { agent_name: "Frozen Hazel Whale" } },
+    { action: "sessions", args: { thread_id: "a2a:<broker>:<worker>", full: true } },
+  ],
   spawn: [
     {
       action: "spawn",
@@ -318,6 +336,7 @@ function normalizeDispatcherAction(value: unknown): PinetDispatcherAction {
     "snooze",
     "schedule",
     "agents",
+    "sessions",
     "lanes",
     "ports",
     "spawn",
@@ -371,7 +390,8 @@ function classifyPinetError(message: string): PinetDispatcherError {
     message.includes("ttl_ms") ||
     message.includes("purpose") ||
     message.includes("port") ||
-    message.includes("spawn")
+    message.includes("spawn") ||
+    message.includes("sessions op")
   ) {
     return {
       class: "input",
@@ -1205,6 +1225,8 @@ function buildCompactAgentDetails(
         repo: getAgentRepo(agent) ?? null,
         branch: getAgentBranch(agent) ?? null,
         role: getAgentRole(agent) ?? null,
+        session: agent.session?.ref ?? null,
+        sessionKind: agent.session?.kind ?? null,
         brokerManaged: agent.metadata?.brokerManaged === true,
         parentAgentId: agent.metadata?.parentAgentId ?? null,
         treeDepth: agent.metadata?.treeDepth ?? 0,
@@ -1845,6 +1867,145 @@ function runPinetAgentsAction(
   })();
 }
 
+function buildPinetSessionSearchOptions(
+  params: Record<string, unknown>,
+): AgentSessionSearchOptions {
+  return {
+    ...((getMaybeString(params, "agent_name") ?? getMaybeString(params, "name"))
+      ? { agentName: getMaybeString(params, "agent_name") ?? getMaybeString(params, "name") }
+      : {}),
+    ...(getMaybeString(params, "agent_id") ? { agentId: getMaybeString(params, "agent_id") } : {}),
+    ...(getMaybeString(params, "thread_id")
+      ? { threadId: getMaybeString(params, "thread_id") }
+      : {}),
+    ...(getMaybeString(params, "repo") ? { repo: getMaybeString(params, "repo") } : {}),
+    ...(getMaybeString(params, "worktree_path")
+      ? { worktreePath: getMaybeString(params, "worktree_path") }
+      : {}),
+    ...(getMaybeString(params, "tmux_session")
+      ? { tmuxSession: getMaybeString(params, "tmux_session") }
+      : {}),
+    ...(getMaybeString(params, "since") ? { since: getMaybeString(params, "since") } : {}),
+    ...(getMaybeString(params, "until") ? { until: getMaybeString(params, "until") } : {}),
+    ...(getMaybeNumber(params, "limit") ? { limit: getMaybeNumber(params, "limit") } : {}),
+  };
+}
+
+function formatPinetSessionSearchHeader(
+  sessions: AgentSessionSearchInfo[],
+  options: AgentSessionSearchOptions,
+): string {
+  const filters = [
+    options.agentName ? `agent_name=${options.agentName}` : null,
+    options.agentId ? `agent_id=${options.agentId}` : null,
+    options.threadId ? `thread_id=${options.threadId}` : null,
+    options.repo ? `repo=${options.repo}` : null,
+    options.worktreePath ? `worktree=${options.worktreePath}` : null,
+    options.tmuxSession ? `tmux=${options.tmuxSession}` : null,
+    options.since ? `since=${options.since}` : null,
+    options.until ? `until=${options.until}` : null,
+  ].filter((item): item is string => Boolean(item));
+  const filterText = filters.length > 0 ? ` for ${filters.join(" · ")}` : "";
+  return `Pinet sessions: ${sessions.length} match${sessions.length === 1 ? "" : "es"}${filterText}.`;
+}
+
+function formatPinetSessionLine(session: AgentSessionSearchInfo, full: boolean): string {
+  const summary = summarizePinetStableId(session.stableId);
+  const health = session.disconnectedAt ? "disconnected" : "live";
+  const where = [
+    session.repo ?? null,
+    session.branch ? `branch=${session.branch}` : null,
+    session.tmuxSession ? `tmux=${session.tmuxSession}` : null,
+  ].filter((item): item is string => Boolean(item));
+  const threads = session.relatedThreadIds.slice(0, full ? 10 : 3).join(", ");
+  const suffix = session.relatedThreadIds.length > (full ? 10 : 3) ? " …" : "";
+  const base = [
+    `- ${session.emoji} ${session.agentName} (${session.agentId})`,
+    `${health}`,
+    `pid:${session.pid}`,
+    summary?.ref ? `session:${summary.ref}` : "session:none",
+    `lastSeen:${session.lastSeen}`,
+    where.length > 0 ? where.join(" · ") : null,
+  ].filter((item): item is string => Boolean(item));
+  const lines = [base.join(" — ")];
+  if (threads) {
+    lines.push(`  threads: ${threads}${suffix}`);
+  }
+  if (full) {
+    const sessionPath = getPinetSessionPath(session.stableId);
+    const sessionFilename = getPinetSessionFilename(session.stableId);
+    if (session.stableId) lines.push(`  stableId: ${session.stableId}`);
+    if (sessionPath) lines.push(`  jsonl: ${sessionPath}`);
+    if (sessionFilename) lines.push(`  jsonlFile: ${sessionFilename}`);
+    if (session.cwd) lines.push(`  cwd: ${session.cwd}`);
+    if (session.repoRoot) lines.push(`  repoRoot: ${session.repoRoot}`);
+    if (session.worktreePath) lines.push(`  worktreePath: ${session.worktreePath}`);
+    if (session.brokerManaged) {
+      lines.push(
+        `  managed: source=${session.launchSource ?? "broker"}${session.brokerManagedBy ? ` by=${session.brokerManagedBy}` : ""}`,
+      );
+    }
+    lines.push(`  matchedBy: ${session.matchedBy.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function formatPinetSessionSearch(
+  sessions: AgentSessionSearchInfo[],
+  options: AgentSessionSearchOptions,
+  full: boolean,
+): string {
+  const header = formatPinetSessionSearchHeader(sessions, options);
+  if (sessions.length === 0)
+    return `${header} Try a broader agent_name, thread_id, or repo filter.`;
+  const body = sessions.map((session) => formatPinetSessionLine(session, full)).join("\n");
+  const fullHint = full ? "" : "\nUse args.full=true for exact stableId/jsonl paths.";
+  return `${header}\n${body}${fullHint}`;
+}
+
+function runPinetSessionsAction(
+  params: Record<string, unknown>,
+  deps: RegisterPinetToolsDeps,
+  toolName: string,
+  output: PinetOutputOptions,
+): Promise<PinetToolResult> {
+  return (async () => {
+    const op = getMaybeString(params, "op") ?? "search";
+    if (op !== "search") {
+      throw new Error("sessions op must be search");
+    }
+
+    const options = buildPinetSessionSearchOptions(params);
+    deps.requireToolPolicy(
+      toolName,
+      undefined,
+      `agent_name=${options.agentName ?? ""} | agent_id=${options.agentId ?? ""} | thread_id=${options.threadId ?? ""} | repo=${options.repo ?? ""} | worktree_path=${options.worktreePath ?? ""} | tmux_session=${options.tmuxSession ?? ""} | since=${options.since ?? ""} | until=${options.until ?? ""} | limit=${options.limit ?? ""} | format=${output.format} | full=${output.full}`,
+    );
+
+    if (!deps.pinetEnabled()) {
+      throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
+    }
+
+    const sessions = await deps.searchPinetSessions(options);
+    const text = formatPinetSessionSearch(sessions, options, output.full);
+    return {
+      content: [{ type: "text", text }],
+      details: { count: sessions.length, sessions, options },
+      compactDetails: {
+        count: sessions.length,
+        options,
+        sessions: sessions.map(buildPinetSessionCompactDetails),
+      },
+      fullDetails: {
+        count: sessions.length,
+        options,
+        sessions: sessions.map(buildPinetSessionFullDetails),
+      },
+      expandedText: text,
+    };
+  })();
+}
+
 export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDeps): void {
   const actionDefinitions = new Map<string, PinetActionDefinition>();
 
@@ -2011,6 +2172,34 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
   });
 
   registerAction({
+    name: "sessions",
+    description:
+      "Search live and historical Pinet worker Pi sessions by display name, agent id, thread, repo/worktree, tmux session, or time range.",
+    parameters: Type.Object({
+      op: Type.Optional(Type.String({ description: "Operation: search (default)" })),
+      agent_name: Type.Optional(
+        Type.String({ description: "Worker display name, e.g. Frozen Hazel Whale" }),
+      ),
+      name: Type.Optional(Type.String({ description: "Alias for agent_name" })),
+      agent_id: Type.Optional(Type.String({ description: "Pinet agent id or id prefix" })),
+      thread_id: Type.Optional(Type.String({ description: "Related Pinet/Slack/A2A thread id" })),
+      repo: Type.Optional(Type.String({ description: "Repo name or path fragment" })),
+      worktree_path: Type.Optional(Type.String({ description: "Worktree/cwd path fragment" })),
+      tmux_session: Type.Optional(Type.String({ description: "Broker-managed tmux session name" })),
+      since: Type.Optional(
+        Type.String({ description: "Only sessions active after this ISO time" }),
+      ),
+      until: Type.Optional(
+        Type.String({ description: "Only sessions started before this ISO time" }),
+      ),
+      limit: Type.Optional(Type.Number({ description: "Maximum matches (default 20, max 100)" })),
+      ...PINET_OUTPUT_OPTION_PARAMETERS,
+    }),
+    execute: (_id, params, output) =>
+      runPinetSessionsAction(params, deps, "pinet:sessions", output),
+  });
+
+  registerAction({
     name: "ports",
     description:
       "Acquire, renew, release, inspect, list, or expire durable Pinet local port leases.",
@@ -2128,11 +2317,11 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     label: "Pinet Dispatcher",
     description: "Dispatch Pinet operations by action with compact help and schema discovery.",
     promptSnippet:
-      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, lanes, ports, reload, exit, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" for the compact envelope or args.full=true for verbose/debug detail.',
+      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, exit, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" for the compact envelope or args.full=true for verbose/debug detail.',
     parameters: Type.Object({
       action: Type.String({
         description:
-          "Action name: help, send, read, free, snooze, schedule, agents, lanes, ports, reload, or exit. Also supports spawn for launching worker-owned subtree children.",
+          "Action name: help, send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, or exit. Also supports spawn for launching worker-owned subtree children.",
       }),
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {

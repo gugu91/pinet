@@ -31,6 +31,8 @@ import type {
   PortLeaseReleaseInput,
   PortLeaseRenewInput,
   PortLeaseStatus,
+  AgentSessionSearchInfo,
+  AgentSessionSearchOptions,
   PinetLaneInfo,
   PinetLaneListOptions,
   PinetLaneParticipantInfo,
@@ -559,6 +561,131 @@ function getOptionalMetadataString(
     }
   }
   return null;
+}
+
+function getOptionalNestedMetadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  keys: string[],
+): string | null {
+  const direct = getOptionalMetadataString(metadata ?? undefined, keys);
+  if (direct) return direct;
+  const capabilities =
+    metadata?.capabilities &&
+    typeof metadata.capabilities === "object" &&
+    !Array.isArray(metadata.capabilities)
+      ? (metadata.capabilities as Record<string, unknown>)
+      : undefined;
+  return getOptionalMetadataString(capabilities, keys);
+}
+
+function normalizeSessionSearchNeedle(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed.toLowerCase() : null;
+}
+
+function matchesSessionSearchNeedle(
+  value: string | null | undefined,
+  needle: string | null,
+): boolean {
+  if (!needle) return true;
+  return Boolean(value?.toLowerCase().includes(needle));
+}
+
+function matchesSessionSearchPrefixOrExact(
+  value: string | null | undefined,
+  needle: string | null,
+): boolean {
+  if (!needle) return true;
+  const normalized = value?.toLowerCase();
+  return Boolean(normalized && (normalized === needle || normalized.startsWith(needle)));
+}
+
+function parseSessionSearchTime(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function normalizeSessionSearchLimit(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 20;
+  return Math.max(1, Math.min(100, Math.floor(value)));
+}
+
+function agentSessionOverlapsRange(
+  agent: AgentInfo,
+  sinceMs: number | null,
+  untilMs: number | null,
+): boolean {
+  const connectedMs = Date.parse(agent.connectedAt);
+  const lastSeenMs = Date.parse(agent.lastSeen || agent.lastHeartbeat || agent.connectedAt);
+  const startMs = Number.isNaN(connectedMs) ? null : connectedMs;
+  const endMs = Number.isNaN(lastSeenMs) ? startMs : lastSeenMs;
+  if (sinceMs !== null && endMs !== null && endMs < sinceMs) return false;
+  if (untilMs !== null && startMs !== null && startMs > untilMs) return false;
+  return true;
+}
+
+function getAgentSessionMatchedBy(input: {
+  agent: AgentInfo;
+  metadata: Record<string, unknown> | null;
+  relatedThreadIds: string[];
+  options: AgentSessionSearchOptions;
+}): string[] {
+  const matchedBy: string[] = [];
+  const agentName = normalizeSessionSearchNeedle(input.options.agentName);
+  const agentId = normalizeSessionSearchNeedle(input.options.agentId);
+  const threadId = normalizeSessionSearchNeedle(input.options.threadId);
+  const repo = normalizeSessionSearchNeedle(input.options.repo);
+  const worktreePath = normalizeSessionSearchNeedle(input.options.worktreePath);
+  const tmuxSession = normalizeSessionSearchNeedle(input.options.tmuxSession);
+
+  if (agentName && matchesSessionSearchNeedle(input.agent.name, agentName)) {
+    matchedBy.push("agent_name");
+  }
+  if (agentId && matchesSessionSearchPrefixOrExact(input.agent.id, agentId)) {
+    matchedBy.push("agent_id");
+  }
+  if (
+    threadId &&
+    input.relatedThreadIds.some((candidate) => candidate.toLowerCase().includes(threadId))
+  ) {
+    matchedBy.push("thread_id");
+  }
+
+  const repoValues = [
+    getOptionalNestedMetadataString(input.metadata, ["repo"]),
+    getOptionalNestedMetadataString(input.metadata, ["repoRoot"]),
+    getOptionalNestedMetadataString(input.metadata, ["cwd"]),
+  ];
+  if (repo && repoValues.some((value) => matchesSessionSearchNeedle(value, repo))) {
+    matchedBy.push("repo");
+  }
+
+  const worktreeValues = [
+    getOptionalNestedMetadataString(input.metadata, ["worktreePath"]),
+    getOptionalNestedMetadataString(input.metadata, ["cwd"]),
+    getOptionalNestedMetadataString(input.metadata, ["repoRoot"]),
+  ];
+  if (
+    worktreePath &&
+    worktreeValues.some((value) => matchesSessionSearchNeedle(value, worktreePath))
+  ) {
+    matchedBy.push("worktree_path");
+  }
+
+  const tmux = getOptionalNestedMetadataString(input.metadata, ["tmuxSession", "tmux"]);
+  if (tmuxSession && matchesSessionSearchNeedle(tmux, tmuxSession)) {
+    matchedBy.push("tmux_session");
+  }
+
+  if (input.options.since || input.options.until) {
+    matchedBy.push("time_range");
+  }
+
+  if (matchedBy.length === 0) {
+    matchedBy.push("recent");
+  }
+  return matchedBy;
 }
 
 function rowToPinetLaneParticipant(row: PinetLaneParticipantRow): PinetLaneParticipantInfo {
@@ -1974,6 +2101,148 @@ export class BrokerDB implements BrokerDBInterface {
       )
       .all() as unknown as AgentRow[];
     return rows.map((row) => this.rowToAgentWithCurrentSessionOutboundCount(row));
+  }
+
+  private getAgentRelatedThreadIds(agentId: string, limit = 12): string[] {
+    const db = this.getDb();
+    const rows = db
+      .prepare(
+        `SELECT thread_id, MAX(activity_at) AS activity_at
+         FROM (
+           SELECT thread_id, updated_at AS activity_at
+             FROM threads
+            WHERE owner_agent = ? OR channel = ?
+           UNION ALL
+           SELECT thread_id, created_at AS activity_at
+             FROM messages
+            WHERE sender = ?
+           UNION ALL
+           SELECT m.thread_id, i.created_at AS activity_at
+             FROM inbox i
+             JOIN messages m ON m.id = i.message_id
+            WHERE i.agent_id = ?
+           UNION ALL
+           SELECT thread_id, updated_at AS activity_at
+             FROM threads
+            WHERE thread_id LIKE ? OR thread_id LIKE ?
+         ) related
+         GROUP BY thread_id
+         ORDER BY activity_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        agentId,
+        `agent:${agentId}`,
+        agentId,
+        agentId,
+        `a2a:${agentId}:%`,
+        `a2a:%:${agentId}`,
+        limit,
+      ) as Array<{ thread_id: string }>;
+    return rows.map((row) => row.thread_id);
+  }
+
+  searchAgentSessions(options: AgentSessionSearchOptions = {}): AgentSessionSearchInfo[] {
+    const agentName = normalizeSessionSearchNeedle(options.agentName);
+    const agentId = normalizeSessionSearchNeedle(options.agentId);
+    const threadId = normalizeSessionSearchNeedle(options.threadId);
+    const repo = normalizeSessionSearchNeedle(options.repo);
+    const worktreePath = normalizeSessionSearchNeedle(options.worktreePath);
+    const tmuxSession = normalizeSessionSearchNeedle(options.tmuxSession);
+    const sinceMs = parseSessionSearchTime(options.since);
+    const untilMs = parseSessionSearchTime(options.until);
+    const limit = normalizeSessionSearchLimit(options.limit);
+
+    const results = this.getAllAgents()
+      .map((agent) => {
+        const metadata = agent.metadata ?? null;
+        const relatedThreadIds = this.getAgentRelatedThreadIds(agent.id);
+        const matchedBy = getAgentSessionMatchedBy({ agent, metadata, relatedThreadIds, options });
+        return {
+          agent,
+          metadata,
+          relatedThreadIds,
+          matchedBy,
+          lastSeenMs: Date.parse(agent.lastSeen || agent.lastHeartbeat || agent.connectedAt),
+        };
+      })
+      .filter(({ agent, metadata, relatedThreadIds }) => {
+        if (agentName && !matchesSessionSearchNeedle(agent.name, agentName)) return false;
+        if (agentId && !matchesSessionSearchPrefixOrExact(agent.id, agentId)) return false;
+        if (
+          threadId &&
+          !relatedThreadIds.some((candidate) => candidate.toLowerCase().includes(threadId))
+        ) {
+          return false;
+        }
+        if (repo) {
+          const values = [
+            getOptionalNestedMetadataString(metadata, ["repo"]),
+            getOptionalNestedMetadataString(metadata, ["repoRoot"]),
+            getOptionalNestedMetadataString(metadata, ["cwd"]),
+          ];
+          if (!values.some((value) => matchesSessionSearchNeedle(value, repo))) return false;
+        }
+        if (worktreePath) {
+          const values = [
+            getOptionalNestedMetadataString(metadata, ["worktreePath"]),
+            getOptionalNestedMetadataString(metadata, ["cwd"]),
+            getOptionalNestedMetadataString(metadata, ["repoRoot"]),
+          ];
+          if (!values.some((value) => matchesSessionSearchNeedle(value, worktreePath))) {
+            return false;
+          }
+        }
+        if (tmuxSession) {
+          const tmux = getOptionalNestedMetadataString(metadata, ["tmuxSession", "tmux"]);
+          if (!matchesSessionSearchNeedle(tmux, tmuxSession)) return false;
+        }
+        return agentSessionOverlapsRange(agent, sinceMs, untilMs);
+      })
+      .sort((left, right) => {
+        const liveDelta =
+          Number(Boolean(left.agent.disconnectedAt)) - Number(Boolean(right.agent.disconnectedAt));
+        if (liveDelta !== 0) return liveDelta;
+        const leftSeen = Number.isNaN(left.lastSeenMs) ? 0 : left.lastSeenMs;
+        const rightSeen = Number.isNaN(right.lastSeenMs) ? 0 : right.lastSeenMs;
+        if (leftSeen !== rightSeen) return rightSeen - leftSeen;
+        return left.agent.name.localeCompare(right.agent.name);
+      })
+      .slice(0, limit)
+      .map(({ agent, metadata, relatedThreadIds, matchedBy }) => ({
+        agentId: agent.id,
+        agentName: agent.name,
+        emoji: agent.emoji,
+        pid: agent.pid,
+        status: agent.status,
+        stableId: agent.stableId ?? null,
+        connectedAt: agent.connectedAt,
+        lastSeen: agent.lastSeen,
+        lastHeartbeat: agent.lastHeartbeat,
+        disconnectedAt: agent.disconnectedAt ?? null,
+        resumableUntil: agent.resumableUntil ?? null,
+        idleSince: agent.idleSince ?? null,
+        lastActivity: agent.lastActivity ?? null,
+        cwd: getOptionalNestedMetadataString(metadata, ["cwd"]),
+        repo: getOptionalNestedMetadataString(metadata, ["repo"]),
+        repoRoot: getOptionalNestedMetadataString(metadata, ["repoRoot"]),
+        worktreePath: getOptionalNestedMetadataString(metadata, ["worktreePath"]),
+        branch: getOptionalNestedMetadataString(metadata, ["branch"]),
+        tmuxSession: getOptionalNestedMetadataString(metadata, ["tmuxSession", "tmux"]),
+        brokerManaged: metadata?.brokerManaged === true,
+        brokerManagedBy: getOptionalNestedMetadataString(metadata, ["brokerManagedBy"]),
+        launchSource: getOptionalNestedMetadataString(metadata, ["launchSource"]),
+        parentAgentId: agent.parentAgentId ?? null,
+        rootAgentId: agent.rootAgentId ?? null,
+        treeDepth: agent.treeDepth ?? 0,
+        supervisionState: agent.supervisionState ?? "root",
+        subtreeRole: agent.subtreeRole ?? null,
+        laneId: agent.laneId ?? null,
+        relatedThreadIds,
+        matchedBy,
+      }));
+
+    return results;
   }
 
   getSetting<T = unknown>(key: string): T | null {
