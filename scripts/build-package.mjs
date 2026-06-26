@@ -79,6 +79,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "model-aware-compaction": {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
 };
 
 const config = packageConfigs[packageName];

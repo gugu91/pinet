@@ -44,6 +44,15 @@ declare module "@earendil-works/pi-coding-agent" {
     isIdle?: () => boolean;
     ui: ExtensionUI;
     sessionManager: SessionManager;
+    model?: { provider?: string; id?: string };
+    getContextUsage?: () =>
+      | { tokens: number | null; contextWindow: number; percent: number | null }
+      | undefined;
+    compact?: (options?: {
+      customInstructions?: string;
+      onComplete?: (result?: unknown) => void;
+      onError?: (error: Error) => void;
+    }) => void;
   }
 
   export interface ToolUpdate {

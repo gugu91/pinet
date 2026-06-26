@@ -73,6 +73,8 @@ importers:
         specifier: file:../transport-core
         version: link:../transport-core
 
+  model-aware-compaction: {}
+
   neon-psql:
     devDependencies:
       "@earendil-works/pi-ai":

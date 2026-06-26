@@ -17,6 +17,7 @@ const packages = [
   "nvim-bridge",
   "neon-psql",
   "openai-execution-shaping",
+  "model-aware-compaction",
   "slack-bridge",
 ];
 
