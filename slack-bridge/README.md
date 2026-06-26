@@ -160,6 +160,15 @@ Behavior and precedence:
     "appToken": "xapp-...",
     "runtimeMode": "single",
     "allowedUsers": ["U_EXAMPLE_MEMBER_ID"],
+    "ingressGuard": {
+      "requireMention": {
+        "channels": ["C_EXTERNAL_CHANNEL_ID"],
+        "mixedParticipantThreads": {
+          "enabled": true,
+          "trustedUsers": ["U_EXAMPLE_MEMBER_ID"]
+        }
+      }
+    },
     "defaultChannel": "C_EXAMPLE_CHANNEL_ID",
     "logChannel": "#pinet-logs",
     "logLevel": "actions",
@@ -183,30 +192,33 @@ Slack access is now **default-deny** unless you configure one of these explicitl
 - `allowedUsers` / `SLACK_ALLOWED_USERS` — allow only specific Slack user IDs
 - `allowAllWorkspaceUsers: true` / `SLACK_ALLOW_ALL_WORKSPACE_USERS=true` — explicit workspace-wide opt-in
 
-| Key                            | Required | Description                                                                                                           |
-| ------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------- |
-| `botToken`                     | **yes**  | Bot User OAuth Token (`xoxb-...`)                                                                                     |
-| `appToken`                     | **yes**  | App-Level Token for Socket Mode (`xapp-...`)                                                                          |
-| `allowedUsers`                 | no       | Slack user IDs that can interact; when unset, access is denied unless `allowAllWorkspaceUsers` is true                |
-| `allowAllWorkspaceUsers`       | no       | Explicit opt-in for workspace-wide Slack access when you do not want a user allowlist                                 |
-| `defaultChannel`               | no       | Default channel for the `slack` dispatcher `post_channel` action                                                      |
-| `logChannel`                   | no       | Channel for broker activity logs                                                                                      |
-| `logLevel`                     | no       | `"errors"`, `"actions"` (default), or `"verbose"`                                                                     |
-| `runtimeMode`                  | no       | Explicit startup mode: `"off"`, `"single"`, `"broker"`, or `"follower"`                                               |
-| `autoConnect`                  | no       | Legacy compatibility alias for `runtimeMode: "single"`                                                                |
-| `autoFollow`                   | no       | Legacy compatibility alias for follower startup when a broker socket exists                                           |
-| `ralphLoopIntervalMs`          | no       | Broker RALPH maintenance cadence in milliseconds; defaults to `300000` (5 minutes), valid range `1000`-`2147483647`   |
-| `ralphSnoozeAfterEmptyCycles`  | no       | Broker RALPH auto-snooze trigger after N empty cycles; defaults to `0` (disabled), valid range `0`-`100`              |
-| `ralphSnoozeDurationMs`        | no       | Broker RALPH auto-snooze duration in milliseconds; defaults to `1800000` (30 minutes), valid range `60000`-`86400000` |
-| `skinTheme`                    | no       | Pinet presentation skin selected at broker startup/reload (`default`, `foundation`, `cosmere`, or free-form)          |
-| `slackCommandName`             | no       | Slack web app slash command name for `agents list`; defaults to `/pinet`, or `/oathgate` for Oathgate/Cosmere skins   |
-| `slackCommandNames`            | no       | Optional list of accepted/deployed Slack slash command aliases when one app needs multiple command names              |
-| `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                     |
-| `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file               |
-| `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                    |
-| `security.readOnly`            | no       | Runtime-block write-capable tools for Slack-triggered turns, including core tools like `bash`, `edit`, and `write`    |
-| `security.requireConfirmation` | no       | Runtime-require Slack approval before matching tools execute; core tools need a specific Slack thread context         |
-| `security.blockedTools`        | no       | Runtime-block matching tools for Slack-triggered turns, including core tools                                          |
+Optional explicit invocation guard: `ingressGuard.requireMention` is off by default. Set `channels` to Slack channel IDs where otherwise-actionable messages must mention the bot (`@pinet` / `<@bot>`), and set `mixedParticipantThreads.enabled: true` with `trustedUsers` to require a mention in Pinet-owned Slack threads once anyone outside `trustedUsers` plus the bot has participated. This guard is orthogonal to `allowedUsers`: sender authorization still decides who may invoke Pinet; the guard only decides when an explicit mention is required.
+
+| Key                            | Required | Description                                                                                                            |
+| ------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `botToken`                     | **yes**  | Bot User OAuth Token (`xoxb-...`)                                                                                      |
+| `appToken`                     | **yes**  | App-Level Token for Socket Mode (`xapp-...`)                                                                           |
+| `allowedUsers`                 | no       | Slack user IDs that can interact; when unset, access is denied unless `allowAllWorkspaceUsers` is true                 |
+| `allowAllWorkspaceUsers`       | no       | Explicit opt-in for workspace-wide Slack access when you do not want a user allowlist                                  |
+| `ingressGuard.requireMention`  | no       | Optional Slack ingress guard requiring `@pinet` in configured channel IDs and/or mixed-participant Pinet-owned threads |
+| `defaultChannel`               | no       | Default channel for the `slack` dispatcher `post_channel` action                                                       |
+| `logChannel`                   | no       | Channel for broker activity logs                                                                                       |
+| `logLevel`                     | no       | `"errors"`, `"actions"` (default), or `"verbose"`                                                                      |
+| `runtimeMode`                  | no       | Explicit startup mode: `"off"`, `"single"`, `"broker"`, or `"follower"`                                                |
+| `autoConnect`                  | no       | Legacy compatibility alias for `runtimeMode: "single"`                                                                 |
+| `autoFollow`                   | no       | Legacy compatibility alias for follower startup when a broker socket exists                                            |
+| `ralphLoopIntervalMs`          | no       | Broker RALPH maintenance cadence in milliseconds; defaults to `300000` (5 minutes), valid range `1000`-`2147483647`    |
+| `ralphSnoozeAfterEmptyCycles`  | no       | Broker RALPH auto-snooze trigger after N empty cycles; defaults to `0` (disabled), valid range `0`-`100`               |
+| `ralphSnoozeDurationMs`        | no       | Broker RALPH auto-snooze duration in milliseconds; defaults to `1800000` (30 minutes), valid range `60000`-`86400000`  |
+| `skinTheme`                    | no       | Pinet presentation skin selected at broker startup/reload (`default`, `foundation`, `cosmere`, or free-form)           |
+| `slackCommandName`             | no       | Slack web app slash command name for `agents list`; defaults to `/pinet`, or `/oathgate` for Oathgate/Cosmere skins    |
+| `slackCommandNames`            | no       | Optional list of accepted/deployed Slack slash command aliases when one app needs multiple command names               |
+| `meshSecret`                   | no       | Optional inline Pinet shared secret; overrides `meshSecretPath` and env fallbacks                                      |
+| `meshSecretPath`               | no       | Optional path to a shared-secret file; broker creates it if missing, followers require an existing file                |
+| `suggestedPrompts`             | no       | Prompts shown when a user opens a new conversation                                                                     |
+| `security.readOnly`            | no       | Runtime-block write-capable tools for Slack-triggered turns, including core tools like `bash`, `edit`, and `write`     |
+| `security.requireConfirmation` | no       | Runtime-require Slack approval before matching tools execute; core tools need a specific Slack thread context          |
+| `security.blockedTools`        | no       | Runtime-block matching tools for Slack-triggered turns, including core tools                                           |
 
 ## Scope carrier model (compatibility-first)
 

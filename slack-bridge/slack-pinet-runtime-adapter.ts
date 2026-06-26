@@ -103,6 +103,7 @@ export function createSlackPinetRuntimeAdapterFactory(
       appToken: deps.getAppToken(),
       allowedUsers: allowedUsers ? [...allowedUsers] : undefined,
       allowAllWorkspaceUsers: deps.shouldAllowAllWorkspaceUsers(),
+      ingressGuard: settings.ingressGuard,
       suggestedPrompts: settings.suggestedPrompts,
       reactionCommands: settings.reactionCommands as ReactionCommandSettings | undefined,
       isKnownThread: (threadTs: string) =>
@@ -113,6 +114,11 @@ export function createSlackPinetRuntimeAdapterFactory(
       },
       isReactionThreadAuthorized: (threadTs: string, channelId: string) =>
         isAuthorizedReactionThread(broker, threadTs, channelId),
+      isPinetOwnedThread: (threadTs: string, channelId: string) => {
+        const thread = broker.db.getThread(threadTs);
+        if (!thread || thread.source !== "slack" || thread.channel !== channelId) return false;
+        return !!thread.ownerAgent || readStoredSlackThreadContext(thread.metadata) !== null;
+      },
       onAppHomeOpened: async ({ userId }) => {
         await deps.onAppHomeOpened(userId, ctx);
       },
