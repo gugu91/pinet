@@ -73,7 +73,11 @@ importers:
         specifier: file:../transport-core
         version: link:../transport-core
 
-  model-aware-compaction: {}
+  model-aware-compaction:
+    dependencies:
+      "@earendil-works/pi-coding-agent":
+        specifier: ">=0.74.0"
+        version: 0.74.0(ws@8.20.0)(zod@4.3.6)
 
   neon-psql:
     devDependencies:

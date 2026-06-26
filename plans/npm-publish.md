@@ -11,6 +11,7 @@ The publish workflow always validates or publishes the full npm org `pinet` pack
 3. `@pinet/pinet-core` from `pinet-core/`
 4. `@pinet/imessage-bridge` from `imessage-bridge/`
 5. `@pinet/slack-bridge` from `slack-bridge/`
+6. `@pinet/model-aware-compaction` from `model-aware-compaction/`
 
 There is intentionally no workflow target selector or script target flag. Real releases publish the shared core packages and Slack bridge package together so dependency versions stay aligned and operators cannot accidentally publish only a subset.
 
@@ -58,7 +59,7 @@ Manual real publishes require all of these gates before the publish job can run:
 
 Tag-triggered real publishes require all of these gates before the publish job can run:
 
-- A maintainer-approved version-bump PR has landed on `main`, with all five `@pinet/*` package versions and `pnpm-lock.yaml` aligned.
+- A maintainer-approved version-bump PR has landed on `main`, with all six `@pinet/*` package versions and `pnpm-lock.yaml` aligned.
 - A `vX.Y.Z` tag points at the current `main` tip after the version-bump PR merges.
 - The non-environment preflight job fetches `origin/main` and confirms the tag commit equals the current `origin/main` tip.
 - The same preflight job confirms every full-set package version equals `X.Y.Z`.

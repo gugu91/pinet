@@ -9,6 +9,32 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.1] - 2026-06-26
+
+Pinet v0.2.1 keeps the coordinated `@pinet/*` package set aligned and adds `@pinet/model-aware-compaction` as its sixth package.
+
+### Version verification
+
+- `pi-extensions` — `0.2.1` (private repo package)
+- `@pinet/transport-core` — `0.2.1`
+- `@pinet/broker-core` — `0.2.1`
+- `@pinet/pinet-core` — `0.2.1`
+- `@pinet/imessage-bridge` — `0.2.1`
+- `@pinet/slack-bridge` — `0.2.1`
+- `@pinet/model-aware-compaction` — `0.2.1` (initial release)
+
+### Release highlights
+
+- Adds model-aware proactive compaction with ordered exact or wildcard model rules and active-context token limits.
+- Prevents duplicate compactions while one is in flight and adds optional diagnostics plus `/model-aware-compaction-status`.
+- Keeps the existing Pinet libraries and bridges version-aligned on `0.2.1`.
+- Includes the compact Pinet read-help refinements merged after `0.2.0`.
+
+### Included pull requests since v0.2.0
+
+- [#842](https://github.com/gugu91/extensions/pull/842) — docs(pinet): make compact read defaults explicit
+- [#844](https://github.com/gugu91/extensions/pull/844) — feat: add model-aware compaction extension
+
 ## [0.2.0] - 2026-06-17
 
 Pinet v0.2.0 is the first coordinated `@pinet/*` package release cut from the current `main` branch. It intentionally includes only work already merged through PR #829 and aligns all publishable Pinet packages on the same version.
