@@ -37,7 +37,9 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   pi.on("session_start", rearm);
   pi.on("model_select", rearm);
 
-  pi.on("turn_end", (_event, rawCtx) => {
+  // ctx.compact() aborts an active agent operation. Wait for the complete
+  // model/tool loop to settle so compaction cannot discard pending tool work.
+  pi.on("agent_end", (_event, rawCtx) => {
     const ctx = rawCtx as CompatibleContext;
     const config = loadConfig(ctx.cwd);
     const usage = ctx.getContextUsage?.();
