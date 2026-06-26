@@ -1,6 +1,6 @@
 {
-  "name": "@gugu910/pi-model-aware-compaction",
-  "version": "0.0.0",
+  "name": "@pinet/model-aware-compaction",
+  "version": "0.2.1",
   "type": "module",
   "description": "Pi extension for proactive model-aware context compaction thresholds",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
@@ -44,5 +44,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  }
 }

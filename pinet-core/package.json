@@ -1,6 +1,6 @@
 {
   "name": "@pinet/pinet-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Pinet runtime core for pi — broker/follower orchestration and mesh tooling",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",

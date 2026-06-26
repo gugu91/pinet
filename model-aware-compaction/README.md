@@ -1,11 +1,11 @@
-# @gugu910/pi-model-aware-compaction
+# @pinet/model-aware-compaction
 
 A Pi extension that triggers proactive compaction at different active-context token limits for different models. It adapts Pi's shipped `trigger-compact.ts` example to multi-model and subagent workloads.
 
 ## Install
 
 ```bash
-pi install npm:@gugu910/pi-model-aware-compaction
+pi install npm:@pinet/model-aware-compaction
 ```
 
 For local development from a clone of this repository, load the source directly:
@@ -48,8 +48,8 @@ Pi's extension API makes `ctx.compact()` fire-and-forget. This package is theref
 ## Development
 
 ```bash
-pnpm --filter @gugu910/pi-model-aware-compaction lint
-pnpm --filter @gugu910/pi-model-aware-compaction typecheck
-pnpm --filter @gugu910/pi-model-aware-compaction test
-pnpm --filter @gugu910/pi-model-aware-compaction build
+pnpm --filter @pinet/model-aware-compaction lint
+pnpm --filter @pinet/model-aware-compaction typecheck
+pnpm --filter @pinet/model-aware-compaction test
+pnpm --filter @pinet/model-aware-compaction build
 ```
