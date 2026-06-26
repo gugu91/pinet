@@ -60,7 +60,8 @@
     "imessage-bridge",
     "nvim-bridge",
     "neon-psql",
-    "openai-execution-shaping"
+    "openai-execution-shaping",
+    "model-aware-compaction"
   ],
   "dependencies": {
     "typescript": "^5.7.3"
