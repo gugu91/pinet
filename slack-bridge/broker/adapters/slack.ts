@@ -41,6 +41,7 @@ import {
   SlackThreadStatusManager,
 } from "../../slack-thread-status.js";
 import { performSlackUploads, prepareSlackUpload } from "../../slack-upload.js";
+import { convertMarkdownBoldToSlackMrkdwn } from "../../slack-mrkdwn.js";
 import type {
   AdapterCapabilityRequest,
   AdapterCapabilityResult,
@@ -235,9 +236,10 @@ export class SlackAdapter implements MessageAdapter {
         : msg.blocks && msg.blocks.length > 0
           ? msg.blocks
           : undefined;
+    const outboundText = convertMarkdownBoldToSlackMrkdwn(msg.content?.text ?? msg.text);
     const body: Record<string, unknown> = {
       channel: msg.channel,
-      text: msg.content?.text ?? msg.text,
+      text: outboundText,
       thread_ts: msg.threadId,
       ...(slackBlocks ? { blocks: slackBlocks } : {}),
     };
@@ -280,7 +282,7 @@ export class SlackAdapter implements MessageAdapter {
         uploads,
         channelId: msg.channel,
         threadTs: msg.threadId,
-        initialComment: msg.content?.text ?? msg.text,
+        initialComment: outboundText,
         slack: this.callSlack.bind(this),
         token: this.config.botToken,
       });

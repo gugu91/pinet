@@ -2408,6 +2408,28 @@ describe("SlackAdapter — send", () => {
     expect(body.thread_ts).toBe("100.200");
   });
 
+  it("normalizes Markdown **bold** to Slack *bold* on the wire (issue #848)", async () => {
+    fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
+
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+    });
+
+    await adapter.send({
+      threadId: "100.200",
+      channel: "C123",
+      content: {
+        text: "Status: *done* and **also done** plus **one more**",
+        markdown: "Status: *done* and **also done** plus **one more**",
+      },
+    } as OutboundMessage);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.text).toBe("Status: *done* and *also done* plus *one more*");
+  });
+
   it("includes agent metadata when agentName is provided", async () => {
     fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
 
