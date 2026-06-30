@@ -9,6 +9,32 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.3] - 2026-06-30
+
+Pinet v0.2.3 keeps the coordinated `@pinet/*` package set aligned and ships the Slack/Pinet fixes merged after v0.2.2.
+
+### Version verification
+
+- `pi-extensions` — `0.2.3` (private repo package)
+- `@pinet/transport-core` — `0.2.3`
+- `@pinet/broker-core` — `0.2.3`
+- `@pinet/pinet-core` — `0.2.3`
+- `@pinet/imessage-bridge` — `0.2.3`
+- `@pinet/slack-bridge` — `0.2.3`
+- `@pinet/model-aware-compaction` — `0.2.3`
+
+### Release highlights
+
+- Adds worker-session lookup support to the Pinet mesh/API surface, including broker schema, client, socket-server, tool output, and formatting coverage.
+- Requires explicit invocation before guarded Slack contexts can route into Pinet, preventing passive channel/thread traffic from being treated as an authorized assistant request.
+- Fixes Slack Markdown bold rendering by adding a focused Slack-markdown conversion path and regression coverage.
+
+### Included pull requests since v0.2.2
+
+- [#837](https://github.com/gugu91/extensions/pull/837) — Add Pinet worker session lookup
+- [#838](https://github.com/gugu91/extensions/pull/838) — fix(slack-bridge): require explicit invocation in guarded Slack contexts
+- [#840](https://github.com/gugu91/extensions/pull/840) — Fix Slack Markdown bold rendering
+
 ## [0.2.2] - 2026-06-26
 
 Pinet v0.2.2 keeps the coordinated `@pinet/*` package set aligned and fixes proactive compaction interrupting active model/tool loops.
