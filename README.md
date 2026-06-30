@@ -1,361 +1,219 @@
-# extensions
+# Extensions
 
-Pi extensions monorepo — Slack, Neovim, and Neon Postgres integrations for
-the [pi coding agent](https://github.com/nicholasgasior/pi-coding-agent).
+Get Pinet working in your Slack workspace in 10 minutes. This repository provides pi coding agent extensions for Slack, Neovim, and Neon Postgres.
 
-Current state: the repo has moved from the initial **50+ merged PRs in a
-single day** sprint into a broader Pinet stabilization and docs pass, with a
-broker/follower Slack mesh, durable Pinet lanes/inbox state, Slack canvases, scheduled
-wake-ups, worktree guardrails, checked-in Slack manifest deploy tooling,
-optional mesh auth, and a browser-playwright workspace package for
-interactive browsing and screenshots.
+## What Pinet does
 
-## Extensions
+Pinet connects pi coding agents to Slack. It runs a broker that coordinates work, routes messages, and keeps multiple agents working together. The system can:
 
-| Package                                     | Description                                                                     |
-| ------------------------------------------- | ------------------------------------------------------------------------------- |
-| [`transport-core`](transport-core/)         | Transport-neutral message contracts shared across transport packages            |
-| [`browser-playwright`](browser-playwright/) | Supported Anthropic-sandbox browsing path; Playwright-first single browser tool |
-| [`slack-bridge`](slack-bridge/)             | Slack assistant app (Pinet) — broker mesh, inbox, canvases, deploy tooling      |
-| [`slack-api`](slack-api/)                   | Typed Slack Web API client + CLI generated from OpenAPI                         |
-| [`imessage-bridge`](imessage-bridge/)       | macOS/iMessage send-first transport package + readiness helpers                 |
-| [`nvim-bridge`](nvim-bridge/)               | Neovim editor context sync; PiComms disabled pending Pinet adapter replacement  |
-| [`neon-psql`](neon-psql/)                   | Config-driven Neon tunnel + `psql` tool                                         |
-| [`types`](types/)                           | Shared ambient type declarations                                                |
+- respond to Slack messages and commands
+- coordinate multiple agents working on different tasks
+- support pull request review workflows
+- recover from stale claims and surface pending backlog
+- keep you informed about what agents are doing
 
-## Current state snapshot
+## Get started
 
-- **Broker mesh** — Slack-bridge now runs a broker/follower Pinet workflow with
-  routing, inbox sync, broadcast channels, reload/unfollow controls,
-  scheduled wake-ups, and optional/configurable shared-secret mesh auth.
-- **Slack tooling** — the Slack extension includes canvases, uploads,
-  modals, bookmarks, pinning, exports, and a root `pnpm deploy:slack` command
-  for pushing `slack-bridge/manifest.yaml` via the Slack App Manifest API.
-- **Browser automation** — the repo now carries a dedicated
-  [`browser-playwright`](browser-playwright/README.md)
-  workspace package as the supported browsing path in the Anthropic sandbox,
-  with reusable sessions, multi-tab browsing, request guardrails, and
-  workspace-local screenshot artifacts. Local `agent-browser` daemon
-  compatibility is explicitly not a support goal for this path.
-- **Recent wave** — browser-playwright landed alongside the Pinet v0.1.1 prep,
-  mesh-secret optionality, auth-mismatch clarification, and refreshed mesh-auth
-  docs ([#282](https://github.com/gugu91/extensions/pull/282),
-  [#288](https://github.com/gugu91/extensions/pull/288),
-  [#289](https://github.com/gugu91/extensions/pull/289),
-  [#292](https://github.com/gugu91/extensions/pull/292),
-  [#294](https://github.com/gugu91/extensions/pull/294)).
+### Install from npm
 
-## Philosophy
-
-### How Pinet was built
-
-Pinet was not just designed on paper and then implemented by hand. It was built
-mostly unsupervised by the kind of system it enables: a self-coordinating mesh
-of coding agents working through Slack, GitHub, and linked git worktrees.
-
-The core operating model is simple:
-
-- **A broker coordinates, but does not write code.** The broker agent watches
-  Slack, files and routes work, nudges stalled threads, tracks ownership, and
-  keeps the system coherent. The actual implementation work stays with worker
-  agents in isolated worktrees.
-- **Workers ship end-to-end.** Worker agents pick up issues, write code, add
-  tests, run checks, push branches, and open PRs without waiting for a human to
-  micromanage every step.
-- **Agents review other agents.** The mesh does not stop at code generation:
-  agents review each other's PRs, handle rebases, resolve conflicts, and repair
-  broken branches autonomously when `main` moves underneath them.
-- **Personality is a feature, not garnish.** Named agents like Rocket Dolphin,
-  Silent Crocodile, Solar Mantis, and Ultra Rabbit make a busy multi-agent
-  system legible. When dozens of tasks are moving at once, memorable identities
-  make status, ownership, and accountability visible to humans.
-- **The mesh is expected to self-repair.** The RALPH loop watches for stalls,
-  reassigns stuck work, nudges long-running threads, and reaps dead or ghosted
-  agents so the system can keep moving even when parts of it fail.
-
-This is not a toy demo. During the current buildout, the mesh merged **50+ PRs
-in a single day** with minimal human intervention. The system was doing real
-engineering work: implementing features, reviewing changes, recovering from
-failures, and keeping momentum through rebases and broker hiccups.
-
-Humans still matter, but in a deliberately high-leverage role: **set
-priorities, approve merges, and provide the API tokens and environment** that
-let the mesh operate. The goal is not to remove humans from the loop; it is to
-move them up a level, from doing every step manually to steering a system that
-can coordinate and execute most of the work itself.
-
-## Quick start
-
-```bash
-# Install dependencies in this checkout
-pnpm install
-
-# Run all checks
-pnpm lint && pnpm typecheck && pnpm test
-```
-
-### Fresh worktree bootstrap
-
-For a fresh git worktree, bootstrap dependencies in that checkout before
-running `pnpm lint`, `pnpm typecheck`, `pnpm test`, or `pnpm prepush`:
-
-```bash
-git worktree add .worktrees/<name> -b <branch>
-cd .worktrees/<name>
-pnpm install --frozen-lockfile
-```
-
-Dependency bootstrap is per checkout/worktree, not a one-time repo setup step.
-If the lane exercises live browser launches and no compatible host browser is
-available, install the Playwright browser binaries from the package directory:
-
-```bash
-cd browser-playwright
-npx playwright install chromium
-```
-
-## Local extension development
-
-This repo now uses pnpm workspaces + Turborepo for **repo-internal monorepo
-tooling**. It is **not** yet a supported root-level `pi install git:...`
-package target.
-
-For the published Pinet Slack bridge pi package, install from npm:
+Install the Slack bridge package:
 
 ```bash
 pi install npm:@pinet/slack-bridge
-pi install npm:@pinet/slack-bridge@0.1.0 # pinned version
 ```
 
-For local development, load individual extensions directly:
+Or pin a specific version:
 
 ```bash
-ln -s "$(pwd)/slack-bridge"       ~/.pi/agent/extensions/slack-bridge
-ln -s "$(pwd)/nvim-bridge"        ~/.pi/agent/extensions/nvim-bridge
-ln -s "$(pwd)/neon-psql"          ~/.pi/agent/extensions/neon-psql
-ln -s "$(pwd)/browser-playwright" ~/.pi/agent/extensions/browser-playwright
+pi install npm:@pinet/slack-bridge@0.2.2
 ```
 
-See each extension's README for configuration details.
+### Set up your Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app
+2. Choose 'From a manifest'
+3. Select your workspace
+4. Paste the contents of [`slack-bridge/manifest.yaml`](slack-bridge/manifest.yaml)
+5. Create the app
+
+### Get your tokens
+
+You need two tokens from Slack:
+
+- App-Level Token: go to Basic Information → App-Level Tokens → Generate (add `connections:write` scope)
+- Bot Token: go to OAuth & Permissions → Install to Workspace → copy the Bot User OAuth Token
+
+### Configure Pinet
+
+Add your tokens, runtime mode, and access rules to `~/.pi/agent/settings.json`:
+
+```json
+{
+  "slack-bridge": {
+    "botToken": "xoxb-your-bot-token",
+    "appToken": "xapp-your-app-token",
+    "runtimeMode": "single",
+    "allowedUsers": ["U_YOUR_USER_ID"]
+  }
+}
+```
+
+Start pi. Pinet appears in your Slack sidebar.
+
+## Current features
+
+The repository includes these extensions:
+
+| Package                                     | Description                                             |
+| ------------------------------------------- | ------------------------------------------------------- |
+| [`transport-core`](transport-core/)         | Message contracts shared across transport packages      |
+| [`browser-playwright`](browser-playwright/) | Browser automation with Playwright                      |
+| [`slack-bridge`](slack-bridge/)             | Slack integration with broker mesh, inbox, and canvases |
+| [`slack-api`](slack-api/)                   | Typed Slack Web API client                              |
+| [`imessage-bridge`](imessage-bridge/)       | macOS iMessage transport                                |
+| [`nvim-bridge`](nvim-bridge/)               | Neovim editor context sync                              |
+| [`neon-psql`](neon-psql/)                   | Neon Postgres tunnel                                    |
+| [`types`](types/)                           | Shared type declarations                                |
+
+Recent updates include:
+
+- broker mesh for coordinating multiple agents
+- Slack canvases, uploads, modals, bookmarks, and pins
+- scheduled wake-ups and inbox sync
+- browser automation with reusable sessions
+- optional shared-secret mesh authentication
+
+## How Pinet works
+
+### Architecture
+
+Pinet uses a broker-worker model. One agent acts as the broker. It watches Slack, assigns work, and keeps track of what each worker is doing. Worker agents pick up tasks, write code, run tests, and open pull requests.
+
+The system can review its own code. Agents review each other's pull requests, handle rebases, and fix broken branches when the main branch moves.
+
+### Self-repair
+
+The RALPH loop monitors broker health. It:
+
+- checks worker presence every 5 minutes
+- releases stale thread claims when owners disappear
+- observes pending backlog while broker maintenance handles assignment
+- triggers scheduled wake-ups
+
+### Agent identity
+
+Named agents make the system easier to follow. When you see 'Rocket Dolphin' or 'Silent Crocodile' in Slack, you know which agent is working on what. This helps when dozens of tasks are moving at once.
 
 ## Development
 
-This repo uses [pnpm workspaces](https://pnpm.io/workspaces) +
-[Turborepo](https://turbo.build/repo) for build orchestration with local
-caching.
+### Work in a git worktree
 
-### Commands
+Never work directly on main. Create a worktree for your changes:
 
-| Command             | Description                                                     |
-| ------------------- | --------------------------------------------------------------- |
-| `pnpm lint`         | ESLint across all extensions (turbo-cached)                     |
-| `pnpm typecheck`    | TypeScript strict check (turbo-cached)                          |
-| `pnpm test`         | Vitest — all tests (turbo-cached)                               |
-| `pnpm deploy:slack` | Validate and push `slack-bridge/manifest.yaml` to the Slack app |
-| `pnpm prepush`      | lint + typecheck + test (runs on git push)                      |
-| `pnpm format`       | Prettier + Stylua                                               |
-| `pnpm check`        | lint + typecheck + format check                                 |
+```bash
+git worktree add .worktrees/my-feature -b feat/my-feature
+cd .worktrees/my-feature
+pnpm install --frozen-lockfile
+```
+
+### Run checks
+
+```bash
+pnpm lint         # ESLint
+pnpm typecheck    # TypeScript
+pnpm test         # Vitest
+pnpm prepush      # All checks (runs on git push)
+```
 
 ### Structure
 
 ```
 extensions/
-├── transport-core/     # @pinet/transport-core
-│   ├── index.ts        #   canonical transport message contracts
-│   └── package.json    #   workspace package
-├── browser-playwright/ # @gugu910/pi-browser-playwright
-│   ├── index.ts        #   Playwright-first single `browser` tool entry point
-│   ├── helpers.ts      #   security defaults + install guidance
-│   └── package.json    #   workspace package + pi manifest
-├── slack-bridge/       # @pinet/slack-bridge
-│   ├── broker/         #   message routing, socket server, adapters
-│   ├── index.ts        #   extension entry point
-│   └── package.json    #   workspace package + pi manifest
-├── slack-api/          # @gugu910/pi-slack-api
-│   ├── generated/      #   generated typed Slack Web API client
-│   ├── cli.ts          #   CLI wrapper around generated methods
-│   └── package.json    #   workspace package + pi manifest
-├── imessage-bridge/    # @pinet/imessage-bridge
-│   ├── mvp.ts          #   local macOS/iMessage readiness helpers
-│   ├── send.ts         #   AppleScript send-first transport helper
-│   └── package.json    #   standalone workspace package
-├── nvim-bridge/        # @gugu910/pi-nvim-bridge
-│   ├── nvim/           #   Neovim Lua plugin
-│   ├── index.ts        #   extension entry point
-│   └── package.json
-├── neon-psql/          # @gugu910/pi-neon-psql
-│   ├── index.ts        #   extension entry point
-│   └── package.json
-├── types/              # @gugu910/pi-ext-types (shared .d.ts)
+├── transport-core/       # Message contracts
+├── browser-playwright/   # Browser automation
+├── slack-bridge/         # Slack integration
+├── slack-api/           # Slack API client
+├── imessage-bridge/     # iMessage transport
+├── nvim-bridge/         # Neovim sync
+├── neon-psql/          # Postgres tunnel
+├── types/              # Type declarations
 ├── plans/              # Architecture docs
-├── .pi/                # Pi config (skills, agents)
-├── turbo.json          # Turborepo task config
-├── pnpm-workspace.yaml # Workspace packages
-└── package.json        # Root — dev deps + scripts
+├── .pi/                # Pi configuration
+├── turbo.json          # Build orchestration
+└── package.json        # Root configuration
 ```
 
-### Extension tool-surface design principles
+### Local development
 
-All extensions should use token-efficient progressive discovery for
-agent-facing surfaces. This is especially important for Pinet / `slack-bridge`,
-where broad Slack/Pinet action families can otherwise bloat every agent turn
-(see #566 and #581).
-
-1. **Hot tool schemas stay small.** Keep only the few per-turn, high-signal
-   execution tools registered as dedicated tools, and justify additions by
-   expected usage and token footprint.
-2. **Cold paths stay discoverable.** Large homogeneous action families should
-   sit behind compact dispatchers with structured `help` and per-action schema
-   discovery instead of many cold one-off tools.
-3. **Warm knowledge moves to skills/docs.** Formatting examples, API recipes,
-   templates, and recovery playbooks belong in lazily loaded skills or docs —
-   not in always-present prompts or tool schemas.
-4. **Responses are contracts.** Prefer structured response envelopes such as
-   `{ status, data, errors, warnings }` with typed error classes and recovery
-   hints so agents can recover without an extra human turn.
-5. **Guardrails name the executable action.** Dispatcher actions should expose
-   stable guardrail names (for example `slack:upload`) so blocking and
-   confirmation policies remain precise even when many actions share one tool.
-6. **Reviews check token cost.** New Slack/Pinet tools, dispatcher actions, or
-   prompt surfaces should include token-footprint tradeoffs in design and review
-   rather than expanding the always-loaded surface by default.
-
-### Adding a new extension
-
-1. Create a directory with `index.ts` and `package.json`
-2. Add a `pi` key to `package.json` pointing at the entry file
-3. Add the directory to `pnpm-workspace.yaml`
-4. Add `tsconfig.json` extending the root config
-5. Add `eslint.config.mjs` re-exporting the root config
-6. If the extension has tests, add `vitest.config.ts` and a `test` script
-
-### Test policy
-
-See [`plans/test-policy.md`](plans/test-policy.md) for merge-ready test
-expectations and the required smoke checklist.
-
-## npm publish readiness
-
-The publishable Pinet/Slack package set is tracked in
-[`plans/npm-publish.md`](plans/npm-publish.md) and executed through the manual
-[`Publish npm packages`](.github/workflows/npm-publish.yml) GitHub Actions
-workflow. The workflow supports manual dry-run/publish dispatches and release-tag
-publishes from `vX.Y.Z` tags. It intentionally has no package target selector; it
-always validates or publishes the full set in dependency order.
-
-Safe readiness checks are the default path:
-
-1. Open **Actions → Publish npm packages → Run workflow**.
-2. Leave `dry_run=true`.
-3. Confirm the workflow runs `scripts/publish-npm-packages.mjs --dry-run` for
-   the full `@pinet/*` package set and does not request npm credentials.
-
-The same dry-run path can be run locally with `pnpm publish:npm`; it defaults to
-readiness only and has no package target selector. The one-time npm org package
-creation bootstrap path is `pnpm bootstrap:npm`, which also defaults to dry-run
-and prints the full `@pinet/*` package set it would publish.
-
-Real publishes are intentionally harder to trigger. Maintainers can either
-manually dispatch from `main` with `dry_run=false` and `release_approval` exactly
-`publish all`, or push a release tag named `vX.Y.Z` after the version bump has
-merged to the current `main` tip. Tag-triggered publishes validate that the tag
-commit equals the current `origin/main` tip and that all five `@pinet/*` package
-versions equal the tag version before the protected publish job can request the
-`npm-publish` environment. Both real publish paths require maintainer approval of
-the protected `npm-publish` environment. The publish job uses npm Trusted
-Publishing / GitHub OIDC with `npm publish --provenance`; it does not use a
-long-lived npm token. Maintainers must also configure npm Trusted Publishers for
-every package in the npm `pinet` org settings
-(`https://www.npmjs.com/settings/pinet/packages`) before real publish. The live
-GitHub `npm-publish` environment must also be verified out-of-band by a
-maintainer before tag releases are considered ready: it should require approval
-and allow deployments from `main` plus release tags matching `v*.*.*`. That tag
-environment allowance does not replace the workflow guard that requires the tag
-commit to equal the current `origin/main` tip.
-If npm requires packages to exist before Trusted Publishing can be configured,
-a `pinet` org owner/admin may use the guarded local bootstrap script only after
-maintainer-approved versions are set:
+For development, link extensions directly:
 
 ```bash
-node ./scripts/bootstrap-npm-packages.mjs \
-  --bootstrap-publish \
-  --confirm "bootstrap @pinet packages"
+ln -s "$(pwd)/slack-bridge" ~/.pi/agent/extensions/slack-bridge
+ln -s "$(pwd)/nvim-bridge" ~/.pi/agent/extensions/nvim-bridge
+ln -s "$(pwd)/neon-psql" ~/.pi/agent/extensions/neon-psql
+ln -s "$(pwd)/browser-playwright" ~/.pi/agent/extensions/browser-playwright
 ```
 
-The maintainer must already be logged in with `npm login` as a `pinet` org
-owner/admin. This repo does not add token automation. Immediately after any
-successful bootstrap, configure Trusted Publishing for every `@pinet/*` package
-and use the GitHub Actions workflow for normal future publishes.
+## Philosophy
 
-The publish and bootstrap scripts still refuse placeholder `0.0.0` versions and
-versions that already exist on npm.
+### Built by the system it enables
 
-Normal tag-release procedure:
+Pinet was built by agents coordinating through Slack and GitHub. During development, the mesh merged over 50 pull requests in a single day with minimal human intervention.
 
-1. Bump all five `@pinet/*` package versions to the same version, update
-   `pnpm-lock.yaml`, and add a maintainer-approved `CHANGELOG.md` entry.
-2. Open and merge that version-bump PR to `main` after dry-run/readiness is
-   green.
-3. Create and push a `vX.Y.Z` tag on the current `main` tip after the merge. The
-   tag-triggered workflow validates the tag commit equals the current
-   `origin/main` tip and every publishable package version equals `X.Y.Z` before
-   any dry-run/publish step, dry-runs the full set, then waits for `npm-publish`
-   environment approval before publishing.
+The broker coordinates but does not write code. Workers ship end to end. They write code, add tests, run checks, push branches, and open pull requests. Agents review other agents' work. The mesh self-repairs when things break.
 
-Do not publish, tag, or bump package versions as part of readiness-only changes;
-record release notes in `CHANGELOG.md` only when a maintainer approves a real
-versioned release.
+### Human leverage
 
-## Git workflow
+Humans set priorities, approve merges, and provide API tokens. The system handles coordination and execution. The goal is to move humans up a level — from doing every step to steering a system that coordinates itself.
 
-1. Branch from `main` — use `feat/`, `fix/`, `chore/` prefixes
-2. Write tests for any new logic
-3. Run `pnpm lint && pnpm typecheck && pnpm test`
-4. Create a PR — merge to `main`
+## Configuration reference
 
-## Contributors
+See [full configuration options](slack-bridge/README.md#configure-pinet) for all settings.
 
-This repo is built by a mesh of human and AI agents coordinating via
-[Pinet](slack-bridge/README.md). Names are procedural and can rotate across
-sessions, so this section is a snapshot of the agents visible in today's work.
-Entries are sourced from the relevant PR, Pinet, and PiComms trail rather than
-`git shortlog` alone.
+Key settings:
 
-### Today's agents (2026-04-08)
+- `botToken` and `appToken`: required Slack tokens
+- `allowedUsers`: limit access to specific Slack users
+- `defaultChannel`: where Pinet posts updates
+- `ralphLoopIntervalMs`: how often RALPH checks for stalls (default 5 minutes)
+- `meshSecret` or `meshSecretPath`: optional shared-secret authentication
 
-| Agent                       | Contribution                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🦔 **Ember Ivory Hedgehog** | Coordinated the read-only post-merge sweep, opened [#296](https://github.com/gugu91/extensions/issues/296), and turned the browser/Pinet docs drift into a focused README refresh lane.                                                                                                                                                                                                                                   |
-| 🦥 **Stellar Ebony Sloth**  | Traced the canonical contributor/acknowledgement locations, confirmed the root README drift after [#282](https://github.com/gugu91/extensions/pull/282), [#289](https://github.com/gugu91/extensions/pull/289), [#292](https://github.com/gugu91/extensions/pull/292), and [#294](https://github.com/gugu91/extensions/pull/294), then refreshed the snapshot in [#296](https://github.com/gugu91/extensions/issues/296). |
-| 🐧 **Patch Puffin**         | Approved the Pinet v0.1.1 release-prep metadata and publish-surface review in [PR #288](https://github.com/gugu91/extensions/pull/288).                                                                                                                                                                                                                                                                                   |
+## Troubleshooting
 
-### Today's agents (2026-04-03)
+### Pinet does not appear in Slack
 
-| Agent                          | Contribution                                                                                     |
-| ------------------------------ | ------------------------------------------------------------------------------------------------ |
-| 🐢 **Thunder Emerald Turtle**  | Merge queue operator (11 PRs rebased & merged), phantom subagent pollution fix (#237 / PR #244). |
-| 🦙 **Cobalt Slate Llama**      | RALPH "maintain momentum" message tweak (#246), RALPH broker self-nudge fix (#241 / PR #242).    |
-| 🐘 **Jade Rust Elephant**      | Auto-reload on reconnect (#238 / PR #243).                                                       |
-| 🦝 **Silver Coral Raccoon**    | npm publish preflight for all 4 packages.                                                        |
-| 🐢 **Orbit Lime Turtle 2**     | PR #242 code review.                                                                             |
-| 🐘 **Scarlet Bronze Elephant** | PR #244 code review.                                                                             |
-| 🫎 **Slate Emerald Moose**     | PR #243 code review.                                                                             |
+Check that:
 
-### Today's agents (2026-04-02)
+- both tokens are in your settings.json
+- the Slack app is installed to your workspace
+- pi is running
 
-| Agent                     | Contribution                                                                                                                                                                                        |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🐇 **Ultra Rabbit**       | Built file uploads, scheduled messages, pinning, thread export, the activity log, and the philosophy docs.                                                                                          |
-| 🦩 **Cosmic Crane**       | Shipped Slack canvases, broker-specific naming, Block Kit support, the remaining RALPH timestamp work, neon-psql execution-path tests, the broker control-plane canvas, and the thread-routing fix. |
-| 🐊 **Silent Crocodile**   | Shipped the deploy command, agent personalities, reaction triggers, user presence checks, the dedup fix, and Slack modals.                                                                          |
-| 🐬 **Rocket Dolphin**     | Handled video research, Slack CLI research, the `slack-api` package, npm-readiness work, worktree cleanup, and the idle/free signal.                                                                |
-| 🐻 **Crystal Blush Bear** | Fixed the phone input bug in `ai-recruiter`.                                                                                                                                                        |
+### Commands do not work
 
-### Maintainers
+Check that:
 
-- **Will** — coordinates the agent mesh, reviews the flood of PRs, and keeps the
-  whole worktree-first workflow pointed in roughly the right direction.
+- you are in the allowed users list (or `allowAllWorkspaceUsers` is true)
+- the bot has the required scopes (see manifest.yaml)
+- Socket Mode is enabled in your Slack app
 
-## License
+### Agents get stuck
 
-MIT. See [`LICENSE`](LICENSE).
+RALPH checks for stalls every 5 minutes by default. You can:
+
+- reduce `ralphLoopIntervalMs` for faster recovery
+- run `/pinet status` inside pi to check Pinet state
+- use `/pinet logs` inside pi or check your configured log channel for errors
+
+## Next steps
+
+- Read the [Slack bridge documentation](slack-bridge/) for detailed configuration
+- See [architecture plans](plans/) for design decisions
+- Join the discussion in your Slack workspace
+
+## Repository information
+
+- GitHub: [github.com/gugu91/extensions](https://github.com/gugu91/extensions)
+- License: MIT
+- Package manager: pnpm with workspaces
+- Build tool: Turborepo with local caching
+- Node version: 22 or later

@@ -1,20 +1,26 @@
 # @pinet/pinet-core
 
-Runtime-core helpers for Pinet that are independent of any Slack adapter.
+Runtime helpers for Pinet that work independently of Slack.
 
-Current seam:
+## What it does
 
-- Pinet output option normalization (`cli` default, explicit `json`/`full` opt-ins)
-- durable Pinet read result text/detail formatting
-- scheduled wake-up time parsing and thread ID helpers
+This package provides:
 
-`@pinet/slack-bridge` still composes the extension and preserves compatibility wrappers, but these helpers now live behind package exports so future extraction can move one boundary at a time.
+- output option normalisation (defaults to `cli`, accepts `json` or `full`)
+- durable read result formatting
+- scheduled wake-up time parsing
+- thread ID helpers
 
-Design proposal: `plans/slack-split-proposal.md`
+## How it works
+
+The package exports helpers that `@pinet/slack-bridge` uses internally. These functions handle Pinet operations without depending on Slack adapters.
+
+The helpers live behind package exports. Future changes can move functionality one boundary at a time.
+
+See the design proposal in `plans/slack-split-proposal.md`.
 
 ## Publishing
 
-This package is included in the full npm publish set tracked in
-[`../plans/npm-publish.md`](../plans/npm-publish.md). Use the GitHub Actions
-workflow's default dry-run/readiness path for validation; do not publish, tag, or
-bump versions without explicit maintainer release approval.
+This package is part of the npm publish set in [`../plans/npm-publish.md`](../plans/npm-publish.md).
+
+Do not publish, tag, or bump versions without maintainer approval. Use the GitHub Actions workflow for validation.
