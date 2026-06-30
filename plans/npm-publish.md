@@ -13,7 +13,7 @@ The publish workflow always validates or publishes the full npm org `pinet` pack
 5. `@pinet/slack-bridge` from `slack-bridge/`
 6. `@pinet/model-aware-compaction` from `model-aware-compaction/`
 
-There is intentionally no workflow target selector or script target flag. Real releases publish the shared core packages and Slack bridge package together so dependency versions stay aligned and operators cannot accidentally publish only a subset.
+There is intentionally no workflow target selector or script target flag. Real releases publish the shared core packages, bridges, and model-aware compaction package together so dependency versions stay aligned and operators cannot accidentally publish only a subset.
 
 ## Workflow and script
 
