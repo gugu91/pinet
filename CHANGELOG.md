@@ -11,7 +11,7 @@ version bumps and publish scope.
 
 ## [0.2.3] - 2026-06-30
 
-Pinet v0.2.3 keeps the coordinated `@pinet/*` package set aligned and includes the Slack/Pinet fixes merged after the v0.2.2 release prep.
+Pinet v0.2.3 re-synchronizes the coordinated `@pinet/*` package set after the partial v0.2.2 npm publish, and includes the Slack/Pinet fixes merged after the v0.2.2 release prep.
 
 ### Version verification
 
@@ -29,7 +29,7 @@ Pinet v0.2.3 keeps the coordinated `@pinet/*` package set aligned and includes t
 - Fixes Slack mrkdwn bold rendering by preserving `*bold*` output instead of converting it to unsupported double-asterisk Markdown.
 - Adds Pinet worker session lookup support so broker/operator tooling can resolve worker sessions more reliably.
 
-### Included pull requests since v0.2.2
+### Included pull requests since the v0.2.2 repo release prep
 
 - [#837](https://github.com/gugu91/extensions/pull/837) — Add Pinet worker session lookup
 - [#838](https://github.com/gugu91/extensions/pull/838) — Require explicit Pinet invocation in guarded Slack contexts
