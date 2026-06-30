@@ -13,7 +13,7 @@ The publish workflow always validates or publishes the full npm org `pinet` pack
 5. `@pinet/slack-bridge` from `slack-bridge/`
 6. `@pinet/model-aware-compaction` from `model-aware-compaction/`
 
-There is intentionally no workflow target selector or script target flag. Real releases publish the shared core packages and Slack bridge package together so dependency versions stay aligned and operators cannot accidentally publish only a subset.
+There is intentionally no workflow target selector or script target flag. Real releases always attempt the shared core packages, bridges, and model-aware compaction package in dependency order so dependency versions stay aligned. npm publishes are sequential rather than atomic, so operators must verify the full package set after any real publish and treat a late failure as a partial-release recovery task.
 
 ## Workflow and script
 
@@ -26,7 +26,7 @@ Manual dispatch inputs:
 
 Tag-triggered publishes run only for `vX.Y.Z` tags. The readiness job validates every package in the full `@pinet/*` set has `package.json.version` equal to the tag version before any `npm publish --dry-run`; the preflight job also fetches `origin/main`, fails unless the tag commit equals the current `origin/main` tip, and repeats the package-version check before the protected publish job can request the `npm-publish` environment.
 
-Every run first executes the readiness job: install with `pnpm install --frozen-lockfile`, build packages in dependency order through `scripts/publish-npm-packages.mjs`, rewrite local `file:../...` workspace dependencies to exact package versions in the CI checkout, verify declared `dist/` JavaScript exports and declaration outputs exist, smoke-test public declaration imports, and run `npm publish --dry-run` in dependency order.
+Every run first executes the readiness job: install with `pnpm install --frozen-lockfile`, build packages in dependency order through `scripts/publish-npm-packages.mjs`, rewrite local `file:../...` workspace dependencies to exact package versions in the CI checkout, verify declared `dist/` JavaScript exports and declaration outputs exist, smoke-test public declaration imports, and run `npm publish --dry-run` in dependency order. After any real publish, verify every package in the full set exists on npm at the intended version with `npm view <package>@<version> version`.
 
 For local/readiness use, run the same script directly or through the safe npm script:
 
@@ -66,7 +66,7 @@ Tag-triggered real publishes require all of these gates before the publish job c
 - The `npm-publish` GitHub environment is approved by a maintainer after preflight passes.
 - The publish job has `id-token: write` and npm Trusted Publishers are configured for every package as above.
 
-The real publish job then reruns the same publish script with `--publish`, which uses `npm publish --provenance` and fails closed if any target package version already exists on npm.
+The real publish job then reruns the same publish script with `--publish`, which uses `npm publish --provenance` and fails closed if any target package version already exists on npm. Because npm does not roll back already-published packages when a later package fails, a partial publish must be recovered by preparing a new patch version for the entire set, documenting the partial state in the changelog/release notes, and publishing the new full set after maintainer approval.
 
 ## npm org and first-publish bootstrap
 
