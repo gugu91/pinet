@@ -182,15 +182,14 @@ take upstream once proven:
 3. **Upstream:** shared broker client extraction → follower-bridge extraction
    → PR the worker + bridge + CC adapter with this doc as the plan.
 
-## Open questions for Thomas
+## Decisions (Thomas, 2026-07-06)
 
-1. Should _every_ CC session auto-follow (SessionStart hook arms it), or
-   opt-in per session via `/pinet-follow`? (Recommend opt-in; dozens of
-   parallel CC sessions all registering would spam the roster.)
-2. When a mesh task arrives while you're mid-flow with the session on
-   something else — should the model finish your thing first (natural turn
-   order, recommended) or should the skill tell it to always service mesh
-   messages first?
-3. Naming: keep broker-assigned whimsy for interactive followers too, or a
-   convention like "Thomas's CC — commercial" so humans can tell interactive
-   followers from headless workers in Slack?
+1. **Opt-in.** Sessions join via `/pinet-follow`, never automatically.
+2. **Steering-message delivery.** Mirror pi's behaviour: mesh messages are
+   serviced promptly at the next turn boundary (the waiter-exit wake _is_ the
+   turn boundary, so this falls out naturally — the skill instructs the model
+   to treat wakes like steering messages and handle mesh work before
+   returning to other tasks).
+3. **Broker-assigned identity**, same as the rest of the mesh. The
+   `harness:interactive` metadata tag distinguishes interactive followers
+   from headless workers in rosters.

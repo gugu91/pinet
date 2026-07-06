@@ -197,6 +197,10 @@ export class WorkerBrokerClient {
     });
   }
 
+  async listAgents(): Promise<unknown> {
+    return this.request("agents.list");
+  }
+
   // ─── Transport ───────────────────────────────────────
 
   private request(method: string, params?: Record<string, unknown>): Promise<unknown> {
