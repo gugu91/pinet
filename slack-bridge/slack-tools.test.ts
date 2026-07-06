@@ -261,6 +261,7 @@ describe("registerSlackTools", () => {
     const noteThreadReply = vi.fn();
     const clearPendingAttention = vi.fn();
     const requireToolPolicy = vi.fn();
+    let pinetDeliveryEnabled = true;
     let pinetDeliveryAvailable = false;
     const sendPinetSlackMessage = vi.fn(async (input: SlackPinetDeliveryInput) => ({
       adapter: "slack",
@@ -293,6 +294,7 @@ describe("registerSlackTools", () => {
       registerConfirmationRequest: () => ({ status: "created" }),
       getBotUserId: () => "U_BOT",
       pinetDelivery: {
+        isEnabled: () => pinetDeliveryEnabled,
         isAvailable: () => pinetDeliveryAvailable,
         sendSlackMessage: sendPinetSlackMessage,
       },
@@ -383,6 +385,9 @@ describe("registerSlackTools", () => {
       noteThreadReply,
       clearPendingAttention,
       requireToolPolicy,
+      setPinetDeliveryEnabled: (value: boolean) => {
+        pinetDeliveryEnabled = value;
+      },
       setPinetDeliveryAvailable: (value: boolean) => {
         pinetDeliveryAvailable = value;
       },
@@ -1331,10 +1336,19 @@ describe("registerSlackTools", () => {
     );
   });
 
-  it("includes blocks when slack_send posts a rich message", async () => {
-    const { slack, tools, setResolveThreadChannel, noteThreadReply, clearPendingAttention } =
-      setup();
+  it("includes blocks when slack_send posts a rich message in single-player mode", async () => {
+    const {
+      slack,
+      tools,
+      setResolveThreadChannel,
+      setPinetDeliveryEnabled,
+      noteThreadReply,
+      clearPendingAttention,
+    } = setup();
     setResolveThreadChannel(async () => "D123");
+    // Single-player mode: Pinet is not enabled, so direct Slack posting is
+    // the sanctioned path and does not bypass any broker ownership check.
+    setPinetDeliveryEnabled(false);
 
     await tools.get("slack_send")!.execute("tool-14", {
       thread_ts: "123.456",
@@ -1440,10 +1454,12 @@ describe("registerSlackTools", () => {
     });
   });
 
-  it("sends direct Slack text and a binary file in one threaded external upload", async () => {
-    const { slack, tools, setResolveThreadChannel, setPinetDeliveryAvailable } = setup();
+  it("sends direct Slack text and a binary file in one threaded external upload (single-player)", async () => {
+    const { slack, tools, setResolveThreadChannel, setPinetDeliveryEnabled } = setup();
     setResolveThreadChannel(async () => "D123");
-    setPinetDeliveryAvailable(false);
+    // Single-player mode: direct Slack upload is the only path and does not
+    // bypass broker ownership because Pinet is not enabled at all.
+    setPinetDeliveryEnabled(false);
     const dir = await mkdtemp(path.join(os.tmpdir(), "slack-send-file-test-"));
     const filePath = path.join(dir, "payload.bin");
     await writeFile(filePath, Buffer.from([0, 1, 2, 3]));
@@ -1564,7 +1580,7 @@ describe("registerSlackTools", () => {
     expect(JSON.stringify(response!.details)).not.toContain("files.slack.com/private");
   });
 
-  it("falls back to direct Slack delivery when Pinet thread delivery fails", async () => {
+  it("refuses direct Slack fallback for threaded replies when Pinet delivery fails (#855)", async () => {
     const {
       slack,
       tools,
@@ -1576,27 +1592,45 @@ describe("registerSlackTools", () => {
     setPinetDeliveryAvailable(true);
     sendPinetSlackMessage.mockRejectedValueOnce(new Error("broker unavailable"));
 
-    const response = await tools.get("slack_send")!.execute("tool-pinet-fallback", {
-      thread_ts: "123.456",
-      text: "Fallback reply",
-    });
-
-    expect(sendPinetSlackMessage).toHaveBeenCalledOnce();
-    expect(slack).toHaveBeenCalledWith(
-      "chat.postMessage",
-      "xoxb-initial",
-      expect.objectContaining({
-        channel: "D123",
+    await expect(
+      tools.get("slack_send")!.execute("tool-pinet-fallback", {
         thread_ts: "123.456",
         text: "Fallback reply",
       }),
+    ).rejects.toThrow("broker unavailable");
+
+    expect(sendPinetSlackMessage).toHaveBeenCalledOnce();
+    expect(slack).not.toHaveBeenCalledWith(
+      "chat.postMessage",
+      expect.any(String),
+      expect.any(Object),
     );
-    expect(response.details).toMatchObject({
-      ts: "123.456",
-      channel: "D123",
-      delivery: "slack",
-      fallbackReason: "broker unavailable",
-    });
+  });
+
+  it("refuses direct Slack fallback when Pinet delivery is unavailable for a threaded reply (#855)", async () => {
+    const {
+      slack,
+      tools,
+      setResolveThreadChannel,
+      setPinetDeliveryAvailable,
+      sendPinetSlackMessage,
+    } = setup();
+    setResolveThreadChannel(async () => "D123");
+    setPinetDeliveryAvailable(false);
+
+    await expect(
+      tools.get("slack_send")!.execute("tool-pinet-unavailable", {
+        thread_ts: "123.456",
+        text: "Should refuse when broker is down",
+      }),
+    ).rejects.toThrow(/broker is unavailable/i);
+
+    expect(sendPinetSlackMessage).not.toHaveBeenCalled();
+    expect(slack).not.toHaveBeenCalledWith(
+      "chat.postMessage",
+      expect.any(String),
+      expect.any(Object),
+    );
   });
 
   it("prefers Pinet delivery for threaded slack_post_channel messages", async () => {
@@ -1630,7 +1664,7 @@ describe("registerSlackTools", () => {
     expect(response.details).not.toHaveProperty("ts");
   });
 
-  it("falls back to direct Slack delivery when Pinet message.send times out", async () => {
+  it("refuses direct Slack fallback when Pinet message.send times out on a threaded reply (#855)", async () => {
     const {
       slack,
       tools,
@@ -1642,27 +1676,19 @@ describe("registerSlackTools", () => {
     setPinetDeliveryAvailable(true);
     sendPinetSlackMessage.mockRejectedValueOnce(new Error("Request timed out: message.send"));
 
-    const response = await tools.get("slack_send")!.execute("tool-pinet-timeout-fallback", {
-      thread_ts: "123.456",
-      text: "Timeout fallback reply",
-    });
-
-    expect(sendPinetSlackMessage).toHaveBeenCalledOnce();
-    expect(slack).toHaveBeenCalledWith(
-      "chat.postMessage",
-      "xoxb-initial",
-      expect.objectContaining({
-        channel: "D123",
+    await expect(
+      tools.get("slack_send")!.execute("tool-pinet-timeout-fallback", {
         thread_ts: "123.456",
         text: "Timeout fallback reply",
       }),
+    ).rejects.toThrow("Request timed out: message.send");
+
+    expect(sendPinetSlackMessage).toHaveBeenCalledOnce();
+    expect(slack).not.toHaveBeenCalledWith(
+      "chat.postMessage",
+      expect.any(String),
+      expect.any(Object),
     );
-    expect(response.details).toMatchObject({
-      ts: "123.456",
-      channel: "D123",
-      delivery: "slack",
-      fallbackReason: "Request timed out: message.send",
-    });
   });
 
   it("does not bypass healthy Pinet ownership rejections with direct Slack fallback", async () => {

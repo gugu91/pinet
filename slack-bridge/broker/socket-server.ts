@@ -1397,6 +1397,15 @@ export class BrokerSocketServer {
     req: JsonRpcRequest,
     state: ConnectionState,
   ): Promise<JsonRpcResponse> {
+    // #855: adapter.capability must be identity-bound so the broker can
+    // enforce thread ownership. Unregistered callers cannot own or claim
+    // threads, so they must not be able to invoke outbound-side capabilities
+    // (chat.postMessage in particular) that would race a first-responder
+    // claim or take over a thread already owned by another agent.
+    if (!state.agentId) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
+    }
+
     const params = req.params ?? {};
     const adapterName =
       typeof params.adapter === "string"
@@ -1431,6 +1440,13 @@ export class BrokerSocketServer {
     req: JsonRpcRequest,
     state: ConnectionState,
   ): Promise<JsonRpcResponse> {
+    // #855: legacy slack.proxy is a compatibility wrapper over
+    // adapter.capability and must enforce the same registration bar so
+    // unregistered callers cannot bypass thread ownership via chat.postMessage.
+    if (!state.agentId) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
+    }
+
     const params = req.params ?? {};
     const method = typeof params.method === "string" ? params.method.trim() : "";
     if (!method) {
@@ -1471,6 +1487,21 @@ export class BrokerSocketServer {
       );
     }
 
+    // #855: refuse cross-owner Slack chat.postMessage before hitting Slack.
+    // Without this pre-check the adapter posts first and the broker races a
+    // first-responder-wins claim via effects.claimThread — letting an
+    // unauthorized follower take over a thread already owned by another
+    // agent simply by winning the send.
+    const ownershipError = this.checkAdapterCapabilityThreadOwnership(
+      adapterName,
+      capability,
+      capabilityParams,
+      state.agentId,
+    );
+    if (ownershipError) {
+      return rpcError(id, RPC_INVALID_PARAMS, `${errorPrefix}: ${ownershipError}`);
+    }
+
     try {
       const response = await adapter.invokeCapability({ capability, params: capabilityParams });
       this.applyAdapterCapabilityEffects(adapterName, response, state);
@@ -1479,6 +1510,40 @@ export class BrokerSocketServer {
       const message = err instanceof Error ? err.message : String(err);
       return rpcError(id, RPC_INTERNAL_ERROR, `${errorPrefix}: ${message}`);
     }
+  }
+
+  private checkAdapterCapabilityThreadOwnership(
+    adapterName: string,
+    capability: string,
+    capabilityParams: Record<string, unknown>,
+    callerAgentId: string | null,
+  ): string | null {
+    if (adapterName !== "slack") return null;
+    if (capability !== "api.call") return null;
+    const method =
+      typeof capabilityParams.method === "string" ? capabilityParams.method.trim() : "";
+    if (method !== "chat.postMessage") return null;
+    const inner =
+      capabilityParams.params &&
+      typeof capabilityParams.params === "object" &&
+      !Array.isArray(capabilityParams.params)
+        ? (capabilityParams.params as Record<string, unknown>)
+        : {};
+    const threadTs = typeof inner.thread_ts === "string" ? inner.thread_ts.trim() : "";
+    if (!threadTs) return null;
+
+    // Defense in depth (#855): even if a future call path forgot the
+    // registration guard on the handler, refuse threaded chat.postMessage
+    // for unregistered callers here — they cannot own a Slack thread and
+    // must not be able to post into one.
+    if (!callerAgentId) {
+      return `Slack thread ${threadTs}: refusing threaded chat.postMessage from an unregistered caller`;
+    }
+
+    const thread = this.db.getThread(threadTs);
+    if (!thread?.ownerAgent) return null;
+    if (thread.ownerAgent === callerAgentId) return null;
+    return `Slack thread ${threadTs} is already owned by another agent; refusing cross-owner chat.postMessage`;
   }
 
   private applyAdapterCapabilityEffects(

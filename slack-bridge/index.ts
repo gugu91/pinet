@@ -1211,6 +1211,7 @@ export default function (pi: ExtensionAPI) {
       getBotUserId: () => botUserId,
       registerConfirmationRequest,
       pinetDelivery: {
+        isEnabled: () => pinetEnabled,
         isAvailable: () => pinetEnabled && brokerRole !== null,
         sendSlackMessage: async (input) => {
           const content = {
