@@ -9,6 +9,33 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.4] - 2026-07-06
+
+Pinet v0.2.4 keeps the coordinated `@pinet/*` package set aligned and ships the Slack-bridge thread-ownership hardening merged after the v0.2.3 release prep.
+
+### Version verification
+
+- `pi-extensions` — `0.2.4` (private repo package)
+- `@pinet/transport-core` — `0.2.4`
+- `@pinet/broker-core` — `0.2.4`
+- `@pinet/pinet-core` — `0.2.4`
+- `@pinet/imessage-bridge` — `0.2.4`
+- `@pinet/slack-bridge` — `0.2.4`
+- `@pinet/model-aware-compaction` — `0.2.4`
+
+### Release highlights
+
+- Stops followers from taking over Slack threads they do not own by refusing the direct-Slack `chat.postMessage` fallback in `deliverSlackMessage` whenever Pinet is enabled but the broker is unavailable.
+- Refuses cross-owner `slackProxy chat.postMessage` at the broker before the Slack API is called, closing the first-responder-wins claim race between `applyAdapterCapabilityEffects` and `router.claimThread`.
+- Requires a registered caller on `adapter.capability` and legacy `slack.proxy` (matching every other ownership-sensitive broker RPC) and keeps a defense-in-depth refusal for threaded `chat.postMessage` from unregistered callers.
+- Updates in-agent Slack guidance so agents wait for the broker or ask for a transfer on `broker is unavailable` / `already owned by another agent` instead of retrying via `post_channel`.
+- Freezes the clock in the `pinet-tools` schedule formatter test so CI stays deterministic past hardcoded fire-at timestamps.
+
+### Included pull requests since the v0.2.3 repo release prep
+
+- [#856](https://github.com/gugu91/extensions/pull/856) — fix(slack-bridge): stop workers taking over Slack threads they don't own (#855)
+- [#853](https://github.com/gugu91/extensions/pull/853) — docs: rewrite Pinet READMEs
+
 ## [0.2.3] - 2026-06-30
 
 Pinet v0.2.3 re-synchronizes the coordinated `@pinet/*` package set after the partial v0.2.2 npm publish, and includes the Slack/Pinet fixes merged after the v0.2.2 release prep.
