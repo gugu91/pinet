@@ -1471,6 +1471,21 @@ export class BrokerSocketServer {
       );
     }
 
+    // #855: refuse cross-owner Slack chat.postMessage before hitting Slack.
+    // Without this pre-check the adapter posts first and the broker races a
+    // first-responder-wins claim via effects.claimThread — letting an
+    // unauthorized follower take over a thread already owned by another
+    // agent simply by winning the send.
+    const ownershipError = this.checkAdapterCapabilityThreadOwnership(
+      adapterName,
+      capability,
+      capabilityParams,
+      state.agentId,
+    );
+    if (ownershipError) {
+      return rpcError(id, RPC_INVALID_PARAMS, `${errorPrefix}: ${ownershipError}`);
+    }
+
     try {
       const response = await adapter.invokeCapability({ capability, params: capabilityParams });
       this.applyAdapterCapabilityEffects(adapterName, response, state);
@@ -1479,6 +1494,32 @@ export class BrokerSocketServer {
       const message = err instanceof Error ? err.message : String(err);
       return rpcError(id, RPC_INTERNAL_ERROR, `${errorPrefix}: ${message}`);
     }
+  }
+
+  private checkAdapterCapabilityThreadOwnership(
+    adapterName: string,
+    capability: string,
+    capabilityParams: Record<string, unknown>,
+    callerAgentId: string | null,
+  ): string | null {
+    if (!callerAgentId) return null;
+    if (adapterName !== "slack") return null;
+    if (capability !== "api.call") return null;
+    const method =
+      typeof capabilityParams.method === "string" ? capabilityParams.method.trim() : "";
+    if (method !== "chat.postMessage") return null;
+    const inner =
+      capabilityParams.params &&
+      typeof capabilityParams.params === "object" &&
+      !Array.isArray(capabilityParams.params)
+        ? (capabilityParams.params as Record<string, unknown>)
+        : {};
+    const threadTs = typeof inner.thread_ts === "string" ? inner.thread_ts.trim() : "";
+    if (!threadTs) return null;
+    const thread = this.db.getThread(threadTs);
+    if (!thread?.ownerAgent) return null;
+    if (thread.ownerAgent === callerAgentId) return null;
+    return `Slack thread ${threadTs} is already owned by another agent; refusing cross-owner chat.postMessage`;
   }
 
   private applyAdapterCapabilityEffects(

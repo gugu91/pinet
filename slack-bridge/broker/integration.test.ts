@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1510,6 +1510,128 @@ describe("broker integration — client ↔ server ↔ DB", () => {
 
     // No thread should be created
     expect(db.getThread("some-ts")).toBeNull();
+  });
+
+  it("refuses slackProxy chat.postMessage to a thread owned by a different agent (#855)", async () => {
+    client.disconnect();
+    await server.stop();
+
+    const invokeCapability = vi.fn(async ({ params }: { params: Record<string, unknown> }) => {
+      const body = params.params as Record<string, unknown>;
+      return {
+        result: {
+          ok: true,
+          ts: "unauthorized-reply-ts",
+          channel: body.channel,
+          message: { ts: "unauthorized-reply-ts", text: body.text },
+        },
+        effects: {
+          claimThread: {
+            threadId: "protected-thread-ts",
+            channel: body.channel as string,
+          },
+        },
+      };
+    });
+
+    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability,
+      },
+    ]);
+    await server.start();
+
+    const info = server.getConnectInfo();
+    if (info.type !== "tcp") throw new Error("Expected TCP");
+
+    // Pre-seed the thread as owned by a different agent.
+    db.registerAgent("legit-owner", "Legit Owner", "🛡️", process.pid);
+    db.createThread({
+      threadId: "protected-thread-ts",
+      source: "slack",
+      channel: "C-PROTECTED",
+      ownerAgent: "legit-owner",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    client = new BrokerClient({ host: info.host, port: info.port });
+    await client.connect();
+    await client.register("would-be-hijacker", "🥷");
+
+    await expect(
+      client.slackProxy("chat.postMessage", {
+        channel: "C-PROTECTED",
+        text: "trying to hijack",
+        thread_ts: "protected-thread-ts",
+      }),
+    ).rejects.toThrow(/already owned by another agent/i);
+
+    // Adapter must NOT have been called: refusal happens before hitting Slack.
+    expect(invokeCapability).not.toHaveBeenCalled();
+
+    // Ownership must be unchanged after the refused call.
+    const thread = db.getThread("protected-thread-ts");
+    expect(thread?.ownerAgent).toBe("legit-owner");
+  });
+
+  it("allows slackProxy chat.postMessage when caller is the current thread owner (#855)", async () => {
+    client.disconnect();
+    await server.stop();
+
+    const invokeCapability = vi.fn(async ({ params }: { params: Record<string, unknown> }) => {
+      const body = params.params as Record<string, unknown>;
+      return {
+        result: {
+          ok: true,
+          ts: "owner-reply-ts",
+          channel: body.channel,
+          message: { ts: "owner-reply-ts", text: body.text },
+        },
+        effects: {
+          claimThread: { threadId: "owned-thread-ts", channel: body.channel as string },
+        },
+      };
+    });
+
+    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability,
+      },
+    ]);
+    await server.start();
+
+    const info = server.getConnectInfo();
+    if (info.type !== "tcp") throw new Error("Expected TCP");
+
+    client = new BrokerClient({ host: info.host, port: info.port });
+    await client.connect();
+    const reg = await client.register("real-owner", "✅");
+
+    db.createThread({
+      threadId: "owned-thread-ts",
+      source: "slack",
+      channel: "C-OWNED",
+      ownerAgent: reg.agentId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    await client.slackProxy("chat.postMessage", {
+      channel: "C-OWNED",
+      text: "legit reply",
+      thread_ts: "owned-thread-ts",
+    });
+
+    expect(invokeCapability).toHaveBeenCalledOnce();
+    const thread = db.getThread("owned-thread-ts");
+    expect(thread?.ownerAgent).toBe(reg.agentId);
   });
 });
 

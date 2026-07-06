@@ -73,6 +73,14 @@ export interface SlackPinetDeliveryResult {
 }
 
 export interface SlackPinetDeliveryPort {
+  /**
+   * True when Pinet is configured/enabled for this session, regardless of
+   * live broker connectivity. When true, threaded Slack replies MUST route
+   * through the broker; direct Slack fallback is refused even if the broker
+   * is momentarily unavailable, to preserve broker-enforced thread
+   * ownership (see gugu91/extensions#855).
+   */
+  isEnabled: () => boolean;
   isAvailable: () => boolean;
   sendSlackMessage: (input: SlackPinetDeliveryInput) => Promise<SlackPinetDeliveryResult>;
 }
@@ -323,27 +331,6 @@ function isAbortError(error: unknown): boolean {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isPinetDeliveryFallbackError(error: unknown): boolean {
-  const lower = getErrorMessage(error).toLowerCase();
-  if (lower.includes("already owned")) return false;
-  return (
-    lower.includes("not running") ||
-    lower.includes("unexpected state") ||
-    lower.includes("unavailable") ||
-    lower.includes("not connected") ||
-    lower.includes("disconnected") ||
-    lower.includes("timeout") ||
-    lower.includes("timed out") ||
-    lower.includes("econn") ||
-    lower.includes("socket") ||
-    lower.includes("no transport source") ||
-    lower.includes("no transport channel") ||
-    lower.includes("only allows local file paths") ||
-    lower.includes("no adapter") ||
-    lower.includes("identity is unavailable")
-  );
 }
 
 function classifySlackDispatcherError(error: unknown): SlackDispatcherError {
@@ -920,34 +907,36 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     delivery: "pinet" | "slack";
     adapter?: string;
     messageId?: number;
-    fallbackReason?: string;
   }> {
     const blocks = input.blocks ? normalizeSlackBlocksInput(input.blocks) : undefined;
-    let fallbackReason: string | undefined;
 
-    if (input.threadTs && pinetDelivery) {
-      try {
-        if (pinetDelivery.isAvailable()) {
-          const result = await pinetDelivery.sendSlackMessage({
-            threadId: input.threadTs,
-            channel: input.channel,
-            text: input.text,
-            ...(blocks ? { blocks } : {}),
-            ...(input.files ? { files: input.files } : {}),
-          });
-          return {
-            threadTs: input.threadTs,
-            channel: result.channel,
-            blocksCount: blocks?.length ?? 0,
-            delivery: "pinet",
-            adapter: result.adapter,
-            messageId: result.messageId,
-          };
-        }
-      } catch (error) {
-        if (!isPinetDeliveryFallbackError(error)) throw error;
-        fallbackReason = getErrorMessage(error);
+    // Threaded Slack replies routed through Pinet MUST NOT fall back to direct
+    // Slack when the broker is unavailable or the delivery errors: direct
+    // Slack posting bypasses broker thread-ownership enforcement and lets any
+    // worker with a valid bot token take over a Slack thread it does not own.
+    // See gugu91/extensions#855. Single-player mode (isEnabled === false) and
+    // top-level channel posts (no threadTs) remain unaffected.
+    if (input.threadTs && pinetDelivery?.isEnabled()) {
+      if (!pinetDelivery.isAvailable()) {
+        throw new Error(
+          "Cannot post to Slack thread: Pinet broker is unavailable and direct Slack fallback would bypass thread-ownership enforcement. Wait for the broker to reconnect, or ask the broker to transfer this thread.",
+        );
       }
+      const result = await pinetDelivery.sendSlackMessage({
+        threadId: input.threadTs,
+        channel: input.channel,
+        text: input.text,
+        ...(blocks ? { blocks } : {}),
+        ...(input.files ? { files: input.files } : {}),
+      });
+      return {
+        threadTs: input.threadTs,
+        channel: result.channel,
+        blocksCount: blocks?.length ?? 0,
+        delivery: "pinet",
+        adapter: result.adapter,
+        messageId: result.messageId,
+      };
     }
 
     if (input.files && input.files.length > 0) {
@@ -985,7 +974,6 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
         channel: input.channel,
         blocksCount: blocks?.length ?? 0,
         delivery: "slack",
-        ...(fallbackReason ? { fallbackReason } : {}),
       };
     }
 
@@ -1010,7 +998,6 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       channel: input.channel,
       blocksCount: blocks?.length ?? 0,
       delivery: "slack",
-      ...(fallbackReason ? { fallbackReason } : {}),
     };
   }
 
@@ -2043,7 +2030,6 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           filesCount: Array.isArray(params.files) ? params.files.length : 0,
           ...(delivery.adapter ? { adapter: delivery.adapter } : {}),
           ...(delivery.messageId ? { messageId: delivery.messageId } : {}),
-          ...(delivery.fallbackReason ? { fallbackReason: delivery.fallbackReason } : {}),
         },
       };
     },
@@ -2973,7 +2959,6 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           filesCount: Array.isArray(params.files) ? params.files.length : 0,
           ...(delivery.adapter ? { adapter: delivery.adapter } : {}),
           ...(delivery.messageId ? { messageId: delivery.messageId } : {}),
-          ...(delivery.fallbackReason ? { fallbackReason: delivery.fallbackReason } : {}),
         },
       };
     },
