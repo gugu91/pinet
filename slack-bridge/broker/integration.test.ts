@@ -1633,6 +1633,61 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const thread = db.getThread("owned-thread-ts");
     expect(thread?.ownerAgent).toBe(reg.agentId);
   });
+
+  it("refuses adapter.capability from an unregistered caller (#855)", async () => {
+    client.disconnect();
+    await server.stop();
+
+    const invokeCapability = vi.fn(async () => ({
+      result: { ok: true },
+    }));
+
+    server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    server.setOutboundMessageAdapters([
+      {
+        name: "slack",
+        send: async () => undefined,
+        invokeCapability,
+      },
+    ]);
+    await server.start();
+
+    const info = server.getConnectInfo();
+    if (info.type !== "tcp") throw new Error("Expected TCP");
+
+    // Pre-seed an owned thread that the unregistered caller must not touch.
+    db.registerAgent("legit-owner-2", "Legit Owner 2", "🛡️", process.pid);
+    db.createThread({
+      threadId: "pre-existing-thread",
+      source: "slack",
+      channel: "C-EXISTING",
+      ownerAgent: "legit-owner-2",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    client = new BrokerClient({ host: info.host, port: info.port });
+    await client.connect();
+    // Deliberately DO NOT call client.register(...).
+
+    await expect(
+      client.slackProxy("chat.postMessage", {
+        channel: "C-EXISTING",
+        text: "unregistered hijack attempt",
+        thread_ts: "pre-existing-thread",
+      }),
+    ).rejects.toThrow(/not registered/i);
+
+    await expect(
+      client.invokeAdapterCapability("slack", "api.call", {
+        method: "chat.postMessage",
+        params: { channel: "C-EXISTING", text: "nope", thread_ts: "pre-existing-thread" },
+      }),
+    ).rejects.toThrow(/not registered/i);
+
+    expect(invokeCapability).not.toHaveBeenCalled();
+    expect(db.getThread("pre-existing-thread")?.ownerAgent).toBe("legit-owner-2");
+  });
 });
 
 // ─── Integration: router with real DB ────────────────────

@@ -181,6 +181,7 @@ function appendSlackThreadTransferNotice(body: string, threadId: string, channel
     `- channel: ${channel}`,
     `- To report directly in the transferred Slack thread, use slack_send with thread_ts ${threadId}; the channel is already recorded in Pinet.`,
     "- If slack_send says the thread is already owned by another agent, ask the broker to inspect ownership and transfer it again.",
+    "- If slack_send says the Pinet broker is unavailable, wait for the broker to reconnect \u2014 do NOT retry via post_channel; direct posting would bypass thread ownership (#855).",
   ].join("\n");
 }
 

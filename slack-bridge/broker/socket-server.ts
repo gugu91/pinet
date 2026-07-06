@@ -1397,6 +1397,15 @@ export class BrokerSocketServer {
     req: JsonRpcRequest,
     state: ConnectionState,
   ): Promise<JsonRpcResponse> {
+    // #855: adapter.capability must be identity-bound so the broker can
+    // enforce thread ownership. Unregistered callers cannot own or claim
+    // threads, so they must not be able to invoke outbound-side capabilities
+    // (chat.postMessage in particular) that would race a first-responder
+    // claim or take over a thread already owned by another agent.
+    if (!state.agentId) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
+    }
+
     const params = req.params ?? {};
     const adapterName =
       typeof params.adapter === "string"
@@ -1431,6 +1440,13 @@ export class BrokerSocketServer {
     req: JsonRpcRequest,
     state: ConnectionState,
   ): Promise<JsonRpcResponse> {
+    // #855: legacy slack.proxy is a compatibility wrapper over
+    // adapter.capability and must enforce the same registration bar so
+    // unregistered callers cannot bypass thread ownership via chat.postMessage.
+    if (!state.agentId) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
+    }
+
     const params = req.params ?? {};
     const method = typeof params.method === "string" ? params.method.trim() : "";
     if (!method) {
@@ -1502,7 +1518,6 @@ export class BrokerSocketServer {
     capabilityParams: Record<string, unknown>,
     callerAgentId: string | null,
   ): string | null {
-    if (!callerAgentId) return null;
     if (adapterName !== "slack") return null;
     if (capability !== "api.call") return null;
     const method =
@@ -1516,6 +1531,15 @@ export class BrokerSocketServer {
         : {};
     const threadTs = typeof inner.thread_ts === "string" ? inner.thread_ts.trim() : "";
     if (!threadTs) return null;
+
+    // Defense in depth (#855): even if a future call path forgot the
+    // registration guard on the handler, refuse threaded chat.postMessage
+    // for unregistered callers here — they cannot own a Slack thread and
+    // must not be able to post into one.
+    if (!callerAgentId) {
+      return `Slack thread ${threadTs}: refusing threaded chat.postMessage from an unregistered caller`;
+    }
+
     const thread = this.db.getThread(threadTs);
     if (!thread?.ownerAgent) return null;
     if (thread.ownerAgent === callerAgentId) return null;

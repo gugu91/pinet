@@ -604,6 +604,7 @@ function buildSlackSendPromptGuidelines(): string[] {
   return [
     "Use slack_send for replies in the current Slack assistant thread; always reply where the task came from.",
     "For rich Block Kit JSON examples or modal/canvas patterns, load the slack-bridge skill instead of relying on tool schemas.",
+    "If slack_send fails with 'broker is unavailable' or 'already owned by another agent', do NOT retry via post_channel or a different tool \u2014 report the blocker in the same thread (or to the broker) and wait for ownership to be transferred; direct posting would bypass thread ownership (#855).",
   ];
 }
 
