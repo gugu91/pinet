@@ -182,6 +182,42 @@ take upstream once proven:
 3. **Upstream:** shared broker client extraction → follower-bridge extraction
    → PR the worker + bridge + CC adapter with this doc as the plan.
 
+## Status: v1 built and proven (2026-07-06)
+
+Shipped in `claude-code-worker/` (`follower-bridge.ts`, `mcp-server.ts`,
+`waiter.ts`, `cli.ts` subcommands `mcp`/`wait`, `skills/pinet-follow/`).
+Local only — nothing pushed. Evidence:
+
+- **E2E against the live broker** (MCP-protocol driver simulating the
+  session): follow → broker-assigned identity → waiter armed → a2a task →
+  waiter woke → `pinet_read` drained/acked → `pinet_send` reply delivered →
+  `pinet_unfollow` gave armed waiters `PINET_EXIT`; bridge unregisters on
+  stdin close.
+- **Real Claude Code interop**: a headless `claude -p` session loaded the
+  user-scope `pinet` server, followed, listed the roster, unfollowed — the
+  hand-rolled MCP server speaks CC's dialect.
+- **Idle-wake assumption validated live**: a background task exiting ~90s
+  after the turn ended re-invoked a fully idle interactive session.
+- 46 unit tests; package + repo-wide typecheck/lint green.
+
+Machine setup (Thomas's laptop): `claude mcp add --scope user pinet -- node
+<worktree>/claude-code-worker/dist/cli.js mcp` and
+`~/.claude/skills/pinet-follow` symlinked into the worktree — both bind to
+the worktree path; re-point them if it moves. Sessions spawn MCP servers at
+start, so `/pinet-follow` only works in sessions newer than the
+registration.
+
+Protocol findings worth keeping: a2a `sender` fields are agentId UUIDs (not
+names); roster `agents.list` ids are 8-char prefixes of those UUIDs (the
+bridge resolves display names by prefix match); `agent.message` accepts a
+UUID `targetAgent`. Pre-existing `slack-bridge` test failures on this
+machine, unrelated to this branch (flag when upstreaming): one fixture
+spreads `...process.env` and picks up the real exported `PINET_MESH_SECRET`;
+one hardcodes a schedule date (2026-07-01) that is now in the past.
+
+Next: trial period from fresh interactive sessions, then the upstream
+sequence in Build order step 3.
+
 ## Decisions (Thomas, 2026-07-06)
 
 1. **Opt-in.** Sessions join via `/pinet-follow`, never automatically.
