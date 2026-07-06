@@ -1,0 +1,37 @@
+{
+  "name": "@pinet/claude-code-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinet mesh worker that executes tasks with headless Claude Code",
+  "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gugu91/extensions.git",
+    "directory": "claude-code-worker"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "pinet-claude-worker": "./dist/cli.js"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node ../scripts/build-package.mjs",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run *.test.ts"
+  },
+  "dependencies": {
+    "@pinet/broker-core": "file:../broker-core"
+  },
+  "types": "./dist/index.d.ts"
+}
