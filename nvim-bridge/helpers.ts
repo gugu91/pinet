@@ -42,9 +42,15 @@ export type CommentRpcRequest =
       };
     };
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null) return null;
-  return value as Record<string, unknown>;
+type NvimRpcJsonPrimitive = string | number | boolean | null;
+export type NvimRpcJsonValue = NvimRpcJsonPrimitive | NvimRpcJsonObject | NvimRpcJsonValue[];
+export interface NvimRpcJsonObject {
+  [key: string]: NvimRpcJsonValue;
+}
+
+function asNvimRpcObject(value: unknown): NvimRpcJsonObject | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as NvimRpcJsonObject;
 }
 
 export function toPositiveInteger(value: unknown): number | null {
@@ -75,7 +81,7 @@ export function formatContext(state: EditorState): string {
 }
 
 export function parseNvimEvent(value: unknown): NvimEvent | null {
-  const event = asObject(value);
+  const event = asNvimRpcObject(value);
   if (!event || typeof event.type !== "string") return null;
 
   switch (event.type) {
@@ -127,7 +133,7 @@ export function parseNvimEvent(value: unknown): NvimEvent | null {
 }
 
 export function parseCommentRpcRequest(value: unknown): CommentRpcRequest | null {
-  const request = asObject(value);
+  const request = asNvimRpcObject(value);
   if (
     !request ||
     typeof request.id !== "string" ||
@@ -138,7 +144,7 @@ export function parseCommentRpcRequest(value: unknown): CommentRpcRequest | null
   }
 
   if (request.type === "comment.list" || request.type === "comment.sync") {
-    const payload = asObject(request.payload) ?? {};
+    const payload = asNvimRpcObject(request.payload) ?? {};
     const limit = toPositiveInteger(payload.limit);
     return {
       id: request.id,
@@ -151,7 +157,7 @@ export function parseCommentRpcRequest(value: unknown): CommentRpcRequest | null
   }
 
   if (request.type === "comment.list_all") {
-    const payload = asObject(request.payload) ?? {};
+    const payload = asNvimRpcObject(request.payload) ?? {};
     const limit = toPositiveInteger(payload.limit);
     return {
       id: request.id,
@@ -163,10 +169,10 @@ export function parseCommentRpcRequest(value: unknown): CommentRpcRequest | null
   }
 
   if (request.type === "comment.add") {
-    const payload = asObject(request.payload);
+    const payload = asNvimRpcObject(request.payload);
     if (!payload || typeof payload.body !== "string") return null;
 
-    const context = asObject(payload.context);
+    const context = asNvimRpcObject(payload.context);
 
     return {
       id: request.id,
