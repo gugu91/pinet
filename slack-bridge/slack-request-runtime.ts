@@ -1,10 +1,12 @@
 import { createAbortableOperationTracker } from "./helpers.js";
 import { callSlackApi, type SlackResult } from "./slack-api.js";
 
+export type SlackRequestBody = NonNullable<Parameters<typeof callSlackApi>[2]>;
+
 export type SlackRequestCall = (
   method: string,
   token: string,
-  body?: Record<string, unknown>,
+  body?: SlackRequestBody,
 ) => Promise<SlackResult>;
 
 export interface SlackRequestRuntime {
