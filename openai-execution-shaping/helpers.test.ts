@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveConfig } from "./config.js";
+import { loadConfig, resolveConfig } from "./config.js";
 import {
   buildAutoContinueMessage,
   buildExecutionShapingPrompt,
@@ -51,6 +54,33 @@ describe("resolveConfig", () => {
     expect(config.providerSet.has("openai")).toBe(true);
     expect(config.providerSet.has("openai-codex")).toBe(true);
     expect(config.providerSet.has("anthropic")).toBe(false);
+  });
+
+  it("ignores malformed settings roots and sections", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openai-shaping-config-"));
+    try {
+      const rootArrayPath = join(dir, "root-array.json");
+      writeFileSync(rootArrayPath, JSON.stringify([]));
+      expect(
+        loadConfig({
+          cwd: dir,
+          agentDir: dir,
+          env: { PI_OPENAI_EXECUTION_SHAPING_SETTINGS: rootArrayPath },
+        }).sourcePath,
+      ).toBeNull();
+
+      const sectionArrayPath = join(dir, "section-array.json");
+      writeFileSync(sectionArrayPath, JSON.stringify({ "openai-execution-shaping": [] }));
+      expect(
+        loadConfig({
+          cwd: dir,
+          agentDir: dir,
+          env: { PI_OPENAI_EXECUTION_SHAPING_SETTINGS: sectionArrayPath },
+        }).sourcePath,
+      ).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

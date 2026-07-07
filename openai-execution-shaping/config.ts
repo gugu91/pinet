@@ -40,9 +40,13 @@ export interface LoadConfigOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-function parseJsonFile(filePath: string): unknown | null {
+type SettingsJsonPrimitive = string | number | boolean | null;
+type SettingsJsonValue = SettingsJsonPrimitive | SettingsJsonObject | SettingsJsonValue[];
+type SettingsJsonObject = { [key: string]: SettingsJsonValue };
+
+function parseJsonFile(filePath: string): SettingsJsonValue | null {
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as SettingsJsonValue;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[${SETTINGS_KEY}] Failed to parse config ${filePath}: ${message}`);
@@ -55,10 +59,10 @@ function readSettingsConfig(
 ): { path: string; raw: OpenAIExecutionShapingConfig } | null {
   if (!fs.existsSync(settingsPath)) return null;
   const parsed = parseJsonFile(settingsPath);
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 
-  const raw = (parsed as Record<string, unknown>)[SETTINGS_KEY];
-  if (!raw || typeof raw !== "object") return null;
+  const raw = parsed[SETTINGS_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 
   return {
     path: `${settingsPath}#${SETTINGS_KEY}`,
