@@ -1,0 +1,239 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base
+  title="Pinet Core — the runtime under the adapters"
+  description="Broker–worker model, runtime modes, the message primitive, agent identity, the RALPH maintenance loop, and the pinet dispatcher."
+  docId="PINET/CORE"
+  active="core"
+>
+  <header class="page-head">
+    <h1>Pinet Core</h1>
+    <p class="dek">
+      The runtime under the adapters: how the broker owns the mesh, how messages become durable
+      inbox entries, and how the system repairs itself when an agent goes quiet.
+    </p>
+  </header>
+
+  <section class="section" id="s01">
+    <div class="section-no"><a href="#s01">§ 01</a><small>topology</small></div>
+    <div class="prose">
+      <h2>Runtime modes</h2>
+      <p>
+        Every pi session that loads the bridge runs in one of four modes. Pinet stays off unless you
+        set <code>runtimeMode</code>, <code>autoConnect</code>, or <code>autoFollow</code>. Nothing
+        connects to your workspace by accident.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Mode</th><th>Role</th><th>Use when</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>single</code></td>
+            <td>One instance handles everything: ingress, work, replies.</td>
+            <td>You run one agent and want Slack access without a mesh.</td>
+          </tr>
+          <tr>
+            <td><code>broker</code></td>
+            <td>Coordinates: watches Slack, assigns work, tracks ownership, syncs state.</td>
+            <td>You run several agents and want one control plane.</td>
+          </tr>
+          <tr>
+            <td><code>follower</code></td>
+            <td>Connects to the broker, receives assigned work, stays in sync.</td>
+            <td>Worker sessions joining an existing broker.</td>
+          </tr>
+          <tr>
+            <td><code>off</code></td>
+            <td>Extension loaded, nothing running.</td>
+            <td>Default.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Inside pi, <code>/pinet start</code> makes the current session the broker,
+        <code>/pinet follow</code> joins it, and <code>/pinet status</code> tells you which of these
+        is true right now. Only one session holds the Socket Mode connection: Slack allows a
+        limited number per app, and a single WebSocket owner avoids duplicate delivery.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="s02">
+    <div class="section-no"><a href="#s02">§ 02</a><small>primitive</small></div>
+    <div class="prose">
+      <h2>The message primitive</h2>
+      <p>
+        <code>message.send</code> is the one primitive. A Slack reply, an agent-to-agent note, and a
+        broker nudge are the same operation with different addresses; adapters translate at the
+        edges. The broker itself needs no adapter: it is a pi session, and you can type to it in
+        its own terminal. This is what keeps new transports cheap: Discord, Linear, or GitHub would plug into
+        the same flow rather than growing their own routing.
+      </p>
+      <h3>inbox semantics</h3>
+      <p>Each agent has a durable inbox. Messages are:</p>
+      <ul>
+        <li>routed by thread ownership (an owned thread keeps flowing to its owner)</li>
+        <li>queued while the agent is mid-turn, drained on the next turn</li>
+        <li>marked read once processed</li>
+        <li>preserved across restarts</li>
+      </ul>
+      <p>
+        Thread ownership is the continuity mechanism. Once an agent claims a Slack thread, replies
+        in that thread route to it until the claim is released, by the agent finishing or by
+        RALPH noticing the owner is gone.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="s03">
+    <div class="section-no"><a href="#s03">§ 03</a><small>identity</small></div>
+    <div class="prose">
+      <h2>Agent identity</h2>
+      <p>
+        Agents carry a logical identity that survives reconnects. Heartbeats and leases handle
+        liveness: a worker that stops responding loses its lease, and its claims become
+        assignable again. Dead agents get reaped, not ignored.
+      </p>
+      <p>
+        Identities are named. When "Rocket Dolphin" or "Silent Crocodile" posts in a thread, you
+        know which agent holds which task. With dozens of tasks moving at once, names are what make
+        the mesh legible to the humans steering it. Rename a session any time with
+        <code>/pinet rename</code>.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="s04">
+    <div class="section-no"><a href="#s04">§ 04</a><small>self-repair</small></div>
+    <div class="prose">
+      <h2>The RALPH loop</h2>
+      <p>
+        RALPH is the broker's autonomous maintenance cycle. On every pass (default: five minutes)
+        it:
+      </p>
+      <ul>
+        <li>checks worker presence,</li>
+        <li>releases stale thread claims held by unavailable workers,</li>
+        <li>observes pending backlog while broker maintenance handles assignment, and</li>
+        <li>triggers scheduled wake-ups.</li>
+      </ul>
+      <p>
+        The loop is tunable: faster cycles for quicker recovery, snoozing after empty cycles for
+        quiet nights.
+      </p>
+      <pre><code>{`{
+  "slack-bridge": {
+    "ralphLoopIntervalMs": 120000,
+    "ralphSnoozeAfterEmptyCycles": 3,
+    "ralphSnoozeDurationMs": 1800000
+  }
+}`}</code></pre>
+      <div class="callout">
+        <span class="label">operational note</span>
+        If work gets stuck: <code>/pinet status</code> for current state,
+        <code>/pinet logs</code> for repeated failures, then let RALPH run; most stalls clear on
+        its next pass without intervention.
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="s05">
+    <div class="section-no"><a href="#s05">§ 05</a><small>interface</small></div>
+    <div class="prose">
+      <h2>The dispatcher</h2>
+      <p>
+        Agents drive coordination through a compact <code>pinet</code> dispatcher rather than a
+        sprawl of tools: one entry point, discoverable actions, a small schema per action.
+      </p>
+      <pre><code>{`{
+  "action": "send",
+  "args": {
+    "to": "@worker",
+    "message": "Please review PR #123"
+  }
+}`}</code></pre>
+      <dl class="defs">
+        <div>
+          <dt>send</dt>
+          <dd>Message an agent or a broker-only channel.</dd>
+        </div>
+        <div>
+          <dt>read</dt>
+          <dd>Read this agent's inbox.</dd>
+        </div>
+        <div>
+          <dt>schedule</dt>
+          <dd>Schedule a future wake-up.</dd>
+        </div>
+        <div>
+          <dt>free</dt>
+          <dd>Mark this agent idle and available for work.</dd>
+        </div>
+        <div>
+          <dt>help</dt>
+          <dd>Discover actions and their schemas; nothing bloats the hot path.</dd>
+        </div>
+      </dl>
+      <p>
+        Hot-path Slack replies go through a dedicated <code>slack_send</code> tool; uploads,
+        canvases, pins, bookmarks, and other cold Slack actions sit behind a matching
+        <code>slack</code> dispatcher. The split is deliberate: frequent operations get compact
+        dedicated tools, everything else is discovered on demand.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="s06">
+    <div class="section-no"><a href="#s06">§ 06</a><small>package</small></div>
+    <div class="prose">
+      <h2>@pinet/pinet-core</h2>
+      <p>
+        The <code>pinet-core</code> package holds the runtime helpers that work independently of
+        Slack: the pieces the bridge uses internally, extracted behind package exports so future
+        adapters can move one boundary at a time.
+      </p>
+      <ul>
+        <li>output option normalisation (defaults to <code>cli</code>; accepts <code>json</code> or <code>full</code>),</li>
+        <li>durable read-result formatting,</li>
+        <li>scheduled wake-up time parsing, and</li>
+        <li>thread ID helpers.</li>
+      </ul>
+      <p>
+        No Slack types, no adapter imports. If you are building a different transport for Pinet,
+        this is the layer you build against.
+      </p>
+      <div>
+        <a
+          class="xref"
+          href="https://github.com/gugu91/extensions/tree/main/pinet-core"
+          ><span class="arrow">→</span> pinet-core source</a
+        >
+        <a class="xref" href="/slack-bridge/"><span class="arrow">→</span> the slack adapter</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .page-head {
+    padding: 2.6rem 0 2.4rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .page-head h1 {
+    font-family: var(--sans);
+    font-size: clamp(2rem, 4vw, 2.8rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    margin: 0 0 0.8rem;
+  }
+
+  .dek {
+    font-size: 1.05rem;
+    max-width: 60ch;
+    margin: 0;
+  }
+</style>

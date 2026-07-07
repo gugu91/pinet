@@ -1,4 +1,5 @@
 node_modules
 dist
 .turbo
+website/.astro
 nvim-bridge/nvim/**/*.lua

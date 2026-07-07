@@ -1,0 +1,69 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description: string;
+  docId: string;
+  active?: "core" | "slack-bridge" | "home";
+}
+
+const { title, description, docId, active = "home" } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <!-- impeccable-disable numbered-section-markers, single-font -- spec-document register:
+         § numbers are citable anchors (each links to #sNN and xrefs cite them, like RFC
+         sections); the mono second family loads via bundled global CSS the static
+         engine misses. -->
+    <header class="masthead">
+      <div class="shell masthead-row">
+        <div>
+          <a class="wordmark" href="/">pinet<span class="tld">/</span></a>
+          <span class="masthead-role">&nbsp; multi-agent coordination for pi</span>
+        </div>
+        <nav>
+          <a href="/core/" aria-current={active === "core" ? "page" : undefined}>Core</a>
+          <a href="/slack-bridge/" aria-current={active === "slack-bridge" ? "page" : undefined}
+            >Slack&nbsp;Bridge</a
+          >
+          <a href="https://github.com/gugu91/extensions">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="shell doc-meta">
+      <span>DOC <strong>{docId}</strong></span>
+      <span>STATUS&nbsp;·&nbsp;LIVING&nbsp;DOCUMENT</span>
+      <span>LICENSE&nbsp;·&nbsp;MIT</span>
+    </div>
+
+    <main class="shell">
+      <slot />
+    </main>
+
+    <footer class="colophon">
+      <div class="shell colophon-inner">
+        <div>
+          <span class="mark">※</span> written, reviewed, and merged by the mesh it describes <span
+            class="mark">※</span>
+        </div>
+        <div>
+          source: <a href="https://github.com/gugu91/extensions">gugu91/extensions</a> · package: <a
+            href="https://www.npmjs.com/package/@pinet/slack-bridge">@pinet/slack-bridge</a> · MIT
+          © {new Date().getFullYear()}
+        </div>
+        <div>set in your system's own Helvetica &amp; monospace · zero webfonts · built with Astro</div>
+      </div>
+    </footer>
+  </body>
+</html>

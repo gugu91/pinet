@@ -1,0 +1,301 @@
+---
+import Base from "../layouts/Base.astro";
+import MeshDiagram from "../components/MeshDiagram.astro";
+---
+
+<Base
+  title="Pinet — multi-agent coordination for pi"
+  description="Pinet connects pi coding agents to Slack and to each other. One broker, deterministic routing, agents that survive restarts."
+  docId="PINET/OVERVIEW"
+  active="home"
+>
+  <section class="hero">
+    <div class="hero-copy">
+      <h1>One gateway.<br />One message primitive.<br />Many agents.</h1>
+      <p class="dek">
+        Pinet is a local-first coordination layer for <a
+          href="https://github.com/badlogic/pi-mono">pi</a> coding agents. One broker routes every
+        message, whether it arrives from Slack or is typed at the broker's own terminal. It keeps
+        a mesh of named worker agents shipping: writing code, reviewing each other's pull
+        requests, and repairing themselves when something stalls.
+      </p>
+      <span class="cmd"><span class="prompt">$ </span>pi install npm:@pinet/slack-bridge</span>
+      <p class="small-note">requires pi · node ≥ 22 · a slack workspace where you can install apps</p>
+      <div>
+        <a class="xref" href="#s04"><span class="arrow">→</span> §04 · ten minutes to a working mesh</a>
+        <a class="xref" href="/core/#s02"><span class="arrow">→</span> pinet/core §02 · how messages move</a>
+      </div>
+    </div>
+    <div class="hero-figure">
+      <MeshDiagram />
+    </div>
+  </section>
+
+  <section class="section" id="s01">
+    <div class="section-no"><a href="#s01">§ 01</a><small>subject</small></div>
+    <div class="prose">
+      <h2>What Pinet is</h2>
+      <p>
+        You mention an agent in Slack. The right agent picks the message up. If that agent dies,
+        another takes over. You never think about routing, lifecycle, or thread ownership — that is
+        the whole point.
+      </p>
+      <p>
+        Underneath, Pinet runs a broker–worker model. One pi session acts as the broker: it owns
+        ingress from Slack and from its own terminal, assigns work, and tracks what every worker
+        holds. Worker sessions pick up tasks, write code, run tests, and open pull requests. The
+        broker coordinates but does not write code; workers ship end to end.
+      </p>
+      <p>
+        Everything rides on a single primitive, <code>message.send</code>. Slack replies,
+        agent-to-agent messages, and scheduled wake-ups are the same thing underneath; adapters
+        translate at the edges. The broker reasons; the routing under it is deterministic policy
+        code.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="s02">
+    <div class="section-no"><a href="#s02">§ 02</a><small>wire path</small></div>
+    <div class="prose">
+      <h2>The life of a message</h2>
+      <ol class="clauses">
+        <li>
+          <div>
+            <span class="clause-title">Arrival.</span>
+            <p>
+              A message arrives through one of two doors. From Slack over Socket Mode: a DM, an
+              <code>@pinet</code> mention, or a <code>/pinet</code> slash command. Or from the
+              keyboard: the broker is a pi session in a terminal, and you can talk to it there.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Gatekeeping.</span>
+            <p>
+              Access is default-deny. The sender must be in <code>allowedUsers</code> (or the
+              workspace-wide allowance must be explicit). Ingress guards can additionally require a
+              mention in configured channels.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Routing.</span>
+            <p>
+              The broker resolves thread ownership. A thread claimed by an agent keeps flowing to
+              that agent; unclaimed work is assigned. No split brain; one control plane owns
+              delivery.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Inbox.</span>
+            <p>
+              The message is queued in the owner's durable inbox. Busy agents drain it on their next
+              turn; restarts do not lose it.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Work &amp; reply.</span>
+            <p>
+              The agent acknowledges, does the work (code, tests, PRs), and replies in the same
+              thread with <code>slack_send</code>. Every message ends in a reply or a visible
+              failure; nothing drops silently.
+            </p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section" id="s03">
+    <div class="section-no"><a href="#s03">§ 03</a><small>doctrine</small></div>
+    <div class="prose">
+      <h2>Operating principles</h2>
+      <dl class="defs">
+        <div>
+          <dt>one control plane</dt>
+          <dd>A single broker owns routing, agent lifecycle, and message delivery.</dd>
+        </div>
+        <div>
+          <dt>stable identity</dt>
+          <dd>
+            Agents keep a logical identity across reconnects. Heartbeats and leases handle
+            liveness; dead agents get reaped, not ignored.
+          </dd>
+        </div>
+        <div>
+          <dt>smart broker, dumb routing</dt>
+          <dd>
+            The broker is an LLM agent that can reason and self-heal. The routing beneath it is
+            deterministic policy code.
+          </dd>
+        </div>
+        <div>
+          <dt>RALPH loop</dt>
+          <dd>
+            An autonomous maintenance cycle: reap dead agents, release stale claims, drain unrouted
+            messages, nudge idle workers.
+          </dd>
+        </div>
+        <div>
+          <dt>workers compute, broker keeps the lights on</dt>
+          <dd>
+            Workers do tasks. The broker is infrastructure. They do not share a process lifetime.
+          </dd>
+        </div>
+        <div>
+          <dt>extensions stay thin</dt>
+          <dd>
+            Tools like <code>slack_send</code> and <code>pinet action=send</code> are shims over the
+            broker. They do not own state.
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="section" id="s04">
+    <div class="section-no"><a href="#s04">§ 04</a><small>bootstrap</small></div>
+    <div class="prose">
+      <h2>Ten minutes to a working mesh</h2>
+      <ol class="clauses">
+        <li>
+          <div>
+            <span class="clause-title">Install the bridge.</span>
+            <p><code>pi install npm:@pinet/slack-bridge</code></p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Create the Slack app from the manifest.</span>
+            <p>
+              At <a href="https://api.slack.com/apps">api.slack.com/apps</a>, create an app "from a
+              manifest" and paste <a
+                href="https://github.com/gugu91/extensions/blob/main/slack-bridge/manifest.yaml"
+                ><code>manifest.yaml</code></a
+              >. Socket Mode, scopes, events, and slash commands are configured for you.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Collect two tokens.</span>
+            <p>
+              An app-level token (<code>xapp-…</code>, with <code>connections:write</code>) and a
+              bot token (<code>xoxb-…</code>) from OAuth &amp; Permissions.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Configure pi.</span>
+            <p>
+              Add tokens, a runtime mode, and your Slack user ID to
+              <code>~/.pi/agent/settings.json</code>:
+            </p>
+            <pre><code>{`{
+  "slack-bridge": {
+    "botToken": "xoxb-…",
+    "appToken": "xapp-…",
+    "runtimeMode": "single",
+    "allowedUsers": ["U_YOUR_USER_ID"]
+  }
+}`}</code></pre>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Start pi.</span>
+            <p>Pinet appears in your Slack sidebar. DM it, mention it, or run <code>/pinet</code>.</p>
+          </div>
+        </li>
+      </ol>
+      <p>
+        Full walkthrough, access control, and the complete configuration table live in the <a
+          href="/slack-bridge/">Slack Bridge document</a>.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="s05">
+    <div class="section-no"><a href="#s05">§ 05</a><small>provenance</small></div>
+    <div class="prose">
+      <h2>Built by the system it enables</h2>
+      <p>
+        Agents built Pinet, coordinating through Slack and GitHub: the same broker, the same
+        inbox, the same thread ownership described on this page. During development the mesh
+        merged over 50 pull requests in a single day, with little human help. Workers wrote the
+        code. Other agents reviewed it. RALPH cleaned up after the ones that wandered off.
+      </p>
+      <p>
+        Humans set priorities, approve merges, and hold the API tokens. The system handles
+        coordination and execution. The aim is to move you up a level, from doing every step to
+        steering a mesh that coordinates itself.
+      </p>
+      <div>
+        <a class="xref" href="https://github.com/gugu91/extensions"
+          ><span class="arrow">→</span> read the source</a
+        >
+        <a class="xref" href="/core/"><span class="arrow">→</span> doc pinet/core · the runtime in depth</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    gap: 3rem;
+    padding: 3.2rem 0 3rem;
+    border-bottom: 1px solid var(--rule);
+    align-items: start;
+  }
+
+  .hero h1 {
+    font-family: var(--sans);
+    font-size: clamp(2.1rem, 4.6vw, 3.3rem);
+    line-height: 1.04;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    margin: 0 0 1.2rem;
+  }
+
+  .dek {
+    font-size: 1.08rem;
+    line-height: 1.6;
+    max-width: 54ch;
+    margin: 0 0 1.4rem;
+  }
+
+  .dek a {
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--signal);
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+  }
+
+  .hero-copy .small-note {
+    display: block;
+    margin: -0.4rem 0 1.2rem;
+  }
+
+  .hero-figure {
+    padding-top: 0.5rem;
+  }
+
+  @media (max-width: 900px) {
+    .hero {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2.2rem;
+      padding-top: 2.4rem;
+    }
+  }
+</style>

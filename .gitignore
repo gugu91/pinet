@@ -18,3 +18,4 @@ slack-api/.tmp/
 .worktrees
 .handovers
 .tmp-*
+.vercel
