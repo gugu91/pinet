@@ -4,7 +4,9 @@ import {
   buildCompatibilityInstanceScope,
   buildCompatibilityWorkspaceScope,
   buildRuntimeScopeCarrier,
+  type AdapterCapabilityRequest,
   type InboundMessage,
+  type OutboundMessage,
 } from "./index.ts";
 
 test("buildCompatibilityWorkspaceScope keeps unknown workspace ids unknown while preserving compatibility mode", () => {
@@ -67,4 +69,22 @@ test("InboundMessage can carry first-class runtime scope metadata", () => {
 
   assert.equal(message.scope?.workspace?.workspaceId, "T123");
   assert.equal(message.scope?.instance?.compatibilityKey, "default");
+});
+
+test("transport payload DTOs carry JSON-compatible metadata and blocks", () => {
+  const message: OutboundMessage = {
+    threadId: "123.456",
+    channel: "C123",
+    text: "hello",
+    metadata: { attempt: 1, tags: ["owl", "transport"], nested: { ok: true } },
+    blocks: [{ type: "section", text: { type: "mrkdwn", text: "*hello*" } }],
+  };
+  const request: AdapterCapabilityRequest = {
+    capability: "thread.claim",
+    params: { threadId: message.threadId, dryRun: false },
+  };
+
+  assert.deepEqual(message.metadata?.nested, { ok: true });
+  assert.equal(message.blocks?.[0]?.type, "section");
+  assert.equal(request.params.threadId, "123.456");
 });
