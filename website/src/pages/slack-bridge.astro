@@ -234,7 +234,9 @@ users:read</code></pre>
           <dt>confirmation gates</dt>
           <dd>
             Require explicit confirmation per action:
-            <code>{'"requireConfirmation": ["slack:create_channel", "slack:upload", "slack:delete"]'}</code>
+            <code
+              >{'"security": { "requireConfirmation": ["slack:create_channel", "slack:upload", "slack:delete"] }'}</code
+            >
           </dd>
         </div>
         <div>

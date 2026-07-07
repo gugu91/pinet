@@ -398,8 +398,15 @@ tr:last-child td {
     display: block;
   }
 
+  /* Visually hidden, not display:none: header text stays available
+     to screen readers ahead of the stacked rows. */
   thead {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   tr {
