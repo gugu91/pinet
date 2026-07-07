@@ -13,7 +13,7 @@ export function createAbortError(message = "Operation aborted"): Error {
 }
 
 /** True when the value is an Error whose name is "AbortError". */
-export function isAbortError(error: unknown): boolean {
+export function isAbortError<T>(error: T): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
@@ -66,7 +66,7 @@ export function createTimeoutError(timeoutMs: number, label?: string): Error {
 }
 
 /** True when the value is an Error whose name is "TimeoutError". */
-export function isTimeoutError(error: unknown): boolean {
+export function isTimeoutError<T>(error: T): boolean {
   return error instanceof Error && error.name === "TimeoutError";
 }
 
