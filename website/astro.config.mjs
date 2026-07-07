@@ -1,8 +1,8 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 
-// Set `site` (and `base` if deploying under a sub-path, e.g. GitHub Pages
-// project sites) before wiring up a deployment.
+// Deployed on Vercel (project: tmustiers-projects/pinet).
 export default defineConfig({
+  site: "https://pinet-mesh.vercel.app",
   trailingSlash: "ignore",
 });
