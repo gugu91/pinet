@@ -24,12 +24,17 @@ export interface ResolvedConfig {
   sourcePath: string | null;
 }
 
+type SettingsJsonPrimitive = string | number | boolean | null;
+type SettingsJsonValue = SettingsJsonPrimitive | SettingsJsonObject | SettingsJsonValue[];
+type SettingsJsonObject = { [key: string]: SettingsJsonValue };
+
 function parseSettings(
   path: string,
 ): { raw: ModelAwareCompactionConfig; sourcePath: string } | null {
   if (!fs.existsSync(path)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as Record<string, unknown>;
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as SettingsJsonValue;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const value = parsed[SETTINGS_KEY];
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return { raw: value as ModelAwareCompactionConfig, sourcePath: `${path}#${SETTINGS_KEY}` };
