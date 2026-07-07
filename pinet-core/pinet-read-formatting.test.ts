@@ -88,7 +88,7 @@ describe("Pinet read formatting", () => {
       unreadAfter: number;
       markedReadCount: number;
       exactBodies: string;
-      messages: Array<{ id: number; threadId: string; preview?: string; message?: unknown }>;
+      messages: Array<{ id: number; threadId: string; preview?: string; message?: string }>;
     };
 
     expect(compactDetails.summary).toBe("1 msg; unread 2→1; marked 1; 1 unread thread");

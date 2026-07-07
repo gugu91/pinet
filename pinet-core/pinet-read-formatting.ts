@@ -4,6 +4,13 @@ import {
   type PinetMailClass,
 } from "@pinet/broker-core/mail-classification";
 
+export type PinetReadMetadataPrimitive = string | number | boolean | null;
+export type PinetReadMetadataValue =
+  | PinetReadMetadataPrimitive
+  | PinetReadMessageMetadata
+  | PinetReadMetadataValue[];
+export type PinetReadMessageMetadata = { [key: string]: PinetReadMetadataValue };
+
 export interface PinetInboxItem {
   inboxId: number;
   delivered: boolean;
@@ -15,7 +22,7 @@ export interface PinetInboxItem {
     direction: string;
     sender: string;
     body: string;
-    metadata: Record<string, unknown> | null;
+    metadata: PinetReadMessageMetadata | null;
     createdAt: string;
   };
 }
@@ -51,6 +58,36 @@ export interface PinetReadOptions {
   limit?: number;
   unreadOnly?: boolean;
   markRead?: boolean;
+}
+
+export interface CompactPinetReadMessageDetails {
+  id: number;
+  threadId: string;
+  source: string;
+  sender: string;
+  class: PinetMailClass;
+}
+
+export interface CompactPinetReadUnreadThreadDetails {
+  threadId: string;
+  source: string;
+  unread: number;
+  latestMessageId: number;
+  class: PinetMailClass;
+  summary: string;
+}
+
+export interface CompactPinetReadDetails {
+  summary: string;
+  messageCount: number;
+  unreadBefore: number;
+  unreadAfter: number;
+  markedReadCount?: number;
+  messages?: CompactPinetReadMessageDetails[];
+  exactBodies?: string;
+  messagesTruncated?: number;
+  unreadThreads?: CompactPinetReadUnreadThreadDetails[];
+  unreadThreadsTruncated?: number;
 }
 
 const COMPACT_READ_DETAIL_LIMIT = 10;
@@ -133,7 +170,7 @@ export function summarizeUnreadThreadCounts(thread: PinetUnreadThreadSummary): s
     .join(", ");
 }
 
-export function buildCompactPinetReadDetails(result: PinetReadResult): Record<string, unknown> {
+export function buildCompactPinetReadDetails(result: PinetReadResult): CompactPinetReadDetails {
   const messages = result.messages.slice(0, COMPACT_READ_DETAIL_LIMIT);
   const unreadThreads = result.unreadThreads.slice(0, COMPACT_READ_DETAIL_LIMIT);
   const messageTruncated = Math.max(0, result.messages.length - messages.length);
@@ -147,7 +184,7 @@ export function buildCompactPinetReadDetails(result: PinetReadResult): Record<st
       : null,
   ].filter((item): item is string => Boolean(item));
 
-  const details: Record<string, unknown> = {
+  const details: CompactPinetReadDetails = {
     summary: summaryParts.join("; "),
     messageCount: result.messages.length,
     unreadBefore: result.unreadCountBefore,
