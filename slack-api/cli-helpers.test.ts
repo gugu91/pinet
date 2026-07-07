@@ -3,7 +3,6 @@ import { WebClient } from "@slack/web-api";
 
 import {
   discoverMethods,
-  isJsonObject,
   mergeInput,
   parseCliValue,
   parseJsonObject,
@@ -40,6 +39,13 @@ describe("resolveMethod", () => {
     const client = new WebClient();
     expect(resolveMethod(client, "does.not.exist")).toBeNull();
     expect(resolveMethod(client, "noNamespace")).toBeNull();
+  });
+
+  it("returns null when an intermediate or final property is not callable", () => {
+    const client = new WebClient();
+    expect(resolveMethod(client, "chat.postMessage.nope")).toBeNull();
+    expect(resolveMethod(client, "chat.nope.call")).toBeNull();
+    expect(resolveMethod(client, "token.value")).toBeNull();
   });
 });
 
@@ -89,13 +95,5 @@ describe("mergeInput", () => {
       text: "after",
       unfurl_links: false,
     });
-  });
-});
-
-describe("isJsonObject", () => {
-  it("narrows plain objects", () => {
-    expect(isJsonObject({ ok: true })).toBe(true);
-    expect(isJsonObject(null)).toBe(false);
-    expect(isJsonObject([])).toBe(false);
   });
 });
