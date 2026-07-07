@@ -39,7 +39,7 @@
     "prepack": "pnpm run build",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --config ../vitest.config.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
