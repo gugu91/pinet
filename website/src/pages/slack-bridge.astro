@@ -12,7 +12,7 @@ import Base from "../layouts/Base.astro";
     <h1>Slack Bridge</h1>
     <p class="dek">
       The adapter that puts Pinet in your Slack sidebar. Socket Mode ingress, default-deny access,
-      inbox tools, canvases, uploads, modals — and a manifest that configures the app for you.
+      inbox tools, canvases, uploads, modals, and a manifest that configures the app for you.
     </p>
     <span class="cmd"><span class="prompt">$ </span>pi install npm:@pinet/slack-bridge</span>
     <p class="small-note">
@@ -91,7 +91,7 @@ users:read</code></pre>
       </table>
       <p>
         Put them in <code>~/.pi/agent/settings.json</code>, or export
-        <code>SLACK_BOT_TOKEN</code> / <code>SLACK_APP_TOKEN</code> — settings override the
+        <code>SLACK_BOT_TOKEN</code> / <code>SLACK_APP_TOKEN</code>; settings override the
         environment. Never commit tokens; use separate apps for development and production.
       </p>
       <pre><code>{`{
@@ -156,7 +156,7 @@ users:read</code></pre>
     <div class="prose">
       <h2>Talking to Pinet</h2>
       <p>
-        In Slack: DM the bot, mention <code>@pinet</code> in a channel, or use the slash command —
+        In Slack: DM the bot, mention <code>@pinet</code> in a channel, or use the slash command,
         <code>/pinet agents list</code>. In pi, the command set splits by role:
       </p>
       <table>
@@ -244,8 +244,8 @@ users:read</code></pre>
         <div>
           <dt>guardrail naming</dt>
           <dd>
-            Every cold action carries a precise name — <code>slack:upload</code>,
-            <code>slack:canvas_update</code> — so policies can target exactly one capability.
+            Every cold action carries a precise name (<code>slack:upload</code>,
+            <code>slack:canvas_update</code>) so policies can target exactly one capability.
           </dd>
         </div>
       </dl>

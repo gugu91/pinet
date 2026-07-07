@@ -9,8 +9,8 @@
   --ink-soft: #5f5747;
   --rule: #1c1914;
   --rule-faint: #cfc7b2;
-  --signal: #b93a10;
-  --signal-soft: #e8d9cf;
+  --signal: #2038c0;
+  --signal-soft: #d4daf3;
   --serif: "Source Serif 4 Variable", "Source Serif 4", Georgia, serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --measure: 66ch;
@@ -276,10 +276,11 @@ pre code {
 .cmd {
   display: block;
   font-family: var(--mono);
-  font-size: 0.86rem;
-  background: var(--ink);
-  color: var(--paper);
-  border-left: 4px solid var(--signal);
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--paper-deep);
+  color: var(--ink);
+  border: 1.5px solid var(--rule);
   padding: 0.85rem 1.1rem;
   margin: 1.1rem 0;
   max-width: var(--measure);
@@ -288,7 +289,7 @@ pre code {
 }
 
 .cmd .prompt {
-  color: var(--signal-soft);
+  color: var(--signal);
   user-select: none;
 }
 
@@ -435,26 +436,24 @@ tr:last-child td {
 .xref {
   display: inline-block;
   font-family: var(--mono);
-  font-size: 0.78rem;
-  letter-spacing: 0.06em;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
   color: var(--ink);
-  text-decoration: none;
-  border: 1px solid var(--rule);
-  padding: 0.45rem 0.9rem;
-  margin: 0.4rem 0.6rem 0 0;
+  text-decoration: underline;
+  text-decoration-color: var(--rule-faint);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 4px;
+  margin: 0.5rem 1.8rem 0 0;
 }
 
 .xref:hover {
-  background: var(--ink);
-  color: var(--paper);
+  color: var(--signal);
+  text-decoration-color: var(--signal);
 }
 
 .xref .arrow {
   color: var(--signal);
-}
-
-.xref:hover .arrow {
-  color: var(--signal-soft);
+  text-decoration: none;
 }
 
 /* ── Footer ───────────────────────────────────────────── */
@@ -464,16 +463,18 @@ tr:last-child td {
   margin-top: 0;
 }
 
-.colophon-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 1.5rem;
-  padding: 1.2rem 0 2.2rem;
+.colophon-inner {
+  text-align: center;
+  padding: 1.8rem 0 2.4rem;
   font-family: var(--mono);
   font-size: 0.72rem;
+  line-height: 2;
   letter-spacing: 0.05em;
   color: var(--ink-soft);
-  flex-wrap: wrap;
+}
+
+.colophon-inner .mark {
+  color: var(--signal);
 }
 
 .colophon a {
@@ -481,4 +482,8 @@ tr:last-child td {
   text-decoration: underline;
   text-decoration-color: var(--signal);
   text-underline-offset: 3px;
+}
+
+.colophon a:hover {
+  color: var(--signal);
 }

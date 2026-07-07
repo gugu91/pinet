@@ -22,7 +22,7 @@ import Base from "../layouts/Base.astro";
       <h2>Runtime modes</h2>
       <p>
         Every pi session that loads the bridge runs in one of four modes. Pinet stays off unless you
-        set <code>runtimeMode</code>, <code>autoConnect</code>, or <code>autoFollow</code> — nothing
+        set <code>runtimeMode</code>, <code>autoConnect</code>, or <code>autoFollow</code>. Nothing
         connects to your workspace by accident.
       </p>
       <table>
@@ -32,7 +32,7 @@ import Base from "../layouts/Base.astro";
         <tbody>
           <tr>
             <td><code>single</code></td>
-            <td>One instance handles everything — ingress, work, replies.</td>
+            <td>One instance handles everything: ingress, work, replies.</td>
             <td>You run one agent and want Slack access without a mesh.</td>
           </tr>
           <tr>
@@ -55,7 +55,7 @@ import Base from "../layouts/Base.astro";
       <p>
         Inside pi, <code>/pinet start</code> makes the current session the broker,
         <code>/pinet follow</code> joins it, and <code>/pinet status</code> tells you which of these
-        is true right now. Only one session holds the Socket Mode connection — Slack allows a
+        is true right now. Only one session holds the Socket Mode connection: Slack allows a
         limited number per app, and a single WebSocket owner avoids duplicate delivery.
       </p>
     </div>
@@ -68,20 +68,20 @@ import Base from "../layouts/Base.astro";
       <p>
         <code>message.send</code> is the one primitive. A Slack reply, an agent-to-agent note, and a
         broker nudge are the same operation with different addresses; adapters translate at the
-        edges. This is what keeps new transports cheap — Discord, Linear, or GitHub would plug into
+        edges. This is what keeps new transports cheap: Discord, Linear, or GitHub would plug into
         the same flow rather than growing their own routing.
       </p>
       <h3>inbox semantics</h3>
       <p>Each agent has a durable inbox. Messages are:</p>
       <ul>
-        <li><strong>routed</strong> by thread ownership — an owned thread keeps flowing to its owner,</li>
+        <li><strong>routed</strong> by thread ownership (an owned thread keeps flowing to its owner),</li>
         <li><strong>queued</strong> while the agent is mid-turn, drained on the next turn,</li>
         <li><strong>marked read</strong> once processed, and</li>
         <li><strong>preserved</strong> across restarts.</li>
       </ul>
       <p>
         Thread ownership is the continuity mechanism. Once an agent claims a Slack thread, replies
-        in that thread route to it until the claim is released — by the agent finishing, or by
+        in that thread route to it until the claim is released, by the agent finishing or by
         RALPH noticing the owner is gone.
       </p>
     </div>
@@ -97,7 +97,7 @@ import Base from "../layouts/Base.astro";
         assignable again. Dead agents get reaped, not ignored.
       </p>
       <p>
-        Identities are named — when "Rocket Dolphin" or "Silent Crocodile" posts in a thread, you
+        Identities are named. When "Rocket Dolphin" or "Silent Crocodile" posts in a thread, you
         know which agent holds which task. With dozens of tasks moving at once, names are what make
         the mesh legible to the humans steering it. Rename a session any time with
         <code>/pinet rename</code>.
@@ -120,8 +120,8 @@ import Base from "../layouts/Base.astro";
         <li>triggers scheduled wake-ups.</li>
       </ul>
       <p>
-        The loop is tunable — faster cycles for quicker recovery, snoozing after empty cycles for
-        quiet nights:
+        The loop is tunable: faster cycles for quicker recovery, snoozing after empty cycles for
+        quiet nights.
       </p>
       <pre><code>{`{
   "slack-bridge": {
@@ -133,7 +133,7 @@ import Base from "../layouts/Base.astro";
       <div class="callout">
         <span class="label">operational note</span>
         If work gets stuck: <code>/pinet status</code> for current state,
-        <code>/pinet logs</code> for repeated failures, then let RALPH run — most stalls clear on
+        <code>/pinet logs</code> for repeated failures, then let RALPH run; most stalls clear on
         its next pass without intervention.
       </div>
     </div>
@@ -145,7 +145,7 @@ import Base from "../layouts/Base.astro";
       <h2>The dispatcher</h2>
       <p>
         Agents drive coordination through a compact <code>pinet</code> dispatcher rather than a
-        sprawl of tools — one entry point, discoverable actions, small schemas per action:
+        sprawl of tools: one entry point, discoverable actions, a small schema per action.
       </p>
       <pre><code>{`{
   "action": "send",
@@ -173,7 +173,7 @@ import Base from "../layouts/Base.astro";
         </div>
         <div>
           <dt>help</dt>
-          <dd>Discover actions and their schemas — nothing bloats the hot path.</dd>
+          <dd>Discover actions and their schemas; nothing bloats the hot path.</dd>
         </div>
       </dl>
       <p>
@@ -191,8 +191,8 @@ import Base from "../layouts/Base.astro";
       <h2>@pinet/pinet-core</h2>
       <p>
         The <code>pinet-core</code> package holds the runtime helpers that work independently of
-        Slack — the pieces the bridge uses internally, extracted behind package exports so future
-        adapters can move one boundary at a time:
+        Slack: the pieces the bridge uses internally, extracted behind package exports so future
+        adapters can move one boundary at a time.
       </p>
       <ul>
         <li>output option normalisation (defaults to <code>cli</code>; accepts <code>json</code> or <code>full</code>),</li>

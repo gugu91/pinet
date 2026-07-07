@@ -1,0 +1,45 @@
+# Pinet website
+
+Astro site for Pinet, covering pinet-core and the Slack bridge.
+
+- `/` — what Pinet is, the life of a message, operating principles, quick start
+- `/core/` — runtime modes, the message primitive, agent identity, RALPH, the dispatcher, `@pinet/pinet-core`
+- `/slack-bridge/` — app manifest setup, tokens, access control, configuration reference, security, troubleshooting
+
+## Develop
+
+This directory is a standalone pnpm project. Its `pnpm-workspace.yaml` is a
+boundary marker that keeps it outside the monorepo workspace and the turbo
+lint/typecheck/test pipelines.
+
+```bash
+cd website
+pnpm install
+pnpm dev        # http://localhost:4321
+pnpm build      # static output in dist/
+pnpm preview
+```
+
+## Design system
+
+Spec-document aesthetic: ink on paper, Source Serif 4 prose, IBM Plex Mono
+machinery, ultramarine signal accent, hairline rules, numbered sections.
+No gradients, no glow, no glass, no card grids, no sticky chrome.
+
+The design and copy were iterated against an
+[unslop](https://github.com/mshumer/unslop) run over 11 generated developer-tool
+landing pages:
+
+- [`design/unslop-profile.md`](design/unslop-profile.md) — the distilled
+  "what to avoid" profile. Read it before restyling anything.
+- [`design/unslop-analysis.md`](design/unslop-analysis.md) — the full counted
+  pattern analysis the profile is based on.
+
+Content is sourced from the repository README, `slack-bridge/README.md`,
+`pinet-core/README.md`, and `plans/pinet-vision.md`. When those change, keep
+the site in step.
+
+## Deploy
+
+Not wired up yet. For GitHub Pages or similar, set `site` (and `base` for
+project sub-paths) in `astro.config.mjs`, then publish `dist/`.

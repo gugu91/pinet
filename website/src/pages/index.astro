@@ -15,7 +15,7 @@ import MeshDiagram from "../components/MeshDiagram.astro";
       <p class="dek">
         Pinet is a local-first coordination layer for <a
           href="https://github.com/badlogic/pi-mono">pi</a> coding agents. A single broker watches
-        Slack, routes every message, and keeps a mesh of named worker agents shipping — writing
+        Slack, routes every message, and keeps a mesh of named worker agents shipping: writing
         code, reviewing each other's pull requests, and repairing themselves when something stalls.
       </p>
       <span class="cmd"><span class="prompt">$ </span>pi install npm:@pinet/slack-bridge</span>
@@ -47,7 +47,7 @@ import MeshDiagram from "../components/MeshDiagram.astro";
       </p>
       <p>
         Everything rides on a single primitive, <code>message.send</code>. Slack replies,
-        agent-to-agent messages, and scheduled wake-ups are the same thing underneath — adapters
+        agent-to-agent messages, and scheduled wake-ups are the same thing underneath; adapters
         translate at the edges. The broker reasons; the routing under it is deterministic policy
         code.
       </p>
@@ -63,7 +63,7 @@ import MeshDiagram from "../components/MeshDiagram.astro";
           <div>
             <span class="clause-title">Arrival.</span>
             <p>
-              A Slack message lands over Socket Mode — a DM, an <code>@pinet</code> mention, or a
+              A Slack message lands over Socket Mode: a DM, an <code>@pinet</code> mention, or a
               <code>/pinet</code> slash command.
             </p>
           </div>
@@ -83,7 +83,7 @@ import MeshDiagram from "../components/MeshDiagram.astro";
             <span class="clause-title">Routing.</span>
             <p>
               The broker resolves thread ownership. A thread claimed by an agent keeps flowing to
-              that agent; unclaimed work is assigned. No split brain — one control plane owns
+              that agent; unclaimed work is assigned. No split brain; one control plane owns
               delivery.
             </p>
           </div>
@@ -101,7 +101,7 @@ import MeshDiagram from "../components/MeshDiagram.astro";
           <div>
             <span class="clause-title">Work &amp; reply.</span>
             <p>
-              The agent acknowledges, does the work — code, tests, PRs — and replies in the same
+              The agent acknowledges, does the work (code, tests, PRs), and replies in the same
               thread via <code>slack_send</code>. The ball never silently drops.
             </p>
           </div>
@@ -225,14 +225,14 @@ import MeshDiagram from "../components/MeshDiagram.astro";
     <div class="prose">
       <h2>Built by the system it enables</h2>
       <p>
-        Pinet was built by agents coordinating through Slack and GitHub — the same broker, the same
+        Pinet was built by agents coordinating through Slack and GitHub: the same broker, the same
         inbox, the same thread ownership described on this page. During development the mesh merged
         over fifty pull requests in a single day with minimal human intervention: workers wrote the
         code, other agents reviewed it, and RALPH cleaned up after the ones that wandered off.
       </p>
       <p>
         Humans set priorities, approve merges, and hold the API tokens. The system handles
-        coordination and execution. The aim is to move you up a level — from doing every step to
+        coordination and execution. The aim is to move you up a level, from doing every step to
         steering a mesh that coordinates itself.
       </p>
       <div>

@@ -51,15 +51,17 @@ const { title, description, docId, active = "home" } = Astro.props;
     </main>
 
     <footer class="colophon">
-      <div class="shell colophon-row">
-        <span>
-          © {new Date().getFullYear()} · MIT ·
-          <a href="https://github.com/gugu91/extensions">gugu91/extensions</a>
-        </span>
-        <span>
-          <a href="https://www.npmjs.com/package/@pinet/slack-bridge">npm:@pinet/slack-bridge</a>
-        </span>
-        <span>built by the mesh it describes</span>
+      <div class="shell colophon-inner">
+        <div>
+          <span class="mark">※</span> written, reviewed, and merged by the mesh it describes <span
+            class="mark">※</span>
+        </div>
+        <div>
+          source: <a href="https://github.com/gugu91/extensions">gugu91/extensions</a> · package: <a
+            href="https://www.npmjs.com/package/@pinet/slack-bridge">@pinet/slack-bridge</a> · MIT
+          © {new Date().getFullYear()}
+        </div>
+        <div>set in Source Serif 4 &amp; IBM Plex Mono · built with Astro</div>
       </div>
     </footer>
   </body>
