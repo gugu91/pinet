@@ -1,11 +1,7 @@
 export type RuntimeScopeSource = "explicit" | "compatibility";
 
-export type TransportJsonPrimitive = string | number | boolean | null;
-export type TransportJsonValue =
-  | TransportJsonPrimitive
-  | TransportJsonObject
-  | TransportJsonValue[];
-export type TransportJsonObject = { [key: string]: TransportJsonValue };
+export type TransportJsonValue = unknown;
+export type TransportJsonObject = Record<string, TransportJsonValue>;
 export type TransportRichBlock = TransportJsonObject;
 export type AdapterCapabilityParams = TransportJsonObject;
 export type AdapterCapabilityPayload = TransportJsonObject;

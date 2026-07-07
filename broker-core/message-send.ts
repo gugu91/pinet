@@ -1,3 +1,4 @@
+import type { TransportJsonObject, TransportRichBlock } from "@pinet/transport-core";
 import type {
   BrokerMessage,
   MessageAdapter,
@@ -24,7 +25,7 @@ export interface BrokerMessageSenderDb {
     sender: string,
     body: string,
     targetAgentIds: string[],
-    metadata?: Record<string, unknown>,
+    metadata?: TransportJsonObject,
   ): BrokerMessage;
 }
 
@@ -40,12 +41,12 @@ export interface SendBrokerMessageInput {
   source?: string;
   channel?: string;
   content?: NormalizedMessageContent;
-  blocks?: ReadonlyArray<Record<string, unknown>>;
+  blocks?: ReadonlyArray<TransportRichBlock>;
   files?: ReadonlyArray<OutboundAttachmentFile>;
   agentName?: string;
   agentEmoji?: string;
   agentOwnerToken?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: TransportJsonObject;
 }
 
 function normalizeMessageContent(
