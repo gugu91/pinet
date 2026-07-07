@@ -1,0 +1,322 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base
+  title="Slack Bridge — put the mesh in your sidebar"
+  description="Install @pinet/slack-bridge, create the Slack app from a manifest, wire up two tokens, and control exactly who can talk to your agents."
+  docId="PINET/SLACK-BRIDGE"
+  active="slack-bridge"
+>
+  <header class="page-head">
+    <h1>Slack Bridge</h1>
+    <p class="dek">
+      The adapter that puts Pinet in your Slack sidebar. Socket Mode ingress, default-deny access,
+      inbox tools, canvases, uploads, modals — and a manifest that configures the app for you.
+    </p>
+    <span class="cmd"><span class="prompt">$ </span>pi install npm:@pinet/slack-bridge</span>
+    <p class="small-note">
+      pin a version with <code>@0.2.2</code> · node ≥ 22 · a workspace where you can install apps
+    </p>
+  </header>
+
+  <section class="section">
+    <div class="section-no">§ 01<small>slack app</small></div>
+    <div class="prose">
+      <h2>Create the app from the manifest</h2>
+      <ol class="clauses">
+        <li>
+          <div>
+            <span class="clause-title">Open <a href="https://api.slack.com/apps">api.slack.com/apps</a>.</span>
+            <p>Select "Create New App", then "From a manifest", then your workspace.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Paste the manifest.</span>
+            <p>
+              Use <a
+                href="https://github.com/gugu91/extensions/blob/main/slack-bridge/manifest.yaml"
+                ><code>slack-bridge/manifest.yaml</code></a
+              >. It configures Socket Mode, the assistant view, bot scopes, event subscriptions,
+              and slash commands in one paste.
+            </p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <span class="clause-title">Optional: rename the slash command.</span>
+            <p>
+              Change <code>features.slash_commands[0].command</code> before creating, and set
+              <code>slackCommandName</code> in <code>settings.json</code> to match.
+            </p>
+          </div>
+        </li>
+      </ol>
+      <h3>scopes the manifest grants</h3>
+      <pre><code>app_mentions:read    assistant:write      bookmarks:read
+bookmarks:write      canvases:read        canvases:write
+channels:history     channels:read        chat:write
+commands             files:read           files:write
+groups:history       groups:read          im:history
+im:read              im:write             pins:read
+pins:write           reactions:read       reactions:write
+users:read</code></pre>
+      <p class="small-note">
+        files:read looks odd but is real: Slack paginates canvas comments through files.info.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-no">§ 02<small>credentials</small></div>
+    <div class="prose">
+      <h2>Two tokens</h2>
+      <table>
+        <thead>
+          <tr><th>Token</th><th>Where</th><th>Format</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>App-level token</td>
+            <td>Basic Information → App-Level Tokens → Generate, with <code>connections:write</code></td>
+            <td><code>xapp-1-…</code></td>
+          </tr>
+          <tr>
+            <td>Bot token</td>
+            <td>OAuth &amp; Permissions → Install to Workspace → Bot User OAuth Token</td>
+            <td><code>xoxb-…</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Put them in <code>~/.pi/agent/settings.json</code>, or export
+        <code>SLACK_BOT_TOKEN</code> / <code>SLACK_APP_TOKEN</code> — settings override the
+        environment. Never commit tokens; use separate apps for development and production.
+      </p>
+      <pre><code>{`{
+  "slack-bridge": {
+    "botToken": "xoxb-your-bot-token",
+    "appToken": "xapp-your-app-token",
+    "runtimeMode": "single",
+    "allowedUsers": ["U_YOUR_USER_ID"]
+  }
+}`}</code></pre>
+      <p>
+        Start pi. Pinet appears in your sidebar. Pinet stays off unless <code>runtimeMode</code>,
+        <code>autoConnect</code>, or <code>autoFollow</code> says otherwise.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-no">§ 03<small>access</small></div>
+    <div class="prose">
+      <h2>Who gets in</h2>
+      <p>
+        Slack access is <strong>default-deny</strong>. Until you configure one of these, nobody can
+        use Pinet:
+      </p>
+      <dl class="defs">
+        <div>
+          <dt>allowedUsers</dt>
+          <dd>
+            A list of Slack user IDs. Find one via a profile → "Copy member ID".
+          </dd>
+        </div>
+        <div>
+          <dt>allowAllWorkspaceUsers</dt>
+          <dd>Everyone in the workspace. An explicit opt-in, never a default.</dd>
+        </div>
+      </dl>
+      <h3>ingress guard</h3>
+      <p>
+        Authorization decides <em>who</em> can use Pinet; the ingress guard decides <em>when</em> a
+        mention is required. In busy channels you can require an explicit <code>@pinet</code> before
+        the bot engages, with trusted-user carve-outs for mixed-participant threads:
+      </p>
+      <pre><code>{`{
+  "slack-bridge": {
+    "ingressGuard": {
+      "requireMention": {
+        "channels": ["C_CHANNEL_ID"],
+        "mixedParticipantThreads": {
+          "enabled": true,
+          "trustedUsers": ["U_TRUSTED_USER"]
+        }
+      }
+    }
+  }
+}`}</code></pre>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-no">§ 04<small>operation</small></div>
+    <div class="prose">
+      <h2>Talking to Pinet</h2>
+      <p>
+        In Slack: DM the bot, mention <code>@pinet</code> in a channel, or use the slash command —
+        <code>/pinet agents list</code>. In pi, the command set splits by role:
+      </p>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>/pinet status</code></td><td>Current Pinet state for this session.</td></tr>
+          <tr><td><code>/pinet logs</code></td><td>Recent broker activity.</td></tr>
+          <tr><td><code>/pinet rename [name]</code></td><td>Rename this agent.</td></tr>
+          <tr><td><code>/pinet free</code></td><td>Mark this agent idle.</td></tr>
+          <tr><td><code>/pinet start</code></td><td>Become the broker.</td></tr>
+          <tr><td><code>/pinet follow</code> / <code>unfollow</code></td><td>Join or leave the mesh.</td></tr>
+          <tr><td><code>/pinet reload &lt;agent&gt;</code></td><td>Ask another agent to reload.</td></tr>
+          <tr><td><code>/pinet exit &lt;agent&gt;</code></td><td>Ask another agent to exit.</td></tr>
+          <tr><td><code>/pinet snooze [duration]</code></td><td>Quiet empty RALPH cycles.</td></tr>
+          <tr><td><code>/pinet subtree …</code></td><td>Manage subtree broker mode.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-no">§ 05<small>reference</small></div>
+    <div class="prose">
+      <h2>Configuration</h2>
+      <table>
+        <thead>
+          <tr><th>Setting</th><th>Description</th><th>Default</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>botToken</code></td><td>Bot User OAuth Token (required)</td><td>—</td></tr>
+          <tr><td><code>appToken</code></td><td>App-level token for Socket Mode (required)</td><td>—</td></tr>
+          <tr>
+            <td><code>runtimeMode</code></td>
+            <td><code>off</code> · <code>single</code> · <code>broker</code> · <code>follower</code></td>
+            <td><code>off</code></td>
+          </tr>
+          <tr><td><code>allowedUsers</code></td><td>Slack user IDs allowed to use Pinet</td><td>—</td></tr>
+          <tr><td><code>allowAllWorkspaceUsers</code></td><td>Allow every workspace member</td><td><code>false</code></td></tr>
+          <tr><td><code>defaultChannel</code></td><td>Where Pinet posts updates</td><td>—</td></tr>
+          <tr><td><code>logChannel</code></td><td>Where Pinet posts logs</td><td>—</td></tr>
+          <tr>
+            <td><code>logLevel</code></td>
+            <td><code>errors</code> · <code>actions</code> · <code>verbose</code></td>
+            <td><code>actions</code></td>
+          </tr>
+          <tr><td><code>autoConnect</code></td><td>Start as single instance when <code>runtimeMode</code> unset</td><td><code>false</code></td></tr>
+          <tr><td><code>autoFollow</code></td><td>Start as follower if a broker exists</td><td><code>false</code></td></tr>
+          <tr><td><code>ralphLoopIntervalMs</code></td><td>Stall-check interval</td><td><code>300000</code></td></tr>
+          <tr><td><code>meshSecret</code> / <code>meshSecretPath</code></td><td>Shared-secret mesh auth</td><td>off</td></tr>
+          <tr><td><code>suggestedPrompts</code></td><td>Prompt chips in the assistant view</td><td>—</td></tr>
+        </tbody>
+      </table>
+      <h3>mesh authentication</h3>
+      <p>
+        Optional shared-secret auth between broker and followers. Settings override environment
+        variables (<code>PINET_MESH_SECRET</code>, <code>PINET_MESH_SECRET_PATH</code>); inline
+        secrets override file paths. Brokers create the secret file if it does not exist; followers
+        need an existing one. Unset means mesh auth is off.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-no">§ 06<small>containment</small></div>
+    <div class="prose">
+      <h2>Security posture</h2>
+      <dl class="defs">
+        <div>
+          <dt>default-deny</dt>
+          <dd>No <code>allowedUsers</code>, no access. There is no permissive default to forget.</dd>
+        </div>
+        <div>
+          <dt>confirmation gates</dt>
+          <dd>
+            Require explicit confirmation per action:
+            <code>{'"requireConfirmation": ["slack:create_channel", "slack:upload", "slack:delete"]'}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>read-only mode</dt>
+          <dd><code>{'"security": { "readOnly": true }'}</code> blocks all modifications.</dd>
+        </div>
+        <div>
+          <dt>guardrail naming</dt>
+          <dd>
+            Every cold action carries a precise name — <code>slack:upload</code>,
+            <code>slack:canvas_update</code> — so policies can target exactly one capability.
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-no">§ 07<small>recovery</small></div>
+    <div class="prose">
+      <h2>When something misbehaves</h2>
+      <dl class="defs">
+        <div>
+          <dt>no bot in sidebar</dt>
+          <dd>Both tokens present in settings? App installed to the workspace? pi running?</dd>
+        </div>
+        <div>
+          <dt>websocket errors</dt>
+          <dd>
+            Validate the app token, confirm Socket Mode is enabled, check connectivity. Slack caps
+            connections at ten per app.
+          </dd>
+        </div>
+        <div>
+          <dt>no response</dt>
+          <dd>
+            Socket Mode shows "Connected"? Event subscriptions enabled? Sender in
+            <code>allowedUsers</code>? The log channel usually names the culprit.
+          </dd>
+        </div>
+        <div>
+          <dt>permission errors</dt>
+          <dd>
+            Invite the bot (<code>/invite @pinet</code>), verify scopes against the manifest,
+            reinstall the app after scope changes.
+          </dd>
+        </div>
+        <div>
+          <dt>stalled work</dt>
+          <dd>
+            <code>/pinet status</code>, then <code>/pinet logs</code>. RALPH releases stale claims
+            on its next cycle; lower <code>ralphLoopIntervalMs</code> for faster recovery.
+          </dd>
+        </div>
+      </dl>
+      <div>
+        <a class="xref" href="https://github.com/gugu91/extensions/tree/main/slack-bridge"
+          ><span class="arrow">→</span> slack-bridge source</a
+        >
+        <a class="xref" href="/core/"><span class="arrow">→</span> the runtime underneath</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .page-head {
+    padding: 2.6rem 0 2.4rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .page-head h1 {
+    font-family: var(--serif);
+    font-size: clamp(2rem, 4vw, 2.9rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin: 0 0 0.8rem;
+  }
+
+  .dek {
+    font-size: 1.05rem;
+    max-width: 62ch;
+    margin: 0 0 1.2rem;
+  }
+</style>

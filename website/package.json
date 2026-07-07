@@ -1,0 +1,17 @@
+{
+  "name": "@pinet/website",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Website for Pinet — multi-agent coordination for pi (pinet-core + slack-bridge)",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@fontsource-variable/source-serif-4": "^5.2.9",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "astro": "^7.0.6"
+  }
+}

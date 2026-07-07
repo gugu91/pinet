@@ -1,0 +1,66 @@
+---
+import "@fontsource-variable/source-serif-4";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/600.css";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description: string;
+  docId: string;
+  active?: "core" | "slack-bridge" | "home";
+}
+
+const { title, description, docId, active = "home" } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="shell masthead-row">
+        <div>
+          <a class="wordmark" href="/">pinet<span class="tld">/</span></a>
+          <span class="masthead-role">&nbsp; multi-agent coordination for pi</span>
+        </div>
+        <nav>
+          <a href="/core/" aria-current={active === "core" ? "page" : undefined}>Core</a>
+          <a href="/slack-bridge/" aria-current={active === "slack-bridge" ? "page" : undefined}
+            >Slack&nbsp;Bridge</a
+          >
+          <a href="https://github.com/gugu91/extensions">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="shell doc-meta">
+      <span>DOC <strong>{docId}</strong></span>
+      <span>STATUS&nbsp;·&nbsp;LIVING&nbsp;DOCUMENT</span>
+      <span>LICENSE&nbsp;·&nbsp;MIT</span>
+    </div>
+
+    <main class="shell">
+      <slot />
+    </main>
+
+    <footer class="colophon">
+      <div class="shell colophon-row">
+        <span>
+          © {new Date().getFullYear()} · MIT ·
+          <a href="https://github.com/gugu91/extensions">gugu91/extensions</a>
+        </span>
+        <span>
+          <a href="https://www.npmjs.com/package/@pinet/slack-bridge">npm:@pinet/slack-bridge</a>
+        </span>
+        <span>built by the mesh it describes</span>
+      </div>
+    </footer>
+  </body>
+</html>

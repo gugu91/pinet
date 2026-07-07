@@ -1,0 +1,132 @@
+---
+// The broker–worker mesh, drawn as a wiring diagram.
+// Pure HTML/CSS: boxes, hairline wires, mono annotations.
+---
+
+<figure class="mesh">
+  <div class="mesh-node mesh-slack">
+    <span class="node-kind">slack workspace</span>
+    <span class="node-name">#your-channel · DMs · /pinet</span>
+  </div>
+
+  <div class="wire wire-down">
+    <span class="wire-label">socket mode</span>
+  </div>
+
+  <div class="mesh-node mesh-broker">
+    <span class="node-kind">broker</span>
+    <span class="node-name">routing · thread ownership · RALPH loop</span>
+  </div>
+
+  <div class="wire wire-fan" aria-hidden="true">
+    <span class="wire-label">message.send</span>
+  </div>
+
+  <div class="mesh-workers">
+    <div class="mesh-node mesh-worker">
+      <span class="node-kind">worker</span>
+      <span class="node-name">Rocket Dolphin</span>
+      <span class="node-task">reviewing PR #123</span>
+    </div>
+    <div class="mesh-node mesh-worker">
+      <span class="node-kind">worker</span>
+      <span class="node-name">Silent Crocodile</span>
+      <span class="node-task">fixing broken branch</span>
+    </div>
+    <div class="mesh-node mesh-worker">
+      <span class="node-kind">worker</span>
+      <span class="node-name">Pixel Lime Jaguar</span>
+      <span class="node-task">running the tests</span>
+    </div>
+  </div>
+
+  <figcaption>
+    fig. 1 — one broker owns routing and lifecycle; workers pick up threads, ship, and report back.
+  </figcaption>
+</figure>
+
+<style>
+  .mesh {
+    margin: 0;
+    font-family: var(--mono);
+  }
+
+  .mesh-node {
+    border: 1.5px solid var(--rule);
+    background: var(--paper);
+    padding: 0.55rem 0.8rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  .node-kind {
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--signal);
+  }
+
+  .node-name {
+    font-size: 0.78rem;
+    color: var(--ink);
+  }
+
+  .node-task {
+    font-size: 0.66rem;
+    color: var(--ink-soft);
+  }
+
+  .mesh-broker {
+    border-width: 2.5px;
+  }
+
+  .wire {
+    position: relative;
+    height: 2rem;
+    margin-left: 1.6rem;
+    border-left: 1.5px solid var(--rule);
+  }
+
+  .wire-label {
+    position: absolute;
+    left: 0.6rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    color: var(--ink-soft);
+  }
+
+  .wire-fan {
+    border-left: 1.5px solid var(--rule);
+  }
+
+  .mesh-workers {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.6rem;
+    border-top: 1.5px solid var(--rule);
+    padding-top: 0.6rem;
+  }
+
+  .mesh-workers .mesh-node {
+    border-style: solid;
+  }
+
+  figcaption {
+    margin-top: 0.8rem;
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    border-top: 1px solid var(--rule-faint);
+    padding-top: 0.5rem;
+  }
+
+  @media (max-width: 640px) {
+    .mesh-workers {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

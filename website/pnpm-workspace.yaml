@@ -1,0 +1,6 @@
+# Boundary marker: keeps the website a standalone pnpm project,
+# outside the extensions monorepo workspace and its turbo pipelines.
+packages:
+  - "."
+allowBuilds:
+  esbuild: true
