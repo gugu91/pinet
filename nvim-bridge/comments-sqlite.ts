@@ -40,12 +40,72 @@ interface CountRow {
   cnt: number;
 }
 
-interface IdRow {
-  id: string;
-}
-
 interface SqliteJournalModeResult {
   journal_mode?: string | null;
+}
+
+type SqliteRow = Record<string, unknown>;
+
+function readSqliteRow(value: unknown, label: string): SqliteRow {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Expected SQLite ${label} row to be an object`);
+  }
+  return value as SqliteRow;
+}
+
+function readStringColumn(row: SqliteRow, key: string, label: string): string {
+  const value = row[key];
+  if (typeof value !== "string") {
+    throw new Error(`Expected SQLite ${label}.${key} to be a string`);
+  }
+  return value;
+}
+
+function readNullableNumberColumn(row: SqliteRow, key: string, label: string): number | null {
+  const value = row[key];
+  if (value == null) return null;
+  if (typeof value !== "number") {
+    throw new Error(`Expected SQLite ${label}.${key} to be a number or null`);
+  }
+  return value;
+}
+
+function readCountRow(value: unknown): CountRow {
+  const row = readSqliteRow(value, "count");
+  const cnt = row.cnt;
+  if (typeof cnt !== "number") {
+    throw new Error("Expected SQLite count row cnt to be a number");
+  }
+  return { cnt };
+}
+
+// agent-standards-ignore prefer-inline-single-use-helper: semantic row-mapper seam for the SQLite comments table.
+function readCommentRow(value: unknown): CommentRow {
+  const row = readSqliteRow(value, "comment");
+  const contextFile = row.context_file;
+  if (contextFile != null && typeof contextFile !== "string") {
+    throw new Error("Expected SQLite comment.context_file to be a string or null");
+  }
+
+  return {
+    id: readStringColumn(row, "id", "comment"),
+    thread_id: readStringColumn(row, "thread_id", "comment"),
+    actor_type: readStringColumn(row, "actor_type", "comment"),
+    actor_id: readStringColumn(row, "actor_id", "comment"),
+    created_at: readStringColumn(row, "created_at", "comment"),
+    body: readStringColumn(row, "body", "comment"),
+    body_path: readStringColumn(row, "body_path", "comment"),
+    context_file: contextFile ?? null,
+    context_start_line: readNullableNumberColumn(row, "context_start_line", "comment"),
+    context_end_line: readNullableNumberColumn(row, "context_end_line", "comment"),
+  };
+}
+
+function readCommentRows(values: unknown): CommentRow[] {
+  if (!Array.isArray(values)) {
+    throw new Error("Expected SQLite comment rows to be an array");
+  }
+  return values.map(readCommentRow);
 }
 
 function getSqliteJournalMode(result?: SqliteJournalModeResult): string {
@@ -186,25 +246,29 @@ export class SqliteCommentStore implements ICommentStore {
     const threadId = normalizeThreadId(input.threadId);
     const limit = normalizeLimit(input.limit);
 
-    const countRow = db
-      .prepare("SELECT COUNT(*) as cnt FROM comments WHERE thread_id = ?")
-      .get(threadId) as unknown as CountRow;
+    const countRow = readCountRow(
+      db.prepare("SELECT COUNT(*) as cnt FROM comments WHERE thread_id = ?").get(threadId),
+    );
     const total = countRow.cnt;
 
     let rows: CommentRow[];
     if (limit != null) {
-      rows = db
-        .prepare(
-          `SELECT * FROM (
+      rows = readCommentRows(
+        db
+          .prepare(
+            `SELECT * FROM (
             SELECT * FROM comments WHERE thread_id = ?
             ORDER BY created_at DESC, id DESC LIMIT ?
           ) ORDER BY created_at ASC, id ASC`,
-        )
-        .all(threadId, limit) as unknown as CommentRow[];
+          )
+          .all(threadId, limit),
+      );
     } else {
-      rows = db
-        .prepare("SELECT * FROM comments WHERE thread_id = ? ORDER BY created_at ASC, id ASC")
-        .all(threadId) as unknown as CommentRow[];
+      rows = readCommentRows(
+        db
+          .prepare("SELECT * FROM comments WHERE thread_id = ? ORDER BY created_at ASC, id ASC")
+          .all(threadId),
+      );
     }
 
     return {
@@ -218,24 +282,24 @@ export class SqliteCommentStore implements ICommentStore {
     const db = this.getDb();
     const limit = normalizeLimit(input.limit);
 
-    const countRow = db
-      .prepare("SELECT COUNT(*) as cnt FROM comments")
-      .get() as unknown as CountRow;
+    const countRow = readCountRow(db.prepare("SELECT COUNT(*) as cnt FROM comments").get());
     const total = countRow.cnt;
 
     let rows: CommentRow[];
     if (limit != null) {
-      rows = db
-        .prepare(
-          `SELECT * FROM (
+      rows = readCommentRows(
+        db
+          .prepare(
+            `SELECT * FROM (
             SELECT * FROM comments ORDER BY created_at DESC, id DESC LIMIT ?
           ) ORDER BY created_at ASC, id ASC`,
-        )
-        .all(limit) as unknown as CommentRow[];
+          )
+          .all(limit),
+      );
     } else {
-      rows = db
-        .prepare("SELECT * FROM comments ORDER BY created_at ASC, id ASC")
-        .all() as unknown as CommentRow[];
+      rows = readCommentRows(
+        db.prepare("SELECT * FROM comments ORDER BY created_at ASC, id ASC").all(),
+      );
     }
 
     return {
@@ -247,9 +311,7 @@ export class SqliteCommentStore implements ICommentStore {
   async wipeAllComments(): Promise<CommentWipeResult> {
     const db = this.getDb();
 
-    const countRow = db
-      .prepare("SELECT COUNT(*) as cnt FROM comments")
-      .get() as unknown as CountRow;
+    const countRow = readCountRow(db.prepare("SELECT COUNT(*) as cnt FROM comments").get());
     const removed = countRow.cnt;
 
     db.exec("DELETE FROM comments");
@@ -265,17 +327,25 @@ export class SqliteCommentStore implements ICommentStore {
     const db = this.getDb();
     const normalizedThreadId = normalizeThreadId(threadId);
 
-    const countRow = db
-      .prepare("SELECT COUNT(*) as cnt FROM comments WHERE thread_id = ?")
-      .get(normalizedThreadId) as unknown as CountRow;
+    const countRow = readCountRow(
+      db
+        .prepare("SELECT COUNT(*) as cnt FROM comments WHERE thread_id = ?")
+        .get(normalizedThreadId),
+    );
     const total = countRow.cnt;
 
-    const latestRow = db
+    const latestRowValue = db
       .prepare(
         "SELECT id FROM comments WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
       )
-      .get(normalizedThreadId) as unknown as IdRow | undefined;
-    const latestId = latestRow?.id ?? null;
+      .get(normalizedThreadId);
+    const latestId = latestRowValue
+      ? readStringColumn(
+          readSqliteRow(latestRowValue, "latest comment id"),
+          "id",
+          "latest comment id",
+        )
+      : null;
 
     return {
       threadId: normalizedThreadId,
