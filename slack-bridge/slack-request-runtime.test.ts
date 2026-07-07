@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createSlackRequestRuntime } from "./slack-request-runtime.js";
+import { createSlackRequestRuntime, type SlackRequestBody } from "./slack-request-runtime.js";
 
 const slackApiState = vi.hoisted(() => ({
   callSlackApi: vi.fn(),
@@ -45,7 +45,7 @@ describe("createSlackRequestRuntime", () => {
       async (
         _method: string,
         _token: string,
-        _body?: Record<string, unknown>,
+        _body?: SlackRequestBody,
         options?: { signal?: AbortSignal },
       ) =>
         new Promise((_resolve, reject) => {
