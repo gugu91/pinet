@@ -21,6 +21,10 @@ const { title, description, docId, active = "home" } = Astro.props;
     <title>{title}</title>
   </head>
   <body>
+    <!-- impeccable-disable numbered-section-markers, single-font -- spec-document register:
+         § numbers are citable anchors (each links to #sNN and xrefs cite them, like RFC
+         sections); the mono second family loads via bundled global CSS the static
+         engine misses. -->
     <header class="masthead">
       <div class="shell masthead-row">
         <div>

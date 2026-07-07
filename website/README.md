@@ -37,6 +37,11 @@ Two deliberate refusals worth preserving:
    models reach for when told to avoid the first. Earlier drafts of this site
    landed there twice. White + grotesque + functional red is the break.
 
+Design context for agents lives in [`PRODUCT.md`](PRODUCT.md) and
+[`DESIGN.md`](DESIGN.md) (impeccable-compatible). The site passes
+[impeccable](https://github.com/pbakaus/impeccable)'s deterministic detector
+with zero findings; the two inline waivers in `Base.astro` carry their reasons.
+
 The design and copy were also iterated against an
 [unslop](https://github.com/mshumer/unslop) run over 11 generated developer-tool
 landing pages:

@@ -20,8 +20,8 @@ import Base from "../layouts/Base.astro";
     </p>
   </header>
 
-  <section class="section">
-    <div class="section-no">§ 01<small>slack app</small></div>
+  <section class="section" id="s01">
+    <div class="section-no"><a href="#s01">§ 01</a><small>slack app</small></div>
     <div class="prose">
       <h2>Create the app from the manifest</h2>
       <ol class="clauses">
@@ -68,8 +68,8 @@ users:read</code></pre>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-no">§ 02<small>credentials</small></div>
+  <section class="section" id="s02">
+    <div class="section-no"><a href="#s02">§ 02</a><small>credentials</small></div>
     <div class="prose">
       <h2>Two tokens</h2>
       <table>
@@ -109,8 +109,8 @@ users:read</code></pre>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-no">§ 03<small>access</small></div>
+  <section class="section" id="s03">
+    <div class="section-no"><a href="#s03">§ 03</a><small>access</small></div>
     <div class="prose">
       <h2>Who gets in</h2>
       <p>
@@ -151,8 +151,8 @@ users:read</code></pre>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-no">§ 04<small>operation</small></div>
+  <section class="section" id="s04">
+    <div class="section-no"><a href="#s04">§ 04</a><small>operation</small></div>
     <div class="prose">
       <h2>Talking to Pinet</h2>
       <p>
@@ -179,8 +179,8 @@ users:read</code></pre>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-no">§ 05<small>reference</small></div>
+  <section class="section" id="s05">
+    <div class="section-no"><a href="#s05">§ 05</a><small>reference</small></div>
     <div class="prose">
       <h2>Configuration</h2>
       <table>
@@ -188,17 +188,17 @@ users:read</code></pre>
           <tr><th>Setting</th><th>Description</th><th>Default</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>botToken</code></td><td>Bot User OAuth Token (required)</td><td>—</td></tr>
-          <tr><td><code>appToken</code></td><td>App-level token for Socket Mode (required)</td><td>—</td></tr>
+          <tr><td><code>botToken</code></td><td>Bot User OAuth Token</td><td>required</td></tr>
+          <tr><td><code>appToken</code></td><td>App-level token for Socket Mode</td><td>required</td></tr>
           <tr>
             <td><code>runtimeMode</code></td>
             <td><code>off</code> · <code>single</code> · <code>broker</code> · <code>follower</code></td>
             <td><code>off</code></td>
           </tr>
-          <tr><td><code>allowedUsers</code></td><td>Slack user IDs allowed to use Pinet</td><td>—</td></tr>
+          <tr><td><code>allowedUsers</code></td><td>Slack user IDs allowed to use Pinet</td><td>unset (deny all)</td></tr>
           <tr><td><code>allowAllWorkspaceUsers</code></td><td>Allow every workspace member</td><td><code>false</code></td></tr>
-          <tr><td><code>defaultChannel</code></td><td>Where Pinet posts updates</td><td>—</td></tr>
-          <tr><td><code>logChannel</code></td><td>Where Pinet posts logs</td><td>—</td></tr>
+          <tr><td><code>defaultChannel</code></td><td>Where Pinet posts updates</td><td>unset</td></tr>
+          <tr><td><code>logChannel</code></td><td>Where Pinet posts logs</td><td>unset</td></tr>
           <tr>
             <td><code>logLevel</code></td>
             <td><code>errors</code> · <code>actions</code> · <code>verbose</code></td>
@@ -208,7 +208,7 @@ users:read</code></pre>
           <tr><td><code>autoFollow</code></td><td>Start as follower if a broker exists</td><td><code>false</code></td></tr>
           <tr><td><code>ralphLoopIntervalMs</code></td><td>Stall-check interval</td><td><code>300000</code></td></tr>
           <tr><td><code>meshSecret</code> / <code>meshSecretPath</code></td><td>Shared-secret mesh auth</td><td>off</td></tr>
-          <tr><td><code>suggestedPrompts</code></td><td>Prompt chips in the assistant view</td><td>—</td></tr>
+          <tr><td><code>suggestedPrompts</code></td><td>Prompt chips in the assistant view</td><td>unset</td></tr>
         </tbody>
       </table>
       <h3>mesh authentication</h3>
@@ -221,8 +221,8 @@ users:read</code></pre>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-no">§ 06<small>containment</small></div>
+  <section class="section" id="s06">
+    <div class="section-no"><a href="#s06">§ 06</a><small>containment</small></div>
     <div class="prose">
       <h2>Security posture</h2>
       <dl class="defs">
@@ -252,8 +252,8 @@ users:read</code></pre>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-no">§ 07<small>recovery</small></div>
+  <section class="section" id="s07">
+    <div class="section-no"><a href="#s07">§ 07</a><small>recovery</small></div>
     <div class="prose">
       <h2>When something misbehaves</h2>
       <dl class="defs">

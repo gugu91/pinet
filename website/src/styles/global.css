@@ -4,12 +4,14 @@
    Color is functional annotation, not decoration. */
 
 :root {
+  /* Neutrals carry a whisper of the red ink's hue (impeccable: tint toward
+     the brand hue, never default-warm). Paper stays true white. */
   --paper: #ffffff;
-  --paper-deep: #f2f2f1;
-  --ink: #131313;
-  --ink-soft: #5a5a5a;
-  --rule: #131313;
-  --rule-faint: #d9d9d9;
+  --paper-deep: #f4f0f0;
+  --ink: #171112;
+  --ink-soft: #5d5254;
+  --rule: #171112;
+  --rule-faint: #ddd4d5;
   --signal: #c8102e;
   --signal-soft: #f6d7db;
   --sans: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
@@ -37,6 +39,24 @@ body {
 ::selection {
   background: var(--signal);
   color: var(--paper);
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+a {
+  transition:
+    color 120ms ease-out,
+    border-color 120ms ease-out,
+    text-decoration-color 120ms ease-out;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
 }
 
 /* ── Shell ─────────────────────────────────────────────── */
@@ -139,6 +159,7 @@ body {
   gap: 0 2.2rem;
   padding: 2.6rem 0 2.8rem;
   border-bottom: 1px solid var(--rule);
+  scroll-margin-top: 1.5rem;
 }
 
 .section:last-of-type {
@@ -152,6 +173,17 @@ body {
   letter-spacing: 0.1em;
   color: var(--signal);
   padding-top: 0.55rem;
+}
+
+/* § numbers are citation anchors: linkable, like RFC section numbers. */
+.section-no > a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.section-no > a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .section-no small {
@@ -203,6 +235,7 @@ body {
 
 .prose p {
   margin: 0 0 1rem;
+  text-wrap: pretty;
 }
 
 .prose p:last-child {
@@ -260,8 +293,7 @@ pre {
   font-size: 0.78rem;
   line-height: 1.6;
   background: var(--paper-deep);
-  border: 1px solid var(--rule);
-  border-left: 4px solid var(--signal);
+  border: 1px solid var(--rule-faint);
   padding: 0.9rem 1.1rem;
   overflow-x: auto;
   margin: 1.1rem 0;
@@ -413,8 +445,7 @@ tr:last-child td {
 /* ── Callout ──────────────────────────────────────────── */
 
 .callout {
-  border: 1px solid var(--rule);
-  border-left: 4px solid var(--signal);
+  border: 1.5px solid var(--ink);
   padding: 0.8rem 1.1rem;
   margin: 1.1rem 0;
   max-width: var(--measure);

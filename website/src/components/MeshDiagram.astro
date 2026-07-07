@@ -89,6 +89,50 @@
     border-left: 1.5px solid var(--rule);
   }
 
+  /* A message pip travels the wire: workspace → broker → workers.
+     The one purposeful animation on the page; it draws the actual data path. */
+  .wire::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -4.25px;
+    width: 7px;
+    height: 7px;
+    background: var(--signal);
+    opacity: 0;
+    animation: pip 4.8s linear infinite;
+  }
+
+  .wire-fan::after {
+    animation-delay: 2.4s;
+  }
+
+  @keyframes pip {
+    0% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    6% {
+      opacity: 1;
+    }
+    40% {
+      opacity: 1;
+      transform: translateY(1.55rem);
+    }
+    48%,
+    100% {
+      opacity: 0;
+      transform: translateY(1.55rem);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wire::after {
+      animation: none;
+      opacity: 0;
+    }
+  }
+
   .wire-label {
     position: absolute;
     left: 0.6rem;
