@@ -1,16 +1,28 @@
 ---
 // The broker–worker mesh, drawn as a wiring diagram.
 // Pure HTML/CSS: boxes, hairline wires, mono annotations.
+// Worker silhouettes: PhyloPic, CC0 (Kai Caspar, Beth Reinke, Margot Michaud).
+import dolphin from "./animals/dolphin.svg?raw";
+import crocodile from "./animals/crocodile.svg?raw";
+import jaguar from "./animals/jaguar.svg?raw";
 ---
 
 <figure class="mesh">
-  <div class="mesh-node mesh-slack">
-    <span class="node-kind">slack workspace</span>
-    <span class="node-name">#your-channel · DMs · /pinet</span>
+  <div class="mesh-ingress">
+    <div class="mesh-node mesh-slack">
+      <span class="node-kind">slack workspace</span>
+      <span class="node-name">#your-channel · DMs · /pinet</span>
+      <span class="node-task">ingress · socket mode</span>
+    </div>
+    <div class="mesh-node mesh-term">
+      <span class="node-kind">terminal</span>
+      <span class="node-name">the broker's own pi session</span>
+      <span class="node-task">ingress · type at it directly</span>
+    </div>
   </div>
 
-  <div class="wire wire-down">
-    <span class="wire-label">socket mode</span>
+  <div class="wire wire-join" aria-hidden="true">
+    <i class="pip"></i>
   </div>
 
   <div class="mesh-node mesh-broker">
@@ -24,16 +36,19 @@
 
   <div class="mesh-workers">
     <div class="mesh-node mesh-worker">
+      <span class="node-animal animal-dolphin" aria-hidden="true" set:html={dolphin} />
       <span class="node-kind">worker</span>
       <span class="node-name">Rocket Dolphin</span>
       <span class="node-task">reviewing PR #123</span>
     </div>
     <div class="mesh-node mesh-worker">
+      <span class="node-animal animal-crocodile" aria-hidden="true" set:html={crocodile} />
       <span class="node-kind">worker</span>
       <span class="node-name">Silent Crocodile</span>
       <span class="node-task">fixing broken branch</span>
     </div>
     <div class="mesh-node mesh-worker">
+      <span class="node-animal animal-jaguar" aria-hidden="true" set:html={jaguar} />
       <span class="node-kind">worker</span>
       <span class="node-name">Pixel Lime Jaguar</span>
       <span class="node-task">running the tests</span>
@@ -41,7 +56,8 @@
   </div>
 
   <figcaption>
-    fig. 1 — one broker owns routing and lifecycle; workers pick up threads, ship, and report back.
+    fig. 1 — two doors in, one wire out: the broker owns routing and lifecycle; workers pick up
+    threads, ship, and report back. worker silhouettes: PhyloPic (CC0).
   </figcaption>
 </figure>
 
@@ -78,6 +94,12 @@
     color: var(--ink-soft);
   }
 
+  .mesh-ingress {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+  }
+
   .mesh-broker {
     border-width: 2.5px;
   }
@@ -85,17 +107,59 @@
   .wire {
     position: relative;
     height: 2rem;
+  }
+
+  .wire-fan {
     margin-left: 1.6rem;
     border-left: 1.5px solid var(--rule);
   }
 
-  /* A message pip travels the wire: workspace → broker → workers.
-     The one purposeful animation on the page; it draws the actual data path. */
-  .wire::after {
+  /* Both ingress legs drop to a bus, then one line continues to the broker. */
+  .wire-join {
+    height: 2.6rem;
+  }
+
+  .wire-join::before {
     content: "";
     position: absolute;
     top: 0;
-    left: -4.25px;
+    left: 1.6rem;
+    right: 25%;
+    height: 50%;
+    border-left: 1.5px solid var(--rule);
+    border-right: 1.5px solid var(--rule);
+    border-bottom: 1.5px solid var(--rule);
+  }
+
+  .wire-join::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    bottom: 0;
+    left: 1.6rem;
+    border-left: 1.5px solid var(--rule);
+  }
+
+  .wire-label {
+    position: absolute;
+    left: 2.2rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    color: var(--ink-soft);
+  }
+
+  /* A message pip travels the wires: ingress → broker → workers.
+     The one purposeful animation on the page; it draws the actual data path. */
+  .wire-fan::after {
+    content: "";
+  }
+
+  .wire-fan::after,
+  .wire-join .pip {
+    position: absolute;
+    top: 0;
     width: 7px;
     height: 7px;
     background: var(--signal);
@@ -103,7 +167,14 @@
     animation: pip 4.8s linear infinite;
   }
 
+  .wire-join .pip {
+    left: calc(1.6rem - 2.75px);
+    --pip-travel: 2.15rem;
+  }
+
   .wire-fan::after {
+    left: -4.25px;
+    --pip-travel: 1.55rem;
     animation-delay: 2.4s;
   }
 
@@ -117,34 +188,21 @@
     }
     40% {
       opacity: 1;
-      transform: translateY(1.55rem);
+      transform: translateY(var(--pip-travel));
     }
     48%,
     100% {
       opacity: 0;
-      transform: translateY(1.55rem);
+      transform: translateY(var(--pip-travel));
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .wire::after {
+    .wire-fan::after,
+    .wire-join .pip {
       animation: none;
       opacity: 0;
     }
-  }
-
-  .wire-label {
-    position: absolute;
-    left: 0.6rem;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 0.62rem;
-    letter-spacing: 0.1em;
-    color: var(--ink-soft);
-  }
-
-  .wire-fan {
-    border-left: 1.5px solid var(--rule);
   }
 
   .mesh-workers {
@@ -155,8 +213,34 @@
     padding-top: 0.6rem;
   }
 
-  .mesh-workers .mesh-node {
-    border-style: solid;
+  .mesh-worker {
+    position: relative;
+  }
+
+  /* PhyloPic silhouettes, sized to roughly equal visual mass. */
+  .node-animal {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.7rem;
+    color: var(--ink);
+  }
+
+  .node-animal :global(svg) {
+    height: 100%;
+    width: auto;
+    display: block;
+  }
+
+  .animal-dolphin {
+    height: 13px;
+  }
+
+  .animal-crocodile {
+    height: 11px;
+  }
+
+  .animal-jaguar {
+    height: 16px;
   }
 
   figcaption {
@@ -169,6 +253,25 @@
   }
 
   @media (max-width: 640px) {
+    .mesh-ingress {
+      grid-template-columns: 1fr;
+    }
+
+    .wire-join {
+      height: 2rem;
+    }
+
+    .wire-join::before {
+      right: auto;
+      height: 100%;
+      border-right: none;
+      border-bottom: none;
+    }
+
+    .wire-join .pip {
+      --pip-travel: 1.55rem;
+    }
+
     .mesh-workers {
       grid-template-columns: 1fr;
     }

@@ -68,16 +68,17 @@ import Base from "../layouts/Base.astro";
       <p>
         <code>message.send</code> is the one primitive. A Slack reply, an agent-to-agent note, and a
         broker nudge are the same operation with different addresses; adapters translate at the
-        edges. This is what keeps new transports cheap: Discord, Linear, or GitHub would plug into
+        edges. The broker itself needs no adapter: it is a pi session, and you can type to it in
+        its own terminal. This is what keeps new transports cheap: Discord, Linear, or GitHub would plug into
         the same flow rather than growing their own routing.
       </p>
       <h3>inbox semantics</h3>
       <p>Each agent has a durable inbox. Messages are:</p>
       <ul>
-        <li><strong>routed</strong> by thread ownership (an owned thread keeps flowing to its owner),</li>
-        <li><strong>queued</strong> while the agent is mid-turn, drained on the next turn,</li>
-        <li><strong>marked read</strong> once processed, and</li>
-        <li><strong>preserved</strong> across restarts.</li>
+        <li>routed by thread ownership (an owned thread keeps flowing to its owner)</li>
+        <li>queued while the agent is mid-turn, drained on the next turn</li>
+        <li>marked read once processed</li>
+        <li>preserved across restarts</li>
       </ul>
       <p>
         Thread ownership is the continuity mechanism. Once an agent claims a Slack thread, replies
@@ -92,8 +93,8 @@ import Base from "../layouts/Base.astro";
     <div class="prose">
       <h2>Agent identity</h2>
       <p>
-        Agents carry a logical identity that survives reconnects. Liveness is handled by heartbeats
-        and leases: a worker that stops responding loses its lease, and its claims become
+        Agents carry a logical identity that survives reconnects. Heartbeats and leases handle
+        liveness: a worker that stops responding loses its lease, and its claims become
         assignable again. Dead agents get reaped, not ignored.
       </p>
       <p>

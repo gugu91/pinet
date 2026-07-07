@@ -121,7 +121,7 @@ users:read</code></pre>
         <div>
           <dt>allowedUsers</dt>
           <dd>
-            A list of Slack user IDs. Find one via a profile → "Copy member ID".
+            A list of Slack user IDs. To find one, open a profile and select "Copy member ID".
           </dd>
         </div>
         <div>
@@ -131,9 +131,9 @@ users:read</code></pre>
       </dl>
       <h3>ingress guard</h3>
       <p>
-        Authorization decides <em>who</em> can use Pinet; the ingress guard decides <em>when</em> a
-        mention is required. In busy channels you can require an explicit <code>@pinet</code> before
-        the bot engages, with trusted-user carve-outs for mixed-participant threads:
+        Authorization decides who can use Pinet. The ingress guard decides when a mention is
+        required. In busy channels you can require an explicit <code>@pinet</code> before the bot
+        engages, with trusted-user carve-outs for mixed-participant threads:
       </p>
       <pre><code>{`{
   "slack-bridge": {

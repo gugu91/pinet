@@ -14,6 +14,12 @@ multi-agent coordination without a hosted platform. Skeptical of AI-generated
 marketing; allergic to SaaS landing pages. They will read the config table
 before the hero.
 
+**Writing style:** GOV.UK plain-English rules apply to prose — active voice,
+one idea per sentence, about 25 words maximum, no bold/italic for emphasis,
+no Latin abbreviations. Carve-out: the uppercase mono labels (WORKER, §
+keywords, table headers) are typographic structure of the datasheet genre,
+not emphasis, and stay.
+
 **Voice:** declarative, precise, lightly dry. Claims are mechanisms, not
 adjectives ("one control plane owns delivery", not "blazingly fast").
 Provenance is part of the pitch: the site says, truthfully, that the mesh

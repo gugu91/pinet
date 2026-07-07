@@ -14,9 +14,10 @@ import MeshDiagram from "../components/MeshDiagram.astro";
       <h1>One gateway.<br />One message primitive.<br />Many agents.</h1>
       <p class="dek">
         Pinet is a local-first coordination layer for <a
-          href="https://github.com/badlogic/pi-mono">pi</a> coding agents. A single broker watches
-        Slack, routes every message, and keeps a mesh of named worker agents shipping: writing
-        code, reviewing each other's pull requests, and repairing themselves when something stalls.
+          href="https://github.com/badlogic/pi-mono">pi</a> coding agents. One broker routes every
+        message, whether it arrives from Slack or is typed at the broker's own terminal. It keeps
+        a mesh of named worker agents shipping: writing code, reviewing each other's pull
+        requests, and repairing themselves when something stalls.
       </p>
       <span class="cmd"><span class="prompt">$ </span>pi install npm:@pinet/slack-bridge</span>
       <p class="small-note">requires pi · node ≥ 22 · a slack workspace where you can install apps</p>
@@ -40,10 +41,10 @@ import MeshDiagram from "../components/MeshDiagram.astro";
         the whole point.
       </p>
       <p>
-        Underneath, Pinet runs a <strong>broker–worker model</strong>. One pi session acts as the
-        broker: it owns Slack ingress, assigns work, and tracks what every worker holds. Worker
-        sessions pick up tasks, write code, run tests, and open pull requests. The broker
-        coordinates but does not write code; workers ship end to end.
+        Underneath, Pinet runs a broker–worker model. One pi session acts as the broker: it owns
+        ingress from Slack and from its own terminal, assigns work, and tracks what every worker
+        holds. Worker sessions pick up tasks, write code, run tests, and open pull requests. The
+        broker coordinates but does not write code; workers ship end to end.
       </p>
       <p>
         Everything rides on a single primitive, <code>message.send</code>. Slack replies,
@@ -63,8 +64,9 @@ import MeshDiagram from "../components/MeshDiagram.astro";
           <div>
             <span class="clause-title">Arrival.</span>
             <p>
-              A Slack message lands over Socket Mode: a DM, an <code>@pinet</code> mention, or a
-              <code>/pinet</code> slash command.
+              A message arrives through one of two doors. From Slack over Socket Mode: a DM, an
+              <code>@pinet</code> mention, or a <code>/pinet</code> slash command. Or from the
+              keyboard: the broker is a pi session in a terminal, and you can talk to it there.
             </p>
           </div>
         </li>
@@ -102,7 +104,8 @@ import MeshDiagram from "../components/MeshDiagram.astro";
             <span class="clause-title">Work &amp; reply.</span>
             <p>
               The agent acknowledges, does the work (code, tests, PRs), and replies in the same
-              thread via <code>slack_send</code>. The ball never silently drops.
+              thread with <code>slack_send</code>. Every message ends in a reply or a visible
+              failure; nothing drops silently.
             </p>
           </div>
         </li>
@@ -225,10 +228,10 @@ import MeshDiagram from "../components/MeshDiagram.astro";
     <div class="prose">
       <h2>Built by the system it enables</h2>
       <p>
-        Pinet was built by agents coordinating through Slack and GitHub: the same broker, the same
-        inbox, the same thread ownership described on this page. During development the mesh merged
-        over fifty pull requests in a single day with minimal human intervention: workers wrote the
-        code, other agents reviewed it, and RALPH cleaned up after the ones that wandered off.
+        Agents built Pinet, coordinating through Slack and GitHub: the same broker, the same
+        inbox, the same thread ownership described on this page. During development the mesh
+        merged over 50 pull requests in a single day, with little human help. Workers wrote the
+        code. Other agents reviewed it. RALPH cleaned up after the ones that wandered off.
       </p>
       <p>
         Humans set priorities, approve merges, and hold the API tokens. The system handles

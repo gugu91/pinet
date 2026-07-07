@@ -31,6 +31,10 @@ standards documents use what the system has.
   eyebrows: every section is an `id="sNN"` anchor, § numbers self-link, and
   cross-references cite them (`→ §04 · ten minutes to a working mesh`).
 - Hairline rules and double rules for hierarchy; no cards, no shadows.
+- Fig. 1 shows both ingress doors (Slack and the broker's own terminal)
+  joining a bus into the broker. Worker cards carry PhyloPic silhouettes
+  (CC0: Kai Caspar, Beth Reinke, Margot Michaud) — taxonomy-figure register,
+  solid ink, sized to roughly equal visual mass, credited in the figcaption.
 - Full borders only. **No side-stripe `border-left` accents** (impeccable ban).
 - One animation: the message pip travelling fig. 1's wires. It draws the actual
   data path. `prefers-reduced-motion` disables it. Nothing else moves.
