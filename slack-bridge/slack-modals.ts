@@ -2,7 +2,7 @@ export type SlackModalView = Record<string, unknown>;
 
 const PI_SLACK_MODAL_CONTEXT_KEY = "__piSlackModalContext";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isSlackModalObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -15,7 +15,7 @@ function asOptionalString(value: unknown): string | null {
 }
 
 export function normalizeSlackModalViewInput(view: unknown): SlackModalView {
-  if (!isRecord(view)) {
+  if (!isSlackModalObject(view)) {
     throw new Error("Slack modal view must be a JSON object.");
   }
   const cloned = structuredClone(view) as SlackModalView;
@@ -54,7 +54,7 @@ export function encodeSlackModalPrivateMetadata(
     }
   }
 
-  if (isRecord(value)) {
+  if (isSlackModalObject(value)) {
     return JSON.stringify({
       ...value,
       [PI_SLACK_MODAL_CONTEXT_KEY]: threadContext,
@@ -77,9 +77,9 @@ export function decodeSlackModalPrivateMetadata(
 
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (isRecord(parsed)) {
+    if (isSlackModalObject(parsed)) {
       const context = parsed[PI_SLACK_MODAL_CONTEXT_KEY];
-      const threadContext = isRecord(context)
+      const threadContext = isSlackModalObject(context)
         ? {
             threadTs: asString(context.threadTs) ?? "",
             channel: asString(context.channel) ?? "",

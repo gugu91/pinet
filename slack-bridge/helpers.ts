@@ -3038,7 +3038,7 @@ const PINET_BUILT_IN_SKIN_FILES = ["foundation", "cosmere"] as const;
 
 let cachedBuiltInPinetSkinDescriptors: readonly BuiltInPinetSkinDescriptor[] | null = null;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isPinetSkinObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -3074,7 +3074,7 @@ function validatePinetSkinTheme(value: string): BuiltInPinetSkinDescriptor["key"
 }
 
 function validatePinetSkinStatusVocabulary(value: unknown): PinetSkinStatusVocabulary | null {
-  if (!isRecord(value)) {
+  if (!isPinetSkinObject(value)) {
     return null;
   }
 
@@ -3085,7 +3085,7 @@ function validateBuiltInPinetSkinCharacter(
   id: string,
   value: unknown,
 ): BuiltInPinetSkinCharacter | null {
-  if (!isRecord(value)) {
+  if (!isPinetSkinObject(value)) {
     return null;
   }
 
@@ -3104,7 +3104,7 @@ function validateBuiltInPinetSkinCharacter(
 function validateBuiltInPinetSkinRoleDescriptor(
   value: unknown,
 ): BuiltInPinetSkinRoleDescriptor | null {
-  if (!isRecord(value)) {
+  if (!isPinetSkinObject(value)) {
     return null;
   }
 
@@ -3125,7 +3125,7 @@ function validateBuiltInPinetSkinRoleDescriptor(
 }
 
 function validateBuiltInPinetSkinDescriptor(value: unknown): BuiltInPinetSkinDescriptor {
-  if (!isRecord(value)) {
+  if (!isPinetSkinObject(value)) {
     throw new Error("Pinet skin descriptor must be an object.");
   }
 
@@ -3139,7 +3139,7 @@ function validateBuiltInPinetSkinDescriptor(value: unknown): BuiltInPinetSkinDes
     throw new Error("Pinet skin descriptor is missing required top-level fields.");
   }
 
-  if (!isRecord(value.roles)) {
+  if (!isPinetSkinObject(value.roles)) {
     throw new Error(`Pinet skin descriptor ${key} must define roles.`);
   }
   const brokerRole = validateBuiltInPinetSkinRoleDescriptor(value.roles.broker);
@@ -3148,7 +3148,7 @@ function validateBuiltInPinetSkinDescriptor(value: unknown): BuiltInPinetSkinDes
     throw new Error(`Pinet skin descriptor ${key} must define broker and worker roles.`);
   }
 
-  if (!isRecord(value.characters)) {
+  if (!isPinetSkinObject(value.characters)) {
     throw new Error(`Pinet skin descriptor ${key} must define characters.`);
   }
   const characters: Record<string, BuiltInPinetSkinCharacter> = {};
