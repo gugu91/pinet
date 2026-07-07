@@ -16,7 +16,8 @@
       "@pinet/imessage-bridge": ["./imessage-bridge/index.ts"],
       "@pinet/pinet-core": ["./pinet-core/index.ts"],
       "@pinet/pinet-core/*": ["./pinet-core/*.ts"],
-      "@pinet/transport-core": ["./transport-core/index.ts"]
+      "@pinet/transport-core": ["./transport-core/index.ts"],
+      "@pinet/transport-core/*": ["./transport-core/*.ts"]
     }
   },
   "include": [

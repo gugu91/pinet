@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sleep } from "@pinet/transport-core/async";
 import { summarizePinetStableId } from "./pinet-session-formatting.js";
 import type { AgentSessionSummary } from "./broker/types.js";
 import type { PinetReadOptions, PinetReadResult } from "@pinet/pinet-core/pinet-read-formatting";
@@ -150,12 +151,6 @@ function sanitizePathSegment(value: string): string {
 
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
 
 export function buildSubtreeBrokerPaths(stableId: string): SubtreeBrokerPaths {
@@ -535,7 +530,7 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
         });
       }
 
-      await delay(1_000);
+      await sleep(1_000);
     }
 
     throw new Error(
@@ -573,7 +568,7 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
       .filter((agent) => isSubtreeChildAgent(agent, agentId));
     await Promise.all(children.map(requestChildExit));
     if (children.length > 0) {
-      await delay(SUBTREE_CHILD_EXIT_GRACE_MS);
+      await sleep(SUBTREE_CHILD_EXIT_GRACE_MS);
     }
 
     const tmuxSocketPath = findTmuxSocketPath();

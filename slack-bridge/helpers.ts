@@ -11,6 +11,7 @@ import {
   buildRuntimeScopeCarrier,
   type RuntimeScopeCarrier,
 } from "@pinet/transport-core";
+import { createAbortError, isAbortError, sleep } from "@pinet/transport-core/async";
 import type { ReactionCommandSettings } from "./reaction-triggers.js";
 import { buildPinetReadPointer } from "./broker-inbound-persistence.js";
 import { matchesToolPattern } from "./guardrails.js";
@@ -871,35 +872,10 @@ export interface AbortableOperationTracker {
   isAborting(): boolean;
 }
 
-export function createAbortError(message = "Operation aborted"): Error {
-  const error = new Error(message);
-  error.name = "AbortError";
-  return error;
-}
-
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
+export { createAbortError, isAbortError };
 
 export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(createAbortError());
-  }
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-
-    function onAbort(): void {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      reject(createAbortError());
-    }
-
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
+  return sleep(ms, { signal });
 }
 
 export function createAbortableOperationTracker(): AbortableOperationTracker {
@@ -3967,11 +3943,7 @@ export async function callSlackAPI(
       throw new Error(`Slack ${method}: rate limited after ${maxRetries} retries`);
     }
     const wait = Number(res.headers.get("retry-after") ?? "3");
-    if (signal) {
-      await abortableDelay(wait * 1000, signal);
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
-    }
+    await sleep(wait * 1000, { signal });
     return callSlackAPI(method, token, body, { signal, retryCount: retryCount + 1 });
   }
 
