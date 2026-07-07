@@ -1,19 +1,20 @@
-/* Pinet — spec-document design system.
-   Ink on paper. Serif prose, mono machinery. No gradients, no glass,
-   no glow. The page should read like a well-set protocol spec. */
+/* Pinet — standards-document design system.
+   Two-ink print job: black and red on white, like an RFC or a datasheet.
+   System fonts only — no webfonts. No gradients, no glass, no glow.
+   Color is functional annotation, not decoration. */
 
 :root {
-  --paper: #f4f1e8;
-  --paper-deep: #eae5d6;
-  --ink: #1c1914;
-  --ink-soft: #5f5747;
-  --rule: #1c1914;
-  --rule-faint: #cfc7b2;
-  --signal: #2038c0;
-  --signal-soft: #d4daf3;
-  --serif: "Source Serif 4 Variable", "Source Serif 4", Georgia, serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --measure: 66ch;
+  --paper: #ffffff;
+  --paper-deep: #f2f2f1;
+  --ink: #131313;
+  --ink-soft: #5a5a5a;
+  --rule: #131313;
+  --rule-faint: #d9d9d9;
+  --signal: #c8102e;
+  --signal-soft: #f6d7db;
+  --sans: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+  --measure: 68ch;
 }
 
 * {
@@ -23,9 +24,9 @@
 html {
   background: var(--paper);
   color: var(--ink);
-  font-family: var(--serif);
-  font-size: 17px;
-  line-height: 1.55;
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -164,12 +165,12 @@ body {
 }
 
 .section h2 {
-  font-family: var(--serif);
-  font-size: 1.75rem;
-  font-weight: 600;
+  font-family: var(--sans);
+  font-size: 1.7rem;
+  font-weight: 700;
   line-height: 1.2;
   margin: 0 0 1.1rem;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .section h3 {

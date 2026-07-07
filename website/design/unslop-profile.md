@@ -48,5 +48,28 @@ Mostly "what to avoid". Counts cite the sample batch.
 
 ---
 
-If a choice matches one of these counted defaults, stop and make a different one.
-The goal is not a new template; it is refusing the old one.
+## The second-order attractor (learned the hard way)
+
+Dodging the counted patterns above is not enough. When told to avoid them,
+models fall into a *second* default: the "tasteful AI editorial" surface —
+warm cream background, literary serif, one refined accent (terracotta or
+International Klein blue). That is Anthropic's own house style, and it is now
+as recognizable as the dark-SaaS template. Two early drafts of this site
+landed in it (cream + ember, then cream + ultramarine) while passing every
+counted check.
+
+The escape is not another palette swap. Ask what the *authentic human-made
+artifacts* in the content's domain look like (for infrastructure: RFCs, ISO
+specs, datasheets, DIN manuals) and take the surface from there:
+
+- White, not cream. Warmth is an affectation the content did not ask for.
+- Grotesque or Times, not a literary serif.
+- System fonts, no webfonts — generated pages virtually always ship Google
+  Fonts because that is what a CDN import can reach.
+- Color as functional annotation (two-ink print logic), not as brand accent.
+
+---
+
+If a choice matches one of these counted defaults — or the second-order
+default — stop and make a different one. The goal is not a new template; it
+is refusing the old one, including the one the model itself prefers.

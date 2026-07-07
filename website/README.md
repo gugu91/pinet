@@ -22,11 +22,22 @@ pnpm preview
 
 ## Design system
 
-Spec-document aesthetic: ink on paper, Source Serif 4 prose, IBM Plex Mono
-machinery, ultramarine signal accent, hairline rules, numbered sections.
-No gradients, no glow, no glass, no card grids, no sticky chrome.
+Standards-document aesthetic: a two-ink print job. Black and red on white,
+like an RFC, an ISO spec, or an engineering datasheet. System fonts only
+(Helvetica/Arial + the platform monospace) — zero webfont payload. Hairline
+rules, numbered sections, dense tables. Red is functional annotation, never
+decoration. No gradients, no glow, no glass, no card grids, no sticky chrome.
 
-The design and copy were iterated against an
+Two deliberate refusals worth preserving:
+
+1. **No dark-SaaS surface** — near-black + green/amber accent was 10/11 of the
+   generated corpus (see below).
+2. **No "tasteful AI editorial" surface** — warm cream + literary serif + a
+   refined accent (terracotta, Klein blue) is the second-order default that
+   models reach for when told to avoid the first. Earlier drafts of this site
+   landed there twice. White + grotesque + functional red is the break.
+
+The design and copy were also iterated against an
 [unslop](https://github.com/mshumer/unslop) run over 11 generated developer-tool
 landing pages:
 
