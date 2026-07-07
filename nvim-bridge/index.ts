@@ -5,7 +5,13 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
-import { formatContext, parseNvimEvent, type EditorState, type NvimEvent } from "./helpers.js";
+import {
+  formatContext,
+  parseNvimEvent,
+  type EditorState,
+  type NvimEvent,
+  type NvimRpcJsonValue,
+} from "./helpers.js";
 
 type NvimCommand = { type: "open_file"; file: string; line?: number };
 
@@ -209,7 +215,7 @@ export default function (pi: ExtensionAPI) {
           if (!line.trim()) continue;
 
           try {
-            const parsed = JSON.parse(line) as unknown;
+            const parsed = JSON.parse(line) as NvimRpcJsonValue;
             const event = parseNvimEvent(parsed);
             if (!event) continue;
 
