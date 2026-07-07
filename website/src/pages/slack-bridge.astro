@@ -79,13 +79,13 @@ users:read</code></pre>
         <tbody>
           <tr>
             <td>App-level token</td>
-            <td>Basic Information → App-Level Tokens → Generate, with <code>connections:write</code></td>
-            <td><code>xapp-1-…</code></td>
+            <td data-th="where">Basic Information → App-Level Tokens → Generate, with <code>connections:write</code></td>
+            <td data-th="format"><code>xapp-1-…</code></td>
           </tr>
           <tr>
             <td>Bot token</td>
-            <td>OAuth &amp; Permissions → Install to Workspace → Bot User OAuth Token</td>
-            <td><code>xoxb-…</code></td>
+            <td data-th="where">OAuth &amp; Permissions → Install to Workspace → Bot User OAuth Token</td>
+            <td data-th="format"><code>xoxb-…</code></td>
           </tr>
         </tbody>
       </table>
@@ -188,27 +188,27 @@ users:read</code></pre>
           <tr><th>Setting</th><th>Description</th><th>Default</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>botToken</code></td><td>Bot User OAuth Token</td><td>required</td></tr>
-          <tr><td><code>appToken</code></td><td>App-level token for Socket Mode</td><td>required</td></tr>
+          <tr><td><code>botToken</code></td><td>Bot User OAuth Token</td><td data-th="default">required</td></tr>
+          <tr><td><code>appToken</code></td><td>App-level token for Socket Mode</td><td data-th="default">required</td></tr>
           <tr>
             <td><code>runtimeMode</code></td>
             <td><code>off</code> · <code>single</code> · <code>broker</code> · <code>follower</code></td>
-            <td><code>off</code></td>
+            <td data-th="default"><code>off</code></td>
           </tr>
-          <tr><td><code>allowedUsers</code></td><td>Slack user IDs allowed to use Pinet</td><td>unset (deny all)</td></tr>
-          <tr><td><code>allowAllWorkspaceUsers</code></td><td>Allow every workspace member</td><td><code>false</code></td></tr>
-          <tr><td><code>defaultChannel</code></td><td>Where Pinet posts updates</td><td>unset</td></tr>
-          <tr><td><code>logChannel</code></td><td>Where Pinet posts logs</td><td>unset</td></tr>
+          <tr><td><code>allowedUsers</code></td><td>Slack user IDs allowed to use Pinet</td><td data-th="default">unset (deny all)</td></tr>
+          <tr><td><code>allowAllWorkspaceUsers</code></td><td>Allow every workspace member</td><td data-th="default"><code>false</code></td></tr>
+          <tr><td><code>defaultChannel</code></td><td>Where Pinet posts updates</td><td data-th="default">unset</td></tr>
+          <tr><td><code>logChannel</code></td><td>Where Pinet posts logs</td><td data-th="default">unset</td></tr>
           <tr>
             <td><code>logLevel</code></td>
             <td><code>errors</code> · <code>actions</code> · <code>verbose</code></td>
-            <td><code>actions</code></td>
+            <td data-th="default"><code>actions</code></td>
           </tr>
-          <tr><td><code>autoConnect</code></td><td>Start as single instance when <code>runtimeMode</code> unset</td><td><code>false</code></td></tr>
-          <tr><td><code>autoFollow</code></td><td>Start as follower if a broker exists</td><td><code>false</code></td></tr>
-          <tr><td><code>ralphLoopIntervalMs</code></td><td>Stall-check interval</td><td><code>300000</code></td></tr>
-          <tr><td><code>meshSecret</code> / <code>meshSecretPath</code></td><td>Shared-secret mesh auth</td><td>off</td></tr>
-          <tr><td><code>suggestedPrompts</code></td><td>Prompt chips in the assistant view</td><td>unset</td></tr>
+          <tr><td><code>autoConnect</code></td><td>Start as single instance when <code>runtimeMode</code> unset</td><td data-th="default"><code>false</code></td></tr>
+          <tr><td><code>autoFollow</code></td><td>Start as follower if a broker exists</td><td data-th="default"><code>false</code></td></tr>
+          <tr><td><code>ralphLoopIntervalMs</code></td><td>Stall-check interval</td><td data-th="default"><code>300000</code></td></tr>
+          <tr><td><code>meshSecret</code> / <code>meshSecretPath</code></td><td>Shared-secret mesh auth</td><td data-th="default">off</td></tr>
+          <tr><td><code>suggestedPrompts</code></td><td>Prompt chips in the assistant view</td><td data-th="default">unset</td></tr>
         </tbody>
       </table>
       <h3>mesh authentication</h3>

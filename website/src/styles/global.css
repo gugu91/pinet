@@ -59,6 +59,12 @@ h3 {
   text-wrap: balance;
 }
 
+/* iOS Safari: keep our type scale in landscape. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 /* ── Shell ─────────────────────────────────────────────── */
 
 .shell {
@@ -83,7 +89,7 @@ h3 {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 1.5rem;
+  gap: 0.5rem 1.5rem;
   padding: 1.1rem 0 0.9rem;
   flex-wrap: wrap;
 }
@@ -130,6 +136,14 @@ h3 {
   border-bottom-color: var(--signal);
 }
 
+@media (max-width: 640px) {
+  /* Larger touch targets for the wrapped nav row. */
+  .masthead nav a {
+    padding-top: 0.35rem;
+    padding-bottom: 0.35rem;
+  }
+}
+
 /* ── Document header (per page) ───────────────────────── */
 
 .doc-meta {
@@ -149,6 +163,14 @@ h3 {
 .doc-meta strong {
   color: var(--signal);
   font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  /* space-between strands the wrapped line; rag left instead. */
+  .doc-meta {
+    justify-content: flex-start;
+    gap: 0.15rem 1.3rem;
+  }
 }
 
 /* ── Sections ─────────────────────────────────────────── */
@@ -222,7 +244,9 @@ h3 {
 
 @media (max-width: 760px) {
   .section {
-    grid-template-columns: 1fr;
+    /* minmax(0, …): a wide <pre> must scroll inside its box,
+       not inflate the column via min-content. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.6rem 0;
   }
 }
@@ -231,6 +255,8 @@ h3 {
 
 .prose {
   max-width: var(--measure);
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 .prose p {
@@ -362,6 +388,60 @@ tr:last-child td {
   border-bottom: 1px solid var(--rule);
 }
 
+/* Narrow screens: each table row becomes a stacked, keyed record.
+   Column headers move inline via data-th labels. */
+@media (max-width: 640px) {
+  table,
+  tbody,
+  tr,
+  td {
+    display: block;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tr {
+    border-top: 1px solid var(--rule-faint);
+    padding: 0.65rem 0;
+  }
+
+  tbody tr:first-child {
+    border-top: 2px solid var(--rule);
+  }
+
+  tr:last-child {
+    border-bottom: 1px solid var(--rule);
+  }
+
+  td,
+  tr:last-child td {
+    border: none;
+    padding: 0.1rem 0;
+  }
+
+  td:first-child {
+    font-weight: 600;
+  }
+
+  td code {
+    white-space: normal;
+  }
+
+  td[data-th]::before {
+    content: attr(data-th);
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 0.35rem 0 0.1rem;
+  }
+}
+
 /* ── Spec list (numbered clauses) ─────────────────────── */
 
 .clauses {
@@ -437,7 +517,7 @@ tr:last-child td {
 
 @media (max-width: 640px) {
   .defs > div {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.15rem 0;
   }
 }
