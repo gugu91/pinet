@@ -5,7 +5,7 @@ One broker session owns Slack ingress, routing, thread ownership, and agent
 lifecycle; named worker agents pick up threads, ship code, and report back.
 
 **This surface:** the project website (Astro, three pages). Register: **brand**
-— but a documentation-flavored brand. The site *is* a specification document;
+— but a documentation-flavored brand. The site _is_ a specification document;
 reading it should feel like reading a well-set RFC or datasheet, because the
 audience decides with the same part of their brain they use to read those.
 

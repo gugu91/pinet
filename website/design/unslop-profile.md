@@ -16,7 +16,7 @@ Mostly "what to avoid". Counts cite the sample batch.
 
 ## Visual defaults to avoid
 
-- Do not default to a near-black background (10/11) — and if you go light instead, know that warm-cream + ember accent is *also* a stock move (the one light sample used exactly that).
+- Do not default to a near-black background (10/11) — and if you go light instead, know that warm-cream + ember accent is _also_ a stock move (the one light sample used exactly that).
 - Do not pick your accent from the green/teal or orange/amber families — 11/11 samples landed in just those two (plus one acid-lime). Blue, purple, magenta went entirely unused.
 - Do not put a blurred radial glow blob behind the hero (9/11).
 - Do not add faint grid-line or dot textures behind sections (6/11).
@@ -51,15 +51,15 @@ Mostly "what to avoid". Counts cite the sample batch.
 ## The second-order attractor (learned the hard way)
 
 Dodging the counted patterns above is not enough. When told to avoid them,
-models fall into a *second* default: the "tasteful AI editorial" surface —
+models fall into a _second_ default: the "tasteful AI editorial" surface —
 warm cream background, literary serif, one refined accent (terracotta or
 International Klein blue). That is Anthropic's own house style, and it is now
 as recognizable as the dark-SaaS template. Two early drafts of this site
 landed in it (cream + ember, then cream + ultramarine) while passing every
 counted check.
 
-The escape is not another palette swap. Ask what the *authentic human-made
-artifacts* in the content's domain look like (for infrastructure: RFCs, ISO
+The escape is not another palette swap. Ask what the _authentic human-made
+artifacts_ in the content's domain look like (for infrastructure: RFCs, ISO
 specs, datasheets, DIN manuals) and take the surface from there:
 
 - White, not cream. Warmth is an affectation the content did not ask for.

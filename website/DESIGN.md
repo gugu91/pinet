@@ -5,14 +5,14 @@ like an RFC, an ISO spec, or an engineering datasheet.
 
 ## Tokens (`src/styles/global.css`)
 
-| Token | Value | Role |
-|---|---|---|
-| `--paper` | `#ffffff` | Body background. True white; never cream. |
-| `--paper-deep` | `#f4f0f0` | Plates (code blocks, command). Red-tinted neutral. |
-| `--ink` | `#171112` | Text + strong rules. Near-black, red-tinted. |
-| `--ink-soft` | `#5d5254` | Secondary text. ≥4.5:1 on paper. |
-| `--rule-faint` | `#ddd4d5` | Hairline rules, plate borders. |
-| `--signal` | `#c8102e` | Red ink. Functional annotation only — § numbers, citations, prompts, labels. Never decoration, never fills. |
+| Token          | Value     | Role                                                                                                        |
+| -------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `--paper`      | `#ffffff` | Body background. True white; never cream.                                                                   |
+| `--paper-deep` | `#f4f0f0` | Plates (code blocks, command). Red-tinted neutral.                                                          |
+| `--ink`        | `#171112` | Text + strong rules. Near-black, red-tinted.                                                                |
+| `--ink-soft`   | `#5d5254` | Secondary text. ≥4.5:1 on paper.                                                                            |
+| `--rule-faint` | `#ddd4d5` | Hairline rules, plate borders.                                                                              |
+| `--signal`     | `#c8102e` | Red ink. Functional annotation only — § numbers, citations, prompts, labels. Never decoration, never fills. |
 
 Neutrals carry ~0.005 chroma toward the red hue (impeccable: tint toward the
 brand's own hue). Paper stays chroma-0 white.
@@ -27,7 +27,7 @@ standards documents use what the system has.
 
 ## Structural grammar
 
-- **§ numbered sections** with gutter column. The numbers are *citations*, not
+- **§ numbered sections** with gutter column. The numbers are _citations_, not
   eyebrows: every section is an `id="sNN"` anchor, § numbers self-link, and
   cross-references cite them (`→ §04 · ten minutes to a working mesh`).
 - Hairline rules and double rules for hierarchy; no cards, no shadows.
