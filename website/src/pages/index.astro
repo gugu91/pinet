@@ -14,9 +14,9 @@ import MeshDiagram from "../components/MeshDiagram.astro";
       <h1>One gateway.<br />One message primitive.<br />Many agents.</h1>
       <p class="dek">
         Pinet is a local-first coordination layer for <a
-          href="https://github.com/badlogic/pi-mono">pi</a> coding agents. One broker routes every
-        message, whether it arrives from Slack or is typed at the broker's own terminal. It keeps
-        a mesh of named worker agents shipping: writing code, reviewing each other's pull
+          href="https://github.com/badlogic/pi-mono">pi</a> coding agents. One broker runs the
+        mesh: it routes every Slack message, and you can talk to it directly at its own terminal.
+        It keeps named worker agents shipping: writing code, reviewing each other's pull
         requests, and repairing themselves when something stalls.
       </p>
       <span class="cmd"><span class="prompt">$ </span>pi install npm:@pinet/slack-bridge</span>
@@ -104,8 +104,8 @@ import MeshDiagram from "../components/MeshDiagram.astro";
             <span class="clause-title">Work &amp; reply.</span>
             <p>
               The agent acknowledges, does the work (code, tests, PRs), and replies in the same
-              thread with <code>slack_send</code>. Every message ends in a reply or a visible
-              failure; nothing drops silently.
+              thread with <code>slack_send</code>. If the agent stalls instead, the RALPH loop
+              picks the thread up, so messages do not just disappear.
             </p>
           </div>
         </li>
