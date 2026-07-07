@@ -294,7 +294,7 @@ const SLACK_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
   ],
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isSlackToolObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -466,11 +466,11 @@ function classifySlackDispatcherError(error: unknown): SlackDispatcherError {
 }
 
 function extractToolResponseText(response: unknown): string | undefined {
-  if (!isRecord(response) || !Array.isArray(response.content)) return undefined;
+  if (!isSlackToolObject(response) || !Array.isArray(response.content)) return undefined;
 
   const lines = response.content
     .map((item) => {
-      if (!isRecord(item)) return undefined;
+      if (!isSlackToolObject(item)) return undefined;
       return typeof item.text === "string" ? item.text : undefined;
     })
     .filter((line): line is string => line != null && line.length > 0);
@@ -478,22 +478,24 @@ function extractToolResponseText(response: unknown): string | undefined {
 }
 
 function extractToolResponseDetails(response: unknown): unknown {
-  return isRecord(response) && "details" in response ? response.details : undefined;
+  return isSlackToolObject(response) && "details" in response ? response.details : undefined;
 }
 
 function extractToolResponseFullDetails(response: unknown): unknown {
-  return isRecord(response) && "fullDetails" in response ? response.fullDetails : undefined;
+  return isSlackToolObject(response) && "fullDetails" in response
+    ? response.fullDetails
+    : undefined;
 }
 
 function normalizeSlackOutputOptions(action: string, args: unknown): SlackOutputOptions {
-  if (args != null && !isRecord(args)) {
+  if (args != null && !isSlackToolObject(args)) {
     throw new Error("slack args must be an object.");
   }
 
   const ownsFormatArg = SLACK_ACTIONS_WITH_FORMAT_ARG.has(action);
-  const rawResponseFormat = isRecord(args) ? args.response_format : undefined;
+  const rawResponseFormat = isSlackToolObject(args) ? args.response_format : undefined;
   const rawFormat =
-    rawResponseFormat ?? (isRecord(args) && !ownsFormatArg ? args.format : undefined);
+    rawResponseFormat ?? (isSlackToolObject(args) && !ownsFormatArg ? args.format : undefined);
   const normalizedFormat = rawFormat == null ? "cli" : String(rawFormat).trim().toLowerCase();
   if (normalizedFormat !== "cli" && normalizedFormat !== "json") {
     throw new Error(
@@ -504,7 +506,7 @@ function normalizeSlackOutputOptions(action: string, args: unknown): SlackOutput
   }
   const format: SlackOutputFormat = normalizedFormat;
 
-  const rawFull = isRecord(args) ? args.full : undefined;
+  const rawFull = isSlackToolObject(args) ? args.full : undefined;
   if (rawFull != null && typeof rawFull !== "boolean") {
     throw new Error("full must be a boolean when provided.");
   }
@@ -513,7 +515,7 @@ function normalizeSlackOutputOptions(action: string, args: unknown): SlackOutput
 }
 
 function getSlackEnvelopeCliText(envelope: SlackDispatcherEnvelope): string {
-  if (envelope.status === "succeeded" && isRecord(envelope.data)) {
+  if (envelope.status === "succeeded" && isSlackToolObject(envelope.data)) {
     const text = envelope.data.text;
     if (typeof text === "string" && text.length > 0) return text;
   }
@@ -992,7 +994,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     if (input.threadTs) body.thread_ts = input.threadTs;
 
     const response = await slack("chat.postMessage", getBotToken(), body);
-    const message = isRecord(response.message) ? response.message : null;
+    const message = isSlackToolObject(response.message) ? response.message : null;
     const ts = typeof message?.ts === "string" ? message.ts : undefined;
     return {
       ...(ts ? { ts } : {}),
@@ -1013,11 +1015,12 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
   }
 
   function buildSlackDispatcherHelpEnvelope(args: unknown): SlackDispatcherEnvelope {
-    if (args != null && !isRecord(args)) {
+    if (args != null && !isSlackToolObject(args)) {
       return buildSlackActionFailureEnvelope(new Error("slack help args must be an object."));
     }
 
-    const topic = isRecord(args) && typeof args.topic === "string" ? args.topic : undefined;
+    const topic =
+      isSlackToolObject(args) && typeof args.topic === "string" ? args.topic : undefined;
     if (topic) {
       const action = normalizeSlackDispatcherActionName(topic);
       const definition = slackActionRegistry.get(action);
@@ -1105,7 +1108,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           return buildSlackDispatcherResponse(buildSlackDispatcherHelpEnvelope(args), output);
         }
 
-        if (!isRecord(args)) {
+        if (!isSlackToolObject(args)) {
           return buildSlackDispatcherResponse(
             buildSlackActionFailureEnvelope(new Error("slack args must be an object.")),
             output,

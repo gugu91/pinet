@@ -34,7 +34,7 @@ export interface SlackViewSubmissionInboxEvent {
 
 export type SlackInteractiveInboxEvent = SlackBlockActionInboxEvent | SlackViewSubmissionInboxEvent;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isSlackBlockKitObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -43,11 +43,11 @@ function asString(value: unknown): string | undefined {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return isRecord(value) ? value : undefined;
+  return isSlackBlockKitObject(value) ? value : undefined;
 }
 
 function asRecordArray(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value) || value.some((item) => !isRecord(item))) {
+  if (!Array.isArray(value) || value.some((item) => !isSlackBlockKitObject(item))) {
     throw new Error("Slack blocks must be a JSON array of objects.");
   }
   return value as Record<string, unknown>[];
@@ -171,7 +171,7 @@ export function extractSlackInteractivePayloadFromEnvelope(
     }
   }
 
-  if (!isRecord(payload)) return null;
+  if (!isSlackBlockKitObject(payload)) return null;
   return payload;
 }
 

@@ -76,6 +76,28 @@ The reviewer posts findings to PiComms and GitHub. Fix any critical/warning issu
 - Config in `~/.pi/agent/settings.json` under extension name key
 - Env vars as fallback for secrets
 
+## Agent coding standards
+
+Treat review feedback as repo-owned guardrails, not one-off fixes. When an
+agent or reviewer catches a repeatable issue, prefer a cheap deterministic lint,
+test, or CI check so the next agent gets the correction before review.
+
+- **Parse boundaries, do not spread `unknown`.** External, serialized, config,
+  JSON, Slack, Pinet, and MCP-shaped values must be parsed at the boundary into a
+  named DTO or domain type. The diff-aware `lint:agent-standards` check prevents
+  net-new explicit `unknown` and `any` type escape hatches in changed TypeScript.
+- **No `isRecord`.** Generic record guards hide the real boundary. ESLint bans
+  new functions named `isRecord`; parse the boundary first, then use a
+  domain-specific parser/type guard only if one is still needed.
+- **Inline one-use helpers.** A helper with one call site usually costs more
+  context than it saves. The agent standards lint flags newly added local
+  top-level helpers with one call site. Keep one only when it is a real semantic
+  seam and add `agent-standards-ignore prefer-inline-single-use-helper: <reason>`
+  immediately above it.
+- **No explicit `any`.** `@typescript-eslint/no-explicit-any` is an error. In the
+  rare generic-type-system escape hatch where `any` is the precise TypeScript
+  tool, keep it tiny, tested, and locally documented.
+
 ## GitHub
 
 - Remote: `github.com:gugu91/extensions.git`

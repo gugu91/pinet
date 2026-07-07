@@ -60,7 +60,7 @@ interface SlackFileMetadata {
   privateDownloadUrl: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isSlackFileObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -100,7 +100,7 @@ function assertSafeSlackFileDownloadUrl(rawUrl: string): void {
 }
 
 function metadataFromSlackFile(value: unknown, expectedFileId: string): SlackFileMetadata | null {
-  if (!isRecord(value)) return null;
+  if (!isSlackFileObject(value)) return null;
   const id = getString(value, "id");
   if (id !== expectedFileId) return null;
   const privateDownloadUrl =
@@ -122,7 +122,7 @@ function metadataFromSlackFile(value: unknown, expectedFileId: string): SlackFil
 }
 
 function filesFromMessage(message: unknown): unknown[] {
-  if (!isRecord(message) || !Array.isArray(message.files)) return [];
+  if (!isSlackFileObject(message) || !Array.isArray(message.files)) return [];
   return message.files;
 }
 
@@ -133,7 +133,8 @@ function findFileInMessages(
 ): SlackFileMetadata | null {
   if (!Array.isArray(messages)) return null;
   for (const message of messages) {
-    if (messageTs && (!isRecord(message) || getString(message, "ts") !== messageTs)) continue;
+    if (messageTs && (!isSlackFileObject(message) || getString(message, "ts") !== messageTs))
+      continue;
     for (const file of filesFromMessage(message)) {
       const metadata = metadataFromSlackFile(file, fileId);
       if (metadata) return metadata;

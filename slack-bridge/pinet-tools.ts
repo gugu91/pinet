@@ -334,7 +334,7 @@ function getRecordString(
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isPinetToolObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -455,7 +455,7 @@ function formatPinetHelpCliText(data: Record<string, unknown>): string | null {
   const actions = Array.isArray(data.actions)
     ? data.actions
         .map((action) =>
-          isRecord(action) && typeof action.action === "string" ? action.action : null,
+          isPinetToolObject(action) && typeof action.action === "string" ? action.action : null,
         )
         .filter((action): action is string => Boolean(action))
     : [];
@@ -476,7 +476,7 @@ function formatPinetHelpCliText(data: Record<string, unknown>): string | null {
 }
 
 function getPinetEnvelopeCliText(envelope: PinetDispatcherEnvelope): string {
-  if (envelope.status === "succeeded" && isRecord(envelope.data)) {
+  if (envelope.status === "succeeded" && isPinetToolObject(envelope.data)) {
     const text = envelope.data.text;
     if (typeof text === "string" && text.length > 0) return text;
 
@@ -499,7 +499,7 @@ function getPinetEnvelopeCliText(envelope: PinetDispatcherEnvelope): string {
 }
 
 function getTolerantPinetOutputOptions(value: unknown): PinetOutputOptions {
-  if (!isRecord(value)) return { format: "cli", full: false };
+  if (!isPinetToolObject(value)) return { format: "cli", full: false };
 
   const rawFormat = value.format ?? value.f ?? value["-f"];
   const normalizedFormat = rawFormat == null ? "cli" : String(rawFormat).trim().toLowerCase();
@@ -509,7 +509,7 @@ function getTolerantPinetOutputOptions(value: unknown): PinetOutputOptions {
 }
 
 function getOptionalPinetOutputOptions(value: unknown): PinetOutputOptions {
-  if (!isRecord(value)) return { format: "cli", full: false };
+  if (!isPinetToolObject(value)) return { format: "cli", full: false };
   try {
     return normalizePinetOutputOptions(value);
   } catch {
@@ -524,7 +524,7 @@ function shouldRenderStructuredPinetEnvelope(
   if (output.format === "json") return true;
   if (!output.full) return false;
   if (envelope.status === "failed") return true;
-  if (!isRecord(envelope.data)) return true;
+  if (!isPinetToolObject(envelope.data)) return true;
   const text = envelope.data.text;
   return typeof text !== "string" || text.length === 0;
 }
@@ -682,7 +682,7 @@ function wrapDispatcherEnvelope(
 }
 
 function isPinetDispatcherEnvelope(value: unknown): value is PinetDispatcherEnvelope {
-  if (!isRecord(value)) return false;
+  if (!isPinetToolObject(value)) return false;
   if (value.status !== "succeeded" && value.status !== "failed") return false;
   return Array.isArray(value.errors) && Array.isArray(value.warnings);
 }
@@ -791,13 +791,13 @@ function formatPinetEnvelopeExpandedText(
     }
   } else if (expandedText && expandedText.trim().length > 0) {
     lines.push(...expandedText.split("\n"));
-  } else if (isRecord(envelope.data)) {
+  } else if (isPinetToolObject(envelope.data)) {
     lines.push(`status: ${envelope.status}`);
     const action = typeof envelope.data.action === "string" ? envelope.data.action : undefined;
     if (action) lines.push(`action: ${action}`);
 
     const details = envelope.data.details;
-    if (isRecord(details)) {
+    if (isPinetToolObject(details)) {
       lines.push("details:");
       lines.push(...formatPrimitiveDetails(details).map((line) => `  ${line}`));
     }
@@ -1599,7 +1599,7 @@ function getMaybeMetadata(
   if (!hasParam(params, "metadata")) return undefined;
   const value = params.metadata;
   if (value === null) return null;
-  return isRecord(value) ? value : undefined;
+  return isPinetToolObject(value) ? value : undefined;
 }
 
 function buildCompactPortLeaseDetails(leases: PortLeaseInfo[]): Record<string, unknown> {
@@ -2484,7 +2484,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
       const action =
         typeof args.action === "string" && args.action.trim() ? args.action.trim() : "?";
       let suffix = "";
-      if (isRecord(args.args)) {
+      if (isPinetToolObject(args.args)) {
         const topic = typeof args.args.topic === "string" ? args.args.topic.trim() : "";
         const op = typeof args.args.op === "string" ? args.args.op.trim() : "";
         if (topic) suffix = ` ${theme.fg("dim", `topic=${topic}`)}`;
@@ -2537,7 +2537,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
       }
 
       if (normalizedAction === "help") {
-        const args = isRecord(params.args) ? params.args : {};
+        const args = isPinetToolObject(params.args) ? params.args : {};
         let output: PinetOutputOptions;
         try {
           output = normalizePinetOutputOptions(args);
@@ -2575,7 +2575,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
         );
       }
 
-      if (!isRecord(params.args)) {
+      if (!isPinetToolObject(params.args)) {
         return wrapDispatcherEnvelope(
           buildPinetDispatcherEnvelope("failed", null, [
             {
