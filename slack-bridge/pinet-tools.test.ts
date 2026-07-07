@@ -1,3 +1,5 @@
+import { readFileSync, rmSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -1993,5 +1995,150 @@ describe("registerPinetTools", () => {
     expect(expanded).toContain("issue-688");
     expect(expanded).toContain("[active]");
     expect(expanded).toContain("#688");
+  });
+
+  it("spills oversized full JSON dispatcher output to a temp file", async () => {
+    const longSummary = "oversized lane summary ".repeat(180);
+    const listPinetLanes = vi.fn(async () =>
+      Array.from({ length: 40 }, (_, index) => ({
+        laneId: `issue-${index + 1}`,
+        name: `Large lane ${index + 1}`,
+        task: null,
+        issueNumber: index + 1,
+        prNumber: null,
+        threadId: null,
+        ownerAgentId: "agent-1",
+        implementationLeadAgentId: null,
+        pmMode: false,
+        state: "done" as const,
+        summary: `${longSummary}${index}`,
+        metadata: { index, payload: longSummary },
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        lastActivityAt: "2026-05-01T00:00:00.000Z",
+        participants: [],
+      })),
+    );
+    const tools = registerWithDeps(createDeps({ listPinetLanes }));
+    const pinet = tools.get("pinet");
+
+    const result = (await pinet?.execute("tool-call-lanes-list-large", {
+      action: "lanes",
+      args: { op: "list", include_done: true, full: true, format: "json" },
+    })) as {
+      content?: Array<{ type: string; text?: string }>;
+      details?: {
+        data?: {
+          details?: {
+            fullOutputPath?: string;
+            laneCount?: number;
+            lanes?: unknown[];
+            truncation?: { truncated?: boolean; totalBytes?: number };
+          };
+        };
+      };
+    };
+
+    const inlineText = result.content?.[0]?.text ?? "";
+    const envelope = JSON.parse(inlineText) as {
+      status: string;
+      data: {
+        text: string;
+        details: {
+          fullOutputPath: string;
+          laneCount: number;
+          lanes: unknown[];
+          truncation: { truncated: boolean; totalBytes: number };
+        };
+      };
+      warnings: string[];
+    };
+    const fullOutputPath = envelope.data.details.fullOutputPath;
+
+    try {
+      expect(Buffer.byteLength(inlineText, "utf8")).toBeLessThan(50 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(result.details), "utf8")).toBeLessThan(50 * 1024);
+      expect(envelope.status).toBe("succeeded");
+      expect(envelope.data.text).toContain("Full output saved to:");
+      expect(envelope.data.details.laneCount).toBe(40);
+      expect(envelope.data.details.lanes).toHaveLength(10);
+      expect(envelope.data.details.truncation.truncated).toBe(true);
+      expect(envelope.warnings[0]).toContain("full output saved");
+      expect(result.details?.data?.details?.fullOutputPath).toBe(fullOutputPath);
+
+      const fullOutput = readFileSync(fullOutputPath, "utf8");
+      const fullEnvelope = JSON.parse(fullOutput) as { data: { details: { lanes: unknown[] } } };
+      expect(fullEnvelope.data.details.lanes).toHaveLength(40);
+      expect(fullOutput).toContain(longSummary);
+      expect(Buffer.byteLength(fullOutput, "utf8")).toBeGreaterThan(50 * 1024);
+    } finally {
+      if (fullOutputPath) {
+        rmSync(path.dirname(fullOutputPath), { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("spills when full structured details exceed the inline limit even if CLI text is compact", async () => {
+    const largeMetadata = "metadata-only payload ".repeat(260);
+    const listPinetLanes = vi.fn(async () =>
+      Array.from({ length: 20 }, (_, index) => ({
+        laneId: `metadata-${index + 1}`,
+        name: `Metadata lane ${index + 1}`,
+        task: null,
+        issueNumber: index + 1,
+        prNumber: null,
+        threadId: null,
+        ownerAgentId: "agent-1",
+        implementationLeadAgentId: null,
+        pmMode: false,
+        state: "done" as const,
+        summary: "short summary",
+        metadata: { index, payload: largeMetadata },
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        lastActivityAt: "2026-05-01T00:00:00.000Z",
+        participants: [],
+      })),
+    );
+    const tools = registerWithDeps(createDeps({ listPinetLanes }));
+    const pinet = tools.get("pinet");
+
+    const result = (await pinet?.execute("tool-call-lanes-list-large-details", {
+      action: "lanes",
+      args: { op: "list", include_done: true, full: true },
+    })) as {
+      content?: Array<{ type: string; text?: string }>;
+      details?: {
+        data?: {
+          details?: {
+            fullOutputPath?: string;
+            laneCount?: number;
+            truncation?: { truncated?: boolean };
+          };
+        };
+      };
+    };
+
+    const inlineText = result.content?.[0]?.text ?? "";
+    const fullOutputPath = result.details?.data?.details?.fullOutputPath;
+
+    try {
+      expect(Buffer.byteLength(inlineText, "utf8")).toBeLessThan(50 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(result.details), "utf8")).toBeLessThan(50 * 1024);
+      expect(inlineText).toContain("Pinet lanes: 20 tracked.");
+      expect(inlineText).toContain("Full output saved to:");
+      expect(result.details?.data?.details?.laneCount).toBe(20);
+      expect(result.details?.data?.details?.truncation?.truncated).toBe(true);
+
+      expect(fullOutputPath).toBeTruthy();
+      const fullOutput = readFileSync(fullOutputPath ?? "", "utf8");
+      expect(fullOutput).toContain("--- Pinet dispatcher envelope (JSON) ---");
+      expect(fullOutput).toContain(largeMetadata);
+      expect(Buffer.byteLength(fullOutput, "utf8")).toBeGreaterThan(50 * 1024);
+    } finally {
+      if (fullOutputPath) {
+        rmSync(path.dirname(fullOutputPath), { recursive: true, force: true });
+      }
+    }
   });
 });

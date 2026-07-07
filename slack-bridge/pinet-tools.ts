@@ -1,4 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import {
   buildCompactPinetReadDetails,
   formatPinetReadResultCompact,
@@ -14,7 +16,14 @@ import {
   parseScheduledWakeupDelay,
   resolveScheduledWakeupFireAt,
 } from "@pinet/pinet-core/scheduled-wakeups";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  formatSize,
+  truncateHead,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
@@ -302,6 +311,176 @@ const PINET_OUTPUT_OPTION_PARAMETERS = {
 
 const PINET_COMPACT_LIST_LIMIT = 10;
 
+interface PinetOutputSpill {
+  fullOutputPath: string;
+  originalBytes: number;
+  originalLines: number;
+  inlineBytes: number;
+  inlineLines: number;
+  maxBytes: number;
+  maxLines: number;
+  format: PinetOutputOptions["format"];
+}
+
+function sanitizePinetOutputFileToken(value: string): string {
+  const sanitized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return sanitized || "result";
+}
+
+function writePinetFullOutput(
+  text: string,
+  action: string | undefined,
+  output: PinetOutputOptions,
+): string {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "pinet-output-"));
+  const extension = output.format === "json" ? "json" : "txt";
+  const filename = `${Date.now()}-${sanitizePinetOutputFileToken(action ?? "result")}.${extension}`;
+  const fullOutputPath = path.join(dir, filename);
+  writeFileSync(fullOutputPath, text, "utf8");
+  return fullOutputPath;
+}
+
+function buildPinetSpill(
+  fullOutputText: string,
+  action: string | undefined,
+  output: PinetOutputOptions,
+): PinetOutputSpill | null {
+  const truncation = truncateHead(fullOutputText, {
+    maxLines: DEFAULT_MAX_LINES,
+    maxBytes: DEFAULT_MAX_BYTES,
+  });
+  if (!truncation.truncated) return null;
+
+  return {
+    fullOutputPath: writePinetFullOutput(fullOutputText, action, output),
+    originalBytes: truncation.totalBytes,
+    originalLines: truncation.totalLines,
+    inlineBytes: truncation.outputBytes,
+    inlineLines: truncation.outputLines,
+    maxBytes: DEFAULT_MAX_BYTES,
+    maxLines: DEFAULT_MAX_LINES,
+    format: output.format,
+  };
+}
+
+function formatPinetSpillNotice(spill: PinetOutputSpill): string {
+  return `[Output truncated: original was ${spill.originalLines} line${spill.originalLines === 1 ? "" : "s"} (${formatSize(spill.originalBytes)}), exceeding the inline limit of ${spill.maxLines} lines or ${formatSize(spill.maxBytes)}. Full output saved to: ${spill.fullOutputPath}]`;
+}
+
+function buildPinetSpillDetails(spill: PinetOutputSpill): Record<string, unknown> {
+  return {
+    fullOutputPath: spill.fullOutputPath,
+    truncation: {
+      truncated: true,
+      totalLines: spill.originalLines,
+      totalBytes: spill.originalBytes,
+      outputLines: spill.inlineLines,
+      outputBytes: spill.inlineBytes,
+      maxLines: spill.maxLines,
+      maxBytes: spill.maxBytes,
+    },
+    outputFormat: spill.format,
+  };
+}
+
+function summarizePinetSpilledValue(value: unknown): unknown {
+  if (value === null || ["string", "number", "boolean"].includes(typeof value)) return value;
+  if (Array.isArray(value)) {
+    return { count: value.length };
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, PINET_COMPACT_LIST_LIMIT)
+        .map(([key, nested]) => [key, summarizePinetSpilledValue(nested)]),
+    );
+  }
+  return String(value);
+}
+
+function buildPinetSpilledDetailsPayload(
+  originalDetails: unknown,
+  compactDetails: unknown,
+  spill: PinetOutputSpill,
+): Record<string, unknown> {
+  const base = isRecord(compactDetails)
+    ? compactDetails
+    : compactDetails == null
+      ? isRecord(originalDetails)
+        ? summarizePinetSpilledValue(originalDetails)
+        : {}
+      : { compactDetails: summarizePinetSpilledValue(compactDetails) };
+
+  return {
+    ...(isRecord(base) ? base : {}),
+    ...buildPinetSpillDetails(spill),
+  };
+}
+
+function formatPinetSpilledText(
+  envelope: PinetDispatcherEnvelope,
+  compactDetails: unknown,
+  spill: PinetOutputSpill,
+): string {
+  const action =
+    isRecord(envelope.data) && typeof envelope.data.action === "string"
+      ? envelope.data.action
+      : undefined;
+  const compact = isRecord(compactDetails) ? compactDetails : null;
+  const count = compact
+    ? (compact.laneCount ??
+      compact.count ??
+      compact.total ??
+      compact.messageCount ??
+      compact.sessionCount)
+    : undefined;
+  const subject = action ? `Pinet ${action}` : `Pinet ${envelope.status}`;
+  let summary: string;
+  if (typeof count === "number" && action === "lanes") {
+    summary = `Pinet lanes: ${count} tracked.`;
+  } else if (typeof count === "number" && action === "agents") {
+    summary = `Pinet agents: ${count} visible.`;
+  } else if (typeof count === "number" && action === "sessions") {
+    summary = `Pinet sessions: ${count} found.`;
+  } else if (typeof count === "number" && action === "ports") {
+    summary = `Pinet port leases: ${count}.`;
+  } else if (typeof count === "number" && action === "read") {
+    summary = `Pinet read: ${count} message${count === 1 ? "" : "s"}.`;
+  } else {
+    summary = `${subject} output exceeded the inline limit.`;
+  }
+  return `${summary}\n\n${formatPinetSpillNotice(spill)}`;
+}
+
+function buildPinetSpilledEnvelope(
+  envelope: PinetDispatcherEnvelope,
+  compactDetails: unknown,
+  spill: PinetOutputSpill,
+): PinetDispatcherEnvelope {
+  const warning = `Pinet output exceeded ${formatSize(spill.maxBytes)} / ${spill.maxLines} lines; full output saved to ${spill.fullOutputPath}.`;
+  const compactText = formatPinetSpilledText(envelope, compactDetails, spill);
+  const originalDetails = isRecord(envelope.data) ? envelope.data.details : undefined;
+  const action =
+    isRecord(envelope.data) && typeof envelope.data.action === "string"
+      ? envelope.data.action
+      : undefined;
+
+  return buildPinetDispatcherEnvelope(
+    envelope.status,
+    {
+      ...(action ? { action } : {}),
+      text: compactText,
+      details: buildPinetSpilledDetailsPayload(originalDetails, compactDetails, spill),
+    },
+    envelope.errors,
+    [...envelope.warnings, warning],
+  );
+}
+
 function getRecordString(
   record: Record<string, unknown> | null | undefined,
   key: string,
@@ -510,24 +689,46 @@ function wrapDispatcherEnvelope(
   output: PinetOutputOptions = { format: "cli", full: false },
   expandedText?: string,
   displayText?: string,
+  compactDetailsForSpill?: unknown,
 ): {
   content: Array<{ type: "text"; text: string }>;
   details: PinetDispatcherEnvelope;
   expandedText?: string;
   displayText?: string;
 } {
+  const structuredEnvelopeText = JSON.stringify(envelope, null, output.full ? 2 : 0);
+  const renderedText = shouldRenderStructuredPinetEnvelope(envelope, output)
+    ? structuredEnvelopeText
+    : getPinetEnvelopeCliText(envelope);
+  const action =
+    isRecord(envelope.data) && typeof envelope.data.action === "string"
+      ? envelope.data.action
+      : undefined;
+  const fullOutputText =
+    output.format === "json"
+      ? renderedText
+      : `${renderedText}\n\n--- Pinet dispatcher envelope (JSON) ---\n${JSON.stringify(envelope, null, 2)}`;
+  const spill = buildPinetSpill(fullOutputText, action, output);
+  const returnedEnvelope = spill
+    ? buildPinetSpilledEnvelope(envelope, compactDetailsForSpill, spill)
+    : envelope;
+  const returnedText = spill
+    ? shouldRenderStructuredPinetEnvelope(returnedEnvelope, output)
+      ? JSON.stringify(returnedEnvelope, null, output.full ? 2 : 0)
+      : getPinetEnvelopeCliText(returnedEnvelope)
+    : renderedText;
+  const returnedDisplayText = spill ? getPinetEnvelopeCliText(returnedEnvelope) : displayText;
+
   return {
     content: [
       {
         type: "text",
-        text: shouldRenderStructuredPinetEnvelope(envelope, output)
-          ? JSON.stringify(envelope, null, output.full ? 2 : 0)
-          : getPinetEnvelopeCliText(envelope),
+        text: returnedText,
       },
     ],
-    details: envelope,
-    ...(expandedText ? { expandedText } : {}),
-    ...(displayText ? { displayText } : {}),
+    details: returnedEnvelope,
+    ...(spill ? {} : expandedText ? { expandedText } : {}),
+    ...(returnedDisplayText ? { displayText: returnedDisplayText } : {}),
   };
 }
 
@@ -2472,6 +2673,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
           output,
           expandedText,
           displayText,
+          result.compactDetails,
         );
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
