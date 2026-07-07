@@ -1,5 +1,15 @@
 export type RuntimeScopeSource = "explicit" | "compatibility";
 
+export type TransportJsonPrimitive = string | number | boolean | null;
+export type TransportJsonValue =
+  | TransportJsonPrimitive
+  | TransportJsonObject
+  | TransportJsonValue[];
+export type TransportJsonObject = { [key: string]: TransportJsonValue };
+export type TransportRichBlock = TransportJsonObject;
+export type AdapterCapabilityParams = TransportJsonObject;
+export type AdapterCapabilityPayload = TransportJsonObject;
+
 export const DEFAULT_COMPATIBILITY_SCOPE_KEY = "default";
 
 export interface WorkspaceInstallScopeCarrier {
@@ -95,7 +105,7 @@ export interface InboundMessage {
   text: string;
   timestamp: string;
   isChannelMention?: boolean;
-  metadata?: Record<string, unknown>;
+  metadata?: TransportJsonObject;
   scope?: RuntimeScopeCarrier;
 }
 
@@ -107,7 +117,7 @@ export interface NormalizedMessageContent {
    * This remains intentionally Slack-shaped for the current publish-readiness
    * track while a future transport-neutral rich-content model is considered.
    */
-  slackBlocks?: ReadonlyArray<Record<string, unknown>>;
+  slackBlocks?: ReadonlyArray<TransportRichBlock>;
 }
 
 export interface OutboundAttachmentFile {
@@ -122,12 +132,12 @@ export interface OutboundMessage {
   channel: string;
   text: string;
   content?: NormalizedMessageContent;
-  blocks?: ReadonlyArray<Record<string, unknown>>;
+  blocks?: ReadonlyArray<TransportRichBlock>;
   files?: ReadonlyArray<OutboundAttachmentFile>;
   agentName?: string;
   agentEmoji?: string;
   agentOwnerToken?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: TransportJsonObject;
   scope?: RuntimeScopeCarrier;
 }
 
@@ -142,11 +152,11 @@ export interface AdapterCapabilityEffects {
 
 export interface AdapterCapabilityRequest {
   capability: string;
-  params: Record<string, unknown>;
+  params: AdapterCapabilityParams;
 }
 
 export interface AdapterCapabilityResult {
-  result: Record<string, unknown>;
+  result: AdapterCapabilityPayload;
   effects?: AdapterCapabilityEffects;
 }
 
