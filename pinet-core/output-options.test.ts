@@ -30,7 +30,13 @@ describe("normalizePinetOutputOptions", () => {
     expect(() => normalizePinetOutputOptions({ format: "yaml" })).toThrow(
       'format must be "cli" or "json".',
     );
+    expect(() => normalizePinetOutputOptions({ "-f": 7 })).toThrow(
+      'format must be "cli" or "json".',
+    );
     expect(() => normalizePinetOutputOptions({ full: "true" })).toThrow(
+      "full must be a boolean when provided.",
+    );
+    expect(() => normalizePinetOutputOptions({ "--full": 1 })).toThrow(
       "full must be a boolean when provided.",
     );
   });
