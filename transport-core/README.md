@@ -8,6 +8,11 @@ Tiny transport-neutral contracts package for the `extensions` repo.
 - canonical `OutboundMessage` contract
 - normalized outbound `content` shape for transport-aware rendering with plain-text fallback
 - canonical `MessageAdapter` transport interface
+- shared zero-dependency async primitives via the `@pinet/transport-core/async`
+  subpath: `sleep` (abortable delay), `withTimeout`, `computeBackoffDelay`
+  (capped + jittered exponential backoff), and `AbortError`/`TimeoutError`
+  helpers. Retry _drivers_ stay bespoke at call sites; this module only owns
+  the primitives they compose.
 
 ## What stays out of scope
 

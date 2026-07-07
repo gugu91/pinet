@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
 import { readMeshSecret } from "./auth.js";
 import { DEFAULT_SOCKET_PATH as PINET_DEFAULT_SOCKET_PATH } from "./paths.js";
 import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
@@ -108,30 +109,13 @@ export const MAX_RECONNECT_DELAY_MS = 30000;
 export const HEARTBEAT_INTERVAL_MS = 5000;
 export const HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS = 2500;
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
-    timer.unref?.();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
-}
-
-/** Compute reconnect delay with exponential backoff and jitter. */
+/** Compute reconnect delay with exponential backoff and jitter (±25%). */
 export function computeReconnectDelay(attempt: number, random = Math.random()): number {
-  const baseDelay = INITIAL_RECONNECT_DELAY_MS * Math.pow(2, attempt);
-  const capped = Math.min(baseDelay, MAX_RECONNECT_DELAY_MS);
-  // Add jitter: ±25%
-  const jitter = capped * (0.75 + random * 0.5);
-  return Math.round(jitter);
+  return computeBackoffDelay(attempt, {
+    initialMs: INITIAL_RECONNECT_DELAY_MS,
+    maxMs: MAX_RECONNECT_DELAY_MS,
+    random,
+  });
 }
 
 // ─── Pending request tracker ─────────────────────────────

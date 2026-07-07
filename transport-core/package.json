@@ -16,6 +16,7 @@
   "main": "./dist/index.js",
   "exports": {
     ".": "./dist/index.js",
+    "./async": "./dist/async.js",
     "./package.json": "./package.json"
   },
   "files": [
