@@ -82,9 +82,13 @@ export interface LoadConfigOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-function readJsonFile(filePath: string): unknown | null {
+type ConfigJsonPrimitive = string | number | boolean | null;
+type ConfigJsonValue = ConfigJsonPrimitive | ConfigJsonObject | ConfigJsonValue[];
+type ConfigJsonObject = { [key: string]: ConfigJsonValue };
+
+function readJsonFile(filePath: string): ConfigJsonValue | null {
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as ConfigJsonValue;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[neon-psql] Failed to parse config ${filePath}: ${message}`);
@@ -95,7 +99,7 @@ function readJsonFile(filePath: string): unknown | null {
 function readConfigFile(filePath: string): RawConfigSource | null {
   if (!fs.existsSync(filePath)) return null;
   const parsed = readJsonFile(filePath);
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   return {
     raw: parsed as FileConfig,
     pathLabel: filePath,
@@ -105,10 +109,10 @@ function readConfigFile(filePath: string): RawConfigSource | null {
 function readSettingsConfig(settingsPath: string): RawConfigSource | null {
   if (!fs.existsSync(settingsPath)) return null;
   const parsed = readJsonFile(settingsPath);
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 
-  const raw = (parsed as Record<string, unknown>)[SETTINGS_KEY];
-  if (!raw || typeof raw !== "object") return null;
+  const raw = parsed[SETTINGS_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
 
   return {
     raw: raw as FileConfig,

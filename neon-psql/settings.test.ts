@@ -138,6 +138,17 @@ describe("loadConfig", () => {
     expect(result).toBeNull();
   });
 
+  it("ignores malformed array config roots and settings sections", () => {
+    const explicitPath = path.join(tmpDir, "explicit-array.json");
+    fs.writeFileSync(explicitPath, JSON.stringify([]));
+    expect(
+      loadConfig({ cwd, agentDir, extensionDir, env: { PI_NEON_PSQL_CONFIG: explicitPath } }),
+    ).toBeNull();
+
+    fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ "neon-psql": [] }));
+    expect(loadConfig({ cwd, agentDir, extensionDir, env: {} })).toBeNull();
+  });
+
   it("preserves absolute log paths", () => {
     const absoluteLogPath = path.join(tmpDir, "logs", "neon.log");
     fs.writeFileSync(
