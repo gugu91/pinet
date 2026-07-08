@@ -795,11 +795,15 @@ function extractPinetSkinStatusVocabulary(value: unknown): PinetSkinStatusVocabu
   return Object.keys(vocabulary).length > 0 ? vocabulary : undefined;
 }
 
-export function extractPinetControlCommand(message: {
+export interface PinetControlCommandMessage {
   threadId?: string;
   body?: string;
-  metadata?: Record<string, unknown> | null;
-}): PinetControlCommand | null {
+  metadata?: PinetControlMetadata | null;
+}
+
+export function extractPinetControlCommand(
+  message: PinetControlCommandMessage,
+): PinetControlCommand | null {
   const metadata = message.metadata ?? {};
   if (metadata.scheduledWakeup === true) return null;
 
