@@ -21,6 +21,8 @@ import { extractTaskAssignmentsFromMessage } from "./task-assignments.js";
 
 const execFileAsync = promisify(execFile);
 
+export type PinetMeshOpsAgentMetadata = Record<string, unknown>;
+
 export interface PinetMeshOpsAgentRecord {
   emoji: string;
   name: string;
@@ -29,7 +31,7 @@ export interface PinetMeshOpsAgentRecord {
   stableId?: string | null;
   session?: AgentSessionSummary | null;
   status: "working" | "idle";
-  metadata: Record<string, unknown> | null;
+  metadata: PinetMeshOpsAgentMetadata | null;
   lastHeartbeat: string;
   lastSeen?: string;
   disconnectedAt?: string | null;
