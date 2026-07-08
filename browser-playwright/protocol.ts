@@ -23,7 +23,7 @@ export interface BrowserJsonObject {
   [key: string]: BrowserJsonValue;
 }
 export type BrowserArgs = Record<string, BrowserScalar>;
-export type BrowserArgsInput = Record<string, unknown>;
+export type BrowserArgsInput = BrowserJsonObject;
 export type BrowserResultPayload = BrowserJsonObject;
 export type BrowserArtifactPayload = BrowserJsonObject;
 
@@ -180,9 +180,9 @@ const BROWSER_ACTION_SCHEMAS: Record<BrowserAction, BrowserActionSchema> = {
 function parseInputJson(raw: string | undefined): BrowserArgs {
   if (!raw) return {};
 
-  let parsed: unknown;
+  let parsed: BrowserJsonValue;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw) as BrowserJsonValue;
   } catch (error) {
     throw new Error(
       `input_json must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
@@ -192,7 +192,10 @@ function parseInputJson(raw: string | undefined): BrowserArgs {
   return parseArgsObject(parsed, "input_json");
 }
 
-function parseArgsObject(raw: unknown, source: "args" | "input_json"): BrowserArgs {
+function parseArgsObject(
+  raw: BrowserArgsInput | BrowserJsonValue | undefined,
+  source: "args" | "input_json",
+): BrowserArgs {
   if (raw === undefined) return {};
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${source} must be a JSON object.`);
