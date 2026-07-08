@@ -93,6 +93,11 @@ jobs:
       - name: Build packages
         run: pnpm build:packages
 
+      - name: Verify package build assets
+        run: |
+          test -f slack-bridge/dist/prompts/broker/tmux.md
+          grep -q "PRIORITIZED ISSUE GATE" slack-bridge/dist/prompts/broker/tmux.md
+
   format:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -145,11 +150,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Build test package dependencies
-        run: pnpm build:test-deps
-
       - name: Run tests
         run: pnpm test
+        env:
+          SKIP_SLACK_BRIDGE_PACKAGE_BUILD_TEST: "1"
 
   nvim-smoke:
     runs-on: ubuntu-latest
@@ -175,12 +179,13 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Install Neovim
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: v0.10.4
 
       - name: Run Neovim smoke tests
-        run: pnpm --filter @gugu910/pi-nvim-bridge test
+        run: pnpm --filter @gugu910/pi-nvim-bridge test nvim-lua.test.ts
 
   quality:
     runs-on: ubuntu-latest

@@ -219,12 +219,22 @@ export interface BrokerClientAuthOptions {
   meshSecretPath?: string;
 }
 
+export interface BrokerClientTimingOptions {
+  /** @internal Allows tests to exercise reconnect behavior without waiting for production backoff. */
+  reconnectDelayMs?: (attempt: number) => number;
+}
+
+export type BrokerClientOptions = BrokerConnectOpts &
+  BrokerClientAuthOptions &
+  BrokerClientTimingOptions;
+
 // ─── BrokerClient ────────────────────────────────────────
 
 export class BrokerClient {
   private readonly connectOpts: BrokerConnectOpts;
   private readonly meshSecret: string | null;
   private readonly meshSecretPath: string | null;
+  private readonly reconnectDelayMs: (attempt: number) => number;
   private socket: net.Socket | null = null;
   private connected = false;
   private shuttingDown = false;
@@ -246,7 +256,12 @@ export class BrokerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private buffer = "";
 
-  constructor(opts?: string | (BrokerConnectOpts & BrokerClientAuthOptions)) {
+  constructor(opts?: string | BrokerClientOptions) {
+    this.reconnectDelayMs =
+      typeof opts === "object" && opts !== null
+        ? (opts.reconnectDelayMs ?? computeReconnectDelay)
+        : computeReconnectDelay;
+
     if (opts === undefined) {
       this.connectOpts = { path: DEFAULT_SOCKET_PATH };
       this.meshSecret = null;
@@ -786,7 +801,7 @@ export class BrokerClient {
 
   private scheduleReconnect(): void {
     if (this.shuttingDown || this.reconnectTimer) return;
-    const delay = computeReconnectDelay(this.reconnectAttempt);
+    const delay = this.reconnectDelayMs(this.reconnectAttempt);
     this.reconnectAttempt++;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

@@ -13,7 +13,7 @@ import {
   HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS,
   computeReconnectDelay,
 } from "./client.js";
-import type { BrokerConnectOpts } from "./client.js";
+import type { BrokerClientOptions, BrokerConnectOpts } from "./client.js";
 import { RPC_AGENT_NAME_CONFLICT, RPC_METHOD_NOT_FOUND } from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -27,6 +27,10 @@ interface MockServer {
   respondTo: (conn: net.Socket, id: number, result: unknown) => void;
   respondError: (conn: net.Socket, id: number, code: number, message: string) => void;
   connectOpts: BrokerConnectOpts;
+}
+
+function createFastReconnectClientOptions(connectOpts: BrokerConnectOpts): BrokerClientOptions {
+  return { ...connectOpts, reconnectDelayMs: () => 5 };
 }
 
 function createMockServer(port = 0): Promise<MockServer> {
@@ -1601,7 +1605,7 @@ describe("BrokerClient — exponential backoff", () => {
 
   it("reconnectAttempt starts at 0 and increments after disconnect", async () => {
     const mock = await createMockServer();
-    const client = new BrokerClient(mock.connectOpts);
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
     await client.connect();
     expect(client.getReconnectAttempt()).toBe(0);
 
@@ -1682,7 +1686,7 @@ describe("BrokerClient — onReconnect callback", () => {
   it("scheduleReconnect fires onDisconnect then onReconnect after server restart", async () => {
     const mock = await createMockServer();
     const port = mock.port;
-    const client = new BrokerClient(mock.connectOpts);
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
     let disconnectFired = false;
     let reconnectFired = false;
 
@@ -1727,7 +1731,7 @@ describe("BrokerClient — onReconnect callback", () => {
   it("keeps retrying until it can reconnect and re-register with stable identity", async () => {
     let mock = await createMockServer();
     const port = mock.port;
-    const client = new BrokerClient(mock.connectOpts);
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
     let disconnectFired = false;
     let reconnectFired = false;
 
@@ -1801,7 +1805,7 @@ describe("BrokerClient — onReconnect callback", () => {
   it("re-requests broker-assigned identity after reconnect when the original name was blank", async () => {
     let mock = await createMockServer();
     const port = mock.port;
-    const client = new BrokerClient(mock.connectOpts);
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
     let disconnectFired = false;
     let reconnectFired = false;
 
@@ -1877,7 +1881,7 @@ describe("BrokerClient — onReconnect callback", () => {
   it("stops reconnecting and surfaces a terminal error when an explicit name collides on reconnect", async () => {
     let mock = await createMockServer();
     const port = mock.port;
-    const client = new BrokerClient(mock.connectOpts);
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
     let disconnectFired = false;
     let reconnectFired = false;
     let reconnectFailed: Error | null = null;
@@ -1953,7 +1957,7 @@ describe("BrokerClient — onReconnect callback", () => {
     expect(client.getReconnectAttempt()).toBe(0);
     expect(client.getRegisteredIdentity()).toBeNull();
 
-    await new Promise((resolve) => setTimeout(resolve, INITIAL_RECONNECT_DELAY_MS + 250));
+    await new Promise((resolve) => setTimeout(resolve, 25));
     expect(mock.received).toHaveLength(1);
 
     client.disconnect();
