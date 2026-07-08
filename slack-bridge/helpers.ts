@@ -855,11 +855,18 @@ function serializeSlackFormValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export type SlackRequestBody = Record<string, unknown>;
+
+export interface SlackApiRequest {
+  url: string;
+  init: RequestInit;
+}
+
 export function buildSlackRequest(
   method: string,
   token: string,
-  body?: Record<string, unknown>,
-): { url: string; init: RequestInit } {
+  body?: SlackRequestBody,
+): SlackApiRequest {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
   };
