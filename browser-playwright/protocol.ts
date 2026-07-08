@@ -18,8 +18,14 @@ export const BROWSER_ACTION_VALUES = [
 export type BrowserAction = (typeof BROWSER_ACTION_VALUES)[number];
 
 export type BrowserScalar = string | number | boolean | null;
+export type BrowserJsonValue = BrowserScalar | BrowserJsonObject | BrowserJsonValue[];
+export interface BrowserJsonObject {
+  [key: string]: BrowserJsonValue;
+}
 export type BrowserArgs = Record<string, BrowserScalar>;
 export type BrowserArgsInput = Record<string, unknown>;
+export type BrowserResultPayload = BrowserJsonObject;
+export type BrowserArtifactPayload = BrowserJsonObject;
 
 export type BrowserToolInput = {
   backend?: BrowserBackend;
@@ -51,8 +57,8 @@ export type BrowserToolEnvelope = {
   session_id: string | null;
   page_id: string | null;
   capabilities: BrowserCapabilities;
-  result: Record<string, unknown>;
-  artifacts: Array<Record<string, unknown>>;
+  result: BrowserResultPayload;
+  artifacts: BrowserArtifactPayload[];
 };
 
 export type BrowserOutputOptions = {
@@ -69,7 +75,7 @@ type BrowserActionSchema = {
     required?: string[];
     optional?: string[];
   };
-  example: Record<string, unknown>;
+  example: BrowserJsonObject;
 };
 
 const BROWSER_ACTION_SCHEMAS: Record<BrowserAction, BrowserActionSchema> = {
@@ -305,34 +311,34 @@ function compactTruncate(value: string, maxLength = 900): string {
   return `${value.slice(0, Math.max(0, maxLength - 18)).trimEnd()}… [truncated]`;
 }
 
-function recordValue(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
+function recordValue(record: BrowserJsonObject, key: string): BrowserJsonObject | null {
   const value = record[key];
   return value != null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+    ? (value as BrowserJsonObject)
     : null;
 }
 
-function arrayValue(record: Record<string, unknown>, key: string): unknown[] {
+function arrayValue(record: BrowserJsonObject, key: string): BrowserJsonValue[] {
   const value = record[key];
   return Array.isArray(value) ? value : [];
 }
 
-function stringValue(record: Record<string, unknown> | null, key: string): string | null {
+function stringValue(record: BrowserJsonObject | null, key: string): string | null {
   const value = record?.[key];
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function numberValue(record: Record<string, unknown> | null, key: string): number | null {
+function numberValue(record: BrowserJsonObject | null, key: string): number | null {
   const value = record?.[key];
   return typeof value === "number" ? value : null;
 }
 
-function booleanValue(record: Record<string, unknown> | null, key: string): boolean | null {
+function booleanValue(record: BrowserJsonObject | null, key: string): boolean | null {
   const value = record?.[key];
   return typeof value === "boolean" ? value : null;
 }
 
-function countFromCollection(record: Record<string, unknown>, key: string): number | null {
+function countFromCollection(record: BrowserJsonObject, key: string): number | null {
   const collection = recordValue(record, key);
   return numberValue(collection, "count");
 }
@@ -341,7 +347,7 @@ function formatMaybeTitle(title: string | null): string {
   return title ? `; title=${JSON.stringify(compactTruncate(title, 120))}` : "";
 }
 
-function formatPageSummary(page: Record<string, unknown> | null): string {
+function formatPageSummary(page: BrowserJsonObject | null): string {
   if (!page) return "page=unknown";
   const pageId = stringValue(page, "page_id") ?? "unknown";
   const url = stringValue(page, "url");
@@ -349,14 +355,14 @@ function formatPageSummary(page: Record<string, unknown> | null): string {
   return `page=${pageId}${url ? `; url=${compactTruncate(url, 180)}` : ""}${formatMaybeTitle(title)}`;
 }
 
-function formatItemPreview(items: unknown[], maxItems = 5): string {
+function formatItemPreview(items: BrowserJsonValue[], maxItems = 5): string {
   const lines = items
     .slice(0, maxItems)
     .map((item) => {
       if (item == null || typeof item !== "object" || Array.isArray(item)) {
         return null;
       }
-      const record = item as Record<string, unknown>;
+      const record = item as BrowserJsonObject;
       const text = stringValue(record, "text") ?? stringValue(record, "name") ?? null;
       const href = stringValue(record, "href");
       const value = text ?? href;
@@ -391,7 +397,7 @@ function formatBrowserCompactText(envelope: BrowserToolEnvelope): string {
         const names = actions
           .map((action) =>
             action != null && typeof action === "object" && !Array.isArray(action)
-              ? stringValue(action as Record<string, unknown>, "action")
+              ? stringValue(action as BrowserJsonObject, "action")
               : null,
           )
           .filter((action): action is string => Boolean(action));
@@ -453,7 +459,7 @@ function formatBrowserCompactText(envelope: BrowserToolEnvelope): string {
         .slice(0, 5)
         .map((page) =>
           page != null && typeof page === "object" && !Array.isArray(page)
-            ? stringValue(page as Record<string, unknown>, "page_id")
+            ? stringValue(page as BrowserJsonObject, "page_id")
             : null,
         )
         .filter((id): id is string => Boolean(id));
@@ -501,7 +507,7 @@ export function buildCapabilities(backend: BrowserBackend): BrowserCapabilities 
   };
 }
 
-export function buildBrowserDiscovery(topic: string | undefined): Record<string, unknown> {
+export function buildBrowserDiscovery(topic: string | undefined): BrowserJsonObject {
   const normalizedTopic = topic?.trim().toLowerCase();
   const actionSummaries = BROWSER_ACTION_VALUES.map((action) => ({
     action,

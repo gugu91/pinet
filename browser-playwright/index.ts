@@ -35,6 +35,9 @@ import {
   parseBrowserToolRequest,
   requireStringArg,
   type BrowserAction,
+  type BrowserArtifactPayload,
+  type BrowserJsonObject,
+  type BrowserResultPayload,
   type BrowserToolEnvelope,
   type BrowserToolRequest,
 } from "./protocol.ts";
@@ -145,6 +148,16 @@ function asErrorMessage(error: unknown): string {
 
 function relativeFromWorkspace(absolutePath: string): string {
   return relative(WORKSPACE_ROOT, absolutePath);
+}
+
+function storageStateSummaryPayload(summary: StorageStateSummary | null): BrowserJsonObject | null {
+  if (!summary) return null;
+  return {
+    name: summary.name,
+    path: summary.path,
+    cookie_count: summary.cookie_count,
+    origin_count: summary.origin_count,
+  };
 }
 
 async function loadPlaywright(browserEngine: BrowserEngine): Promise<PlaywrightModule> {
@@ -509,8 +522,8 @@ async function ensureArtifactsDir(): Promise<void> {
 async function buildElementSummary(
   locator: Locator,
   attribute: string | undefined,
-): Promise<Record<string, unknown>> {
-  const summary: Record<string, unknown> = {};
+): Promise<BrowserJsonObject> {
+  const summary: BrowserJsonObject = {};
 
   const text = truncateText(
     await locator.innerText().catch(async () => (await locator.textContent()) ?? ""),
@@ -550,9 +563,9 @@ async function collectElements(
   locator: Locator,
   maxItems = MAX_COLLECTION_ITEMS,
   attribute?: string,
-): Promise<{ count: number; items: Record<string, unknown>[]; truncated: boolean }> {
+): Promise<{ count: number; items: BrowserJsonObject[]; truncated: boolean }> {
   const count = await locator.count();
-  const items: Record<string, unknown>[] = [];
+  const items: BrowserJsonObject[] = [];
   const stopAt = Math.min(count, maxItems);
   for (let index = 0; index < stopAt; index += 1) {
     items.push(await buildElementSummary(locator.nth(index), attribute));
@@ -564,10 +577,10 @@ async function buildPageInspection(pageRecord: BrowserPageRecord): Promise<{
   title: string | null;
   url: string;
   text: string;
-  headings: { count: number; items: Record<string, unknown>[]; truncated: boolean };
-  links: { count: number; items: Record<string, unknown>[]; truncated: boolean };
-  buttons: { count: number; items: Record<string, unknown>[]; truncated: boolean };
-  fields: { count: number; items: Record<string, unknown>[]; truncated: boolean };
+  headings: { count: number; items: BrowserJsonObject[]; truncated: boolean };
+  links: { count: number; items: BrowserJsonObject[]; truncated: boolean };
+  buttons: { count: number; items: BrowserJsonObject[]; truncated: boolean };
+  fields: { count: number; items: BrowserJsonObject[]; truncated: boolean };
 }> {
   const page = pageRecord.page;
   const bodyText = await page
@@ -632,8 +645,8 @@ export default function browserPlaywrightExtension(pi: ExtensionAPI) {
 
   function respond(
     request: BrowserToolRequest,
-    result: Record<string, unknown>,
-    artifacts: Array<Record<string, unknown>> = [],
+    result: BrowserResultPayload,
+    artifacts: BrowserArtifactPayload[] = [],
   ) {
     const envelope: BrowserToolEnvelope = {
       backend: request.backend,
@@ -790,7 +803,7 @@ export default function browserPlaywrightExtension(pi: ExtensionAPI) {
         pages,
         artifact_dir: relativeFromWorkspace(ARTIFACT_ROOT),
         storage_state_dir: STORAGE_STATE_RELATIVE_DIR,
-        mounted_storage_state: session.mountedStorageState,
+        mounted_storage_state: storageStateSummaryPayload(session.mountedStorageState),
         browser_binary: session.browserBinary,
         safety: {
           ...getSecurityOptions(),
@@ -825,7 +838,7 @@ export default function browserPlaywrightExtension(pi: ExtensionAPI) {
       active_page_id: session.activePageId,
       page_count: pages.length,
       pages,
-      mounted_storage_state: session.mountedStorageState,
+      mounted_storage_state: storageStateSummaryPayload(session.mountedStorageState),
       browser_binary: session.browserBinary,
       storage_state_dir: STORAGE_STATE_RELATIVE_DIR,
       network_summary: session.networkSummary,
@@ -892,7 +905,7 @@ export default function browserPlaywrightExtension(pi: ExtensionAPI) {
       title: string | null;
       text: string | null;
       match_count: number | null;
-      items: Record<string, unknown>[];
+      items: BrowserJsonObject[];
       truncated: boolean;
     } = {
       session_id: session.id,
