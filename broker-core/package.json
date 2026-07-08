@@ -40,7 +40,7 @@
     "prepack": "pnpm run build",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run *.test.ts"
+    "test": "vitest run --config ../vitest.config.ts *.test.ts"
   },
   "dependencies": {
     "@pinet/transport-core": "file:../transport-core"
