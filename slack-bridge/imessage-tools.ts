@@ -5,6 +5,10 @@ import { getDefaultIMessageThreadId, normalizeIMessageRecipient } from "@pinet/i
 import type { Broker } from "./broker/index.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 
+export interface IMessageToolMetadata extends Record<string, unknown> {
+  recipient: string;
+}
+
 export interface IMessageToolSendInput {
   threadId: string;
   body: string;
@@ -14,7 +18,7 @@ export interface IMessageToolSendInput {
   agentName: string;
   agentEmoji: string;
   agentOwnerToken: string;
-  metadata: Record<string, unknown>;
+  metadata: IMessageToolMetadata;
 }
 
 export interface IMessageToolSendResult {
