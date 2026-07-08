@@ -23,11 +23,13 @@ export interface SlackPresenceSnapshot {
   online?: boolean;
 }
 
+export type SlackPresenceTimestampValue = string | number | null | undefined;
+
 export interface SlackDndInfoLike {
-  dnd_enabled?: unknown;
-  next_dnd_end_ts?: unknown;
-  snooze_enabled?: unknown;
-  snooze_endtime?: unknown;
+  dnd_enabled?: boolean | null;
+  next_dnd_end_ts?: SlackPresenceTimestampValue;
+  snooze_enabled?: boolean | null;
+  snooze_endtime?: SlackPresenceTimestampValue;
 }
 
 export function stripSlackUserReference(value: string): string {
@@ -89,7 +91,7 @@ export function findSlackPresenceDirectoryUser(
   return null;
 }
 
-function parsePositiveTs(value: unknown): number | undefined {
+function parsePositiveTs(value: SlackPresenceTimestampValue): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return value;
   }
