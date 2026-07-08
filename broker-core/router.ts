@@ -18,6 +18,36 @@ function buildPinetOwnerToken(stableId: string): string {
   return `owner:${primary}${secondary}`;
 }
 
+type BrokerRouterMetadata = Record<string, unknown>;
+
+interface PiAgentMessageMetadata extends BrokerRouterMetadata {
+  event_type?: string;
+  event_payload?: {
+    agent?: string;
+    agent_owner?: string;
+  };
+}
+
+interface BrokerRouterReply extends BrokerRouterMetadata {
+  bot_id?: string;
+  metadata?: PiAgentMessageMetadata;
+}
+
+interface ThreadOwnerHintRecord extends BrokerRouterMetadata {
+  agentId?: string;
+  stableId?: string;
+  agentOwner?: string;
+  agentName?: string;
+}
+
+interface ThreadOwnerHintMetadata extends BrokerRouterMetadata {
+  threadOwnerHint?: ThreadOwnerHintRecord;
+  threadOwnerAgentId?: string;
+  threadOwnerStableId?: string;
+  threadOwnerAgentOwner?: string;
+  threadOwnerAgentName?: string;
+}
+
 export interface ThreadOwnerHint {
   agentId?: string;
   stableId?: string;
@@ -51,17 +81,12 @@ export function findAgentMention(text: string, agents: AgentInfo[]): AgentInfo |
 }
 
 export function extractPiAgentThreadOwnerHint(
-  replies: ReadonlyArray<Record<string, unknown>>,
+  replies: ReadonlyArray<BrokerRouterReply>,
 ): ThreadOwnerHint | null {
   for (let index = replies.length - 1; index >= 0; index -= 1) {
     const message = replies[index];
     if (!message.bot_id) continue;
-    const metadata = message.metadata as
-      | {
-          event_type?: string;
-          event_payload?: { agent?: string; agent_owner?: string };
-        }
-      | undefined;
+    const metadata = message.metadata;
     if (metadata?.event_type !== "pi_agent_msg") continue;
 
     const agentOwner =
@@ -168,13 +193,13 @@ function asNonEmptyString(value: unknown): string | null {
 }
 
 function normalizeThreadOwnerHint(
-  metadata: Record<string, unknown> | undefined,
+  metadata: ThreadOwnerHintMetadata | undefined,
 ): ThreadOwnerHint | null {
   const embeddedHint =
     metadata?.threadOwnerHint &&
     typeof metadata.threadOwnerHint === "object" &&
     !Array.isArray(metadata.threadOwnerHint)
-      ? (metadata.threadOwnerHint as Record<string, unknown>)
+      ? metadata.threadOwnerHint
       : undefined;
 
   const agentId = asNonEmptyString(embeddedHint?.agentId ?? metadata?.threadOwnerAgentId);
@@ -192,7 +217,7 @@ function normalizeThreadOwnerHint(
 }
 
 function resolveAgentFromThreadOwnerHint(
-  metadata: Record<string, unknown> | undefined,
+  metadata: ThreadOwnerHintMetadata | undefined,
   agents: AgentInfo[],
 ): AgentInfo | null {
   const hint = normalizeThreadOwnerHint(metadata);
@@ -338,7 +363,10 @@ export class MessageRouter {
         return { action: "unrouted" };
       }
 
-      const hintedOwner = resolveAgentFromThreadOwnerHint(msg.metadata, agents);
+      const hintedOwner = resolveAgentFromThreadOwnerHint(
+        msg.metadata as ThreadOwnerHintMetadata,
+        agents,
+      );
       if (hintedOwner && isRoutableOwner(hintedOwner)) {
         this.db.updateThread(msg.threadId, { ownerAgent: hintedOwner.id, channel: msg.channel });
         return { action: "deliver", agentId: hintedOwner.id };
