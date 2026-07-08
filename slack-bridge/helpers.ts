@@ -458,15 +458,28 @@ function formatPinetInboxPointer(entry: FollowerInboxEntry): string {
   return buildPinetReadPointer(entry.message.threadId ?? "");
 }
 
+type ThreadTransferMetadata = Record<string, unknown>;
+
+interface ThreadOwnershipTransferPayload extends Record<string, unknown> {
+  threadId?: string;
+  source?: string;
+  channel?: string;
+}
+
+interface TransferredSlackThreadContext {
+  threadId: string;
+  channel?: string;
+}
+
 function getTransferredSlackThreadContext(
-  metadata: Record<string, unknown> | null,
-): { threadId: string; channel?: string } | null {
+  metadata: ThreadTransferMetadata | null,
+): TransferredSlackThreadContext | null {
   const transfer = metadata?.threadOwnershipTransfer;
   if (!transfer || typeof transfer !== "object" || Array.isArray(transfer)) {
     return null;
   }
 
-  const raw = transfer as Record<string, unknown>;
+  const raw = transfer as ThreadOwnershipTransferPayload;
   const threadId = typeof raw.threadId === "string" ? raw.threadId.trim() : "";
   if (!threadId) {
     return null;
