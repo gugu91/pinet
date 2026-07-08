@@ -1,4 +1,7 @@
-import { decodeSlackModalPrivateMetadata } from "./slack-modals.js";
+import {
+  decodeSlackModalPrivateMetadata,
+  type DecodedSlackModalPrivateMetadata,
+} from "./slack-modals.js";
 
 export type SlackBlock = Record<string, unknown>;
 
@@ -14,13 +17,61 @@ export interface SlackNormalizedBlockAction {
   actionTs?: string;
 }
 
+export interface SlackSanitizedBlockAction extends Record<string, unknown> {
+  actionId: string;
+  blockId: string | null;
+  text: string | null;
+  type: string | null;
+  style: string | null;
+  value: string | null;
+  parsedValue: SlackNormalizedBlockAction["parsedValue"];
+  actionTs: string | null;
+}
+
+export interface SlackBlockActionMetadata extends Record<string, unknown> {
+  kind: "slack_block_action";
+  triggerId: string | null;
+  viewId: string | null;
+  callbackId: string | null;
+  viewHash: string | null;
+  blockId: string | null;
+  actionId: string;
+  value: string | null;
+  parsedValue: SlackNormalizedBlockAction["parsedValue"];
+  actionText: string | null;
+  channel: string;
+  threadTs: string;
+  messageTs: string | null;
+  modalPrivateMetadata: DecodedSlackModalPrivateMetadata["value"];
+  actions: SlackSanitizedBlockAction[];
+}
+
+export type SlackViewSubmissionStateValue = SlackBlock;
+export type SlackViewSubmissionStateValues = Record<
+  string,
+  Record<string, SlackViewSubmissionStateValue>
+>;
+
+export interface SlackViewSubmissionMetadata extends Record<string, unknown> {
+  kind: "slack_view_submission";
+  triggerId: string | null;
+  callbackId: string | null;
+  viewId: string;
+  externalId: string | null;
+  viewHash: string | null;
+  channel: string;
+  threadTs: string;
+  privateMetadata: DecodedSlackModalPrivateMetadata["value"];
+  stateValues: SlackViewSubmissionStateValues;
+}
+
 export interface SlackBlockActionInboxEvent {
   channel: string;
   threadTs: string;
   userId: string;
   text: string;
   timestamp: string;
-  metadata: Record<string, unknown>;
+  metadata: SlackBlockActionMetadata;
 }
 
 export interface SlackViewSubmissionInboxEvent {
@@ -29,7 +80,7 @@ export interface SlackViewSubmissionInboxEvent {
   userId: string;
   text: string;
   timestamp: string;
-  metadata: Record<string, unknown>;
+  metadata: SlackViewSubmissionMetadata;
 }
 
 export type SlackInteractiveInboxEvent = SlackBlockActionInboxEvent | SlackViewSubmissionInboxEvent;
@@ -129,7 +180,7 @@ function normalizeAction(action: Record<string, unknown>): SlackNormalizedBlockA
 
 function sanitizeNormalizedActions(
   actions: SlackNormalizedBlockAction[],
-): Array<Record<string, unknown>> {
+): SlackSanitizedBlockAction[] {
   return actions.map((action) => ({
     actionId: action.actionId,
     blockId: action.blockId ?? null,
@@ -273,7 +324,7 @@ export function normalizeSlackViewSubmissionPayload(
     return null;
   }
 
-  const normalizedValues: Record<string, Record<string, unknown>> = {};
+  const normalizedValues: SlackViewSubmissionStateValues = {};
   for (const [blockId, rawActions] of Object.entries(stateValues)) {
     const actionMap = asRecord(rawActions);
     if (!actionMap) continue;
