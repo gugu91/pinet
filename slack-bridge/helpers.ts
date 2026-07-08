@@ -212,6 +212,14 @@ export function isUserAllowed(allowlist: Set<string> | null, userId: string): bo
 
 // ─── Inbox formatting ────────────────────────────────────
 
+export type InboxMessageMetadata = Record<string, unknown>;
+
+interface InboxCanvasReference {
+  canvasId: string;
+  title?: string;
+  permalink?: string;
+}
+
 export interface InboxMessage {
   channel: string;
   threadTs: string;
@@ -220,7 +228,7 @@ export interface InboxMessage {
   timestamp: string;
   isChannelMention?: boolean;
   brokerInboxId?: number;
-  metadata?: Record<string, unknown> | null;
+  metadata?: InboxMessageMetadata | null;
   scope?: RuntimeScopeCarrier | null;
 }
 
@@ -251,11 +259,9 @@ function extractSlackCanvasIdFromPermalink(permalink: string | undefined): strin
   return match?.[1];
 }
 
-function extractInboxCanvasReference(metadata: Record<string, unknown> | null | undefined): {
-  canvasId: string;
-  title?: string;
-  permalink?: string;
-} | null {
+function extractInboxCanvasReference(
+  metadata: InboxMessageMetadata | null | undefined,
+): InboxCanvasReference | null {
   const slackFiles = Array.isArray(metadata?.slackFiles) ? metadata.slackFiles : [];
 
   for (const file of slackFiles) {
@@ -294,7 +300,7 @@ function extractInboxCanvasReference(metadata: Record<string, unknown> | null | 
   return null;
 }
 
-function formatInboxMetadata(metadata: Record<string, unknown> | null | undefined): string {
+function formatInboxMetadata(metadata: InboxMessageMetadata | null | undefined): string {
   if (!metadata || Object.keys(metadata).length === 0) return "";
 
   if (metadata.kind === "slack_block_action") {
