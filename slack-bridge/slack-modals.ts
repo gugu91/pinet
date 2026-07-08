@@ -1,8 +1,12 @@
-export type SlackModalView = Record<string, unknown>;
+export type SlackModalObject = Record<string, unknown>;
+
+export interface SlackModalView extends SlackModalObject {
+  type: "modal";
+}
 
 const PI_SLACK_MODAL_CONTEXT_KEY = "__piSlackModalContext";
 
-function isSlackModalObject(value: unknown): value is Record<string, unknown> {
+function isSlackModalObject(value: unknown): value is SlackModalObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
