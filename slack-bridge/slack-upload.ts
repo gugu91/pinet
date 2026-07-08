@@ -40,8 +40,28 @@ export interface PreparedSlackUpload {
   resolvedPath?: string;
 }
 
+export interface SlackUploadMetadataPayload extends Record<string, unknown> {
+  filename: string;
+  length: number;
+  snippet_type?: string;
+}
+
+export interface SlackCompleteUploadFilePayload {
+  id: string;
+  title: string;
+}
+
+export interface SlackCompleteUploadPayload extends Record<string, unknown> {
+  files: SlackCompleteUploadFilePayload[];
+  channel_id: string;
+  thread_ts?: string;
+  initial_comment?: string;
+}
+
+export type SlackUploadApiBody = SlackUploadMetadataPayload | SlackCompleteUploadPayload;
+
 export interface SlackUploadDeps {
-  slack: (method: string, token: string, body?: Record<string, unknown>) => Promise<SlackResult>;
+  slack: (method: string, token: string, body?: SlackUploadApiBody) => Promise<SlackResult>;
   token: string;
   fetchImpl?: (
     url: string,
@@ -110,7 +130,7 @@ function normalizeSnippetType(filetype: string | undefined): string {
 function buildUploadMetadataPayload(
   upload: PreparedSlackUpload,
   includeSnippetType: boolean,
-): Record<string, unknown> {
+): SlackUploadMetadataPayload {
   return {
     filename: upload.filename,
     length: upload.byteLength,
@@ -376,7 +396,7 @@ export async function performSlackUploads({
     throw new Error("At least one upload is required.");
   }
 
-  const files = [];
+  const files: Array<{ fileId: string; title: string }> = [];
   for (const upload of uploads) {
     files.push(await reserveAndUploadSlackFile(upload, slack, token, fetchImpl));
   }
