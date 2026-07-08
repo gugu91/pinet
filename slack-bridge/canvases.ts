@@ -1,3 +1,5 @@
+export type SlackCanvasApiObject = Record<string, unknown>;
+
 export interface SlackCanvasDocumentContent {
   type: "markdown";
   markdown: string;
@@ -68,6 +70,17 @@ export interface SlackCanvasSectionLookupResult {
   id?: string;
 }
 
+export interface SlackChannelCanvasInfoResponse extends SlackCanvasApiObject {
+  channel?: SlackCanvasApiObject;
+}
+
+export interface SlackCanvasCommentsResponse extends SlackCanvasApiObject {
+  file?: SlackCanvasApiObject;
+  comments?: SlackCanvasApiObject[];
+  paging?: SlackCanvasApiObject;
+  response_metadata?: SlackCanvasApiObject;
+}
+
 function normalizeOptionalString(value?: string): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
@@ -78,8 +91,8 @@ function buildDocumentContent(markdown?: string): SlackCanvasDocumentContent | u
   return { type: "markdown", markdown };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+function asRecord(value: unknown): SlackCanvasApiObject | null {
+  return typeof value === "object" && value !== null ? (value as SlackCanvasApiObject) : null;
 }
 
 function asString(value: unknown): string | undefined {
@@ -270,7 +283,9 @@ export function pickSlackCanvasSectionId(
   return matches[0];
 }
 
-export function extractSlackChannelCanvasId(response: Record<string, unknown>): string | null {
+export function extractSlackChannelCanvasId(
+  response: SlackChannelCanvasInfoResponse,
+): string | null {
   const channel = asRecord(response.channel);
   const properties = asRecord(channel?.properties);
   if (!properties) return null;
@@ -289,7 +304,7 @@ export function extractSlackChannelCanvasId(response: Record<string, unknown>): 
   return null;
 }
 
-function extractSlackCanvasCommentText(comment: Record<string, unknown>): string {
+function extractSlackCanvasCommentText(comment: SlackCanvasApiObject): string {
   return (
     asString(comment.comment) ??
     asString(comment.comment_text) ??
@@ -300,13 +315,11 @@ function extractSlackCanvasCommentText(comment: Record<string, unknown>): string
 }
 
 export function extractSlackCanvasCommentsPage(
-  response: Record<string, unknown>,
+  response: SlackCanvasCommentsResponse,
   fallbackCanvasId?: string,
 ): SlackCanvasCommentsPage {
   const file = asRecord(response.file) ?? {};
-  const comments = Array.isArray(response.comments)
-    ? (response.comments as Record<string, unknown>[])
-    : [];
+  const comments = Array.isArray(response.comments) ? response.comments : [];
   const paging = asRecord(response.paging);
   const responseMetadata = asRecord(response.response_metadata);
   const canvasId = asString(file.id) ?? normalizeOptionalString(fallbackCanvasId);
