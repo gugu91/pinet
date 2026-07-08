@@ -1,17 +1,25 @@
+type SlackMessageContextObject = Record<string, unknown>;
+
+export interface SlackMessageContextEvent extends SlackMessageContextObject {
+  blocks?: unknown;
+  attachments?: unknown;
+  files?: unknown;
+}
+
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
+function asRecord(value: unknown): SlackMessageContextObject | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+    ? (value as SlackMessageContextObject)
     : null;
 }
 
-function asRecordArray(value: unknown): Record<string, unknown>[] {
+function asRecordArray(value: unknown): SlackMessageContextObject[] {
   return Array.isArray(value)
     ? value.filter(
-        (item): item is Record<string, unknown> => typeof item === "object" && item !== null,
+        (item): item is SlackMessageContextObject => typeof item === "object" && item !== null,
       )
     : [];
 }
@@ -40,7 +48,7 @@ function extractTextObject(value: unknown): string[] {
   return text ? [text] : [];
 }
 
-function extractRichTextElementText(element: Record<string, unknown>): string[] {
+function extractRichTextElementText(element: SlackMessageContextObject): string[] {
   const type = asString(element.type) ?? "";
 
   switch (type) {
@@ -218,7 +226,7 @@ function dedupeContextLines(baseText: string, lines: string[]): string[] {
 }
 
 export function extractSlackMessageContextLines(
-  evt: Record<string, unknown>,
+  evt: SlackMessageContextEvent,
   baseText = "",
 ): string[] {
   const lines = [
@@ -232,7 +240,7 @@ export function extractSlackMessageContextLines(
 
 export function buildSlackInboundMessageText(
   baseText: string,
-  evt: Record<string, unknown>,
+  evt: SlackMessageContextEvent,
 ): string {
   const trimmedBase = baseText.trim();
   const contextLines = extractSlackMessageContextLines(evt, trimmedBase);
