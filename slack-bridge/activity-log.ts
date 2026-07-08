@@ -23,6 +23,15 @@ export interface LoggedActivityLogEntry extends ActivityLogEntry {
   timestamp: string;
 }
 
+export type ActivityLogSlackBlock = Record<string, unknown>;
+
+export interface ActivityLogPostMessageBody extends Record<string, unknown> {
+  channel: string;
+  text: string;
+  blocks: ActivityLogSlackBlock[];
+  thread_ts?: string;
+}
+
 interface QueuedActivityLogEntry {
   entry: LoggedActivityLogEntry;
   attempts: number;
@@ -35,7 +44,7 @@ export interface SlackActivityLoggerDeps {
   getAgentName: () => string;
   getAgentEmoji: () => string;
   resolveChannel: (nameOrId: string) => Promise<string>;
-  slack: (method: string, token: string, body?: Record<string, unknown>) => Promise<SlackResult>;
+  slack: (method: string, token: string, body?: ActivityLogPostMessageBody) => Promise<SlackResult>;
   onError?: (error: unknown) => void;
   now?: () => Date;
   maxRecentEntries?: number;
@@ -162,8 +171,8 @@ export function buildActivityLogBlocks(
   agentName: string,
   agentEmoji: string,
   entry: LoggedActivityLogEntry,
-): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [
+): ActivityLogSlackBlock[] {
+  const blocks: ActivityLogSlackBlock[] = [
     {
       type: "section",
       text: {
@@ -211,7 +220,7 @@ export function buildActivityLogThreadHeader(
   agentName: string,
   agentEmoji: string,
   dateKey: string,
-): { text: string; blocks: Record<string, unknown>[] } {
+): { text: string; blocks: ActivityLogSlackBlock[] } {
   return {
     text: `Pinet activity log — ${dateKey}`,
     blocks: [
