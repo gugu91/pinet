@@ -707,14 +707,16 @@ export async function reloadPinetRuntimeSafely<State>(
   }
 }
 
-export interface PinetControlEnvelope {
+export type PinetControlMetadata = Record<string, unknown>;
+
+export interface PinetControlEnvelope extends PinetControlMetadata {
   type: "pinet:control";
   action: PinetControlCommand;
 }
 
 function parsePinetControlEnvelope(value: unknown): PinetControlCommand | null {
   if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
+  const record = value as PinetControlMetadata;
   if (record.type !== "pinet:control") return null;
   return parsePinetControlCommand(record.action);
 }
@@ -760,8 +762,8 @@ export function buildPinetControlMessage(command: PinetControlCommand): string {
 
 export function normalizeOutgoingPinetControlMessage(
   body: string,
-  metadata?: Record<string, unknown>,
-): { body: string; metadata: Record<string, unknown> } | null {
+  metadata?: PinetControlMetadata,
+): { body: string; metadata: PinetControlMetadata } | null {
   const command = getPinetControlCommandFromText(body);
   if (!command) return null;
 
