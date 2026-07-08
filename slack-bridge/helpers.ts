@@ -3050,17 +3050,19 @@ const PINET_BUILT_IN_SKIN_FILES = ["foundation", "cosmere"] as const;
 
 let cachedBuiltInPinetSkinDescriptors: readonly BuiltInPinetSkinDescriptor[] | null = null;
 
-function isPinetSkinObject(value: unknown): value is Record<string, unknown> {
+type PinetSkinDescriptorObject = Record<string, unknown>;
+
+function isPinetSkinObject(value: unknown): value is PinetSkinDescriptorObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readStringProperty(value: Record<string, unknown>, key: string): string | null {
+function readStringProperty(value: PinetSkinDescriptorObject, key: string): string | null {
   const property = value[key];
   return typeof property === "string" && property.trim().length > 0 ? property.trim() : null;
 }
 
 function readStringArrayProperty(
-  value: Record<string, unknown>,
+  value: PinetSkinDescriptorObject,
   key: string,
   required = true,
 ): string[] | null {
