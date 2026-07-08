@@ -3968,7 +3968,7 @@ function formatSlackApiResponseMetadata(data: SlackResult): string {
 export async function callSlackAPI(
   method: string,
   token: string,
-  body?: Record<string, unknown>,
+  body?: SlackRequestBody,
   options: CallSlackAPIOptions = {},
 ): Promise<SlackResult> {
   const { signal, retryCount = 0 } = options;
