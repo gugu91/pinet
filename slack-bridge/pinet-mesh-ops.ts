@@ -22,6 +22,7 @@ import { extractTaskAssignmentsFromMessage } from "./task-assignments.js";
 const execFileAsync = promisify(execFile);
 
 export type PinetMeshOpsAgentMetadata = Record<string, unknown>;
+export type PinetMeshOpsMessageMetadata = Record<string, unknown>;
 
 export interface PinetMeshOpsAgentRecord {
   emoji: string;
@@ -94,7 +95,7 @@ export interface PinetMeshOpsFollowerClientPort {
   sendAgentMessage: (
     target: string,
     body: string,
-    metadata?: Record<string, unknown>,
+    metadata?: PinetMeshOpsMessageMetadata,
   ) => Promise<number>;
   scheduleWakeup: (fireAt: string, message: string) => Promise<{ id: number; fireAt: string }>;
   listAgents: (includeGhosts: boolean) => Promise<PinetMeshOpsFollowerAgentRecord[]>;
@@ -111,7 +112,7 @@ export interface PinetMeshOpsDeps {
   sendSubtreeAgentMessage?: (
     target: string,
     body: string,
-    metadata?: Record<string, unknown>,
+    metadata?: PinetMeshOpsMessageMetadata,
   ) => Promise<{ messageId: number; target: string; threadId: string } | null>;
   formatTrackedAgent: (agentId: string) => string;
   logActivity: (entry: ActivityLogEntry) => void;
@@ -121,7 +122,7 @@ export interface PinetMeshOps {
   sendPinetAgentMessage: (
     target: string,
     body: string,
-    metadata?: Record<string, unknown>,
+    metadata?: PinetMeshOpsMessageMetadata,
   ) => Promise<{
     messageId: number;
     target: string;
@@ -147,8 +148,8 @@ export interface PinetMeshOps {
 
 function prepareOutgoingPinetAgentMessage(
   body: string,
-  metadata?: Record<string, unknown>,
-): { body: string; metadata?: Record<string, unknown> } {
+  metadata?: PinetMeshOpsMessageMetadata,
+): { body: string; metadata?: PinetMeshOpsMessageMetadata } {
   const control = normalizeOutgoingPinetControlMessage(body, metadata);
   if (control) {
     return {
@@ -161,15 +162,15 @@ function prepareOutgoingPinetAgentMessage(
 }
 
 function getThreadOwnershipTransferMetadata(
-  metadata?: Record<string, unknown>,
-): Record<string, unknown> | null {
+  metadata?: PinetMeshOpsMessageMetadata,
+): PinetMeshOpsMessageMetadata | null {
   const transfer = metadata?.threadOwnershipTransfer;
   return transfer && typeof transfer === "object" && !Array.isArray(transfer)
-    ? (transfer as Record<string, unknown>)
+    ? (transfer as PinetMeshOpsMessageMetadata)
     : null;
 }
 
-function getThreadOwnershipTransferId(metadata?: Record<string, unknown>): string | null {
+function getThreadOwnershipTransferId(metadata?: PinetMeshOpsMessageMetadata): string | null {
   const threadId = getThreadOwnershipTransferMetadata(metadata)?.threadId;
   return typeof threadId === "string" && threadId.trim().length > 0 ? threadId.trim() : null;
 }
@@ -226,7 +227,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
   async function sendPinetAgentMessage(
     targetRef: string,
     body: string,
-    metadata?: Record<string, unknown>,
+    metadata?: PinetMeshOpsMessageMetadata,
   ): Promise<{ messageId: number; target: string }> {
     if (!deps.getPinetEnabled()) {
       throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
