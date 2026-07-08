@@ -2,18 +2,31 @@ import type { BrokerControlPlaneDashboardSnapshot } from "./broker/control-plane
 import type { SlackBridgeRuntimeMode } from "./runtime-mode.js";
 
 export type SlackBlock = Record<string, unknown>;
+export type SlackSectionAccessory = Record<string, unknown>;
+export type SlackHomeTabPublishResponse = Record<string, unknown>;
+
+export interface SlackTextObject extends Record<string, unknown> {
+  type: "plain_text" | "mrkdwn";
+  text: string;
+  emoji?: boolean;
+}
 
 export interface SlackHomeView {
   type: "home";
   blocks: SlackBlock[];
 }
 
+export interface SlackHomeTabPublishRequest extends Record<string, unknown> {
+  user_id: string;
+  view: SlackHomeView;
+}
+
 export interface PublishSlackHomeTabInput {
   slack: (
     method: string,
     token: string,
-    body?: Record<string, unknown>,
-  ) => Promise<Record<string, unknown>>;
+    body?: SlackHomeTabPublishRequest,
+  ) => Promise<SlackHomeTabPublishResponse>;
   token: string;
   userId: string;
   view: SlackHomeView;
@@ -65,7 +78,7 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
-function plainText(text: string): Record<string, unknown> {
+function plainText(text: string): SlackTextObject {
   return {
     type: "plain_text",
     text: truncate(text, 150),
@@ -73,7 +86,7 @@ function plainText(text: string): Record<string, unknown> {
   };
 }
 
-function mrkdwn(text: string): Record<string, unknown> {
+function mrkdwn(text: string): SlackTextObject {
   return {
     type: "mrkdwn",
     text,
@@ -101,7 +114,7 @@ function dividerBlock(): SlackBlock {
 function sectionBlock(options: {
   text?: string;
   fields?: string[];
-  accessory?: Record<string, unknown>;
+  accessory?: SlackSectionAccessory;
 }): SlackBlock {
   return {
     type: "section",
@@ -314,7 +327,7 @@ export function renderStandalonePinetHomeTabView(
 export function buildSlackHomeTabPublishRequest(
   userId: string,
   view: SlackHomeView,
-): Record<string, unknown> {
+): SlackHomeTabPublishRequest {
   const normalizedUserId = asNonEmptyString(userId);
   if (!normalizedUserId) {
     throw new Error("Home tab publish requires a user ID.");
