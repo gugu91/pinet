@@ -3996,15 +3996,19 @@ export async function callSlackAPI(
 
 // ─── Follower inbox partitioning (#102, #175) ───────────
 
-export function isRalphNudgeEntry(entry: {
-  message: { metadata?: Record<string, unknown> | null };
-}): boolean {
+interface FollowerInboxMetadataEntry {
+  message: { metadata?: FollowerInboxMessageMetadata | null };
+}
+
+interface FollowerInboxPartitionEntry extends FollowerInboxMetadataEntry {
+  message: { threadId?: string; metadata?: FollowerInboxMessageMetadata | null };
+}
+
+export function isRalphNudgeEntry(entry: FollowerInboxMetadataEntry): boolean {
   return entry.message.metadata?.kind === "ralph_loop_nudge";
 }
 
-export function isAgentToAgentEntry(entry: {
-  message: { threadId?: string; metadata?: Record<string, unknown> | null };
-}): boolean {
+export function isAgentToAgentEntry(entry: FollowerInboxPartitionEntry): boolean {
   const threadId = entry.message.threadId ?? "";
   const metadata = entry.message.metadata ?? null;
   return (
@@ -4012,9 +4016,9 @@ export function isAgentToAgentEntry(entry: {
   );
 }
 
-export function partitionFollowerInboxEntries<
-  T extends { message: { threadId?: string; metadata?: Record<string, unknown> | null } },
->(entries: T[]): { nudges: T[]; agentMessages: T[]; regular: T[] } {
+export function partitionFollowerInboxEntries<T extends FollowerInboxPartitionEntry>(
+  entries: T[],
+): { nudges: T[]; agentMessages: T[]; regular: T[] } {
   const nudges: T[] = [];
   const agentMessages: T[] = [];
   const regular: T[] = [];
