@@ -13,6 +13,30 @@ export interface ParsedPinetStableId {
   hasPath: boolean;
 }
 
+export type PinetSessionFullDetails = AgentSessionSearchInfo & {
+  session: AgentSessionSummary | null;
+  jsonlPath?: string;
+};
+
+export interface PinetSessionCompactDetails {
+  agentId: string;
+  agentName: string;
+  emoji: string;
+  pid: number;
+  status: AgentSessionSearchInfo["status"];
+  health: "disconnected" | "live";
+  session: string | null;
+  sessionKind: AgentSessionKind | null;
+  host: string | null;
+  repo: string | null;
+  branch: string | null;
+  tmuxSession: string | null;
+  lastSeen: string;
+  disconnectedAt: string | null;
+  relatedThreadIds: string[];
+  matchedBy: string[];
+}
+
 function stableIdDigest(stableId: string): string {
   return crypto.createHash("sha256").update(stableId).digest("hex").slice(0, 12);
 }
@@ -72,7 +96,7 @@ export function getPinetSessionFilename(stableId: string | null | undefined): st
 
 export function buildPinetSessionFullDetails(
   session: AgentSessionSearchInfo,
-): Record<string, unknown> {
+): PinetSessionFullDetails {
   const summary = summarizePinetStableId(session.stableId);
   const sessionPath = getPinetSessionPath(session.stableId);
   return {
@@ -84,7 +108,7 @@ export function buildPinetSessionFullDetails(
 
 export function buildPinetSessionCompactDetails(
   session: AgentSessionSearchInfo,
-): Record<string, unknown> {
+): PinetSessionCompactDetails {
   const summary = summarizePinetStableId(session.stableId);
   return {
     agentId: session.agentId,
