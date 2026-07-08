@@ -30,13 +30,18 @@ interface CompatibleExtensionContext extends ExtensionContext {
   hasUI?: boolean;
 }
 
+interface OpenAIExecutionShapingMessageDetails {
+  reason?: string;
+  attempt?: number;
+}
+
 interface CompatibleExtensionAPI extends ExtensionAPI {
   sendMessage(
     message: {
       customType: string;
       content: string;
       display: boolean;
-      details?: Record<string, unknown>;
+      details?: OpenAIExecutionShapingMessageDetails;
     },
     options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
   ): void;
