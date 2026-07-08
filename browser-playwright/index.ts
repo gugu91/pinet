@@ -35,6 +35,7 @@ import {
   parseBrowserToolRequest,
   requireStringArg,
   type BrowserAction,
+  type BrowserArgsInput,
   type BrowserArtifactPayload,
   type BrowserJsonObject,
   type BrowserResultPayload,
@@ -1281,7 +1282,7 @@ export default function browserPlaywrightExtension(pi: ExtensionAPI) {
         action: params.action as BrowserAction,
         session_id: params.session_id,
         page_id: params.page_id,
-        args: params.args,
+        args: params.args as BrowserArgsInput | undefined,
         input_json: params.input_json,
       });
 
