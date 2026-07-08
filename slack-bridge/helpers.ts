@@ -2213,6 +2213,8 @@ export interface FollowerThreadState {
   owner?: string;
 }
 
+export type FollowerInboxMessageMetadata = Record<string, unknown>;
+
 export interface FollowerInboxEntry {
   inboxId?: number;
   message: {
@@ -2221,7 +2223,7 @@ export interface FollowerInboxEntry {
     sender?: string;
     body?: string;
     createdAt?: string;
-    metadata: Record<string, unknown> | null;
+    metadata: FollowerInboxMessageMetadata | null;
   };
 }
 
