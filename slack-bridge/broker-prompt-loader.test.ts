@@ -303,19 +303,24 @@ describe("packaged default broker prompt", () => {
 
   // This exercises the real package build, including declaration emit; loaded worktrees and
   // pre-push runs can exceed Vitest's default 5s timeout even though the build path is expected
-  // for publish readiness.
-  it("copies prompt assets into dist/prompts so the packaged tmux.md is loadable", async () => {
-    await execFileAsync("node", ["../scripts/build-package.mjs"], { cwd: process.cwd() });
+  // for publish readiness. CI's dedicated build job runs the full package build and verifies this
+  // asset, so the separate test job can skip this duplicate build without losing coverage.
+  it.skipIf(process.env.SKIP_SLACK_BRIDGE_PACKAGE_BUILD_TEST === "1")(
+    "copies prompt assets into dist/prompts so the packaged tmux.md is loadable",
+    async () => {
+      await execFileAsync("node", ["../scripts/build-package.mjs"], { cwd: process.cwd() });
 
-    const distPromptPath = path.join(process.cwd(), "dist", "prompts", "broker", "tmux.md");
-    await expect(fs.access(distPromptPath)).resolves.toBeUndefined();
-    const result = await loadBrokerPrompt({
-      workspaceRoot,
-      homeDir,
-      defaultPromptPath: distPromptPath,
-    });
+      const distPromptPath = path.join(process.cwd(), "dist", "prompts", "broker", "tmux.md");
+      await expect(fs.access(distPromptPath)).resolves.toBeUndefined();
+      const result = await loadBrokerPrompt({
+        workspaceRoot,
+        homeDir,
+        defaultPromptPath: distPromptPath,
+      });
 
-    expect(result.source).toBe("packaged");
-    expect(result.content).toContain("PRIORITIZED ISSUE GATE");
-  }, 60_000);
+      expect(result.source).toBe("packaged");
+      expect(result.content).toContain("PRIORITIZED ISSUE GATE");
+    },
+    60_000,
+  );
 });

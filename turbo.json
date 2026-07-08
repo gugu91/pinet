@@ -28,6 +28,7 @@
         "../vitest.config.ts",
         "../pnpm-lock.yaml"
       ],
+      "env": ["SKIP_SLACK_BRIDGE_PACKAGE_BUILD_TEST"],
       "outputs": [],
       "passThroughEnv": ["TMPDIR"]
     }
