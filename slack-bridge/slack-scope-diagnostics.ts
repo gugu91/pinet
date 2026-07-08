@@ -1,11 +1,49 @@
 import { buildSlackRequest } from "./helpers.js";
 import type { SlackResult } from "./slack-api.js";
 
+export type SlackScopeDiagnosticsSurface = "files" | "bookmarks" | "pins";
+
+export type SlackScopeProbeBody = Record<string, unknown>;
+
+interface SlackFileInfoScopeProbeBody extends SlackScopeProbeBody {
+  file: string;
+}
+
+interface SlackCompleteUploadScopeProbeFile {
+  id: string;
+  title: string;
+}
+
+interface SlackCompleteUploadScopeProbeBody extends SlackScopeProbeBody {
+  files: SlackCompleteUploadScopeProbeFile[];
+  channel_id: string;
+}
+
+interface SlackChannelScopeProbeBody extends SlackScopeProbeBody {
+  channel_id: string;
+}
+
+interface SlackBookmarkRemoveScopeProbeBody extends SlackChannelScopeProbeBody {
+  bookmark_id: string;
+}
+
+interface SlackPinnedItemScopeProbeBody extends SlackScopeProbeBody {
+  channel: string;
+  timestamp?: string;
+}
+
+export type SlackScopeProbeRequestBody =
+  | SlackFileInfoScopeProbeBody
+  | SlackCompleteUploadScopeProbeBody
+  | SlackChannelScopeProbeBody
+  | SlackBookmarkRemoveScopeProbeBody
+  | SlackPinnedItemScopeProbeBody;
+
 interface SlackScopeProbe {
   key: string;
-  surface: "files" | "bookmarks" | "pins";
+  surface: SlackScopeDiagnosticsSurface;
   method: string;
-  body: Record<string, unknown>;
+  body: SlackScopeProbeRequestBody;
   expectedScopes: string[];
   okErrors: string[];
 }
@@ -19,7 +57,7 @@ export type SlackScopeDiagnosticsStatus =
 
 export interface SlackScopeProbeResult {
   key: string;
-  surface: "files" | "bookmarks" | "pins";
+  surface: SlackScopeDiagnosticsSurface;
   method: string;
   expectedScopes: string[];
   status: "ok" | "missing" | "unavailable";
@@ -33,7 +71,7 @@ export interface SlackScopeDiagnostics {
   status: SlackScopeDiagnosticsStatus;
   checkedAt: string | null;
   summary: string;
-  surfaces: Array<"files" | "bookmarks" | "pins">;
+  surfaces: SlackScopeDiagnosticsSurface[];
   missingScopes: string[];
   results: SlackScopeProbeResult[];
   error?: string;
@@ -263,7 +301,7 @@ export async function detectSlackScopeDiagnostics(
   );
   const surfaces = uniqueSorted(
     results.flatMap((result) => (result.status === "missing" ? [result.surface] : [])),
-  ) as Array<"files" | "bookmarks" | "pins">;
+  ) as SlackScopeDiagnosticsSurface[];
 
   if (missingScopes.length > 0) {
     return {
