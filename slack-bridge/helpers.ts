@@ -1032,6 +1032,8 @@ export interface AgentDisplayInfo {
   routingReasons?: string[];
 }
 
+export type AgentVisibilityMetadata = Record<string, unknown>;
+
 export interface AgentVisibilityInput {
   emoji: string;
   name: string;
@@ -1040,7 +1042,7 @@ export interface AgentVisibilityInput {
   stableId?: string | null;
   session?: AgentSessionSummary | null;
   status: "working" | "idle";
-  metadata?: Record<string, unknown> | null;
+  metadata?: AgentVisibilityMetadata | null;
   lastHeartbeat?: string;
   lastSeen?: string;
   disconnectedAt?: string | null;
@@ -1201,7 +1203,7 @@ export function shortenPath(p: string, homedir: string): string {
 }
 
 export function extractAgentCapabilities(
-  metadata: Record<string, unknown> | null | undefined,
+  metadata: AgentVisibilityMetadata | null | undefined,
 ): AgentCapabilities {
   const record = asRecord(metadata);
   const capabilitiesRecord = asRecord(record?.capabilities);
