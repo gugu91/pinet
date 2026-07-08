@@ -1076,8 +1076,10 @@ export interface AgentRoutingHint {
 const DEFAULT_AGENT_HEARTBEAT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_HEARTBEAT_INTERVAL_MS = 5_000;
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+type SlackBridgeJsonObject = Record<string, unknown>;
+
+function asRecord(value: unknown): SlackBridgeJsonObject | null {
+  return typeof value === "object" && value !== null ? (value as SlackBridgeJsonObject) : null;
 }
 
 function asString(value: unknown): string | undefined {
