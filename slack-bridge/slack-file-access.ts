@@ -33,8 +33,22 @@ export interface SlackFileLookupContext {
   messageTs?: string;
 }
 
+type SlackFileObject = Record<string, unknown>;
+
+export interface SlackThreadRepliesRequest extends SlackFileObject {
+  channel: string;
+  ts: string;
+  limit: number;
+}
+
+export interface SlackFilesInfoRequest extends SlackFileObject {
+  file: string;
+}
+
+export type SlackFileLookupRequest = SlackThreadRepliesRequest | SlackFilesInfoRequest;
+
 export interface SlackFileDownloadDeps {
-  slack: (method: string, token: string, body?: Record<string, unknown>) => Promise<SlackResult>;
+  slack: (method: string, token: string, body?: SlackFileLookupRequest) => Promise<SlackResult>;
   token: string;
   fetchImpl?: (
     url: string,
@@ -60,16 +74,16 @@ interface SlackFileMetadata {
   privateDownloadUrl: string;
 }
 
-function isSlackFileObject(value: unknown): value is Record<string, unknown> {
+function isSlackFileObject(value: unknown): value is SlackFileObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function getString(record: Record<string, unknown>, key: string): string | undefined {
+function getString(record: SlackFileObject, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function getNumber(record: Record<string, unknown>, key: string): number | undefined {
+function getNumber(record: SlackFileObject, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
