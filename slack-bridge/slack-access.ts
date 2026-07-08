@@ -9,6 +9,7 @@ import {
 import {
   buildSlackInboundMessageText,
   extractSlackMessageFileMetadata,
+  type SlackMessageFileMetadata,
 } from "./slack-message-context.js";
 import {
   extractSlackInteractivePayloadFromEnvelope,
@@ -237,6 +238,11 @@ export function extractAppHomeOpened(evt: Record<string, unknown>): ParsedAppHom
  * Classification result for an incoming message event.
  * Uses a discriminated union so TypeScript narrows fields when relevant is true.
  */
+export interface SlackMessageClassificationMetadata extends Record<string, unknown> {
+  slackSubtype?: string;
+  slackFiles?: SlackMessageFileMetadata[];
+}
+
 export type MessageClassification =
   | { relevant: false }
   | {
@@ -248,7 +254,7 @@ export type MessageClassification =
       isDM: boolean;
       isChannelMention: boolean;
       messageTs: string;
-      metadata?: Record<string, unknown>;
+      metadata?: SlackMessageClassificationMetadata;
     };
 
 /**
@@ -282,7 +288,7 @@ export function classifyMessage(
   const isChannelMention = isMention && !isDM && !isKnown;
   const cleanText = isChannelMention && botUserId ? stripBotMention(text, botUserId) : text;
   const slackFiles = extractSlackMessageFileMetadata(evt.files);
-  const metadata: Record<string, unknown> = {
+  const metadata: SlackMessageClassificationMetadata = {
     ...(subtype ? { slackSubtype: subtype } : {}),
     ...(slackFiles.length > 0 ? { slackFiles } : {}),
   };
