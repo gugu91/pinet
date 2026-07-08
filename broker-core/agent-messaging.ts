@@ -1,6 +1,8 @@
 import { classifyPinetMail } from "./mail-classification.js";
 import type { AgentInfo, BrokerMessage } from "./types.js";
 
+type AgentMessageMetadataObject = Record<string, unknown>;
+
 interface AgentCapabilities {
   repo?: string;
   role?: string;
@@ -8,8 +10,24 @@ interface AgentCapabilities {
   tags?: string[];
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+export interface AgentMessageMetadata extends AgentMessageMetadataObject {
+  senderAgent?: string;
+  a2a?: boolean;
+  broadcast?: boolean;
+  broadcastChannel?: string;
+  trustedBrokerAgentId?: string;
+  emergency?: boolean;
+  targetScope?: string;
+  capabilities?: AgentCapabilities;
+  repo?: string;
+  role?: string;
+  broadcastChannels?: string[];
+  channels?: string[];
+  topics?: string[];
+}
+
+function asRecord(value: unknown): AgentMessageMetadataObject | null {
+  return typeof value === "object" && value !== null ? (value as AgentMessageMetadataObject) : null;
 }
 
 function asString(value: unknown): string | undefined {
@@ -17,7 +35,7 @@ function asString(value: unknown): string | undefined {
 }
 
 function extractAgentCapabilities(
-  metadata: Record<string, unknown> | null | undefined,
+  metadata: AgentMessageMetadataObject | null | undefined,
 ): AgentCapabilities {
   const record = asRecord(metadata);
   const capabilitiesRecord = asRecord(record?.capabilities);
@@ -56,7 +74,7 @@ export interface AgentMessageStorage {
     sender: string,
     body: string,
     targetAgentIds: string[],
-    metadata?: Record<string, unknown>,
+    metadata?: AgentMessageMetadata,
   ): BrokerMessage;
 }
 
@@ -70,7 +88,7 @@ export interface DirectAgentDispatchInput {
   senderAgentName: string;
   target: string;
   body: string;
-  metadata?: Record<string, unknown>;
+  metadata?: AgentMessageMetadata;
   trustedBrokerAgentId?: string;
 }
 
@@ -79,7 +97,7 @@ export interface BroadcastAgentDispatchInput {
   senderAgentName: string;
   channel: string;
   body: string;
-  metadata?: Record<string, unknown>;
+  metadata?: AgentMessageMetadata;
 }
 
 export interface DirectAgentDispatchResult {
@@ -98,7 +116,7 @@ export interface BroadcastAgentDispatchResult {
 export type AgentDispatchCallback = (
   target: AgentDispatchTarget,
   message: BrokerMessage,
-  metadata: Record<string, unknown>,
+  metadata: AgentMessageMetadata,
 ) => void;
 
 function asStringArray(value: unknown): string[] {
@@ -145,10 +163,10 @@ function ensurePairThread(
 function buildAgentMessageMetadata(
   senderAgentName: string,
   body: string,
-  metadata?: Record<string, unknown>,
+  metadata?: AgentMessageMetadata,
   broadcastChannel?: string,
-): Record<string, unknown> {
-  const baseMetadata: Record<string, unknown> = {
+): AgentMessageMetadata {
+  const baseMetadata: AgentMessageMetadata = {
     ...metadata,
     senderAgent: senderAgentName,
     a2a: true,
@@ -167,7 +185,7 @@ function deliverAgentMessage(
   senderAgentId: string,
   target: AgentDispatchTarget,
   body: string,
-  metadata: Record<string, unknown>,
+  metadata: AgentMessageMetadata,
   onDispatch?: AgentDispatchCallback,
 ): { threadId: string; messageId: number } {
   const threadId = ensurePairThread(storage, senderAgentId, target.id);
@@ -262,7 +280,7 @@ function canDispatchDirectAgentMessage(
   agents: AgentInfo[],
   sender: AgentInfo | null,
   target: AgentInfo,
-  metadata?: Record<string, unknown>,
+  metadata?: AgentMessageMetadata,
 ): boolean {
   if (!sender) return false;
   if (
@@ -312,7 +330,7 @@ export function dispatchDirectAgentMessage(
     throw new Error(`Agent not found: ${input.target}`);
   }
   const sender = agents.find((agent) => agent.id === input.senderAgentId) ?? null;
-  const policyMetadata = { ...(input.metadata ?? {}) };
+  const policyMetadata: AgentMessageMetadata = { ...(input.metadata ?? {}) };
   delete policyMetadata.trustedBrokerAgentId;
   if (input.trustedBrokerAgentId) {
     policyMetadata.trustedBrokerAgentId = input.trustedBrokerAgentId;
