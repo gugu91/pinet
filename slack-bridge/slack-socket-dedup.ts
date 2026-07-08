@@ -3,11 +3,53 @@ import { extractSlackInteractivePayloadFromEnvelope } from "./slack-block-kit.js
 export const SLACK_SOCKET_DELIVERY_DEDUP_TTL_MS = 10 * 60 * 1000;
 export const SLACK_SOCKET_DELIVERY_DEDUP_MAX_SIZE = 10_000;
 
+export type SlackDedupEventPayload = Record<string, unknown>;
+export type SlackInteractiveDedupPayload = Record<string, unknown>;
+export type SlackSocketDedupFrame = Record<string, unknown>;
+
+interface SlackReactionItemPayload {
+  type?: string;
+  channel?: string;
+  ts?: string;
+}
+
+interface SlackAssistantThreadPayload {
+  channel_id?: string;
+  thread_ts?: string;
+  user_id?: string;
+}
+
+interface SlackBlockActionActorPayload {
+  id?: string;
+}
+
+interface SlackBlockActionContainerPayload {
+  channel_id?: string;
+  message_ts?: string;
+  thread_ts?: string;
+}
+
+interface SlackBlockActionViewPayload {
+  id?: string;
+  hash?: string;
+  callback_id?: string;
+}
+
+interface SlackBlockActionPayload {
+  action_id?: string;
+  action_ts?: string;
+}
+
+interface SlackEventsApiPayload {
+  event_id?: string;
+  event?: SlackDedupEventPayload;
+}
+
 function asNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function buildSlackMessageDedupKey(evt: Record<string, unknown>): string | null {
+function buildSlackMessageDedupKey(evt: SlackDedupEventPayload): string | null {
   const channel = asNonEmptyString(evt.channel);
   const ts = asNonEmptyString(evt.ts);
   if (!channel || !ts) {
@@ -24,8 +66,8 @@ function buildSlackMessageDedupKey(evt: Record<string, unknown>): string | null 
   ].join(":");
 }
 
-function buildSlackReactionDedupKey(evt: Record<string, unknown>): string | null {
-  const item = evt.item as { type?: string; channel?: string; ts?: string } | undefined;
+function buildSlackReactionDedupKey(evt: SlackDedupEventPayload): string | null {
+  const item = evt.item as SlackReactionItemPayload | undefined;
   if (!item || item.type !== "message" || !item.channel || !item.ts) {
     return null;
   }
@@ -42,11 +84,9 @@ function buildSlackReactionDedupKey(evt: Record<string, unknown>): string | null
 
 function buildSlackAssistantThreadDedupKey(
   kind: "assistant_thread_started" | "assistant_thread_context_changed",
-  evt: Record<string, unknown>,
+  evt: SlackDedupEventPayload,
 ): string | null {
-  const thread = evt.assistant_thread as
-    | { channel_id?: string; thread_ts?: string; user_id?: string }
-    | undefined;
+  const thread = evt.assistant_thread as SlackAssistantThreadPayload | undefined;
   if (!thread?.channel_id || !thread.thread_ts) {
     return null;
   }
@@ -54,7 +94,7 @@ function buildSlackAssistantThreadDedupKey(
   return [kind, thread.channel_id, thread.thread_ts, thread.user_id ?? ""].join(":");
 }
 
-function buildMemberJoinedDedupKey(evt: Record<string, unknown>): string | null {
+function buildMemberJoinedDedupKey(evt: SlackDedupEventPayload): string | null {
   const channel = asNonEmptyString(evt.channel);
   const user = asNonEmptyString(evt.user);
   if (!channel || !user) {
@@ -64,7 +104,7 @@ function buildMemberJoinedDedupKey(evt: Record<string, unknown>): string | null 
   return ["member_joined_channel", channel, user, asNonEmptyString(evt.event_ts) ?? ""].join(":");
 }
 
-export function extractSlackEventDedupKey(evt: Record<string, unknown>): string | null {
+export function extractSlackEventDedupKey(evt: SlackDedupEventPayload): string | null {
   const type = asNonEmptyString(evt.type);
   if (!type) {
     return null;
@@ -88,20 +128,20 @@ export function extractSlackEventDedupKey(evt: Record<string, unknown>): string 
   }
 }
 
-export function extractSlackBlockActionDedupKey(payload: Record<string, unknown>): string | null {
+export function extractSlackBlockActionDedupKey(
+  payload: SlackInteractiveDedupPayload,
+): string | null {
   if (payload.type !== "block_actions") {
     return null;
   }
 
-  const user = payload.user as { id?: string } | undefined;
-  const channel = payload.channel as { id?: string } | undefined;
-  const container = payload.container as
-    | { channel_id?: string; message_ts?: string; thread_ts?: string }
-    | undefined;
-  const view = payload.view as { id?: string; hash?: string } | undefined;
+  const user = payload.user as SlackBlockActionActorPayload | undefined;
+  const channel = payload.channel as SlackBlockActionActorPayload | undefined;
+  const container = payload.container as SlackBlockActionContainerPayload | undefined;
+  const view = payload.view as SlackBlockActionViewPayload | undefined;
   const actions = Array.isArray(payload.actions)
     ? payload.actions.filter(
-        (action): action is { action_id?: string; action_ts?: string } =>
+        (action): action is SlackBlockActionPayload =>
           typeof action === "object" && action !== null,
       )
     : [];
@@ -129,14 +169,14 @@ export function extractSlackBlockActionDedupKey(payload: Record<string, unknown>
 }
 
 export function extractSlackViewSubmissionDedupKey(
-  payload: Record<string, unknown>,
+  payload: SlackInteractiveDedupPayload,
 ): string | null {
   if (payload.type !== "view_submission") {
     return null;
   }
 
-  const user = payload.user as { id?: string } | undefined;
-  const view = payload.view as { id?: string; hash?: string; callback_id?: string } | undefined;
+  const user = payload.user as SlackBlockActionActorPayload | undefined;
+  const view = payload.view as SlackBlockActionViewPayload | undefined;
   if (!view?.id) {
     return null;
   }
@@ -146,7 +186,9 @@ export function extractSlackViewSubmissionDedupKey(
   );
 }
 
-export function extractSlackInteractiveDedupKey(payload: Record<string, unknown>): string | null {
+export function extractSlackInteractiveDedupKey(
+  payload: SlackInteractiveDedupPayload,
+): string | null {
   if (payload.type === "block_actions") {
     return extractSlackBlockActionDedupKey(payload);
   }
@@ -156,11 +198,9 @@ export function extractSlackInteractiveDedupKey(payload: Record<string, unknown>
   return null;
 }
 
-export function extractSlackSocketDedupKey(frame: Record<string, unknown>): string | null {
+export function extractSlackSocketDedupKey(frame: SlackSocketDedupFrame): string | null {
   if (frame.type === "events_api") {
-    const payload = frame.payload as
-      | { event_id?: string; event?: Record<string, unknown> }
-      | undefined;
+    const payload = frame.payload as SlackEventsApiPayload | undefined;
     const eventId = asNonEmptyString(payload?.event_id);
     if (eventId) {
       return `event:${eventId}`;
