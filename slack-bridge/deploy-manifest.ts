@@ -41,12 +41,23 @@ interface SlackErrorDetail {
   pointer?: string;
 }
 
+type SlackManifestPrimitive = string | number | boolean | null;
+export type SlackManifestValue =
+  | SlackManifestPrimitive
+  | SlackManifestObject
+  | SlackManifestValue[];
+export interface SlackManifestObject {
+  [key: string]: SlackManifestValue;
+}
+
+type SlackApiRequestBody = SlackManifestObject;
+
 interface SlackMethodPayload {
   ok?: boolean;
   error?: string;
   errors?: SlackErrorDetail[];
   app_id?: string;
-  manifest?: Record<string, unknown>;
+  manifest?: SlackManifestObject;
 }
 
 class SlackMethodError extends Error {
@@ -79,8 +90,8 @@ function loadSettings(settingsPath?: string): SlackBridgeSettings {
     path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".pi", "agent", "settings.json");
   try {
     const content = fs.readFileSync(resolvedPath, "utf-8");
-    const parsed = JSON.parse(content) as Record<string, unknown>;
-    return ((parsed["slack-bridge"] as Record<string, unknown> | undefined) ??
+    const parsed = JSON.parse(content) as SlackManifestObject;
+    return ((parsed["slack-bridge"] as SlackManifestObject | undefined) ??
       {}) as SlackBridgeSettings;
   } catch {
     return {};
@@ -90,7 +101,7 @@ function loadSettings(settingsPath?: string): SlackBridgeSettings {
 function buildSlackRequest(
   method: string,
   token: string,
-  body?: Record<string, unknown>,
+  body?: SlackApiRequestBody,
 ): { url: string; init: RequestInit } {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -112,16 +123,18 @@ function buildSlackRequest(
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+function asManifestObject(value: SlackManifestValue | undefined): SlackManifestObject | null {
+  return value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as SlackManifestObject)
+    : null;
 }
 
 function readScopeList(
-  manifest: Record<string, unknown> | null | undefined,
+  manifest: SlackManifestObject | null | undefined,
   scopeType: "bot" | "user",
 ): string[] {
-  const oauthConfig = asRecord(manifest?.oauth_config);
-  const scopes = asRecord(oauthConfig?.scopes);
+  const oauthConfig = asManifestObject(manifest?.oauth_config);
+  const scopes = asManifestObject(oauthConfig?.scopes);
   const raw = scopes?.[scopeType];
   if (!Array.isArray(raw)) {
     return [];
@@ -133,8 +146,8 @@ function readScopeList(
 }
 
 export function diffManifestScopes(
-  beforeManifest: Record<string, unknown> | null | undefined,
-  afterManifest: Record<string, unknown> | null | undefined,
+  beforeManifest: SlackManifestObject | null | undefined,
+  afterManifest: SlackManifestObject | null | undefined,
 ): ManifestScopeChanges {
   const beforeBot = new Set(readScopeList(beforeManifest, "bot"));
   const afterBot = new Set(readScopeList(afterManifest, "bot"));
@@ -210,13 +223,13 @@ export function getDeployConfigError(config: ResolvedDeployConfig): string | nul
 }
 
 export function applyConfiguredSlashCommands(
-  manifest: Record<string, unknown>,
+  manifest: SlackManifestObject,
   settings: SlackBridgeSettings,
-): Record<string, unknown> {
+): SlackManifestObject {
   const commandNames = resolveSlackAgentCommandNames(settings);
-  const features = asRecord(manifest.features) ?? {};
-  const oauthConfig = asRecord(manifest.oauth_config) ?? {};
-  const scopes = asRecord(oauthConfig.scopes) ?? {};
+  const features = asManifestObject(manifest.features) ?? {};
+  const oauthConfig = asManifestObject(manifest.oauth_config) ?? {};
+  const scopes = asManifestObject(oauthConfig.scopes) ?? {};
   const botScopes = readScopeList(manifest, "bot");
   const nextBotScopes = botScopes.includes("commands") ? botScopes : [...botScopes, "commands"];
 
@@ -241,7 +254,7 @@ export function applyConfiguredSlashCommands(
   };
 }
 
-async function parseManifestYaml(manifestPath: string): Promise<Record<string, unknown>> {
+async function parseManifestYaml(manifestPath: string): Promise<SlackManifestObject> {
   try {
     const program = [
       "require 'yaml'",
@@ -250,7 +263,7 @@ async function parseManifestYaml(manifestPath: string): Promise<Record<string, u
       "puts JSON.generate(data)",
     ].join("; ");
     const { stdout } = await execFile("ruby", ["-e", program, manifestPath]);
-    return JSON.parse(stdout) as Record<string, unknown>;
+    return JSON.parse(stdout) as SlackManifestObject;
   } catch (error) {
     throw new Error(
       `Failed to parse ${manifestPath} via Ruby YAML parser. Ensure Ruby is installed and the manifest is valid YAML. ${String(error)}`,
@@ -261,7 +274,7 @@ async function parseManifestYaml(manifestPath: string): Promise<Record<string, u
 async function callSlackMethod(
   method: string,
   token: string,
-  body?: Record<string, unknown>,
+  body?: SlackApiRequestBody,
 ): Promise<SlackMethodPayload> {
   const { url, init } = buildSlackRequest(method, token, body);
   const response = await fetch(url, init);
@@ -281,12 +294,12 @@ async function callSlackMethod(
 async function exportRemoteManifest(
   appId: string,
   token: string,
-): Promise<Record<string, unknown> | undefined> {
+): Promise<SlackManifestObject | undefined> {
   const payload = await callSlackMethod("apps.manifest.export", token, { app_id: appId });
   return payload.manifest;
 }
 
-async function validateManifest(manifest: Record<string, unknown>, token: string): Promise<void> {
+async function validateManifest(manifest: SlackManifestObject, token: string): Promise<void> {
   await callSlackMethod("apps.manifest.validate", token, {
     manifest: JSON.stringify(manifest),
   });
@@ -294,7 +307,7 @@ async function validateManifest(manifest: Record<string, unknown>, token: string
 
 async function updateManifest(
   appId: string,
-  manifest: Record<string, unknown>,
+  manifest: SlackManifestObject,
   token: string,
 ): Promise<void> {
   await callSlackMethod("apps.manifest.update", token, {
