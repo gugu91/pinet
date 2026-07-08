@@ -2,12 +2,18 @@ export const PINET_MAIL_CLASSES = ["steering", "fwup", "maintenance_context"] as
 
 export type PinetMailClass = (typeof PINET_MAIL_CLASSES)[number];
 
+export interface PinetMailMetadata extends Record<string, unknown> {
+  kind?: string;
+  type?: string;
+  event_type?: string;
+}
+
 export interface PinetMailClassificationInput {
   source?: string | null;
   threadId?: string | null;
   sender?: string | null;
   body?: string | null;
-  metadata?: Record<string, unknown> | null;
+  metadata?: PinetMailMetadata | null;
 }
 
 export interface PinetMailClassification {
@@ -78,7 +84,7 @@ export function normalizePinetMailClass(value: unknown): PinetMailClass | null {
 }
 
 function getExplicitMailClass(
-  metadata: Record<string, unknown> | null | undefined,
+  metadata: PinetMailMetadata | null | undefined,
 ): PinetMailClass | null {
   if (!metadata) return null;
 
@@ -94,9 +100,7 @@ function hasPattern(patterns: RegExp[], value: string): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
-function metadataLooksLikeMaintenance(
-  metadata: Record<string, unknown> | null | undefined,
-): boolean {
+function metadataLooksLikeMaintenance(metadata: PinetMailMetadata | null | undefined): boolean {
   const kind = asString(metadata?.kind)?.toLowerCase() ?? "";
   const type = asString(metadata?.type)?.toLowerCase() ?? "";
   const eventType = asString(metadata?.event_type)?.toLowerCase() ?? "";
