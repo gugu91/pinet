@@ -4,7 +4,10 @@ import {
   type PinetMailClass,
 } from "@pinet/broker-core/mail-classification";
 
-export type PinetReadMessageMetadata = Record<string, unknown>;
+export type PinetReadMetadataValue = unknown;
+export interface PinetReadMessageMetadata {
+  [key: string]: PinetReadMetadataValue;
+}
 
 export interface PinetInboxItem {
   inboxId: number;
