@@ -9,6 +9,7 @@ Transport-neutral broker kernel primitives for the `extensions` repo.
 - routing and backlog maintenance logic
 - direct/broadcast agent messaging helpers
 - broker auth / lock / path / loopback utilities
+- authenticated Slack approval receipt issuance, audit, and one-time verification primitives
 
 ## What stays out of scope
 
