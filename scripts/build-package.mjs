@@ -26,6 +26,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "superhuman-send-executor": {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   "pinet-core": {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
