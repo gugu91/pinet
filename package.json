@@ -10,6 +10,7 @@
       "./slack-bridge/index.ts",
       "./nvim-bridge/index.ts",
       "./neon-psql/index.ts",
+      "./pinet-sonar/index.ts",
       "./browser-playwright/index.ts"
     ]
   },
