@@ -1,4 +1,5 @@
 export * from "./agent-messaging.js";
+export * from "./approval-receipts.js";
 export * from "./auth.js";
 export * from "./leader.js";
 export * from "./lifecycle.js";
