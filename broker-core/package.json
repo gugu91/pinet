@@ -17,6 +17,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./agent-messaging": "./dist/agent-messaging.js",
+    "./approval-receipts": "./dist/approval-receipts.js",
     "./auth": "./dist/auth.js",
     "./leader": "./dist/leader.js",
     "./maintenance": "./dist/maintenance.js",
