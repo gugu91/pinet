@@ -48,6 +48,7 @@ describe("SlackApprovalIssuer", () => {
   beforeEach(() => {
     directory = mkdtempSync(path.join(tmpdir(), "approval-receipts-"));
     audit = new ApprovalAuditStore(path.join(directory, "audit.db"));
+    // Synthetic, process-local test key only. Production must use the external signer contract.
     ({ privateKey, publicKey } = generateKeyPairSync("ed25519"));
     signer = {
       issueApproval: async (claims: ApprovalClaims) => ({
