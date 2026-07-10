@@ -776,6 +776,79 @@ export function normalizeOutgoingPinetControlMessage(
   };
 }
 
+// ─── Pinet steering messages ────────────────────────────
+
+export interface PinetSteeringEnvelope extends PinetControlMetadata {
+  type: "pinet:steer";
+  message: string;
+}
+
+function normalizePinetSteeringText(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parsePinetSteeringEnvelope(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as PinetControlMetadata;
+  if (record.type !== "pinet:steer") return null;
+  return (
+    normalizePinetSteeringText(record.message) ??
+    normalizePinetSteeringText(record.text) ??
+    normalizePinetSteeringText(record.body)
+  );
+}
+
+function parseStructuredPinetSteeringMessageFromText(text: string | undefined): string | null {
+  const trimmed = text?.trim();
+  if (!trimmed) return null;
+
+  try {
+    return parsePinetSteeringEnvelope(JSON.parse(trimmed));
+  } catch {
+    return null;
+  }
+}
+
+function parseLegacyPinetSteeringMessageFromText(text: string | undefined): string | null {
+  const trimmed = text?.trim();
+  if (!trimmed?.startsWith("/steer")) return null;
+  const nextChar = trimmed.charAt("/steer".length);
+  if (nextChar && !/\s/.test(nextChar)) return null;
+  return normalizePinetSteeringText(trimmed.slice("/steer".length));
+}
+
+export function getPinetSteeringMessageFromText(text: string | undefined): string | null {
+  return (
+    parseStructuredPinetSteeringMessageFromText(text) ??
+    parseLegacyPinetSteeringMessageFromText(text)
+  );
+}
+
+export function buildPinetSteeringMetadata(message: string): PinetSteeringEnvelope {
+  return { type: "pinet:steer", message };
+}
+
+export function buildPinetSteeringMessage(message: string): string {
+  return JSON.stringify(buildPinetSteeringMetadata(message));
+}
+
+export function normalizeOutgoingPinetSteeringMessage(
+  body: string,
+  metadata?: PinetControlMetadata,
+): { body: string; metadata: PinetControlMetadata } | null {
+  const message = getPinetSteeringMessageFromText(body);
+  if (!message) return null;
+
+  return {
+    body: buildPinetSteeringMessage(message),
+    metadata: {
+      ...(metadata ?? {}),
+      ...buildPinetSteeringMetadata(message),
+      kind: "pinet_steer",
+    },
+  };
+}
+
 export type PinetSkinStatusKey = "idle" | "working" | "healthy" | "stale" | "ghost" | "resumable";
 
 export type PinetSkinStatusVocabulary = Partial<Record<PinetSkinStatusKey, string>>;
@@ -827,6 +900,31 @@ export function extractPinetControlCommand(
 
   // Backward-compatible fallback for structured JSON or exact slash commands sent over a2a flows.
   return getPinetControlCommandFromText(message.body);
+}
+
+export function extractPinetSteeringMessage(message: {
+  threadId?: string;
+  body?: string;
+  metadata?: PinetControlMetadata | null;
+}): string | null {
+  const metadata = message.metadata ?? {};
+  if (metadata.scheduledWakeup === true) return null;
+
+  const metadataMessage =
+    parsePinetSteeringEnvelope(metadata) ??
+    (metadata.kind === "pinet_steer" || metadata.kind === "pinet_steering"
+      ? (normalizePinetSteeringText(metadata.message) ??
+        normalizePinetSteeringText(metadata.text) ??
+        normalizePinetSteeringText(metadata.body))
+      : null);
+
+  if (metadataMessage) return metadataMessage;
+
+  if (metadata.reactionTrigger === true && metadata.reactionAction === "steer") {
+    return normalizePinetSteeringText(message.body);
+  }
+
+  return getPinetSteeringMessageFromText(message.body);
 }
 // ─── Slack API encoding ──────────────────────────────────
 
@@ -2246,8 +2344,15 @@ export interface BrokerInboxControlEntry {
   command: PinetControlCommand;
 }
 
+export interface PinetSteeringInboxEntry {
+  inboxId: number;
+  message: FollowerInboxEntry["message"];
+  steeringText: string;
+}
+
 export interface BrokerInboxSyncResult {
   controlEntries: BrokerInboxControlEntry[];
+  steeringEntries: PinetSteeringInboxEntry[];
   inboxMessages: InboxMessage[];
 }
 
@@ -2363,8 +2468,44 @@ export function syncFollowerInboxEntries(
   };
 }
 
+export function extractPinetSteeringInboxEntry(
+  entry: FollowerInboxEntry,
+): PinetSteeringInboxEntry | null {
+  if (entry.inboxId == null) return null;
+
+  const steeringText = extractPinetSteeringMessage({
+    threadId: entry.message.threadId,
+    body: entry.message.body,
+    metadata: entry.message.metadata,
+  });
+  if (!steeringText) return null;
+
+  return {
+    inboxId: entry.inboxId,
+    message: entry.message,
+    steeringText,
+  };
+}
+
+export function formatPinetSteeringMessage(entry: PinetSteeringInboxEntry): string {
+  const threadTs = entry.message.threadId ?? "";
+  const sender = getPinetSenderLabel(entry.message);
+  const transferSuffix = formatPinetThreadTransferSuffix(entry);
+  const pointer = formatPinetInboxPointer(entry);
+
+  return [
+    "Pinet steering message:",
+    `[thread ${threadTs}] ${sender}: inbox_id=${entry.inboxId}${transferSuffix} ${pointer}`,
+    "",
+    entry.steeringText,
+    "",
+    "This message was sent with explicit steering semantics. Incorporate it now, even if it interrupts the active turn. Reply via pinet action=send when needed.",
+  ].join("\n");
+}
+
 export function syncBrokerInboxEntries(entries: FollowerInboxEntry[]): BrokerInboxSyncResult {
   const controlEntries: BrokerInboxControlEntry[] = [];
+  const steeringEntries: PinetSteeringInboxEntry[] = [];
   const inboxMessages: InboxMessage[] = [];
 
   for (const entry of entries) {
@@ -2385,6 +2526,12 @@ export function syncBrokerInboxEntries(entries: FollowerInboxEntry[]): BrokerInb
       continue;
     }
 
+    const steering = extractPinetSteeringInboxEntry(entry);
+    if (steering) {
+      steeringEntries.push(steering);
+      continue;
+    }
+
     const scope = extractRuntimeScopeCarrier(meta.scope);
     inboxMessages.push({
       channel: "",
@@ -2400,6 +2547,7 @@ export function syncBrokerInboxEntries(entries: FollowerInboxEntry[]): BrokerInb
 
   return {
     controlEntries,
+    steeringEntries,
     inboxMessages,
   };
 }

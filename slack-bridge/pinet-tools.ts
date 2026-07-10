@@ -245,7 +245,10 @@ interface PinetRenderResultInput {
 }
 
 const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> = {
-  send: [{ action: "send", args: { to: "@worker", message: "Please review PR #123" } }],
+  send: [
+    { action: "send", args: { to: "@worker", message: "Please review PR #123" } },
+    { action: "send", args: { to: "@worker", message: "/steer stop polling" } },
+  ],
   read: [
     // Routine inbox drain: defaults are `unread_only: true` + `mark_read: true`,
     // so this returns and consumes only this agent's unread rows. The compact
@@ -2165,13 +2168,17 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
 
   registerAction({
     name: "send",
-    description: "Send a message to a connected Pinet agent or broker-only broadcast channel.",
+    description:
+      "Send a queued message to a connected Pinet agent or broker-only broadcast channel. Prefix the body with /steer to interrupt a busy recipient with explicit steering.",
     parameters: Type.Object({
       to: Type.String({
         description:
           "Target agent name/ID, or a broker-only broadcast channel like #extensions. Avoid #all for repo-specific issue/policy announcements.",
       }),
-      message: Type.String({ description: "Message body" }),
+      message: Type.String({
+        description:
+          "Message body. Use /steer <instruction> only when you explicitly need to steer a busy recipient immediately; otherwise messages remain queued.",
+      }),
       transfer_thread_id: Type.Optional(
         Type.String({
           description:

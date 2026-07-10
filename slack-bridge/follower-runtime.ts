@@ -5,11 +5,14 @@ import {
   type InboxMessage,
   type PinetControlCommand,
   type PinetRemoteControlRequestResult,
+  type PinetSteeringInboxEntry,
   type SlackBridgeSettings,
   buildFollowerRuntimeDiagnostic,
   buildPinetOwnerToken,
+  extractPinetSteeringInboxEntry,
   extractPinetControlCommand,
   formatPinetInboxMessages,
+  formatPinetSteeringMessage,
   getFollowerOwnedThreadReclaims,
   getFollowerReconnectUiUpdate,
   partitionFollowerInboxEntries,
@@ -74,6 +77,7 @@ export interface FollowerRuntimeDeps {
   deferControlAck: (command: PinetControlCommand, inboxId: number) => void;
   runRemoteControl: (command: PinetControlCommand, ctx: ExtensionContext) => void;
   deliverFollowUpMessage: (text: string) => boolean;
+  deliverSteeringMessage: (text: string, ctx: ExtensionContext) => boolean;
   setExtStatus: (ctx: ExtensionContext, state: "ok" | "reconnecting" | "error" | "off") => void;
   getRuntimeDiagnostic: () => FollowerRuntimeDiagnostic | null;
   setRuntimeDiagnostic: (diagnostic: FollowerRuntimeDiagnostic | null) => void;
@@ -313,8 +317,31 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
             return;
           }
 
-          const { nudges, agentMessages, regular } =
-            partitionFollowerInboxEntries(remainingEntries);
+          const steeringEntries: PinetSteeringInboxEntry[] = [];
+          const queuedEntries: typeof remainingEntries = [];
+          for (const entry of remainingEntries) {
+            const steering = extractPinetSteeringInboxEntry(entry);
+            if (steering) {
+              steeringEntries.push(steering);
+              continue;
+            }
+            queuedEntries.push(entry);
+          }
+
+          if (steeringEntries.length > 0) {
+            const deliveredSteeringIds: number[] = [];
+            for (const entry of steeringEntries) {
+              if (deps.deliverSteeringMessage(formatPinetSteeringMessage(entry), ctx)) {
+                deliveredSteeringIds.push(entry.inboxId);
+              }
+            }
+            if (deliveredSteeringIds.length > 0) {
+              markFollowerInboxIdsDelivered(deps.deliveryState, deliveredSteeringIds);
+              void flushDeliveredAcks();
+            }
+          }
+
+          const { nudges, agentMessages, regular } = partitionFollowerInboxEntries(queuedEntries);
 
           if (nudges.length > 0) {
             const nudgeText = nudges

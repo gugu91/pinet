@@ -8,6 +8,7 @@ import {
   buildPinetOwnerToken,
   buildPinetSkinAssignment,
   DEFAULT_PINET_SKIN_THEME,
+  formatPinetSteeringMessage,
   normalizePinetSkinTheme,
   resolvePinetMeshAuth,
   syncBrokerInboxEntries,
@@ -92,6 +93,7 @@ export interface BrokerRuntimeDeps {
   pushInboxMessages: (messages: InboxMessage[]) => void;
   updateBadge: () => void;
   maybeDrainInboxIfIdle: (ctx: ExtensionContext) => boolean;
+  deliverSteeringMessage: (text: string, ctx: ExtensionContext) => boolean;
   requestRemoteControl: (
     command: PinetControlCommand,
     ctx: ExtensionContext,
@@ -303,6 +305,21 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
 
     for (const command of commandsToStart) {
       deps.runRemoteControl(command, ctx);
+    }
+
+    const steeredInboxIds: number[] = [];
+    for (const entry of synced.steeringEntries) {
+      try {
+        if (deps.deliverSteeringMessage(formatPinetSteeringMessage(entry), ctx)) {
+          steeredInboxIds.push(entry.inboxId);
+        }
+      } catch (error) {
+        ctx.ui.notify(`Pinet steering delivery failed: ${deps.formatError(error)}`, "error");
+      }
+    }
+
+    if (steeredInboxIds.length > 0) {
+      db.markDelivered(steeredInboxIds, agentId);
     }
 
     if (synced.inboxMessages.length === 0) {

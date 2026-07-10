@@ -249,6 +249,20 @@ export default function (pi: ExtensionAPI) {
   const { deliverFollowUpMessage, flushDeliveredFollowerAcks, drainInbox } = inboxDrainRuntime;
   drainInboxPort = drainInbox;
 
+  function deliverSteeringMessage(text: string, ctx: ExtensionContext): boolean {
+    try {
+      if (ctx.isIdle?.() ?? true) {
+        pi.sendUserMessage(text);
+      } else {
+        pi.sendUserMessage(text, { deliverAs: "steer" });
+      }
+      return true;
+    } catch (error) {
+      console.error(`[slack-bridge] Pinet steering delivery failed: ${msg(error)}`);
+      return false;
+    }
+  }
+
   // ─── Helpers ─────────────────────────────────────────
 
   const gitContextCache = createGitContextCache(() => probeGitContext(process.cwd()));
@@ -550,6 +564,7 @@ export default function (pi: ExtensionAPI) {
     },
     updateBadge,
     maybeDrainInboxIfIdle,
+    deliverSteeringMessage,
     requestRemoteControl,
     runRemoteControl,
     formatError: msg,
@@ -772,6 +787,7 @@ export default function (pi: ExtensionAPI) {
     },
     updateBadge,
     maybeDrainInboxIfIdle,
+    deliverSteeringMessage,
     requestRemoteControl,
     deferControlAck: deferBrokerControlAck,
     runRemoteControl,
@@ -1474,6 +1490,7 @@ export default function (pi: ExtensionAPI) {
     deferControlAck: deferFollowerControlAck,
     runRemoteControl,
     deliverFollowUpMessage,
+    deliverSteeringMessage,
     setExtStatus,
     getRuntimeDiagnostic: () => followerRuntimeDiagnostic,
     setRuntimeDiagnostic: (diagnostic) => {
