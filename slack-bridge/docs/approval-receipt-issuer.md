@@ -2,74 +2,84 @@
 
 Tracking: [#920](https://github.com/gugu91/extensions/issues/920)
 
-## Security boundary
+## Implemented security boundary
 
-`SlackApprovalIssuer` is an issuer protocol, not an executor and not a provider transport. It accepts only semantic `create`, `status`, and `cancel` operations and authorizes one configured Slack principal (`U0AF5S3LQ5C` in the Nexcade deployment). It deliberately exposes no `sign(bytes)` operation.
+`SlackApprovalIssuer` is an issuer protocol, not an executor or provider transport. It exposes only semantic `create`, `status`, and `cancel` operations; there is no `sign(bytes)` operation.
 
-The broker process receives an `ApprovalSigner` capability whose only method is `issueApproval(ApprovalClaims)`. Production packaging **must** back that capability with a separately supervised signer process or hardware-backed service that:
+A create call contains no principal field. It must carry a `SlackBrokerApprovalContext`, which the issuer passes to a deployment-provided `SlackApprovalContextAuthenticator`. Only that trusted adapter's authenticated result supplies the principal and Slack thread. The issuer requires the authenticated principal to equal its fixed authorized principal and the authenticated thread to equal the receipt envelope thread. A production authenticator must validate Slack signatures or resolve an unforgeable broker ingress/session handle; copying a Slack user ID is not authentication.
+
+The broker receives an `ApprovalSigner` capability with a fixed `keyId` and one method, `issueApproval(ApprovalClaims)`. The key ID is included in the claims before signing. Production packaging **must** back that capability with a separately supervised signer process or hardware-backed service that:
 
 1. owns the Ed25519 private key outside Pi/worker processes;
 2. does not put the key in environment variables, files readable by Pi, command lines, IPC responses, crash reports, or descendant processes;
-3. independently parses and validates `shm-approval-receipt/v1` claims before signing;
+3. independently parses and validates the exact `shm-approval-receipt/v1` claims before signing;
 4. authenticates the broker issuer identity rather than trusting arbitrary local callers; and
-5. exposes no generic signing operation.
+5. exposes no generic signing operation or production key fallback.
 
-Provider credentials belong only to the executor/provider process. The signer must not receive them. The broker and signer must not inherit provider credentials.
+Provider credentials belong only to the executor/provider process. The signer must not receive them, and the broker and signer must not inherit them.
 
-The executor must compile in (or load from a root-owned, non-caller-writable deployment resource) the exact Ed25519 SPKI public root and expected key ID. A public key supplied in a create request, environment variable controlled by a worker, or receipt is not trusted. The production root is intentionally not committed until the separately provisioned signer exists.
+## External signer and pinned verifier contracts
 
-## Exact external-signer provisioning contract
-
-The broker-side adapter must implement only this logical request/response contract over an administrator-owned authenticated IPC endpoint:
+The broker-side adapter implements only this logical request/response contract over an administrator-owned authenticated IPC endpoint:
 
 ```text
-request:  { operation: "issueApproval", claims: ApprovalClaims }
-response: { keyId: string, signature: base64url(Ed25519(canonicalClaims)) }
+configured capability: { keyId: string }
+request:               { operation: "issueApproval", claims: ApprovalClaims }
+response:              { signature: base64url(Ed25519(canonicalClaims)) }
 ```
 
-The endpoint must reject every other operation, especially raw byte signing. Before signing it must parse the complete claims object, require version `shm-approval-receipt/v1`, require the configured Thomas Slack principal, require `expiresAt - issuedAt` in `(0, 300000]` milliseconds, and reject unknown/missing fields. It must authenticate the broker service identity using an administrator-owned OS credential or mutually authenticated local channel; filesystem location or loopback reachability alone is not authentication. The signer must return neither private material nor provider credentials.
+The endpoint rejects every other operation, especially raw byte signing. It parses the complete claims object; rejects unknown or missing fields; requires the configured key ID, version, principal, and a lifetime in `(0, 300000]` milliseconds; and authenticates the broker service using an administrator-owned OS credential or mutually authenticated channel. Filesystem location or loopback reachability alone is not authentication.
 
-The executor trust bundle must contain exactly `{ keyId, ed25519SpkiSha256, ed25519PublicKeyPem }`. Its artifact checksum must be recorded with the release. The installed bundle and every parent directory must be owned by the operator/root, non-writable by the Pi account, broker workers, signer service account, and provider executor caller. Receipt-supplied keys, caller parameters, worker environment variables, and writable configuration are never trust roots.
+Executor code uses `ApprovalReceiptVerifier`, constructed with a fixed expected principal, `ApprovalAuditStore`, and a `PinnedApprovalSignatureVerifier`. No verification method accepts a caller public key or key ID. The deployment trust object must pin exactly the configured key ID and Ed25519 public root from an operator-owned, non-caller-writable resource. The repository provides no production key and no fallback verifier.
 
-### Minimum later operator actions (not authorized by #920)
+Synthetic generated keys appear only in the isolated broker-core regression test and are marked non-production.
 
-1. Create a dedicated non-login signer service identity that is not the Pi/worker or provider-executor identity.
-2. Generate/import the Ed25519 key inside that identity's hardware-backed or non-exportable keystore; record only the public SPKI, its SHA-256 fingerprint, and key ID.
-3. Install the signer service and authenticated IPC ACL so only the broker issuer identity can call `issueApproval`; prove Pi/workers and descendants cannot read the key or invoke the endpoint directly.
-4. Install the public trust bundle into the executor artifact/location with operator ownership and no caller write permission; verify its checksum and ACLs independently.
-5. Place provider credentials only in the executor identity's credential store; verify the signer and broker environments cannot access them, and the executor cannot access signer material.
-6. Run the staging-only protocol and adversarial suite, attach ACL/process/environment evidence and exact artifact checksums, then obtain an independent exact-head security review.
-7. Only under separate rollout authorization, install/reload the pinned artifacts. No step above authorizes a provider send.
+## Receipt semantics
 
-## Receipt and audit
+Claims bind all of the following:
 
-Receipts expire no later than five minutes after issuance and bind the account, Slack thread, draft ID and fingerprint, attestation, complete payload, complete recipient envelope, renderer build, screenshot digests, send ID, delay/schedule, action, and provider. Canonical claims are Ed25519-signed.
+- receipt version, key ID, approval ID, authenticated principal, issue time, and expiry;
+- account, authenticated Slack thread, draft ID, lowercase-hex SHA-256 draft fingerprint and attestation, and complete payload;
+- full ordered `To`, `Cc`, and `Bcc` recipient lists;
+- renderer build and at least one lowercase-hex SHA-256 screenshot digest;
+- send ID, delay, schedule, action, and provider.
 
-SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, and signature digest. They never contain message bodies, rendered payloads, or recipients. Unique constraints on approval ID, send ID, and envelope digest provide durable replay exclusion under concurrent requests. `cancel` uses `BEGIN IMMEDIATE`.
+Canonical JSON recursively sorts object keys by locale-independent UTF-16 code-unit order and uses JSON string/number encoding. Issuer inputs are copied into recursively frozen arrays and objects before the signer is called, so caller mutation cannot change signed, returned, or audited values.
 
-Executor consumption is outside #920. It must atomically record first consumption before provider activity, verify the pinned root, reject mismatches/expiry/cancellation, and never treat issuer status alone as authorization.
+Before invoking the signer, `ApprovalAuditStore.reserve` commits a SQLite `BEGIN IMMEDIATE` reservation with unique constraints for approval ID, send ID, draft ID, draft fingerprint, and complete envelope digest. Concurrent collisions therefore make exactly one signer call. A signer failure removes only the matching still-pending reservation token; finalized records cannot be removed by failure cleanup.
+
+`ApprovalReceiptVerifier.verifyAndConsume` checks the exact receipt shape, version, pinned key ID and signature, fixed expected principal, canonical issue/expiry times, non-future issuance, five-minute maximum lifetime, and exact equality for the expected approval and every envelope field. It then checks the issued audit reservation, cancellation, expiry, and replay state and records consumption in one `BEGIN IMMEDIATE` transaction before returning. Cancellation and consumption serialize against each other. A successful receipt is usable once only.
+
+SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, signature digest, reservation state, cancellation, and consumption state. They never contain message bodies, rendered payloads, or recipients.
+
+## Deployment actions not authorized by #920
+
+1. Create a dedicated non-login signer service identity separate from Pi/workers and the provider executor.
+2. Generate or import the Ed25519 key in that identity's hardware-backed or non-exportable keystore; record only its public SPKI fingerprint and key ID.
+3. Install authenticated IPC ACLs so only the broker issuer identity can call `issueApproval`; prove Pi/workers and descendants cannot read the key or invoke the endpoint directly.
+4. Install the pinned verifier resource with operator ownership and no caller write permission; record its artifact checksum.
+5. Put provider credentials only in the executor identity's credential store and prove credential separation.
+6. Run the staging-only protocol/adversarial suite and obtain an independent exact-head security review.
+7. Only with separate rollout authorization, install or reload pinned artifacts. Nothing here authorizes a provider send.
 
 ## Install evidence checklist (not executed in #920)
 
-Before install/reload:
-
-- [ ] Build and package checks pass from the exact commit.
+- [ ] Exact-commit build, lint, typecheck, and tests pass.
+- [ ] Slack/broker context authenticator validates real ingress provenance, not caller identity fields.
 - [ ] Signer identity and pinned public root are provisioned by an administrator outside Pi.
 - [ ] File/socket ACL inspection proves Pi/workers cannot read signer material or rewrite the trust root.
-- [ ] Process-environment and descendant inspection proves signer/provider credential separation.
-- [ ] A staging-only protocol test covers forged, replayed, mismatched, expired, wrong-user, and concurrent requests without sending a message.
-- [ ] Exact-head independent GPT-5.6 security review is attached to the PR.
-- [ ] Package checksum and installed artifact checksum match.
-
-This issue does not authorize executing those deployment steps.
+- [ ] Process-environment inspection proves signer/provider credential separation.
+- [ ] Staging tests cover altered key ID, wrong version/principal, every envelope mismatch, expiry, cancellation, replay, failed reservation cleanup, and concurrent issue/consume without a send.
+- [ ] Exact-head independent security review is attached to the PR.
+- [ ] Package and installed artifact checksums match.
 
 ## Rollback
 
 1. Disable the semantic approval endpoint at the broker boundary.
-2. Stop the external signer endpoint; do not export its private key.
+2. Stop the external signer endpoint without exporting its private key.
 3. Restore the previous package artifact by recorded checksum.
 4. Preserve the body-free audit database for incident analysis.
-5. Revoke the signer identity and rotate the pinned root before any re-enable.
-6. Confirm no receipt from the disabled key ID remains within its validity window (at most five minutes).
+5. Revoke the signer identity and rotate the pinned root before re-enable.
+6. Confirm no receipt from the disabled key remains within its validity window (at most five minutes).
 
 Rollback must not install an executor, invoke provider transport, or perform a synthetic/live send.
