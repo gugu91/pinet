@@ -18,6 +18,7 @@ export const buildTiers = [
     "slack-api",
     "openai-execution-shaping",
     "model-aware-compaction",
+    "pinet-sonar",
   ],
   ["broker-core", "imessage-bridge"],
   ["pinet-core"],

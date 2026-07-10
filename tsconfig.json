@@ -26,6 +26,7 @@
     "browser-playwright/**/*.ts",
     "imessage-bridge/**/*.ts",
     "pinet-core/**/*.ts",
+    "pinet-sonar/**/*.ts",
     "nvim-bridge/**/*.ts",
     "neon-psql/**/*.ts",
     "slack-api/**/*.ts",

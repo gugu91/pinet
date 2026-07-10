@@ -26,6 +26,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "pinet-sonar": {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   "pinet-core": {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
