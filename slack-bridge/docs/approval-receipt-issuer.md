@@ -18,6 +18,29 @@ Provider credentials belong only to the executor/provider process. The signer mu
 
 The executor must compile in (or load from a root-owned, non-caller-writable deployment resource) the exact Ed25519 SPKI public root and expected key ID. A public key supplied in a create request, environment variable controlled by a worker, or receipt is not trusted. The production root is intentionally not committed until the separately provisioned signer exists.
 
+## Exact external-signer provisioning contract
+
+The broker-side adapter must implement only this logical request/response contract over an administrator-owned authenticated IPC endpoint:
+
+```text
+request:  { operation: "issueApproval", claims: ApprovalClaims }
+response: { keyId: string, signature: base64url(Ed25519(canonicalClaims)) }
+```
+
+The endpoint must reject every other operation, especially raw byte signing. Before signing it must parse the complete claims object, require version `shm-approval-receipt/v1`, require the configured Thomas Slack principal, require `expiresAt - issuedAt` in `(0, 300000]` milliseconds, and reject unknown/missing fields. It must authenticate the broker service identity using an administrator-owned OS credential or mutually authenticated local channel; filesystem location or loopback reachability alone is not authentication. The signer must return neither private material nor provider credentials.
+
+The executor trust bundle must contain exactly `{ keyId, ed25519SpkiSha256, ed25519PublicKeyPem }`. Its artifact checksum must be recorded with the release. The installed bundle and every parent directory must be owned by the operator/root, non-writable by the Pi account, broker workers, signer service account, and provider executor caller. Receipt-supplied keys, caller parameters, worker environment variables, and writable configuration are never trust roots.
+
+### Minimum later operator actions (not authorized by #920)
+
+1. Create a dedicated non-login signer service identity that is not the Pi/worker or provider-executor identity.
+2. Generate/import the Ed25519 key inside that identity's hardware-backed or non-exportable keystore; record only the public SPKI, its SHA-256 fingerprint, and key ID.
+3. Install the signer service and authenticated IPC ACL so only the broker issuer identity can call `issueApproval`; prove Pi/workers and descendants cannot read the key or invoke the endpoint directly.
+4. Install the public trust bundle into the executor artifact/location with operator ownership and no caller write permission; verify its checksum and ACLs independently.
+5. Place provider credentials only in the executor identity's credential store; verify the signer and broker environments cannot access them, and the executor cannot access signer material.
+6. Run the staging-only protocol and adversarial suite, attach ACL/process/environment evidence and exact artifact checksums, then obtain an independent exact-head security review.
+7. Only under separate rollout authorization, install/reload the pinned artifacts. No step above authorizes a provider send.
+
 ## Receipt and audit
 
 Receipts expire no later than five minutes after issuance and bind the account, Slack thread, draft ID and fingerprint, attestation, complete payload, complete recipient envelope, renderer build, screenshot digests, send ID, delay/schedule, action, and provider. Canonical claims are Ed25519-signed.
