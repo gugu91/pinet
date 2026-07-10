@@ -18,6 +18,13 @@ import {
   buildPinetControlMetadata,
   buildPinetControlMessage,
   normalizeOutgoingPinetControlMessage,
+  getPinetSteeringMessageFromText,
+  buildPinetSteeringMetadata,
+  buildPinetSteeringMessage,
+  normalizeOutgoingPinetSteeringMessage,
+  extractPinetSteeringMessage,
+  extractPinetSteeringInboxEntry,
+  formatPinetSteeringMessage,
   buildPinetSkinAssignment,
   buildPinetSkinPromptGuideline,
   buildPinetOwnerToken,
@@ -1157,6 +1164,105 @@ describe("Pinet control helpers", () => {
   });
 });
 
+// ─── Pinet steering messages ────────────────────────────
+
+describe("Pinet steering helpers", () => {
+  it("detects explicit steering from structured JSON and slash text", () => {
+    expect(getPinetSteeringMessageFromText('{"type":"pinet:steer","message":"stop polling"}')).toBe(
+      "stop polling",
+    );
+    expect(getPinetSteeringMessageFromText("/steer stop polling")).toBe("stop polling");
+    expect(getPinetSteeringMessageFromText(" /steer   stop polling  ")).toBe("stop polling");
+    expect(getPinetSteeringMessageFromText("/steer")).toBeNull();
+    expect(getPinetSteeringMessageFromText("/steering stop polling")).toBeNull();
+    expect(getPinetSteeringMessageFromText("please /steer stop polling")).toBeNull();
+  });
+
+  it("builds and normalizes structured steering messages", () => {
+    expect(buildPinetSteeringMetadata("stop polling")).toEqual({
+      type: "pinet:steer",
+      message: "stop polling",
+    });
+    expect(buildPinetSteeringMessage("stop polling")).toBe(
+      '{"type":"pinet:steer","message":"stop polling"}',
+    );
+    expect(normalizeOutgoingPinetSteeringMessage("/steer stop polling", { custom: true })).toEqual({
+      body: '{"type":"pinet:steer","message":"stop polling"}',
+      metadata: {
+        custom: true,
+        type: "pinet:steer",
+        message: "stop polling",
+        kind: "pinet_steer",
+      },
+    });
+    expect(normalizeOutgoingPinetSteeringMessage("plain queued note")).toBeNull();
+  });
+
+  it("extracts steering from metadata, slash text, and configured reaction triggers", () => {
+    expect(
+      extractPinetSteeringMessage({
+        threadId: "a2a:sender:target",
+        body: "ignored",
+        metadata: { type: "pinet:steer", message: "use the cache" },
+      }),
+    ).toBe("use the cache");
+    expect(
+      extractPinetSteeringMessage({
+        threadId: "123.456",
+        body: "/steer answer the latest Slack question",
+        metadata: { channel: "D123" },
+      }),
+    ).toBe("answer the latest Slack question");
+    expect(
+      extractPinetSteeringMessage({
+        threadId: "123.456",
+        body: "Reaction trigger from Slack:\n- action: steer\n\nRequested action: prioritize this",
+        metadata: { reactionTrigger: true, reactionAction: "steer" },
+      }),
+    ).toContain("Reaction trigger from Slack");
+  });
+
+  it("does not treat scheduled wakeups or ordinary steering-class mail as runtime steering", () => {
+    expect(
+      extractPinetSteeringMessage({
+        threadId: "wakeup:worker-1",
+        body: "/steer wake up",
+        metadata: { scheduledWakeup: true, type: "pinet:steer", message: "wake up" },
+      }),
+    ).toBeNull();
+    expect(
+      extractPinetSteeringMessage({
+        threadId: "a2a:sender:target",
+        body: "ordinary task that mail classification may call steering",
+        metadata: { a2a: true, pinetMailClass: "steering" },
+      }),
+    ).toBeNull();
+  });
+
+  it("formats extracted steering entries as immediate steering prompts", () => {
+    const entry = extractPinetSteeringInboxEntry({
+      inboxId: 42,
+      message: {
+        threadId: "a2a:sender:target",
+        sender: "sender-agent",
+        body: "/steer stop polling",
+        createdAt: "2026-04-01T00:00:00.000Z",
+        metadata: { a2a: true, senderAgent: "Sender Agent" },
+      },
+    });
+
+    expect(entry).toMatchObject({
+      inboxId: 42,
+      steeringText: "stop polling",
+    });
+    const prompt = formatPinetSteeringMessage(entry!);
+    expect(prompt).toContain("Pinet steering message:");
+    expect(prompt).toContain("inbox_id=42");
+    expect(prompt).toContain("stop polling");
+    expect(prompt).toContain("explicit steering semantics");
+  });
+});
+
 // ─── Safe reload orchestration ───────────────────────────
 
 describe("reloadPinetRuntimeSafely", () => {
@@ -1664,9 +1770,32 @@ describe("Pinet skin helpers", () => {
           metadata: { a2a: true, senderAgent: "sender-agent" },
         },
       },
+      {
+        inboxId: 15,
+        message: {
+          threadId: "123.456",
+          sender: "U123",
+          body: "/steer stop polling",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          metadata: { channel: "D123" },
+        },
+      },
     ]);
 
     expect(result.controlEntries).toEqual([{ inboxId: 11, command: "reload" }]);
+    expect(result.steeringEntries).toEqual([
+      {
+        inboxId: 15,
+        message: {
+          threadId: "123.456",
+          sender: "U123",
+          body: "/steer stop polling",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          metadata: { channel: "D123" },
+        },
+        steeringText: "stop polling",
+      },
+    ]);
 
     expect(result.inboxMessages).toEqual([
       {

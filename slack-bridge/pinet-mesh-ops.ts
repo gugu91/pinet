@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { normalizeOutgoingPinetControlMessage } from "./helpers.js";
+import {
+  normalizeOutgoingPinetControlMessage,
+  normalizeOutgoingPinetSteeringMessage,
+} from "./helpers.js";
 import {
   dispatchBroadcastAgentMessage,
   dispatchDirectAgentMessage,
@@ -155,6 +158,14 @@ function prepareOutgoingPinetAgentMessage(
     return {
       body: control.body,
       metadata: control.metadata,
+    };
+  }
+
+  const steering = normalizeOutgoingPinetSteeringMessage(body, metadata);
+  if (steering) {
+    return {
+      body: steering.body,
+      metadata: steering.metadata,
     };
   }
 

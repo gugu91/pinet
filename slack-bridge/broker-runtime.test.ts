@@ -26,6 +26,7 @@ function createDeps(overrides: Partial<BrokerRuntimeDeps> = {}): BrokerRuntimeDe
     pushInboxMessages: vi.fn(),
     updateBadge: vi.fn(),
     maybeDrainInboxIfIdle: vi.fn(() => false),
+    deliverSteeringMessage: vi.fn(() => true),
     requestRemoteControl: vi.fn(() => ({
       accepted: true,
       shouldStartNow: false,

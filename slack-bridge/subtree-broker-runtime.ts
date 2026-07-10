@@ -15,8 +15,10 @@ import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
 import type { AgentInfo, BrokerMessage } from "./broker/types.js";
 import {
   buildPinetOwnerToken,
+  formatPinetSteeringMessage,
   generateAgentName,
   normalizeOutgoingPinetControlMessage,
+  normalizeOutgoingPinetSteeringMessage,
   resolvePinetMeshAuth,
   syncBrokerInboxEntries,
   type FollowerInboxEntry,
@@ -121,6 +123,7 @@ export interface SubtreeBrokerRuntimeDeps {
   pushInboxMessages: (messages: InboxMessage[]) => void;
   updateBadge: () => void;
   maybeDrainInboxIfIdle: (ctx: ExtensionContext) => boolean;
+  deliverSteeringMessage: (text: string, ctx: ExtensionContext) => boolean;
   requestRemoteControl: (
     command: PinetControlCommand,
     ctx: ExtensionContext,
@@ -434,6 +437,21 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
       broker.db.markDelivered([...handledControlInboxIds], agentId);
     }
 
+    const steeredInboxIds: number[] = [];
+    for (const entry of synced.steeringEntries) {
+      try {
+        if (deps.deliverSteeringMessage(formatPinetSteeringMessage(entry), ctx)) {
+          steeredInboxIds.push(entry.inboxId);
+        }
+      } catch (error) {
+        ctx.ui.notify(`Subtree Pinet steering failed: ${deps.formatError(error)}`, "error");
+      }
+    }
+
+    if (steeredInboxIds.length > 0) {
+      broker.db.markDelivered(steeredInboxIds, agentId);
+    }
+
     if (synced.inboxMessages.length === 0) return;
     deps.pushInboxMessages(synced.inboxMessages);
     deps.updateBadge();
@@ -467,9 +485,11 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     const targetAgent = resolveDirectAgentTarget(activeBroker.db.getAgents(), target);
     if (!targetAgent || targetAgent.id === selfAgentId) return null;
 
-    const control = normalizeOutgoingPinetControlMessage(body, metadata);
-    const finalBody = control?.body ?? body;
-    const finalMetadata = control?.metadata ?? metadata;
+    const normalized =
+      normalizeOutgoingPinetControlMessage(body, metadata) ??
+      normalizeOutgoingPinetSteeringMessage(body, metadata);
+    const finalBody = normalized?.body ?? body;
+    const finalMetadata = normalized?.metadata ?? metadata;
     const identity = deps.getAgentIdentity();
     const result = dispatchDirectAgentMessage(activeBroker.db, {
       senderAgentId: selfAgentId,

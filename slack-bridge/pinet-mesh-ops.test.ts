@@ -274,6 +274,27 @@ describe("createPinetMeshOps", () => {
     });
   });
 
+  it("normalizes broker direct steering messages before dispatch", async () => {
+    const { deps, insertedMessages } = createBrokerDeps();
+    const pinetMeshOps = createPinetMeshOps(deps);
+
+    const result = await pinetMeshOps.sendPinetAgentMessage("worker-1", "/steer stop polling");
+
+    expect(result).toEqual({ messageId: 1, target: "Worker One" });
+    expect(insertedMessages).toHaveLength(1);
+    expect(insertedMessages[0]).toMatchObject({
+      threadId: "a2a:broker-1:worker-1",
+      body: '{"type":"pinet:steer","message":"stop polling"}',
+      metadata: {
+        senderAgent: "Broker Crane",
+        a2a: true,
+        type: "pinet:steer",
+        message: "stop polling",
+        kind: "pinet_steer",
+      },
+    });
+  });
+
   it("records broker task assignments and logs assignment activity", async () => {
     const { deps, recordTaskAssignment, logActivity } = createBrokerDeps();
     const pinetMeshOps = createPinetMeshOps(deps);
@@ -438,6 +459,20 @@ describe("createPinetMeshOps", () => {
       "worker-2",
       '{"type":"pinet:control","action":"exit"}',
       { type: "pinet:control", action: "exit" },
+    );
+    expect(result).toEqual({ messageId: 17, target: "worker-2" });
+  });
+
+  it("routes follower steering messages through the follower client", async () => {
+    const { deps, sendAgentMessage } = createFollowerDeps();
+    const pinetMeshOps = createPinetMeshOps(deps);
+
+    const result = await pinetMeshOps.sendPinetAgentMessage("worker-2", "/steer stop polling");
+
+    expect(sendAgentMessage).toHaveBeenCalledWith(
+      "worker-2",
+      '{"type":"pinet:steer","message":"stop polling"}',
+      { type: "pinet:steer", message: "stop polling", kind: "pinet_steer" },
     );
     expect(result).toEqual({ messageId: 17, target: "worker-2" });
   });
