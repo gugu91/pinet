@@ -1,13 +1,16 @@
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign, verify } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  APPROVAL_SIGNATURE_ALGORITHM,
   ApprovalAuditStore,
   SlackApprovalIssuer,
   THOMAS_SLACK_USER_ID,
   digestApprovalEnvelope,
+  serializeApprovalClaims,
+  type ApprovalClaims,
   type ApprovalEnvelope,
 } from "./approval-receipts.js";
 import {
@@ -142,9 +145,28 @@ describe("SlackV0ApprovalContextAuthenticator", () => {
       action: "email.send",
       provider: "provider",
     };
+    // NON-PRODUCTION TEST FIXTURE ONLY.
+    const pair = generateKeyPairSync("ed25519");
     const issuer = new SlackApprovalIssuer(
       authenticator,
-      { keyId: "external-root", issueApproval: async () => ({ signature: "signed" }) },
+      {
+        keyId: "external-root",
+        issueApproval: async (claims: ApprovalClaims) => ({
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: "external-root",
+          signature: sign(
+            null,
+            Buffer.from(serializeApprovalClaims(claims)),
+            pair.privateKey,
+          ).toString("base64url"),
+        }),
+      },
+      {
+        algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+        keyId: "external-root",
+        verify: (claims, signature) =>
+          verify(null, Buffer.from(claims), pair.publicKey, Buffer.from(signature, "base64url")),
+      },
       audit,
       () => new Date(nowMs),
     );
