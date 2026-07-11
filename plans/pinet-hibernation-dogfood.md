@@ -82,6 +82,19 @@ wake latency, max queue depth/age, estimated recovered RSS, and top refusal
 reasons — so they are safe to surface in a CLI, dashboard, or Slack status reply
 and never emit prompts, message bodies, tokens, or environment values.
 
+For a single agent, `buildAgentLifecycleStatus(input)` and
+`formatAgentLifecycleStatus(status)` compose an operator-safe, actionable view
+from already-fetched inputs (`getAllAgents` lifecycle fields,
+`getLatestAgentCheckpointReceipt`, `getAgentRuntimeSpec`, `listWakeQueue`,
+`countInflightWakes`): lifecycle state/generation/version/policy, checkpoint
+presence/safety/age/pending-inbox, 1-based wake queue position + trigger/reason,
+bounded wake capacity (global + per-repo, with at-capacity flags), the most
+recent refusal/quarantine cause, and `reap-candidate` quarantine. The runtime
+spec is reported through `redactRuntimeSpec` — the sanctioned
+redaction-by-construction boundary that exposes only presence flags, counts, an
+opaque session ref, and a path-free repo basename, and never raw argv, env
+values, or filesystem/socket paths.
+
 ## Stop/rollback conditions
 
 Immediately disable new hibernations on any duplicate accepted generation, affinity reroute/drop, queue order violation, stale-fence acceptance, ambiguous PID/tmux ownership, missing worktree, incompatible config drift, wake timeout beyond retry policy, or secrets/private message content in telemetry. Preserve DB evidence, wake/drain safely where ownership is proven, and quarantine ambiguous identities as `reap-candidate`.
