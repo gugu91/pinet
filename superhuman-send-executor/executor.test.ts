@@ -90,6 +90,7 @@ function harness(input = fixture()): {
         accountId: "acct",
         draftId: "draft",
         userId: "user-1",
+        revisionId: "revision-1",
         rendered: { to: ["recipient@example.test"], subject: "Approved", body: "secret body" },
       };
     },
@@ -142,6 +143,35 @@ describe("executor", () => {
     expect((await h.executor.execute(h.request)).state).toBe("sent");
     expect(h.provider.sends).toBe(1);
   });
+  it("serializes independent journal connections racing the same receipt", async () => {
+    const input = fixture();
+    const dir = mkdtempSync(join(tmpdir(), "executor-"));
+    dirs.push(dir);
+    const path = join(dir, "journal.db");
+    let sends = 0;
+    const provider: Provider = {
+      async render() {
+        return {
+          accountId: "acct",
+          draftId: "draft",
+          userId: "user-1",
+          revisionId: "revision-1",
+          rendered: { to: ["recipient@example.test"], subject: "Approved", body: "secret body" },
+        };
+      },
+      async send() {
+        sends++;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { messageId: "msg-1" };
+      },
+    };
+    const executors = Array.from(
+      { length: 8 },
+      () => new Executor(new Journal(path), provider, input.policy, { write() {} }),
+    );
+    await Promise.all(executors.map((executor) => executor.execute(input.request)));
+    expect(sends).toBe(1);
+  });
   it("refuses a rerender mismatch before claiming or sending", async () => {
     const input = fixture({ draftHash: "0".repeat(64) });
     const h = harness(input);
@@ -160,6 +190,7 @@ describe("executor", () => {
           accountId: "acct",
           draftId: "draft",
           userId: "user-1",
+          revisionId: "revision-1",
           rendered: { to: ["recipient@example.test"], subject: "Approved", body: "secret body" },
         };
       },
@@ -179,6 +210,8 @@ describe("executor", () => {
     const dir = mkdtempSync(join(tmpdir(), "executor-"));
     dirs.push(dir);
     new Journal(join(dir, "journal.db")).claim("r", "h", new Date().toISOString());
-    expect(new Journal(join(dir, "journal.db")).status("r")?.state).toBe("unknown");
+    const restarted = new Journal(join(dir, "journal.db"));
+    expect(restarted.status("r")?.state).toBe("unknown");
+    expect(restarted.auditStates("r")).toEqual(["claimed", "unknown"]);
   });
 });

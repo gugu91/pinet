@@ -3,44 +3,36 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { Provider, RenderedDraft } from "./executor.js";
+import { parseJson, parseRenderedDraft, parseSendResult } from "./parse.js";
 const execFileAsync = promisify(execFile);
-const SHM = "/usr/local/libexec/pinet-superhuman-send-executor/shm";
-const PINNED_SHM_SHA256 = "REPLACE_DURING_SIGNED_RELEASE";
-async function run(args: readonly string[]): Promise<object> {
+const BRIDGE = "/usr/local/libexec/pinet-superhuman-send-executor/current/credential-bridge";
+const PINNED_BRIDGE_SHA256 = "REPLACE_DURING_SIGNED_RELEASE";
+async function run(args: readonly string[]): Promise<string> {
   const digest = createHash("sha256")
-    .update(await readFile(SHM))
+    .update(await readFile(BRIDGE))
     .digest("hex");
-  if (PINNED_SHM_SHA256 === "REPLACE_DURING_SIGNED_RELEASE" || digest !== PINNED_SHM_SHA256)
-    throw new Error("untrusted_shm_binary");
-  const { stdout: credentialOutput } = await execFileAsync(
-    "/usr/bin/security",
-    ["find-generic-password", "-w", "-s", "ai.pinet.superhuman-send-executor", "-a", "root"],
-    { encoding: "utf8", maxBuffer: 64 * 1024 },
-  );
-  const token = credentialOutput.trim();
-  const { stdout } = await execFileAsync(SHM, [...args], {
+  if (PINNED_BRIDGE_SHA256 === "REPLACE_DURING_SIGNED_RELEASE" || digest !== PINNED_BRIDGE_SHA256)
+    throw new Error("untrusted_credential_bridge");
+  const { stdout } = await execFileAsync(BRIDGE, [...args], {
     encoding: "utf8",
-    env: { PATH: "/usr/bin:/bin", SHM_AUTH_TOKEN: token },
+    env: { PATH: "/usr/bin:/bin" },
     maxBuffer: 1024 * 1024,
+    timeout: 30_000,
   });
-  const parsed: object = JSON.parse(stdout) as object;
-  return parsed;
+  return stdout;
 }
 export class KeychainShmProvider implements Provider {
   async render(accountId: string, draftId: string): Promise<RenderedDraft> {
-    return (await run([
-      "draft",
-      "get",
-      "--account",
-      accountId,
-      "--id",
-      draftId,
-      "--json",
-    ])) as RenderedDraft;
+    return parseRenderedDraft(parseJson(await run(["render", accountId, draftId])));
   }
-  async send(accountId: string, draftId: string): Promise<{ messageId: string }> {
-    return (await run(["draft", "send", "--account", accountId, "--id", draftId, "--json"])) as {
-      messageId: string;
-    };
+  async send(
+    accountId: string,
+    draftId: string,
+    revisionId: string,
+    renderedSha256: string,
+  ): Promise<{ messageId: string }> {
+    return parseSendResult(
+      parseJson(await run(["send", accountId, draftId, revisionId, renderedSha256])),
+    );
   }
 }

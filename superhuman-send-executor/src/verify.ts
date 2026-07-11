@@ -36,12 +36,20 @@ export function verifyRequest(request: ExecuteRequest, policy: TrustPolicy): voi
   )
     throw new Error("forged_attestation");
   const now = (policy.now ?? new Date()).getTime();
+  const issuedAt = Date.parse(receipt.issuedAt);
+  const expiresAt = Date.parse(receipt.expiresAt);
+  const attestedAt = Date.parse(attestation.attestedAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || issuedAt >= expiresAt)
+    throw new Error("invalid_receipt_window");
+  if (now < issuedAt || now > expiresAt) throw new Error("expired_receipt");
   if (
-    !Number.isFinite(Date.parse(receipt.issuedAt)) ||
-    now < Date.parse(receipt.issuedAt) ||
-    now > Date.parse(receipt.expiresAt)
+    !Number.isFinite(attestedAt) ||
+    attestedAt < issuedAt ||
+    attestedAt > expiresAt ||
+    attestedAt > now + 30_000 ||
+    now - attestedAt > 5 * 60_000
   )
-    throw new Error("expired_receipt");
+    throw new Error("stale_attestation");
   if (attestation.receiptId !== receipt.id) throw new Error("receipt_mismatch");
   if (
     !sameText(receipt.approved.expectedUserId, policy.expectedUserId) ||

@@ -8,11 +8,17 @@ export interface RenderedDraft {
   readonly accountId: string;
   readonly draftId: string;
   readonly userId: string;
+  readonly revisionId: string;
   readonly rendered: object;
 }
 export interface Provider {
   render(accountId: string, draftId: string): Promise<RenderedDraft>;
-  send(accountId: string, draftId: string): Promise<{ messageId: string }>;
+  send(
+    accountId: string,
+    draftId: string,
+    revisionId: string,
+    renderedSha256: string,
+  ): Promise<{ messageId: string }>;
 }
 export interface AuditSink {
   write(record: {
@@ -33,8 +39,11 @@ export class Executor {
   async execute(request: ExecuteRequest): Promise<ExecutionStatus> {
     verifyRequest(request, this.policy);
     const receiptHash = sha256(canonicalJson(request.receipt));
-    const prior = this.journal.status(request.receipt.id);
-    if (prior) return prior;
+    const prior = this.journal.entry(request.receipt.id);
+    if (prior) {
+      if (prior.receiptHash !== receiptHash) throw new Error("receipt_id_conflict");
+      return prior.status;
+    }
     const draft = await this.provider.render(
       request.receipt.approved.accountId,
       request.receipt.approved.draftId,
@@ -48,37 +57,40 @@ export class Executor {
       throw new Error("render_mismatch");
     const claim = this.journal.claim(request.receipt.id, receiptHash, new Date().toISOString());
     if (!claim.inserted) return claim.status;
+    let status: ExecutionStatus;
     try {
-      const sent = await this.provider.send(draft.accountId, draft.draftId);
-      const status = this.journal.finish(
+      const sent = await this.provider.send(
+        draft.accountId,
+        draft.draftId,
+        draft.revisionId,
+        request.receipt.approved.renderedSha256,
+      );
+      status = this.journal.finish(
         request.receipt.id,
         "sent",
         new Date().toISOString(),
         sent.messageId,
       );
-      this.audit.write({
-        receiptId: request.receipt.id,
-        receiptHash,
-        state: status.state,
-        at: status.updatedAt,
-      });
-      return status;
     } catch {
-      const status = this.journal.finish(
+      status = this.journal.finish(
         request.receipt.id,
         "unknown",
         new Date().toISOString(),
         "provider_outcome_unknown",
       );
+    }
+    try {
       this.audit.write({
         receiptId: request.receipt.id,
         receiptHash,
         state: status.state,
         at: status.updatedAt,
-        errorCode: "provider_outcome_unknown",
+        ...(status.errorCode ? { errorCode: status.errorCode } : {}),
       });
-      return status;
+    } catch {
+      // The canonical journal remains authoritative; audit repair can mirror it without changing send state.
     }
+    return status;
   }
   status(receiptId: string): ExecutionStatus | undefined {
     return this.journal.status(receiptId);
