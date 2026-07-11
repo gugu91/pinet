@@ -1,9 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import type {
-  SlackV0ApprovalContextAuthenticator,
-  SlackV0RequestApprovalContext,
-} from "./slack-approval-authenticator.js";
+import type { SlackV0RequestApprovalContext } from "./slack-approval-authenticator.js";
 
 export const APPROVAL_RECEIPT_VERSION = "shm-approval-receipt/v1" as const;
 export const APPROVAL_SIGNATURE_ALGORITHM = "Ed25519" as const;
@@ -776,7 +773,7 @@ export class SlackApprovalIssuer {
   private readonly reservationLeaseMs: number;
 
   constructor(
-    private readonly contextAuthenticator: SlackV0ApprovalContextAuthenticator,
+    private readonly contextAuthenticator: SlackApprovalContextAuthenticator,
     private readonly signer: ApprovalSigner,
     private readonly pinnedSignerVerifier: PinnedApprovalSignatureVerifier,
     private readonly audit: ApprovalAuditStore,
@@ -992,7 +989,7 @@ export class ApprovalReceiptVerifier {
     }
   }
 
-  verifyAndConsume(receipt: ApprovalReceipt, expectedInput: ExpectedApproval): void {
+  verify(receipt: ApprovalReceipt, expectedInput: ExpectedApproval): void {
     assertReceiptShape(receipt);
     const expected = Object.freeze({
       approvalId: requireText(expectedInput.approvalId, "expected approvalId"),
@@ -1020,7 +1017,11 @@ export class ApprovalReceiptVerifier {
     if (!this.pinnedVerifier.verify(serializeApprovalClaims(receipt.claims), receipt.signature)) {
       throw new Error("Approval signature is invalid");
     }
-    this.audit.consume(receipt, now);
+  }
+
+  verifyAndConsume(receipt: ApprovalReceipt, expectedInput: ExpectedApproval): void {
+    this.verify(receipt, expectedInput);
+    this.audit.consume(receipt, this.now());
   }
 }
 
@@ -1035,14 +1036,17 @@ export class RotatingApprovalReceiptVerifier {
     requireText(expectedPrincipal, "expectedPrincipal");
   }
 
-  verifyAndConsume(receipt: ApprovalReceipt, expected: ExpectedApproval): void {
+  verify(receipt: ApprovalReceipt, expected: ExpectedApproval): void {
     assertReceiptShape(receipt);
     const verifier = this.pinnedVerifiers.require(receipt.claims.keyId);
-    new ApprovalReceiptVerifier(
-      this.expectedPrincipal,
-      verifier,
-      this.audit,
-      this.now,
-    ).verifyAndConsume(receipt, expected);
+    new ApprovalReceiptVerifier(this.expectedPrincipal, verifier, this.audit, this.now).verify(
+      receipt,
+      expected,
+    );
+  }
+
+  verifyAndConsume(receipt: ApprovalReceipt, expected: ExpectedApproval): void {
+    this.verify(receipt, expected);
+    this.audit.consume(receipt, this.now());
   }
 }

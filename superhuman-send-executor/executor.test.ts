@@ -1,217 +1,221 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { generateKeyPairSync, sign } from "node:crypto";
+import {
+  APPROVAL_SIGNATURE_ALGORITHM,
+  ApprovalAuditStore,
+  PinnedApprovalVerifierSet,
+  RotatingApprovalReceiptVerifier,
+  SlackApprovalIssuer,
+  digestApprovalEnvelope,
+  serializeApprovalClaims,
+  type ApprovalEnvelope,
+  type ApprovalReceipt,
+  type PinnedApprovalSignatureVerifier,
+  type SlackApprovalContextAuthenticator,
+} from "@pinet/broker-core/approval-receipts";
+import { generateKeyPairSync, sign, verify } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  canonicalJson,
-  attestationSigningBytes,
-  receiptSigningBytes,
-  sha256,
-} from "./src/canonical.js";
-import {
-  ATTESTATION_KIND,
-  RECEIPT_KIND,
-  type ApprovalAttestation,
-  type ApprovalReceipt,
-  type ExecuteRequest,
-} from "./src/contracts.js";
-import { Executor, type Provider } from "./src/executor.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { Executor, ProviderPreSendRejection, type Provider } from "./src/executor.js";
 import { Journal } from "./src/journal.js";
-import { verifyRequest, type TrustPolicy } from "./src/verify.js";
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-function fixture(overrides?: {
-  expiresAt?: string;
-  userId?: string;
-  processId?: string;
-  draftHash?: string;
-}): { request: ExecuteRequest; policy: TrustPolicy } {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const publicPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-  const rendered = { to: ["recipient@example.test"], subject: "Approved", body: "secret body" };
-  const receiptBase = {
-    kind: RECEIPT_KIND,
-    id: "receipt-1",
-    issuedAt: "2026-01-01T00:00:00.000Z",
-    expiresAt: overrides?.expiresAt ?? "2027-01-01T00:00:00.000Z",
-    issuerKeyId: "issuer-root-1",
-    approved: {
-      accountId: "acct",
-      draftId: "draft",
-      expectedUserId: "user-1",
-      renderedSha256: overrides?.draftHash ?? sha256(canonicalJson(rendered)),
-    },
-  };
-  const unsignedReceipt = { ...receiptBase, signature: "" } as ApprovalReceipt;
-  const receipt = {
-    ...unsignedReceipt,
-    signature: sign(null, receiptSigningBytes(unsignedReceipt), privateKey).toString("base64"),
-  };
-  const attBase = {
-    kind: ATTESTATION_KIND,
-    receiptId: receipt.id,
-    processInstanceId: overrides?.processId ?? "executor-1",
-    userId: overrides?.userId ?? "user-1",
-    attestedAt: "2026-06-01T00:00:00.000Z",
-    issuerKeyId: "issuer-root-1",
-  };
-  const unsignedAttestation = { ...attBase, signature: "" } as ApprovalAttestation;
-  const attestation = {
-    ...unsignedAttestation,
-    signature: sign(null, attestationSigningBytes(unsignedAttestation), privateKey).toString(
-      "base64",
-    ),
-  };
-  return {
-    request: { receipt, attestation },
-    policy: {
-      issuerKeyId: "issuer-root-1",
-      issuerPublicKeyPem: publicPem,
-      expectedUserId: "user-1",
-      processInstanceId: "executor-1",
-      now: new Date("2026-06-01"),
-    },
-  };
-}
-function harness(input = fixture()): {
-  executor: Executor;
-  provider: { sends: number };
-  request: ExecuteRequest;
-} {
+async function fixture(options?: { principal?: string; now?: Date }): Promise<{
+  receipt: ApprovalReceipt;
+  envelope: ApprovalEnvelope;
+  verifier: RotatingApprovalReceiptVerifier;
+  pinned: PinnedApprovalSignatureVerifier;
+  path: string;
+  audit: ApprovalAuditStore;
+}> {
   const dir = mkdtempSync(join(tmpdir(), "executor-"));
   dirs.push(dir);
-  const counter = { sends: 0 };
-  const provider: Provider = {
-    async render() {
+  const path = join(dir, "journal.db");
+  const audit = new ApprovalAuditStore(path);
+  const pair = generateKeyPairSync("ed25519");
+  const keyId = "issuer-1";
+  const pinned: PinnedApprovalSignatureVerifier = {
+    algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+    keyId,
+    verify: (claims, signature) =>
+      verify(null, Buffer.from(claims), pair.publicKey, Buffer.from(signature, "base64url")),
+  };
+  const envelope: ApprovalEnvelope = {
+    accountId: "acct",
+    threadId: "thread",
+    draftId: "draft",
+    draftFingerprint: `sha256:${"a".repeat(64)}`,
+    attestation: `sha256:${"b".repeat(64)}`,
+    payload: "secret body",
+    recipients: { to: ["recipient@example.test"], cc: [], bcc: [] },
+    rendererBuild: "renderer@1",
+    screenshotDigests: [`sha256:${"c".repeat(64)}`],
+    sendId: "send-1",
+    delayMs: 0,
+    scheduledFor: null,
+    action: "send",
+    provider: "superhuman",
+  };
+  const approvalId = "approval-1";
+  const handle = "handle";
+  const principal = options?.principal ?? "U0AF5S3LQ5C";
+  const authenticator = {
+    authenticateAndConsume() {
       return {
-        accountId: "acct",
-        draftId: "draft",
-        userId: "user-1",
-        revisionId: "revision-1",
-        rendered: { to: ["recipient@example.test"], subject: "Approved", body: "secret body" },
+        principal,
+        approvalId,
+        threadId: envelope.threadId,
+        envelopeDigest: digestApprovalEnvelope(envelope),
       };
     },
-    async send() {
-      counter.sends++;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      return { messageId: "msg-1" };
+  } as SlackApprovalContextAuthenticator;
+  const now = options?.now ?? new Date("2026-07-11T10:00:00.000Z");
+  const issuer = new SlackApprovalIssuer(
+    authenticator,
+    {
+      keyId,
+      issueApproval: async (claims) => ({
+        algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+        keyId,
+        signature: sign(
+          null,
+          Buffer.from(serializeApprovalClaims(claims)),
+          pair.privateKey,
+        ).toString("base64url"),
+      }),
     },
-  };
+    pinned,
+    audit,
+    () => now,
+  );
+  const receipt = await issuer.create(
+    {
+      authenticationHandle: handle,
+      rawBody: new Uint8Array(),
+      slackRequestTimestamp: "test",
+      slackSignature: "test",
+    },
+    { approvalId, ttlMs: 300_000, envelope },
+  );
   return {
-    executor: new Executor(new Journal(join(dir, "journal.db")), provider, input.policy, {
-      write() {},
-    }),
-    provider: counter,
-    request: input.request,
+    receipt,
+    envelope,
+    path,
+    audit,
+    pinned,
+    verifier: new RotatingApprovalReceiptVerifier(
+      "U0AF5S3LQ5C",
+      new PinnedApprovalVerifierSet([pinned]),
+      audit,
+      () => now,
+    ),
   };
 }
-describe("request verification", () => {
-  it("rejects forged receipts and attestations", () => {
-    const a = fixture();
-    const forgedReceipt = {
-      ...a.request,
-      receipt: { ...a.request.receipt, signature: Buffer.alloc(64).toString("base64") },
-    };
-    expect(() => verifyRequest(forgedReceipt, a.policy)).toThrow("forged_receipt");
-    const b = fixture();
-    const forgedAttestation = {
-      ...b.request,
-      attestation: { ...b.request.attestation, signature: Buffer.alloc(64).toString("base64") },
-    };
-    expect(() => verifyRequest(forgedAttestation, b.policy)).toThrow("forged_attestation");
+function provider(
+  envelope: ApprovalEnvelope,
+  behavior: "sent" | "unknown" | "failed" = "sent",
+): Provider & { sends: number } {
+  return {
+    sends: 0,
+    async render() {
+      return { revisionId: "revision-1", envelope };
+    },
+    async send() {
+      this.sends++;
+      if (behavior === "unknown") throw new Error("socket closed");
+      if (behavior === "failed") throw new ProviderPreSendRejection("precondition_rejected");
+      return { messageId: "message-1" };
+    },
+  };
+}
+function executor(
+  path: string,
+  verifier: RotatingApprovalReceiptVerifier,
+  adapter: Provider,
+): Executor {
+  return new Executor(new Journal(path), adapter, verifier, { write() {} });
+}
+describe("credential-free issuer-to-executor execution", () => {
+  it("accepts the exact issuer receipt once and replays canonical sent status", async () => {
+    const f = await fixture();
+    const adapter = provider(f.envelope);
+    const subject = executor(f.path, f.verifier, adapter);
+    expect(
+      (await subject.execute(JSON.parse(JSON.stringify(f.receipt)) as ApprovalReceipt)).state,
+    ).toBe("sent");
+    expect((await subject.execute(f.receipt)).state).toBe("sent");
+    expect(adapter.sends).toBe(1);
   });
-  it("rejects expired, wrong-user, and cross-process approvals", () => {
-    for (const [value, message] of [
-      [fixture({ expiresAt: "2026-05-01T00:00:00Z" }), "expired_receipt"],
-      [fixture({ userId: "other" }), "wrong_user"],
-      [fixture({ processId: "other" }), "wrong_process"],
-    ] as const)
-      expect(() => verifyRequest(value.request, value.policy)).toThrow(message);
+  it("serializes independent journal connections racing one receipt", async () => {
+    const f = await fixture();
+    const adapter = provider(f.envelope);
+    const subjects = Array.from({ length: 8 }, () => executor(f.path, f.verifier, adapter));
+    await Promise.all(subjects.map((subject) => subject.execute(f.receipt)));
+    expect(adapter.sends).toBe(1);
   });
-});
-describe("executor", () => {
-  it("sends at most once under replay and cross-process races", async () => {
-    const h = harness();
-    const statuses = await Promise.all(
-      Array.from({ length: 12 }, () => h.executor.execute(h.request)),
+  it("rejects forged and mutated envelope fields before claiming", async () => {
+    const f = await fixture();
+    const forged = { ...f.receipt, signature: "A".repeat(86) };
+    await expect(
+      executor(f.path, f.verifier, provider(f.envelope)).execute(forged),
+    ).rejects.toThrow();
+    const mutated = { ...f.envelope, attestation: `sha256:${"d".repeat(64)}` };
+    await expect(
+      executor(f.path, f.verifier, provider(mutated)).execute(f.receipt),
+    ).rejects.toThrow("attestation mismatch");
+  });
+  it("rejects wrong principal and expired approvals", async () => {
+    const wrong = await fixture();
+    const wrongPrincipalVerifier = new RotatingApprovalReceiptVerifier(
+      "OTHER",
+      new PinnedApprovalVerifierSet([wrong.pinned]),
+      wrong.audit,
+      () => new Date("2026-07-11T10:00:00.000Z"),
     );
-    expect(h.provider.sends).toBe(1);
-    expect(statuses.some((s) => s.state === "sent")).toBe(true);
-    expect((await h.executor.execute(h.request)).state).toBe("sent");
-    expect(h.provider.sends).toBe(1);
-  });
-  it("serializes independent journal connections racing the same receipt", async () => {
-    const input = fixture();
-    const dir = mkdtempSync(join(tmpdir(), "executor-"));
-    dirs.push(dir);
-    const path = join(dir, "journal.db");
-    let sends = 0;
-    const provider: Provider = {
-      async render() {
-        return {
-          accountId: "acct",
-          draftId: "draft",
-          userId: "user-1",
-          revisionId: "revision-1",
-          rendered: { to: ["recipient@example.test"], subject: "Approved", body: "secret body" },
-        };
-      },
-      async send() {
-        sends++;
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return { messageId: "msg-1" };
-      },
-    };
-    const executors = Array.from(
-      { length: 8 },
-      () => new Executor(new Journal(path), provider, input.policy, { write() {} }),
+    await expect(
+      executor(wrong.path, wrongPrincipalVerifier, provider(wrong.envelope)).execute(wrong.receipt),
+    ).rejects.toThrow("principal");
+    const expired = await fixture();
+    const lateVerifier = new RotatingApprovalReceiptVerifier(
+      "U0AF5S3LQ5C",
+      new PinnedApprovalVerifierSet([
+        {
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: expired.receipt.claims.keyId,
+          verify: () => true,
+        },
+      ]),
+      expired.audit,
+      () => new Date("2026-07-11T10:06:00.000Z"),
     );
-    await Promise.all(executors.map((executor) => executor.execute(input.request)));
-    expect(sends).toBe(1);
+    await expect(
+      executor(expired.path, lateVerifier, provider(expired.envelope)).execute(expired.receipt),
+    ).rejects.toThrow("expired");
   });
-  it("refuses a rerender mismatch before claiming or sending", async () => {
-    const input = fixture({ draftHash: "0".repeat(64) });
-    const h = harness(input);
-    await expect(h.executor.execute(h.request)).rejects.toThrow("render_mismatch");
-    expect(h.provider.sends).toBe(0);
-    expect(h.executor.status("receipt-1")).toBeUndefined();
+  it("records definitive pre-send rejection as failed", async () => {
+    const f = await fixture();
+    const adapter = provider(f.envelope, "failed");
+    expect((await executor(f.path, f.verifier, adapter).execute(f.receipt)).state).toBe("failed");
+    expect(adapter.sends).toBe(1);
   });
-  it("reports unknown and never retries an ambiguous provider outcome", async () => {
-    const input = fixture();
-    const dir = mkdtempSync(join(tmpdir(), "executor-"));
-    dirs.push(dir);
-    let sends = 0;
-    const provider: Provider = {
-      async render() {
-        return {
-          accountId: "acct",
-          draftId: "draft",
-          userId: "user-1",
-          revisionId: "revision-1",
-          rendered: { to: ["recipient@example.test"], subject: "Approved", body: "secret body" },
-        };
-      },
-      async send() {
-        sends++;
-        throw new Error("socket closed");
-      },
-    };
-    const executor = new Executor(new Journal(join(dir, "journal.db")), provider, input.policy, {
-      write() {},
-    });
-    expect((await executor.execute(input.request)).state).toBe("unknown");
-    expect((await executor.execute(input.request)).state).toBe("unknown");
-    expect(sends).toBe(1);
+  it("records ambiguous provider outcome as unknown and never retries", async () => {
+    const f = await fixture();
+    const adapter = provider(f.envelope, "unknown");
+    const subject = executor(f.path, f.verifier, adapter);
+    expect((await subject.execute(f.receipt)).state).toBe("unknown");
+    expect((await subject.execute(f.receipt)).state).toBe("unknown");
+    expect(adapter.sends).toBe(1);
   });
-  it("converts an interrupted durable claim to truthful unknown on restart", () => {
-    const dir = mkdtempSync(join(tmpdir(), "executor-"));
-    dirs.push(dir);
-    new Journal(join(dir, "journal.db")).claim("r", "h", new Date().toISOString());
-    const restarted = new Journal(join(dir, "journal.db"));
-    expect(restarted.status("r")?.state).toBe("unknown");
-    expect(restarted.auditStates("r")).toEqual(["claimed", "unknown"]);
+  it("recovers an interrupted durable claim to unknown with an atomic audit transition", async () => {
+    const f = await fixture();
+    const journal = new Journal(f.path);
+    f.verifier.verify(f.receipt, { approvalId: f.receipt.claims.approvalId, envelope: f.envelope });
+    journal.consumeAndClaim(f.receipt, "hash", new Date("2026-07-11T10:00:01.000Z").toISOString());
+    journal.recoverInterruptedClaims();
+    expect(journal.status(f.receipt.claims.approvalId)?.state).toBe("unknown");
+    expect(journal.auditStates(f.receipt.claims.approvalId)).toEqual(["claimed", "unknown"]);
   });
 });

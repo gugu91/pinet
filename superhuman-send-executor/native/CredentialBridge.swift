@@ -49,10 +49,10 @@ case "render":
     guard args.count == 3 else { fail("invalid_arguments") }
     run(["draft", "get", "--account", boundedIdentifier(args[1]), "--id", boundedIdentifier(args[2]), "--json"])
 case "send":
-    guard args.count == 5, args[4].count == 64,
-          args[4].allSatisfy({ $0.isHexDigit }) else { fail("invalid_arguments") }
+    guard args.count == 5, args[4].count == 71, args[4].hasPrefix("sha256:"),
+          args[4].dropFirst(7).allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { fail("invalid_arguments") }
     run(["draft", "send", "--account", boundedIdentifier(args[1]), "--id", boundedIdentifier(args[2]),
-         "--if-revision", boundedIdentifier(args[3]), "--expected-rendered-sha256", args[4], "--json"])
+         "--if-revision", boundedIdentifier(args[3]), "--expected-draft-fingerprint", args[4], "--json"])
 default:
     fail("invalid_operation")
 }

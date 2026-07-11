@@ -1,6 +1,14 @@
 #!/usr/bin/env node
-import { createServer } from "node:http";
+import {
+  APPROVAL_SIGNATURE_ALGORITHM,
+  ApprovalAuditStore,
+  PinnedApprovalVerifierSet,
+  RotatingApprovalReceiptVerifier,
+  type PinnedApprovalSignatureVerifier,
+} from "@pinet/broker-core/approval-receipts";
+import { createPublicKey, verify } from "node:crypto";
 import { chmodSync, chownSync, readFileSync, unlinkSync } from "node:fs";
+import { createServer } from "node:http";
 import { Executor } from "./executor.js";
 import { Journal } from "./journal.js";
 import { JsonlAudit } from "./audit.js";
@@ -10,10 +18,26 @@ const ROOT = "/var/db/pinet-superhuman-send-executor";
 const SOCKET = "/var/run/pinet-superhuman-send-executor.sock";
 const policy = parseTrustPolicy(parseJson(readFileSync(`${ROOT}/trust-policy.json`, "utf8")));
 if (policy.brokerCoreVersion !== "0.2.4") throw new Error("broker_core_version_mismatch");
+const auditStore = new ApprovalAuditStore(policy.approvalAuditPath);
+const pinned = policy.pinnedIssuerKeys.map((configured): PinnedApprovalSignatureVerifier => {
+  const key = createPublicKey(configured.publicKeyPem);
+  return Object.freeze({
+    algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+    keyId: configured.keyId,
+    verify: (canonicalClaims: string, signature: string) =>
+      verify(null, Buffer.from(canonicalClaims), key, Buffer.from(signature, "base64url")),
+  });
+});
+const journal = new Journal(policy.approvalAuditPath);
+journal.recoverInterruptedClaims();
 const executor = new Executor(
-  new Journal(`${ROOT}/journal.sqlite`),
+  journal,
   new KeychainShmProvider(),
-  policy,
+  new RotatingApprovalReceiptVerifier(
+    policy.expectedPrincipal,
+    new PinnedApprovalVerifierSet(pinned),
+    auditStore,
+  ),
   new JsonlAudit(`${ROOT}/audit.jsonl`),
 );
 try {
@@ -50,9 +74,8 @@ const server = createServer((req, res) => {
         }
         chunks.push(value);
       }
-      const status = await executor.execute(
-        parseExecuteRequest(parseJson(Buffer.concat(chunks).toString("utf8"))),
-      );
+      const request = parseExecuteRequest(parseJson(Buffer.concat(chunks).toString("utf8")));
+      const status = await executor.execute(request.receipt);
       res.statusCode = 202;
       res.end(JSON.stringify(status));
     } catch {

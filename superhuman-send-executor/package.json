@@ -7,11 +7,14 @@
   "bin": {
     "pinet-superhuman-send-executor": "dist/src/daemon.js"
   },
+  "dependencies": {
+    "@pinet/broker-core": "file:../broker-core"
+  },
   "scripts": {
     "build": "node ../scripts/build-package.mjs",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh"
+    "test": "pnpm run build && vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh"
   },
   "engines": {
     "node": ">=22.5"

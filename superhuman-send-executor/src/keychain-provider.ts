@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import type { Provider, RenderedDraft } from "./executor.js";
+import { ProviderPreSendRejection, type Provider, type RenderedDraft } from "./executor.js";
 import { parseJson, parseRenderedDraft, parseSendResult } from "./parse.js";
 const execFileAsync = promisify(execFile);
 const BRIDGE = "/usr/local/libexec/pinet-superhuman-send-executor/current/credential-bridge";
@@ -29,10 +29,16 @@ export class KeychainShmProvider implements Provider {
     accountId: string,
     draftId: string,
     revisionId: string,
-    renderedSha256: string,
+    draftFingerprint: string,
   ): Promise<{ messageId: string }> {
-    return parseSendResult(
-      parseJson(await run(["send", accountId, draftId, revisionId, renderedSha256])),
-    );
+    try {
+      return parseSendResult(
+        parseJson(await run(["send", accountId, draftId, revisionId, draftFingerprint])),
+      );
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === 10)
+        throw new ProviderPreSendRejection("provider_precondition_rejected");
+      throw error;
+    }
   }
 }

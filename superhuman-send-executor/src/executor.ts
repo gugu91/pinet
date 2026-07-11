@@ -1,15 +1,22 @@
-import type { ExecuteRequest, ExecutionStatus } from "./contracts.js";
-import { canonicalJson, sha256 } from "./canonical.js";
+import {
+  serializeApprovalClaims,
+  type ApprovalEnvelope,
+  type ApprovalReceipt,
+  type RotatingApprovalReceiptVerifier,
+} from "@pinet/broker-core/approval-receipts";
+import { createHash } from "node:crypto";
+import type { ExecutionStatus } from "./contracts.js";
 import type { Journal } from "./journal.js";
-import { verifyRequest } from "./verify.js";
-import type { TrustPolicy } from "./verify.js";
 
 export interface RenderedDraft {
-  readonly accountId: string;
-  readonly draftId: string;
-  readonly userId: string;
   readonly revisionId: string;
-  readonly rendered: object;
+  readonly envelope: ApprovalEnvelope;
+}
+export class ProviderPreSendRejection extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "ProviderPreSendRejection";
+  }
 }
 export interface Provider {
   render(accountId: string, draftId: string): Promise<RenderedDraft>;
@@ -17,7 +24,7 @@ export interface Provider {
     accountId: string,
     draftId: string,
     revisionId: string,
-    renderedSha256: string,
+    draftFingerprint: string,
   ): Promise<{ messageId: string }>;
 }
 export interface AuditSink {
@@ -30,50 +37,72 @@ export interface AuditSink {
   }): void;
 }
 export class Executor {
+  readonly #inflight = new Map<string, Promise<ExecutionStatus>>();
   constructor(
     private readonly journal: Journal,
     private readonly provider: Provider,
-    private readonly policy: TrustPolicy,
+    private readonly verifier: RotatingApprovalReceiptVerifier,
     private readonly audit: AuditSink,
   ) {}
-  async execute(request: ExecuteRequest): Promise<ExecutionStatus> {
-    verifyRequest(request, this.policy);
-    const receiptHash = sha256(canonicalJson(request.receipt));
-    const prior = this.journal.entry(request.receipt.id);
+  async execute(receipt: ApprovalReceipt): Promise<ExecutionStatus> {
+    const key = receipt.claims.approvalId;
+    const active = this.#inflight.get(key);
+    if (active) return await active;
+    const execution = this.executeOnce(receipt).finally(() => this.#inflight.delete(key));
+    this.#inflight.set(key, execution);
+    return await execution;
+  }
+  private async executeOnce(receipt: ApprovalReceipt): Promise<ExecutionStatus> {
+    const receiptHash = createHash("sha256")
+      .update(serializeApprovalClaims(receipt.claims))
+      .update("\n")
+      .update(receipt.signature)
+      .digest("hex");
+    const prior = this.journal.entry(receipt.claims.approvalId);
     if (prior) {
       if (prior.receiptHash !== receiptHash) throw new Error("receipt_id_conflict");
       return prior.status;
     }
     const draft = await this.provider.render(
-      request.receipt.approved.accountId,
-      request.receipt.approved.draftId,
+      receipt.claims.envelope.accountId,
+      receipt.claims.envelope.draftId,
     );
-    if (
-      draft.accountId !== request.receipt.approved.accountId ||
-      draft.draftId !== request.receipt.approved.draftId ||
-      draft.userId !== this.policy.expectedUserId ||
-      sha256(canonicalJson(draft.rendered)) !== request.receipt.approved.renderedSha256
-    )
-      throw new Error("render_mismatch");
-    const claim = this.journal.claim(request.receipt.id, receiptHash, new Date().toISOString());
+    this.verifier.verify(receipt, {
+      approvalId: receipt.claims.approvalId,
+      envelope: draft.envelope,
+    });
+    const claim = this.journal.consumeAndClaim(receipt, receiptHash, new Date().toISOString());
     if (!claim.inserted) return claim.status;
-    let status: ExecutionStatus;
+    let providerResult: { readonly messageId: string } | undefined;
+    let providerError: Error | undefined;
     try {
-      const sent = await this.provider.send(
-        draft.accountId,
-        draft.draftId,
+      providerResult = await this.provider.send(
+        draft.envelope.accountId,
+        draft.envelope.draftId,
         draft.revisionId,
-        request.receipt.approved.renderedSha256,
+        draft.envelope.draftFingerprint,
       );
+    } catch (error) {
+      providerError = error instanceof Error ? error : new Error("provider_outcome_unknown");
+    }
+    let status: ExecutionStatus;
+    if (providerResult) {
       status = this.journal.finish(
-        request.receipt.id,
+        receipt.claims.approvalId,
         "sent",
         new Date().toISOString(),
-        sent.messageId,
+        providerResult.messageId,
       );
-    } catch {
+    } else if (providerError instanceof ProviderPreSendRejection) {
       status = this.journal.finish(
-        request.receipt.id,
+        receipt.claims.approvalId,
+        "failed",
+        new Date().toISOString(),
+        providerError.code,
+      );
+    } else {
+      status = this.journal.finish(
+        receipt.claims.approvalId,
         "unknown",
         new Date().toISOString(),
         "provider_outcome_unknown",
@@ -81,14 +110,14 @@ export class Executor {
     }
     try {
       this.audit.write({
-        receiptId: request.receipt.id,
+        receiptId: receipt.claims.approvalId,
         receiptHash,
         state: status.state,
         at: status.updatedAt,
         ...(status.errorCode ? { errorCode: status.errorCode } : {}),
       });
     } catch {
-      // The canonical journal remains authoritative; audit repair can mirror it without changing send state.
+      // SQLite audit_transitions is canonical; JSONL is a repairable bounded mirror.
     }
     return status;
   }

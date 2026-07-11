@@ -2,28 +2,31 @@
 
 ## Protected assets
 
-Provider credentials, approved rendered content integrity, single-use approvals, truthful execution state, and body-free audit records.
+Provider credentials, exact approved envelope integrity, single-use approvals, at-most-one provider POST, truthful execution state, and body-free audit records.
 
-## Adversaries
+## Adversary
 
-An unprivileged Pi/worker process able to call the Unix socket, run `curl`/`shm`, race or replay requests, alter request JSON, and crash the service. Root compromise and a malicious signed release are out of scope.
+An unprivileged Pi/worker able to call the group-owned Unix socket, run `curl`/`shm`, race/replay/mutate JSON, and crash the daemon. Root compromise, malicious pinned signing identity, and a malicious reviewed provider adapter are out of scope.
 
 ## Controls
 
-- Ed25519 verification over canonical receipt and attestation bytes; pinned public root/key ID.
-- Exact user and executor process-instance binding, finite receipt window, and five-minute attestation freshness.
-- Service-only System Keychain ACL to a Security.framework native bridge; root-owned signed binaries/config/state, bridge EUID-0 check, `0500` mode, and fixed helper path/hash.
-- Fixed Unix-socket execute/status surface; no URLs, executables, signer keys, credentials, or config accepted.
-- Strict named parsers at request, policy, render, and send-result boundaries.
-- Rerender and canonical SHA-256 comparison before durable claim; conditional send binds the provider operation to that revision and expected hash.
-- One SQLite WAL journal is the sole claim/status authority. Unique receipt ID/hash and `BEGIN IMMEDIATE` serialize competing processes.
-- Claim is durable before POST. No retry follows a claimed/unknown state.
-- Audit schema cannot carry rendered fields.
+- Exact broker-core `shm-approval-receipt/v1` parser/canonical claims; strict unpadded-base64url Ed25519.
+- Deployment-pinned one/two-root verifier set, expected principal, canonical ISO instants, and maximum five-minute receipt lifetime.
+- Complete rerender equality across every signed `ApprovalEnvelope` field; no reduced executor-specific receipt.
+- One issuer/executor SQLite WAL journal. One `BEGIN IMMEDIATE` transaction consumes the exact active issuer reservation and inserts the execution claim.
+- Unique approval ID/hash and durable claim before provider invocation; replay never invokes again.
+- Revision plus approved draft fingerprint passed to the signed provider adapter for atomic conditional send.
+- Typed definitive pre-POST failure versus ambiguous outcome; ambiguous and interrupted claims are never retried.
+- Security.framework native credential bridge, EUID-0 check, root-owned `0500` mode, signed-hash pin, and fixed verbs/paths.
+- Fixed execute/status socket API; no URLs, executable, signer key, credential, or config accepted.
+- Strict named parsers at request, policy, render, and send-result boundaries; bounded body and field sizes.
+- Atomic SQLite body-free transitions; bounded JSONL mirror; generic external errors and request timeouts.
+- Signed app release with pinned designated requirement, post-copy verification, atomic version pointer, retained signed rollback.
 
 ## Residual risks
 
-Superhuman does not provide a transactional coupling between local journal and remote delivery. A crash after POST but before response/commit is necessarily `unknown`; the service chooses no retry to preserve at-most-once POST. Availability depends on the pinned helper and provider contract. The release must pin a reviewed `shm` implementing atomic `--if-revision` plus `--expected-rendered-sha256`; release and synthetic contract tests must reject an adapter lacking either guarantee.
+No local transaction can couple SQLite to remote provider delivery. A crash after POST but before durable confirmation is necessarily `unknown`; no retry preserves at-most-one POST. Availability and TOCTOU integrity depend on the reviewed pinned `shm` honoring its declared atomic revision/fingerprint contract. Release review and credential-free adapter contract testing are therefore authority gates.
 
 ## Negative bypass proof
 
-The native bridge is compiled in CI and a non-root invocation must fail with `root_required` before Keychain access. At rollout, the worker account's direct Security.framework/Keychain read must fail, executing the `0500` bridge must fail, ordinary `shm` must report no authentication, and raw `curl` must have no bearer/cookie material. Credential-backed checks require the separately approved provisioning/rollout phase; this PR neither provisions nor sends.
+CI compiles the native bridge and proves a non-root invocation fails with `root_required` before Keychain access. At rollout, the worker's direct Keychain read and execution of the installed `0500` bridge must fail; ordinary `shm` and raw `curl` must have no authentication; and the installed app must satisfy the root-pinned signing requirement. Credential-backed checks cannot be performed in this no-provision/no-send PR and remain explicit rollout blockers.

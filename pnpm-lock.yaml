@@ -142,6 +142,12 @@ importers:
         specifier: ^0.74.0
         version: 0.74.0
 
+  superhuman-send-executor:
+    dependencies:
+      "@pinet/broker-core":
+        specifier: file:../broker-core
+        version: link:../broker-core
+
   transport-core: {}
 
 packages:

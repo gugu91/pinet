@@ -22,9 +22,14 @@ STAGE="$RELEASES/.stage-$VERSION.app"
 /usr/sbin/chown -R root:wheel "$STAGE"
 /bin/chmod -R go-rwx "$STAGE"
 /bin/chmod 0500 "$STAGE/Contents/MacOS/node" "$STAGE/Contents/MacOS/credential-bridge" "$STAGE/Contents/MacOS/shm"
+/usr/bin/codesign --verify --deep --strict --requirement "$REQUIREMENT" "$STAGE"
+/usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$STAGE/Contents/MacOS/node"
+/usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$STAGE/Contents/MacOS/credential-bridge"
+/usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$STAGE/Contents/MacOS/shm"
 /bin/mv "$STAGE" "$RELEASES/$VERSION.app"
-/bin/ln -sfn "$RELEASES/$VERSION.app/Contents/MacOS" "$PREFIX/current.next"
+FINAL="$RELEASES/$VERSION.app"
+/usr/bin/install -o root -g wheel -m 0400 "$FINAL/Contents/Resources/trust-policy.json" "$STATE/trust-policy.json"
+/usr/bin/install -o root -g wheel -m 0444 "$FINAL/Contents/Resources/ai.pinet.superhuman-send-executor.plist" /Library/LaunchDaemons/ai.pinet.superhuman-send-executor.plist
+/bin/ln -sfn "$FINAL/Contents/MacOS" "$PREFIX/current.next"
 /bin/mv -h "$PREFIX/current.next" "$PREFIX/current"
-/usr/bin/install -o root -g wheel -m 0400 "$BUNDLE/Contents/Resources/trust-policy.json" "$STATE/trust-policy.json"
-/usr/bin/install -o root -g wheel -m 0444 "$BUNDLE/Contents/Resources/ai.pinet.superhuman-send-executor.plist" /Library/LaunchDaemons/ai.pinet.superhuman-send-executor.plist
 echo "Installed atomically but not loaded. Credential provisioning and launch require separate approval." >&2
