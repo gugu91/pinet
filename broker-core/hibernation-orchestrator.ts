@@ -1,7 +1,7 @@
 import * as crypto from "node:crypto";
 import type { BrokerDB } from "./schema.js";
 import { evaluateHibernateEligibility } from "./lifecycle.js";
-import { sanitizeOperatorReason } from "./hibernation-status.js";
+import { sanitizeCheckpointReasonCode, sanitizeOperatorReason } from "./hibernation-status.js";
 import type {
   AgentInfo,
   AgentLifecycleLease,
@@ -216,7 +216,7 @@ export class HibernationOrchestrator {
     agentId: string,
     opts: { reason?: string; actor?: string; correlationId?: string } = {},
   ): { ready: boolean; state: string; reason: string } {
-    const reason = opts.reason ?? "prepare_hibernation";
+    const reason = sanitizeOperatorReason(opts.reason) ?? "prepare_hibernation";
     const actor = opts.actor ?? "broker";
     const correlationId = opts.correlationId ?? this.newId();
     let agent = this.db.getAgentById(agentId);
@@ -270,7 +270,10 @@ export class HibernationOrchestrator {
   ): Promise<HibernateResult> {
     const correlationId = opts.correlationId ?? this.newId();
     const actor = opts.actor ?? "broker";
-    const reason = opts.reason ?? "manual";
+    // Operator-authored reason: bound + path-redact at the orchestrator boundary
+    // so it is safe regardless of caller, before it can be persisted into any
+    // lifecycle row / event.
+    const reason = sanitizeOperatorReason(opts.reason) ?? "manual";
     const startedAt = this.now();
 
     const agent = this.db.getAgentById(agentId);
@@ -350,7 +353,9 @@ export class HibernationOrchestrator {
         runtimeGeneration: agent.runtimeGeneration ?? 0,
         correlationId,
         hibernateSafe: checkpoint.hibernateSafe,
-        reason: checkpoint.reason,
+        // Persist only an allowlisted machine code, never the runtime's raw
+        // reason prose — the receipt is durable and read on recovery.
+        reason: sanitizeCheckpointReasonCode(checkpoint.reason),
         sessionResumeRef: checkpoint.sessionResumeRef,
         pendingInboxCount: checkpoint.pendingInboxCount,
         rssBytes: checkpoint.rssBytes,
@@ -360,13 +365,17 @@ export class HibernationOrchestrator {
       // live/active state — never exit the process.
       const freshInbox = this.db.getUnreadInboxCount(agentId);
       if (!checkpoint.hibernateSafe || freshInbox > 0 || checkpoint.pendingInboxCount > 0) {
-        // `checkpoint.reason` is runtime-authored and may embed a filesystem or
-        // socket path; sanitize before it becomes an operator/telemetry-visible
-        // reason so no private path leaks through the abort surface.
+        // `checkpoint.reason` is runtime-authored; collapse it to an allowlisted
+        // machine code so no argv/env/path prose leaks through the abort surface.
         const abortReason = !checkpoint.hibernateSafe
-          ? `checkpoint_unsafe:${sanitizeOperatorReason(checkpoint.reason) ?? "unconfirmed"}`
+          ? `checkpoint_unsafe:${sanitizeCheckpointReasonCode(checkpoint.reason)}`
           : "work_arrived_during_checkpoint";
-        const active = this.transitionFenced(lease, {
+        // Rollback-to-active before teardown is a fail-closed SAFETY transition:
+        // use an unfenced administrative CAS so a hibernate lease that expired
+        // during a slow checkpoint handshake cannot leave the row stranded in
+        // `hibernating`. The version CAS still blocks clobbering a concurrent
+        // legitimate writer.
+        const active = this.transitionAdministrative({
           agentId,
           expectedVersion: versionCursor,
           toState: "active",
@@ -453,8 +462,9 @@ export class HibernationOrchestrator {
       try {
         if (!teardownStarted) {
           // The runtime was never asked to stop, so it is still alive: abort
-          // back to active rather than quarantine.
-          const active = this.transitionFenced(lease, {
+          // back to active rather than quarantine. Unfenced administrative CAS
+          // so an expired hibernate lease cannot strand the row in `hibernating`.
+          const active = this.transitionAdministrative({
             agentId,
             expectedVersion: versionCursor,
             toState: "active",
@@ -506,7 +516,9 @@ export class HibernationOrchestrator {
   ): Promise<WakeResult> {
     const correlationId = opts.correlationId ?? this.newId();
     const actor = opts.actor ?? "broker";
-    const reason = opts.reason ?? "manual";
+    // Bound + path-redact the operator-authored reason before it can be
+    // persisted into any lifecycle row / event.
+    const reason = sanitizeOperatorReason(opts.reason) ?? "manual";
     const startedAt = this.now();
 
     const agent = this.db.getAgentById(agentId);
@@ -613,7 +625,15 @@ export class HibernationOrchestrator {
 
         if (accepted) {
           const durationMs = this.now() - startedAt;
-          const live = this.transitionFenced(lease, {
+          // Generation acceptance already bound the runtime to our exact
+          // lease/fence/reservation, so the final `waking -> live` promotion is
+          // bookkeeping: drive it with an unfenced administrative CAS. Otherwise
+          // a lease that expired *after* acceptance (e.g. a slow registration on
+          // the winning attempt) would throw the fenced transition and quarantine
+          // an already-live runtime. The version CAS still guards a concurrent
+          // legitimate writer; this mirrors `recoverStrandedWakes`'s accepted->live
+          // completion.
+          const live = this.transitionAdministrative({
             agentId,
             expectedVersion: versionCursor,
             toState: "live",

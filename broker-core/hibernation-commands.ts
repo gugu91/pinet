@@ -114,23 +114,21 @@ export function evaluateHibernateCommandGate(
       break;
   }
 
-  // Fail-closed allowlist with NO basename collapse for slug entries: an
-  // allowlist entry that contains "/" (an owner/repo slug) must match the
-  // identifier's normalized slug exactly, so "gugu91/extensions" never admits
-  // "evil/extensions". Only a deliberately bare-basename entry ("extensions")
-  // opts into basename matching. Blank identifiers/entries never match.
-  // Normalize Windows backslash separators to "/" on both the identifier and
-  // each allowlist entry so path/basename derivation is OS-agnostic (a
-  // "C:\\...\\extensions" root basename is still "extensions").
+  // Fail-closed allowlist with EXACT identity matching and NO basename collapse
+  // (C2): an allowlist entry must equal the broker-derived repo identifier
+  // exactly. A bare "extensions" entry therefore never admits a *different* root
+  // that merely shares a basename (e.g. "gugu91/extensions" or "evil/extensions"),
+  // and an "owner/repo" slug entry never admits a different owner. Blank
+  // identifiers/entries never match. Windows backslash separators are normalized
+  // to "/" on both sides so matching is OS-agnostic, and trailing slashes are
+  // stripped so "owner/repo/" and "owner/repo" compare equal.
   const repo = (repoIdentifier ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
-  const repoBasename = repo.split("/").filter(Boolean).pop() ?? "";
   const repoAllowlisted =
     repo.length > 0 &&
     policy.allowedRepos.some((raw) => {
       const entry = raw.trim().replace(/\\/g, "/").replace(/\/+$/, "");
       if (entry.length === 0) return false;
-      if (entry.includes("/")) return entry === repo;
-      return entry === repo || entry === repoBasename;
+      return entry === repo;
     });
   if (!repoAllowlisted) {
     return refusal(

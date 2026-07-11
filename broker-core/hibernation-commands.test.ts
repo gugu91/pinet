@@ -86,14 +86,17 @@ describe("evaluateHibernateCommandGate", () => {
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 
-  it("bare-basename allowlist entry admits matching slug or basename", () => {
+  it("bare-basename allowlist entry matches ONLY the identical bare identifier (no collapse)", () => {
     const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["extensions"] };
+    // Exact identity proceeds.
     expect(
       evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "extensions", policy }),
     ).toMatchObject({ outcome: "proceed" });
+    // A slug that merely *ends in* the basename must NOT be admitted by a bare
+    // entry — a filesystem parent is not authoritative repository ownership.
     expect(
       evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/extensions", policy }),
-    ).toMatchObject({ outcome: "proceed" });
+    ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 
   it("slug allowlist entry requires an exact slug — no basename collapse", () => {
@@ -110,6 +113,22 @@ describe("evaluateHibernateCommandGate", () => {
     expect(
       evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "extensions", policy }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
+  });
+
+  it("rejects a same-basename different-root identifier (defense-in-depth C2)", () => {
+    // Two distinct roots share the basename `extensions`; only the exact
+    // allowlisted identity may proceed.
+    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["gugu91/extensions"] };
+    for (const repoIdentifier of [
+      "attacker/extensions",
+      "extensions",
+      "gugu91/extensions-fork",
+      "nested/gugu91/extensions", // trailing slug differs after normalization
+    ]) {
+      expect(evaluateHibernateCommandGate({ state: "idle", repoIdentifier, policy })).toMatchObject(
+        { outcome: "refused", refusal: { reason: "repo_not_allowlisted" } },
+      );
+    }
   });
 
   it("rejects blank identifiers and blank allowlist entries (fail-closed)", () => {
@@ -132,8 +151,8 @@ describe("evaluateHibernateCommandGate", () => {
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 
-  it("normalizes Windows backslash separators for slug/basename matching", () => {
-    // Backslash identifier reduced to a slug still matches a "/" slug entry.
+  it("normalizes Windows backslash separators before exact matching", () => {
+    // Backslash identifier reduced to a "/" slug still matches a "/" slug entry.
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
@@ -149,14 +168,15 @@ describe("evaluateHibernateCommandGate", () => {
         policy: { ...ENABLED, allowedRepos: ["gugu91\\extensions"] },
       }),
     ).toMatchObject({ outcome: "proceed" });
-    // A full Windows path's basename still admits a bare-basename entry.
+    // A full Windows path is NOT admitted by a bare-basename entry (no collapse):
+    // exact identity matching means the whole normalized path must equal an entry.
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
         repoIdentifier: "C:\\Users\\tm\\repo\\extensions",
         policy: { ...ENABLED, allowedRepos: ["extensions"] },
       }),
-    ).toMatchObject({ outcome: "proceed" });
+    ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 });
 
@@ -414,14 +434,14 @@ describe("executeHibernateCommand — against the real orchestrator", () => {
     expect(proc.alive).toBe(true);
   });
 
-  it("redacts a path-bearing checkpoint reason in the command result", async () => {
+  it("collapses a path/secret-bearing checkpoint reason to a safe code in the command result", async () => {
     const db = freshDb();
     const proc = new FakeProcess();
-    // A runtime-authored checkpoint reason that embeds a private path.
+    // A runtime-authored checkpoint reason that embeds a private path + secret.
     proc.checkpoint = {
       ...proc.checkpoint,
       hibernateSafe: false,
-      reason: "blocked by /Users/tm/secret/creds.json",
+      reason: "blocked by /Users/tm/secret/creds.json TOKEN=deadbeef",
     };
     const orch = buildOrch(db, proc, new FakeTmux());
     seedAgent(db);
@@ -433,11 +453,13 @@ describe("executeHibernateCommand — against the real orchestrator", () => {
       policy: ENABLED,
     });
     expect(result.outcome).toBe("refused");
-    expect(result.reason).toContain("checkpoint_unsafe:");
-    expect(result.reason).toContain("<path>");
+    expect(result.reason).toBe("checkpoint_unsafe:unspecified");
     expect(result.reason).not.toContain("/Users/tm/secret");
-    // The compact operator line is likewise path-free.
-    expect(formatHibernationCommandResult(result)).not.toContain("/Users/tm/secret");
+    expect(result.reason).not.toContain("deadbeef");
+    // The compact operator line is likewise free of path/secret material.
+    const line = formatHibernationCommandResult(result);
+    expect(line).not.toContain("/Users/tm/secret");
+    expect(line).not.toContain("deadbeef");
   });
 
   it("refuses a working agent via the orchestrator eligibility gate", async () => {

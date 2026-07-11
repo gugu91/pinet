@@ -981,9 +981,11 @@ export default function (pi: ExtensionAPI) {
     // as a fallback — a worker could otherwise self-declare an allowlisted
     // repository. When no trusted spec exists the identifier stays null and the
     // fail-closed gate refuses (a non-hibernatable agent has no spec to wake
-    // from anyway). Derive an owner/repo slug (last two path segments) so
-    // operators can allowlist an exact "owner/repo" slug or a bare basename
-    // without basename collapse.
+    // from anyway). Derive an owner/repo slug (last two path segments of the
+    // broker-captured root) as the identity the allowlist matches EXACTLY (the
+    // gate performs no basename collapse). Operators must therefore allowlist the
+    // exact broker-derived "owner/repo" identity; a bare basename or a different
+    // owner sharing the same basename is refused.
     const specRepoRoot = db.getAgentRuntimeSpec(agent.id)?.repoRoot;
     const repoRootRaw =
       typeof specRepoRoot === "string" && specRepoRoot.length > 0 ? specRepoRoot : null;

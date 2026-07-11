@@ -20,7 +20,14 @@ Crucially, that soft-disconnect is also protected from **routine maintenance**. 
 
 Wake identity revival is fenced in independent layers. First, lifecycle **transitions** bind the _live, matching_ lease: a presented fence must equal the held lease's fence, and when the caller also binds lease identity (`leaseId` + `expectedOperation` + `now`) the DB additionally rejects an expired-but-unsuperseded lease and a wrong-operation lease. Lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a superseded holder is rejected on the fence; the identity binding closes the remaining "expired token still matches" and "hibernate lease drives a wake transition" holes. The orchestrator reads `now` fresh per transition, so a lease that expires mid-operation cannot authorize a later step. Second, socket registration into a durable identity is **state-gated then preflight-then-accept**: registration into a `hibernating` (mid-teardown), `reap-candidate` (quarantined), or `terminated` (closed) identity is rejected fail-closed regardless of any presented fence — only an exact fenced `waking`/`hibernated` revival is admissible. For that admissible case, `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, and the registration mutation plus generation acceptance run **atomically in one broker transaction** (`registerAgentWithGenerationAcceptance`): if acceptance is rejected — e.g. the wake lease expires in the sub-millisecond window after the preflight — the whole registration mutation rolls back, so a refused revival never leaves the durable row with a mutated pid/metadata/connectivity. A later name conflict or registration failure therefore never advances the generation for a runtime that did not register, and the connection binds to the revived identity only on full success.
 
-Because a legitimately long wake (process launch + runtime registration, retried across attempts) can outrun a single wake-lease TTL, the orchestrator **renews the lease per attempt** (`renewAgentLifecycleLease`) — extending the expiry without bumping the fence, and only while the lease is still held and unexpired, which preserves the crash-takeover guarantee. If renewal fails (ownership was lost to another broker), the wake fails closed. And the fail-closed **quarantine/abort transitions are deliberately unfenced administrative CAS transitions**: a recovery to `reap-candidate`/`active` must be able to fire even if our own lease expired mid-operation (otherwise the agent would be stranded in `waking`/`hibernating`), while the version CAS inside `transitionAgentLifecycle` still prevents clobbering a concurrent legitimate writer. Forward-progress transitions remain fully fenced.
+Because a legitimately long wake (process launch + runtime registration, retried across attempts) can outrun a single wake-lease TTL, the orchestrator **renews the lease per attempt** (`renewAgentLifecycleLease`) — extending the expiry without bumping the fence, and only while the lease is still held and unexpired, which preserves the crash-takeover guarantee. If renewal fails (ownership was lost to another broker), the wake fails closed. And the fail-closed **quarantine/abort transitions are deliberately unfenced administrative CAS transitions**: a recovery to `reap-candidate`/`active` must be able to fire even if our own lease expired mid-operation (otherwise the agent would be stranded in `waking`/`hibernating`), while the version CAS inside `transitionAgentLifecycle` still prevents clobbering a concurrent legitimate writer.
+
+Two further **post-authority** transitions are also administrative, closing false-quarantine/strand windows on lease expiry:
+
+- The final `waking -> live` promotion runs after generation acceptance has already bound the runtime to our exact lease/fence/reservation, so it is bookkeeping. If it stayed fenced, a lease that expired _after_ acceptance (e.g. a slow registration on the winning attempt) would throw and quarantine an already-live runtime; an administrative CAS promotes it correctly. This mirrors `recoverStrandedWakes`'s accepted→live completion.
+- The pre-teardown hibernate **abort to `active`** (unsafe checkpoint, work-arrived, or a fault before `stopRuntime`) is a safety rollback. If it stayed fenced, a hibernate lease that expired during a slow checkpoint handshake would throw and leave the row stranded in `hibernating`; an administrative CAS rolls it back to `active`.
+
+Forward-progress transitions that still hold real authority (`idle -> hibernating`, `hibernated -> waking`, and `hibernating -> hibernated`) remain fully fenced.
 
 Configuration defaults to **disabled** and observe-only:
 
@@ -112,20 +119,33 @@ paths such as `accounts/acme.md`) with `<path>` so no private path or unix socke
 path leaks into operator, confirmation, or JSON output, while ordinary prose
 (e.g. `and/or`, `Node.js`) is preserved. `redactRuntimeSpec` splits the repo root
 on both `/` and `\`, so a Windows repo root is reduced to a path-free basename
-rather than emitted verbatim. Runtime-authored `checkpoint.reason` text is
-sanitized **at ingestion** (when the orchestrator composes an abort reason) and
-again where the command layer copies an executor-produced reason into its result,
-and the telemetry rollup redacts reason keys **defense-in-depth**, so a private
-path embedded in a worker's checkpoint reason never reaches the operator, command
-JSON, or telemetry surface. The `pinet hibernate`/`wake` command layer normalizes
-Windows `\` separators before deriving the owner/repo slug and matching the
-fail-closed repo allowlist, so path provenance is OS-agnostic.
+rather than emitted verbatim.
+
+Runtime-authored `checkpoint.reason` is **redacted by construction**. Because the
+reason is authored by the worker runtime, heuristic path-stripping is not enough —
+it could still smuggle argv, env assignments (`TOKEN=secret`), CLI flags
+(`--api-key x`), or extensionless relative paths onto an operator surface. So
+`sanitizeCheckpointReasonCode` allowlists by _shape_: only a short single-token
+machine code (`active_port_lease`, `checkpoint_timeout`, …) passes through;
+anything else collapses to the static code `unspecified`. This runs where the
+orchestrator composes an abort reason **and** where it persists the durable
+checkpoint receipt, so no runtime-authored prose reaches the operator, command
+JSON, telemetry, or the durable receipt. Operator-authored reasons (a different
+trust class) are bounded + path-redacted with `sanitizeOperatorReason` at the
+orchestrator boundary before any lifecycle row/event is written, and the
+telemetry rollup redacts reason keys defense-in-depth.
 
 Repo-allowlist authorization trusts **only** the broker-authored durable runtime
 spec's `repoRoot` (captured at spawn). Mutable, worker-declared
 `agent.metadata.repoRoot` is never used as a fallback, so a worker cannot
 self-declare its way into an allowlisted repository; when no trusted spec exists
-the identifier is null and the fail-closed gate refuses.
+the identifier is null and the fail-closed gate refuses. Matching is **exact
+identity, with no basename collapse**: the broker-derived `owner/repo` identifier
+must equal an allowlist entry exactly (after normalizing Windows `\` separators
+and trailing slashes), so a bare `extensions` entry never admits a different root
+that merely shares the basename, and an `owner/repo` entry never admits a
+different owner. Operators must therefore allowlist the exact broker-derived
+identity.
 
 Wake-trigger contention is disambiguated so a queued trigger is never silently
 lost: only a _matching, unexpired wake lease_ resolves as a benign

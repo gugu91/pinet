@@ -190,6 +190,24 @@ export function redactPathLikeTokens(value: string): string {
 }
 
 /**
+ * Redaction-by-construction for RUNTIME-authored checkpoint reasons. A checkpoint
+ * reason is authored by the worker runtime, so — unlike the trusted-operator
+ * reason path (which only redacts obvious path-like tokens) — it must NOT be able
+ * to smuggle argv, env assignments (`TOKEN=secret`), CLI flags (`--api-key x`),
+ * extensionless relative paths (`accounts/acme`), or other free prose onto any
+ * operator/telemetry/JSON surface. We therefore allowlist by *shape*: only a
+ * short single-token machine code (`active_port_lease`, `checkpoint_timeout`, …)
+ * is passed through; anything containing whitespace, separators, or exotic
+ * characters collapses to the static `unspecified` code. Diagnostic prose belongs
+ * in the worker's own logs, not the broker's operator surface.
+ */
+export function sanitizeCheckpointReasonCode(value: string | null | undefined): string {
+  if (value == null) return "unspecified";
+  const trimmed = value.trim();
+  return /^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(trimmed) ? trimmed.toLowerCase() : "unspecified";
+}
+
+/**
  * Compose an operator-safe, actionable per-agent lifecycle status from already
  * sanitized inputs. Pure: it performs no IO and never emits raw argv, env
  * values, or filesystem/socket paths.

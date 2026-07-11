@@ -226,23 +226,27 @@ describe("HibernationOrchestrator — hibernate", () => {
     expect(h.proc.stopCalls).toBe(0);
   });
 
-  it("redacts a path-bearing runtime-authored checkpoint reason in the abort surface", async () => {
+  it("collapses an arbitrary runtime-authored checkpoint reason to a safe code (by construction)", async () => {
     h.orch.prepareHibernation("worker-1");
-    // A worker-authored checkpoint reason could embed a private filesystem path.
+    // A worker-authored checkpoint reason could embed a private path, an env
+    // assignment, or a CLI flag. It must NEVER reach an operator/telemetry
+    // surface — it is allowlisted by shape down to a static `unspecified` code.
     h.proc.checkpoint = {
       ...h.proc.checkpoint,
       hibernateSafe: false,
-      reason: "held /Users/tm/secret/creds.json open",
+      reason: "held /Users/tm/secret/creds.json open TOKEN=deadbeef --api-key x",
     };
     const result = await h.orch.hibernate("worker-1");
-    expect(result.reason).toContain("checkpoint_unsafe:");
-    expect(result.reason).toContain("<path>");
+    expect(result.reason).toBe("checkpoint_unsafe:unspecified");
     expect(result.reason).not.toContain("/Users/tm/secret");
-    // The recorded lifecycle event reason is likewise redacted.
+    expect(result.reason).not.toContain("deadbeef");
+    // The recorded lifecycle event AND the durable checkpoint receipt are safe.
     const events = h.db.getRecentAgentLifecycleEvents("worker-1");
     const abort = events.find((e) => e.toState === "active");
-    expect(abort?.reason ?? "").not.toContain("/Users/tm/secret");
-    expect(abort?.reason ?? "").toContain("<path>");
+    expect(abort?.reason).toBe("checkpoint_unsafe:unspecified");
+    expect(h.db.getLatestAgentCheckpointReceipt("worker-1")?.reason).toBe("unspecified");
+    // A well-formed machine code, by contrast, is preserved verbatim.
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("active");
   });
 
   it("quarantines to reap-candidate when the runtime survives stop (PID anomaly)", async () => {
@@ -747,6 +751,46 @@ describe("fail-closed fault handling (adapter/DB rejections)", () => {
     expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
   });
 
+  it("aborts a pre-teardown hibernate to active even if the hibernate lease expires mid-checkpoint (no strand)", async () => {
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux();
+    const clock = { ms: 1_000_000 };
+    // The checkpoint reports unsafe, but only after the hibernate lease TTL has
+    // elapsed. The rollback-to-active must still fire (unfenced administrative
+    // CAS) rather than throw the fenced transition and strand `hibernating`.
+    proc.requestCheckpoint = async () => {
+      clock.ms += 5_000; // past the 1s hibernate lease TTL
+      return {
+        hibernateSafe: false,
+        reason: "active_port_lease",
+        sessionResumeRef: null,
+        pendingInboxCount: 0,
+        rssBytes: null,
+      };
+    };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { hibernateLeaseMs: 1_000, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+    });
+    orch.prepareHibernation("worker-1");
+
+    const result = await orch.hibernate("worker-1");
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "checkpoint_unsafe:active_port_lease",
+      state: "active",
+    });
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("active"); // not stranded
+    expect(proc.stopCalls).toBe(0); // teardown never began
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // released in finally
+  });
+
   it("quarantines when teardown has begun and an adapter throws (liveness unknown)", async () => {
     const h = harness();
     seedAgent(h.db);
@@ -867,6 +911,55 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     expect(result).toMatchObject({ ok: true, state: "live", attempts: 3 });
     expect(clock.ms - 1_000_000).toBeGreaterThan(90_000); // proves waits outran one TTL
     expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // released in finally
+  });
+
+  it("promotes an accepted runtime to live even if the lease expires AFTER acceptance (no false quarantine)", async () => {
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux();
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: {
+        registrationTimeoutMs: 200,
+        handshakeTimeoutMs: 200,
+        maxWakeAttempts: 1,
+        wakeLeaseMs: 1_000,
+      },
+      awaitRuntimeRegistration: async (ctx: RuntimeLaunchContext) => {
+        db.registerAgent(
+          ctx.agentId,
+          "Worker",
+          "🦉",
+          5555,
+          { ...AGENT_METADATA },
+          ctx.spec.stableId,
+        );
+        const accepted = db.acceptRuntimeGeneration({
+          agentId: ctx.agentId,
+          wakeLeaseId: ctx.wakeLeaseId,
+          fenceToken: ctx.fenceToken,
+          reservedGeneration: ctx.reservedGeneration,
+          now: clock.ms,
+        }).accepted;
+        // Generation is accepted; then the final promotion is delayed past the
+        // 1s lease TTL. A fenced promotion would throw here and quarantine an
+        // already-live runtime — the administrative promotion must not.
+        clock.ms += 5_000;
+        return accepted;
+      },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1");
+    expect(result).toMatchObject({ ok: true, state: "live", attempts: 1 });
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("live");
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull();
   });
 
   it("quarantines fail-closed (never strands `waking`) when the lease is lost mid-wake", async () => {

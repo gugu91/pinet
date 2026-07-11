@@ -4,6 +4,7 @@ import {
   formatAgentLifecycleStatus,
   redactPathLikeTokens,
   redactRuntimeSpec,
+  sanitizeCheckpointReasonCode,
   sanitizeOperatorReason,
   type AgentLifecycleStatusInput,
 } from "./hibernation-status.js";
@@ -342,5 +343,27 @@ describe("redactPathLikeTokens / sanitizeOperatorReason path redaction", () => {
     expect(sanitizeOperatorReason("stalled\n\tat /Users/tm/private/x")).toBe("stalled at <path>");
     expect(sanitizeOperatorReason("   ")).toBeNull();
     expect(sanitizeOperatorReason(null)).toBeNull();
+  });
+
+  it("sanitizeCheckpointReasonCode allowlists safe codes by shape, else `unspecified`", () => {
+    // Well-formed single-token machine codes pass (normalized to lowercase).
+    expect(sanitizeCheckpointReasonCode("active_port_lease")).toBe("active_port_lease");
+    expect(sanitizeCheckpointReasonCode("Checkpoint_Timeout")).toBe("checkpoint_timeout");
+    // Anything with whitespace, separators, env/flag/secret material, or paths
+    // collapses to a static code by construction — no leak is possible.
+    for (const hostile of [
+      "held /Users/tm/secret/creds.json open",
+      "TOKEN=deadbeef",
+      "--api-key sk-live-123",
+      "accounts/acme", // extensionless relative path
+      "src/index.ts",
+      "reason with spaces",
+      "",
+      "   ",
+      null,
+      undefined,
+    ]) {
+      expect(sanitizeCheckpointReasonCode(hostile)).toBe("unspecified");
+    }
   });
 });
