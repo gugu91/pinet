@@ -4,8 +4,18 @@ NODE_BIN=${1:?usage: build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNIN
 SHM_BIN=${2:?usage: build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNING_IDENTITY OUTPUT.app}
 TRUST_POLICY=${3:?usage: build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNING_IDENTITY OUTPUT.app}
 SIGNING_IDENTITY=${4:?usage: build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNING_IDENTITY OUTPUT.app}
-OUT=${5:?usage: build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNING_IDENTITY OUTPUT.app}
+FINAL_OUT=${5:?usage: build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNING_IDENTITY OUTPUT.app}
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+PRIVATE_STAGE=$(/usr/bin/mktemp -d)
+/bin/chmod 0700 "$PRIVATE_STAGE"
+trap '/bin/rm -rf "$PRIVATE_STAGE"' EXIT HUP INT TERM
+/bin/cp "$NODE_BIN" "$PRIVATE_STAGE/node"
+/bin/cp "$SHM_BIN" "$PRIVATE_STAGE/shm"
+/bin/cp "$TRUST_POLICY" "$PRIVATE_STAGE/trust-policy.json"
+NODE_BIN="$PRIVATE_STAGE/node"
+SHM_BIN="$PRIVATE_STAGE/shm"
+TRUST_POLICY="$PRIVATE_STAGE/trust-policy.json"
+OUT="$PRIVATE_STAGE/Executor.app"
 MACOS="$OUT/Contents/MacOS"
 RESOURCES="$OUT/Contents/Resources"
 if /usr/bin/otool -L "$NODE_BIN" | /usr/bin/tail -n +2 | /usr/bin/grep -Ev '^[[:space:]]+(/usr/lib/|/System/Library/)' >/dev/null; then
@@ -17,7 +27,6 @@ CONTRACT=$($SHM_BIN executor-contract)
   echo "pinned shm lacks the required atomic executor contract" >&2
   exit 1
 }
-rm -rf "$OUT"
 mkdir -p "$MACOS" "$RESOURCES"
 (cd "$ROOT" && pnpm --filter @pinet/broker-core build && pnpm --filter @pinet/superhuman-send-executor build)
 /usr/bin/swiftc -O -framework Security "$ROOT/superhuman-send-executor/native/CredentialBridge.swift" -o "$MACOS/credential-bridge"
@@ -42,4 +51,8 @@ BRIDGE_HASH=$(/usr/bin/shasum -a 256 "$MACOS/credential-bridge" | /usr/bin/awk '
 )
 /usr/bin/codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$OUT"
 /usr/bin/codesign --verify --deep --strict "$OUT"
-echo "Signed, self-consistent release assembled at $OUT. Installation and launch remain separate approvals." >&2
+/bin/rm -rf "$FINAL_OUT"
+/bin/mv "$OUT" "$FINAL_OUT"
+trap - EXIT HUP INT TERM
+/bin/rm -rf "$PRIVATE_STAGE"
+echo "Signed, self-consistent release assembled at $FINAL_OUT. Installation and launch remain separate approvals." >&2

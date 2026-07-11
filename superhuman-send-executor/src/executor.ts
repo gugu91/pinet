@@ -79,6 +79,13 @@ export class Executor {
       envelope: receipt.claims.envelope,
     });
     this.journal.assertActive(receipt, new Date().toISOString());
+    if (
+      receipt.claims.envelope.action !== "send" ||
+      receipt.claims.envelope.provider !== "superhuman" ||
+      receipt.claims.envelope.delayMs !== 0 ||
+      receipt.claims.envelope.scheduledFor !== null
+    )
+      throw new Error("unsupported_execution_semantics");
     const draft = await this.provider.render(
       receipt.claims.envelope.accountId,
       receipt.claims.envelope.draftId,

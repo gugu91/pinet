@@ -38,6 +38,7 @@ private func run(_ arguments: [String]) -> Never {
     process.standardOutput = FileHandle.standardOutput
     process.standardError = FileHandle.standardError
     do { try process.run(); process.waitUntilExit() } catch { fail("provider_helper_failed") }
+    guard process.terminationReason == .exit else { fail("provider_helper_signalled") }
     exit(process.terminationStatus)
 }
 

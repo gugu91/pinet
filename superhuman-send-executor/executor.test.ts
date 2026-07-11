@@ -23,7 +23,14 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-async function fixture(options?: { principal?: string; now?: Date }): Promise<{
+async function fixture(options?: {
+  principal?: string;
+  now?: Date;
+  delayMs?: number;
+  scheduledFor?: string | null;
+  action?: string;
+  provider?: string;
+}): Promise<{
   receipt: ApprovalReceipt;
   envelope: ApprovalEnvelope;
   verifier: RotatingApprovalReceiptVerifier;
@@ -54,10 +61,10 @@ async function fixture(options?: { principal?: string; now?: Date }): Promise<{
     rendererBuild: "renderer@1",
     screenshotDigests: [`sha256:${"c".repeat(64)}`],
     sendId: "send-1",
-    delayMs: 0,
-    scheduledFor: null,
-    action: "send",
-    provider: "superhuman",
+    delayMs: options?.delayMs ?? 0,
+    scheduledFor: options?.scheduledFor ?? null,
+    action: options?.action ?? "send",
+    provider: options?.provider ?? "superhuman",
   };
   const approvalId = "approval-1";
   const handle = "handle";
@@ -218,6 +225,21 @@ describe("credential-free issuer-to-executor execution", () => {
     await expect(
       executor(expired.path, lateVerifier, provider(expired.envelope)).execute(expired.receipt),
     ).rejects.toThrow("expired");
+  });
+  it("rejects delayed, scheduled, non-send, and wrong-provider semantics before render", async () => {
+    const variants = [
+      await fixture({ delayMs: 1 }),
+      await fixture({ scheduledFor: "2026-07-11T10:01:00.000Z" }),
+      await fixture({ action: "schedule" }),
+      await fixture({ provider: "other" }),
+    ];
+    for (const variant of variants) {
+      const adapter = provider(variant.envelope);
+      await expect(
+        executor(variant.path, variant.verifier, adapter).execute(variant.receipt),
+      ).rejects.toThrow("unsupported_execution_semantics");
+      expect(adapter.renders).toBe(0);
+    }
   });
   it("records definitive pre-send rejection as failed", async () => {
     const f = await fixture();
