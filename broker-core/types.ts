@@ -5,6 +5,44 @@ export const DEFAULT_EXTERNAL_THREAD_SOURCE = "external";
 // ─── Domain types ─────────────────────────────────────────
 
 export type AgentSupervisionState = "root" | "supervised" | "orphaned" | "stopping";
+export type AgentLifecycleState =
+  | "live"
+  | "active"
+  | "grace"
+  | "idle"
+  | "hibernating"
+  | "hibernated"
+  | "waking"
+  | "reap-candidate"
+  | "terminated";
+export type AgentHibernatePolicy = "auto" | "never" | "manual";
+
+export interface HibernateEligibility {
+  eligible: boolean;
+  reason: string;
+}
+
+export type AgentLifecycleOperation = "hibernate" | "wake";
+export interface AgentLifecycleLease {
+  agentId: string;
+  operation: AgentLifecycleOperation;
+  fenceToken: number;
+  ownerBrokerInstanceId: string;
+  leaseId: string;
+  acquiredAt: string;
+  expiresAt: string;
+  attempt: number;
+  triggerMessageId: number | null;
+}
+export interface AgentLifecycleTransitionInput {
+  agentId: string;
+  expectedVersion: number;
+  toState: AgentLifecycleState;
+  reason: string;
+  actor: string;
+  correlationId: string;
+  triggerSource?: string;
+}
 
 export interface AgentInfo {
   id: string;
@@ -29,6 +67,16 @@ export interface AgentInfo {
   resumableUntil?: string | null;
   idleSince?: string | null;
   lastActivity?: string | null;
+  lifecycleState?: AgentLifecycleState;
+  lifecycleVersion?: number;
+  hibernatePolicy?: AgentHibernatePolicy;
+  graceUntil?: string | null;
+  idleEligibleAt?: string | null;
+  hibernatedAt?: string | null;
+  terminatedAt?: string | null;
+  hibernateReason?: string | null;
+  lastWakeReason?: string | null;
+  runtimeGeneration?: number;
   outboundCount?: number;
   pendingInboxCount?: number;
 }

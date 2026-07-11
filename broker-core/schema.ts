@@ -3,6 +3,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { classifyPinetMail } from "./mail-classification.js";
+import { assertLegalLifecycleTransition } from "./lifecycle.js";
 import { getDefaultDbPath } from "./paths.js";
 import { DEFAULT_EXTERNAL_THREAD_SOURCE } from "./types.js";
 import type { PinetMailClass } from "./mail-classification.js";
@@ -40,6 +41,11 @@ import type {
   PinetLaneRole,
   PinetLaneState,
   PinetLaneUpsertInput,
+  AgentLifecycleState,
+  AgentHibernatePolicy,
+  AgentLifecycleLease,
+  AgentLifecycleOperation,
+  AgentLifecycleTransitionInput,
 } from "./types.js";
 interface SqliteJournalModeResult {
   journal_mode?: string | null;
@@ -86,6 +92,16 @@ interface AgentRow {
   resumable_until: string | null;
   idle_since: string | null;
   last_activity: string | null;
+  lifecycle_state: string;
+  lifecycle_version: number;
+  grace_until: string | null;
+  idle_eligible_at: string | null;
+  hibernated_at: string | null;
+  terminated_at: string | null;
+  hibernate_policy: string;
+  hibernate_reason: string | null;
+  last_wake_reason: string | null;
+  runtime_generation: number;
 }
 
 interface ThreadRow {
@@ -222,6 +238,16 @@ function rowToAgent(row: AgentRow): AgentInfo {
     resumableUntil: row.resumable_until,
     idleSince: row.idle_since,
     lastActivity: row.last_activity,
+    lifecycleState: row.lifecycle_state as AgentLifecycleState,
+    lifecycleVersion: row.lifecycle_version,
+    graceUntil: row.grace_until,
+    idleEligibleAt: row.idle_eligible_at,
+    hibernatedAt: row.hibernated_at,
+    terminatedAt: row.terminated_at,
+    hibernatePolicy: row.hibernate_policy as AgentHibernatePolicy,
+    hibernateReason: row.hibernate_reason,
+    lastWakeReason: row.last_wake_reason,
+    runtimeGeneration: row.runtime_generation,
   };
 }
 
@@ -860,7 +886,7 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 18;
+export const CURRENT_BROKER_SCHEMA_VERSION = 19;
 
 const REQUIRED_AGENT_LIFECYCLE_COLUMNS = [
   "stable_id",
@@ -1596,6 +1622,63 @@ function createPinetLaneTables(db: DatabaseSync): void {
   `);
 }
 
+function createAgentHibernationTables(db: DatabaseSync): void {
+  for (const [name, sql] of [
+    [
+      "lifecycle_state",
+      "ALTER TABLE agents ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'live'",
+    ],
+    [
+      "lifecycle_version",
+      "ALTER TABLE agents ADD COLUMN lifecycle_version INTEGER NOT NULL DEFAULT 0",
+    ],
+    ["grace_until", "ALTER TABLE agents ADD COLUMN grace_until TEXT"],
+    ["idle_eligible_at", "ALTER TABLE agents ADD COLUMN idle_eligible_at TEXT"],
+    ["hibernated_at", "ALTER TABLE agents ADD COLUMN hibernated_at TEXT"],
+    ["terminated_at", "ALTER TABLE agents ADD COLUMN terminated_at TEXT"],
+    [
+      "hibernate_policy",
+      "ALTER TABLE agents ADD COLUMN hibernate_policy TEXT NOT NULL DEFAULT 'never'",
+    ],
+    ["hibernate_reason", "ALTER TABLE agents ADD COLUMN hibernate_reason TEXT"],
+    ["last_wake_reason", "ALTER TABLE agents ADD COLUMN last_wake_reason TEXT"],
+    [
+      "runtime_generation",
+      "ALTER TABLE agents ADD COLUMN runtime_generation INTEGER NOT NULL DEFAULT 0",
+    ],
+  ] as const)
+    ensureColumn(db, "agents", name, sql);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_runtime_specs (
+      agent_id TEXT PRIMARY KEY NOT NULL, stable_id TEXT NOT NULL, broker_owner_id TEXT NOT NULL,
+      cwd TEXT NOT NULL, repo_root TEXT NOT NULL, worktree_path TEXT NOT NULL,
+      tmux_socket TEXT NOT NULL, tmux_session TEXT NOT NULL, tmux_target TEXT NOT NULL,
+      executable TEXT NOT NULL, argv_json TEXT NOT NULL, env_allowlist_json TEXT NOT NULL,
+      session_resume_ref TEXT NOT NULL, config_fingerprint TEXT NOT NULL,
+      expected_host TEXT NOT NULL, expected_user TEXT NOT NULL, launch_source TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_leases (
+      agent_id TEXT PRIMARY KEY NOT NULL, operation TEXT NOT NULL CHECK(operation IN ('hibernate','wake')),
+      fence_token INTEGER NOT NULL, owner_broker_instance_id TEXT NOT NULL, lease_id TEXT NOT NULL UNIQUE,
+      acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, attempt INTEGER NOT NULL,
+      trigger_message_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, correlation_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+      from_state TEXT NOT NULL, to_state TEXT NOT NULL, lifecycle_version INTEGER NOT NULL,
+      fence_token INTEGER, reason TEXT NOT NULL, trigger_source TEXT, actor TEXT NOT NULL,
+      outcome TEXT NOT NULL, error_code TEXT, queue_depth INTEGER, oldest_queue_age_ms INTEGER,
+      duration_ms INTEGER, rss_bytes_before INTEGER, rss_bytes_after INTEGER, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_lifecycle_events_agent_created
+      ON agent_lifecycle_events(agent_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_lifecycle_events_created
+      ON agent_lifecycle_events(created_at DESC);
+  `);
+}
+
 function runSchemaMigrations(db: DatabaseSync): void {
   const currentVersion = getUserVersion(db);
   if (currentVersion >= CURRENT_BROKER_SCHEMA_VERSION) {
@@ -1663,6 +1746,9 @@ function runSchemaMigrations(db: DatabaseSync): void {
           break;
         case 18:
           addAgentHierarchyColumns(db);
+          break;
+        case 19:
+          createAgentHibernationTables(db);
           break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
@@ -1928,6 +2014,137 @@ export class BrokerDB implements BrokerDBInterface {
         existingRow?.lane_id ??
         null,
     };
+  }
+
+  transitionAgentLifecycle(input: AgentLifecycleTransitionInput): AgentInfo {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const current = this.getAgentById(input.agentId);
+      if (!current?.lifecycleState || current.lifecycleVersion === undefined) {
+        throw new Error(`Unknown lifecycle agent: ${input.agentId}`);
+      }
+      if (current.lifecycleVersion !== input.expectedVersion) {
+        throw new Error(
+          `Lifecycle CAS conflict for ${input.agentId}: expected ${input.expectedVersion}, got ${current.lifecycleVersion}`,
+        );
+      }
+      assertLegalLifecycleTransition(current.lifecycleState, input.toState);
+      const now = new Date().toISOString();
+      const result = db
+        .prepare(
+          `UPDATE agents SET lifecycle_state = ?, lifecycle_version = lifecycle_version + 1,
+           hibernated_at = CASE WHEN ? = 'hibernated' THEN ? ELSE hibernated_at END,
+           terminated_at = CASE WHEN ? = 'terminated' THEN ? ELSE terminated_at END,
+           hibernate_reason = CASE WHEN ? IN ('hibernating','hibernated','reap-candidate') THEN ? ELSE hibernate_reason END,
+           last_wake_reason = CASE WHEN ? = 'waking' THEN ? ELSE last_wake_reason END
+         WHERE id = ? AND lifecycle_version = ?`,
+        )
+        .run(
+          input.toState,
+          input.toState,
+          now,
+          input.toState,
+          now,
+          input.toState,
+          input.reason,
+          input.toState,
+          input.reason,
+          input.agentId,
+          input.expectedVersion,
+        );
+      if (Number(result.changes) !== 1)
+        throw new Error(`Lifecycle CAS conflict for ${input.agentId}`);
+      const nextVersion = input.expectedVersion + 1;
+      db.prepare(
+        `INSERT INTO agent_lifecycle_events
+         (correlation_id, agent_id, from_state, to_state, lifecycle_version, reason, trigger_source, actor, outcome, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)`,
+      ).run(
+        input.correlationId,
+        input.agentId,
+        current.lifecycleState,
+        input.toState,
+        nextVersion,
+        input.reason,
+        input.triggerSource ?? null,
+        input.actor,
+        now,
+      );
+      db.prepare(
+        `DELETE FROM agent_lifecycle_events WHERE id IN (
+        SELECT id FROM agent_lifecycle_events ORDER BY id DESC LIMIT -1 OFFSET 10000
+      )`,
+      ).run();
+      const updated = this.getAgentById(input.agentId);
+      if (!updated) throw new Error(`Lifecycle agent disappeared: ${input.agentId}`);
+      return updated;
+    });
+  }
+
+  acquireAgentLifecycleLease(input: {
+    agentId: string;
+    operation: AgentLifecycleOperation;
+    ownerBrokerInstanceId: string;
+    leaseId: string;
+    ttlMs: number;
+    triggerMessageId?: number | null;
+    now?: number;
+  }): AgentLifecycleLease | null {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowMs = input.now ?? Date.now();
+      const now = new Date(nowMs).toISOString();
+      const expiresAt = new Date(nowMs + input.ttlMs).toISOString();
+      const existing = db
+        .prepare(
+          "SELECT fence_token, expires_at, attempt FROM agent_lifecycle_leases WHERE agent_id = ?",
+        )
+        .get(input.agentId) as
+        | { fence_token: number; expires_at: string; attempt: number }
+        | undefined;
+      if (existing && existing.expires_at > now) return null;
+      const fence = (existing?.fence_token ?? 0) + 1;
+      const attempt = (existing?.attempt ?? 0) + 1;
+      db.prepare(
+        `INSERT INTO agent_lifecycle_leases
+        (agent_id, operation, fence_token, owner_broker_instance_id, lease_id, acquired_at, expires_at, attempt, trigger_message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET operation=excluded.operation, fence_token=excluded.fence_token,
+          owner_broker_instance_id=excluded.owner_broker_instance_id, lease_id=excluded.lease_id,
+          acquired_at=excluded.acquired_at, expires_at=excluded.expires_at, attempt=excluded.attempt,
+          trigger_message_id=excluded.trigger_message_id`,
+      ).run(
+        input.agentId,
+        input.operation,
+        fence,
+        input.ownerBrokerInstanceId,
+        input.leaseId,
+        now,
+        expiresAt,
+        attempt,
+        input.triggerMessageId ?? null,
+      );
+      return {
+        agentId: input.agentId,
+        operation: input.operation,
+        fenceToken: fence,
+        ownerBrokerInstanceId: input.ownerBrokerInstanceId,
+        leaseId: input.leaseId,
+        acquiredAt: now,
+        expiresAt,
+        attempt,
+        triggerMessageId: input.triggerMessageId ?? null,
+      };
+    });
+  }
+
+  releaseAgentLifecycleLease(agentId: string, leaseId: string, fenceToken: number): boolean {
+    const result = this.getDb()
+      .prepare(
+        "DELETE FROM agent_lifecycle_leases WHERE agent_id = ? AND lease_id = ? AND fence_token = ?",
+      )
+      .run(agentId, leaseId, fenceToken);
+    return Number(result.changes) === 1;
   }
 
   unregisterAgent(id: string): void {
