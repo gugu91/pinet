@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ApprovalAuditStore,
   ApprovalReceiptVerifier,
+  ApprovalSignerPreSignRejection,
   MAX_APPROVAL_TTL_MS,
   SlackApprovalIssuer,
   digestApprovalEnvelope,
@@ -643,14 +644,17 @@ describe("broker-core approval receipts", () => {
     expect(signerCalls).toBe(1);
   });
 
-  it("safely cleans only a failed reservation so it can be retried", async () => {
+  it("releases only an operation-bound definitive pre-sign rejection", async () => {
     let fail = true;
     const failOnceSigner: ApprovalSigner = {
       keyId: "synthetic-test-root",
-      issueApproval: async (claims) => {
+      issueApproval: async (claims, request) => {
         if (fail) {
           fail = false;
-          throw new Error("synthetic signer failure");
+          throw new ApprovalSignerPreSignRejection(
+            request.operationId,
+            "synthetic definitive pre-sign rejection",
+          );
         }
         return {
           signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
@@ -665,8 +669,58 @@ describe("broker-core approval receipts", () => {
       audit,
       () => new Date(nowMs),
     );
-    await expect(issue()).rejects.toThrow("synthetic signer failure");
+    await expect(issue()).rejects.toThrow("definitive pre-sign rejection");
     await expect(issue()).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+  });
+
+  it("retains a pre-sign rejection that names a different operation", async () => {
+    const mismatchedSigner: ApprovalSigner = {
+      keyId: "synthetic-test-root",
+      issueApproval: async () => {
+        throw new ApprovalSignerPreSignRejection("different-operation");
+      },
+    };
+    issuer = new SlackApprovalIssuer(
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
+      mismatchedSigner,
+      audit,
+      () => new Date(nowMs),
+    );
+    await expect(issue()).rejects.toThrow("rejected before signing");
+    await expect(issue()).rejects.toThrow("already reserved");
+  });
+
+  it("retains an ambiguous signer failure and reconciles with the same operation ID", async () => {
+    const operationIds: string[] = [];
+    let fail = true;
+    const ambiguousOnceSigner: ApprovalSigner = {
+      keyId: "synthetic-test-root",
+      issueApproval: async (claims, request) => {
+        operationIds.push(request.operationId);
+        if (fail) {
+          fail = false;
+          throw new Error("transport disconnected after request delivery");
+        }
+        return {
+          signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
+            "base64url",
+          ),
+        };
+      },
+    };
+    issuer = new SlackApprovalIssuer(
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
+      ambiguousOnceSigner,
+      audit,
+      () => new Date(nowMs),
+      { signerTimeoutMs: 10, reservationLeaseMs: 30 },
+    );
+    await expect(issue()).rejects.toThrow("transport disconnected");
+    await expect(issue()).rejects.toThrow("already reserved");
+    nowMs += 31;
+    await expect(issue()).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).toBe(operationIds[0]);
   });
 
   it("bounds a hung signer call and retains its reservation for safe recovery", async () => {
@@ -685,32 +739,29 @@ describe("broker-core approval receipts", () => {
     await expect(issue()).rejects.toThrow("already reserved");
   });
 
-  it("recovers a crash-like stale pending lease with the same idempotent signer operation", async () => {
+  it("fences an abort-ignoring stale signer completion from finalizing or deleting its successor", async () => {
     const operationIds: string[] = [];
-    let first = true;
-    let active = 0;
-    let maximumActive = 0;
+    let firstSignal: AbortSignal | undefined;
+    let resolveFirst: (() => void) | undefined;
+    let resolveSuccessor: (() => void) | undefined;
     const recoveringSigner: ApprovalSigner = {
       keyId: "synthetic-test-root",
-      issueApproval: async (claims, request) => {
+      issueApproval: (claims, request) => {
         operationIds.push(request.operationId);
-        active += 1;
-        maximumActive = Math.max(maximumActive, active);
-        if (first) {
-          first = false;
-          await new Promise<void>((_resolve, reject) => {
-            request.signal.addEventListener("abort", () => {
-              active -= 1;
-              reject(new Error("signer aborted stale operation attempt"));
-            });
+        const signature = sign(
+          null,
+          Buffer.from(serializeApprovalClaims(claims)),
+          privateKey,
+        ).toString("base64url");
+        if (operationIds.length === 1) {
+          firstSignal = request.signal;
+          return new Promise((resolve) => {
+            resolveFirst = () => resolve({ signature });
           });
         }
-        active -= 1;
-        return {
-          signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
-            "base64url",
-          ),
-        };
+        return new Promise((resolve) => {
+          resolveSuccessor = () => resolve({ signature });
+        });
       },
     };
     issuer = new SlackApprovalIssuer(
@@ -718,23 +769,25 @@ describe("broker-core approval receipts", () => {
       recoveringSigner,
       audit,
       () => new Date(nowMs),
-      { signerTimeoutMs: 10, reservationLeaseMs: 30 },
+      { signerTimeoutMs: 100, reservationLeaseMs: 200 },
     );
     await expect(issue()).rejects.toThrow("timed out");
-    audit.close();
-    audit = new ApprovalAuditStore(path.join(directory, "audit.db"));
-    nowMs += 31;
-    issuer = new SlackApprovalIssuer(
-      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
-      recoveringSigner,
-      audit,
-      () => new Date(nowMs),
-      { signerTimeoutMs: 10, reservationLeaseMs: 30 },
-    );
-    await expect(issue()).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+    expect(firstSignal?.aborted).toBe(true);
+
+    nowMs += 201;
+    const successor = issue();
     expect(operationIds).toHaveLength(2);
     expect(operationIds[1]).toBe(operationIds[0]);
-    expect(maximumActive).toBe(1);
+
+    resolveFirst?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")).toBeNull();
+    await expect(issue()).rejects.toThrow("already reserved");
+
+    resolveSuccessor?.();
+    await expect(successor).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+    expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")?.state).toBe("active");
   });
 
   it("enforces TTL and complete To/Cc/Bcc and screenshot validation", async () => {

@@ -8,6 +8,8 @@ import type {
 import { THOMAS_SLACK_USER_ID } from "./approval-receipts.js";
 
 export const SLACK_APPROVAL_CONTEXT_VERSION = "pinet-slack-approval-context/v1" as const;
+export const SLACK_APPROVAL_ACTION_ID = "pinet.approval.issue" as const;
+export const SLACK_APPROVAL_VIEW_CALLBACK_ID = "pinet.approval.issue" as const;
 export const DEFAULT_SLACK_REQUEST_FRESHNESS_MS = 5 * 60 * 1000;
 
 export interface SlackV0RequestApprovalContext extends SlackBrokerApprovalContext {
@@ -28,8 +30,8 @@ export interface SlackV0ApprovalAuthenticatorConfig {
 }
 
 interface ApprovalContextPayload {
-  readonly type: typeof SLACK_APPROVAL_CONTEXT_VERSION;
-  readonly contextId: string;
+  readonly interactionType: "block_actions" | "view_submission";
+  readonly interactionId: string;
   readonly userId: string;
   readonly approvalId: string;
   readonly threadId: string;
@@ -51,7 +53,57 @@ function requireNonemptyString(value: ParsedJson | undefined, field: string): st
   return value;
 }
 
-// agent-standards-ignore prefer-inline-single-use-helper: narrow signed Slack payload parsing is an auditable trust boundary
+function requireObject(
+  value: ParsedJson | undefined,
+  field: string,
+): { readonly [key: string]: ParsedJson } {
+  if (value === null || value === undefined || Array.isArray(value) || typeof value !== "object") {
+    throw new Error(`Slack approval ${field} is invalid`);
+  }
+  return value as { readonly [key: string]: ParsedJson };
+}
+
+function parseBindingMetadata(encoded: string): {
+  readonly approvalId: string;
+  readonly threadId: string;
+  readonly envelopeDigest: string;
+} {
+  let parsed: ParsedJson;
+  try {
+    parsed = JSON.parse(encoded) as ParsedJson;
+  } catch {
+    throw new Error("Slack approval binding metadata is not valid JSON");
+  }
+  const object = requireObject(parsed, "binding metadata");
+  const expectedKeys = ["approvalId", "envelopeDigest", "threadId", "type"];
+  const actualKeys = Object.keys(object).sort();
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    throw new Error("Slack approval binding metadata has unknown or missing fields");
+  }
+  if (object.type !== SLACK_APPROVAL_CONTEXT_VERSION) {
+    throw new Error("Slack approval context version is unsupported");
+  }
+  const result = {
+    approvalId: requireNonemptyString(object.approvalId, "approvalId"),
+    threadId: requireNonemptyString(object.threadId, "threadId"),
+    envelopeDigest: requireNonemptyString(object.envelopeDigest, "envelopeDigest"),
+  };
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(result.approvalId)) {
+    throw new Error("Slack approval context approvalId is invalid");
+  }
+  if (!/^\d{10,}\.\d{6}$/.test(result.threadId)) {
+    throw new Error("Slack approval context threadId is invalid");
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(result.envelopeDigest)) {
+    throw new Error("Slack approval context envelopeDigest is invalid");
+  }
+  return result;
+}
+
+// agent-standards-ignore prefer-inline-single-use-helper: genuine Slack interactive payload parsing is an auditable trust boundary
 function parseApprovalContext(rawBody: Uint8Array): ApprovalContextPayload {
   let text: string;
   try {
@@ -60,57 +112,83 @@ function parseApprovalContext(rawBody: Uint8Array): ApprovalContextPayload {
     throw new Error("Slack approval request body is not valid UTF-8");
   }
 
-  let encodedPayload = text;
-  if (!text.startsWith("{")) {
-    const form = new URLSearchParams(text);
-    if ([...form.keys()].length !== 1 || !form.has("payload")) {
-      throw new Error("Slack approval request form must contain only payload");
-    }
-    encodedPayload = form.get("payload") ?? "";
+  const form = new URLSearchParams(text);
+  if ([...form.keys()].length !== 1 || !form.has("payload")) {
+    throw new Error("Slack approval request must be a form containing only payload");
   }
-
   let parsed: ParsedJson;
   try {
-    parsed = JSON.parse(encodedPayload) as ParsedJson;
+    parsed = JSON.parse(form.get("payload") ?? "") as ParsedJson;
   } catch {
-    throw new Error("Slack approval context payload is not valid JSON");
+    throw new Error("Slack interactive payload is not valid JSON");
   }
-  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
-    throw new Error("Slack approval context payload must be an object");
+  const payload = requireObject(parsed, "interactive payload");
+  const user = requireObject(payload.user, "interactive user");
+  const userId = requireNonemptyString(user.id, "user.id");
+
+  if (payload.type === "block_actions") {
+    const container = requireObject(payload.container, "block_actions container");
+    if (container.type !== "message") {
+      throw new Error("Slack approval block_actions container must be a message");
+    }
+    const messageTs = requireNonemptyString(container.message_ts, "container.message_ts");
+    const channelId = requireNonemptyString(container.channel_id, "container.channel_id");
+    const message =
+      payload.message === undefined ? undefined : requireObject(payload.message, "message");
+    const threadTsValue = container.thread_ts ?? message?.thread_ts ?? messageTs;
+    const threadTs = requireNonemptyString(threadTsValue, "thread timestamp");
+    if (
+      !/^\d{10,}\.\d{6}$/.test(messageTs) ||
+      !/^\d{10,}\.\d{6}$/.test(threadTs) ||
+      !/^[CDG][A-Z0-9]+$/.test(channelId)
+    ) {
+      throw new Error("Slack approval message container identifiers are invalid");
+    }
+    if (!Array.isArray(payload.actions) || payload.actions.length !== 1) {
+      throw new Error("Slack approval block_actions must contain exactly one action");
+    }
+    const action = requireObject(payload.actions[0], "block_actions action");
+    if (action.type !== "button" || action.action_id !== SLACK_APPROVAL_ACTION_ID) {
+      throw new Error("Slack approval action identifier is invalid");
+    }
+    const actionTs = requireNonemptyString(action.action_ts, "actions[0].action_ts");
+    if (!/^\d{10,}\.\d{6}$/.test(actionTs)) {
+      throw new Error("Slack approval action timestamp is invalid");
+    }
+    const metadata = parseBindingMetadata(requireNonemptyString(action.value, "actions[0].value"));
+    if (threadTs !== metadata.threadId) {
+      throw new Error("Slack approval action thread does not match its message container");
+    }
+    return {
+      interactionType: "block_actions",
+      interactionId: `${channelId}:${threadTs}:${messageTs}:${actionTs}:${SLACK_APPROVAL_ACTION_ID}`,
+      userId,
+      ...metadata,
+    };
   }
-  const object = parsed as { readonly [key: string]: ParsedJson };
-  const expectedKeys = ["approvalId", "contextId", "envelopeDigest", "threadId", "type", "userId"];
-  const actualKeys = Object.keys(object).sort();
-  if (
-    actualKeys.length !== expectedKeys.length ||
-    actualKeys.some((key, index) => key !== expectedKeys[index])
-  ) {
-    throw new Error("Slack approval context payload has unknown or missing fields");
+
+  if (payload.type === "view_submission") {
+    const view = requireObject(payload.view, "view_submission view");
+    if (view.type !== "modal" || view.callback_id !== SLACK_APPROVAL_VIEW_CALLBACK_ID) {
+      throw new Error("Slack approval view identifier is invalid");
+    }
+    const viewId = requireNonemptyString(view.id, "view.id");
+    const viewHash = requireNonemptyString(view.hash, "view.hash");
+    if (!/^V[A-Z0-9]+$/.test(viewId)) {
+      throw new Error("Slack approval view ID is invalid");
+    }
+    const metadata = parseBindingMetadata(
+      requireNonemptyString(view.private_metadata, "view.private_metadata"),
+    );
+    return {
+      interactionType: "view_submission",
+      interactionId: `${viewId}:${viewHash}:${SLACK_APPROVAL_VIEW_CALLBACK_ID}`,
+      userId,
+      ...metadata,
+    };
   }
-  if (object.type !== SLACK_APPROVAL_CONTEXT_VERSION) {
-    throw new Error("Slack approval context version is unsupported");
-  }
-  const payload = {
-    type: SLACK_APPROVAL_CONTEXT_VERSION,
-    contextId: requireNonemptyString(object.contextId, "contextId"),
-    userId: requireNonemptyString(object.userId, "userId"),
-    approvalId: requireNonemptyString(object.approvalId, "approvalId"),
-    threadId: requireNonemptyString(object.threadId, "threadId"),
-    envelopeDigest: requireNonemptyString(object.envelopeDigest, "envelopeDigest"),
-  };
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(payload.contextId)) {
-    throw new Error("Slack approval context contextId is invalid");
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(payload.approvalId)) {
-    throw new Error("Slack approval context approvalId is invalid");
-  }
-  if (!/^\d{10,}\.\d{6}$/.test(payload.threadId)) {
-    throw new Error("Slack approval context threadId is invalid");
-  }
-  if (!/^[A-Za-z0-9_-]{43}$/.test(payload.envelopeDigest)) {
-    throw new Error("Slack approval context envelopeDigest is invalid");
-  }
-  return payload;
+
+  throw new Error("Slack approval interaction type is unsupported");
 }
 
 /**
@@ -134,7 +212,10 @@ export class SlackV0ApprovalContextAuthenticator implements SlackApprovalContext
       throw new Error("Slack request freshness must be a positive integer");
     }
     this.signingSecret = Buffer.from(config.signingSecret, "utf8");
-    this.requestFreshnessMs = config.requestFreshnessMs ?? DEFAULT_SLACK_REQUEST_FRESHNESS_MS;
+    this.requestFreshnessMs = Math.min(
+      config.requestFreshnessMs ?? DEFAULT_SLACK_REQUEST_FRESHNESS_MS,
+      DEFAULT_SLACK_REQUEST_FRESHNESS_MS,
+    );
     this.now = config.now ?? (() => new Date());
     this.db = new DatabaseSync(config.databasePath);
     this.db.exec(
@@ -190,7 +271,18 @@ export class SlackV0ApprovalContextAuthenticator implements SlackApprovalContext
       throw new Error("Slack approval context user is not authorized");
     }
     const requestDigest = createHash("sha256").update(base).digest("base64url");
-    const contextDigest = createHash("sha256").update(JSON.stringify(payload)).digest("base64url");
+    const contextDigest = createHash("sha256")
+      .update(
+        JSON.stringify({
+          interactionType: payload.interactionType,
+          interactionId: payload.interactionId,
+          userId: payload.userId,
+          approvalId: payload.approvalId,
+          threadId: payload.threadId,
+          envelopeDigest: payload.envelopeDigest,
+        }),
+      )
+      .digest("base64url");
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
