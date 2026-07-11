@@ -1,6 +1,14 @@
 # Pinet hibernation dogfood (#923)
 
-> Status: foundation only. Do not activate against a live broker until the draft PR has exact-head review and a separate activation approval.
+> Status: behaviour implemented and proven in isolation; **not activated**. The
+> orchestrator (cooperative checkpoint, graceful teardown, fenced cold wake,
+> tmux/session restore, queued exactly-once ordered delivery), accepted-generation
+> registration fencing in the real socket server, and lifecycle telemetry are
+> covered by unit tests plus an isolated end-to-end test that runs a real SQLite
+> DB and a real `BrokerSocketServer` over loopback while faking only the
+> process/tmux adapters. No live broker/mesh reload, real hibernation, or real
+> wake has been performed. Do not activate against a live broker until the draft
+> PR has exact-head review and a separate activation approval.
 
 ## Safety model
 
@@ -64,6 +72,15 @@ ORDER BY day;
 ```
 
 For p95 wake latency, export `duration_ms` for accepted `waking -> live` events and compute the nearest-rank 95th percentile. Compare resident runtime count and measured RSS before/after each canary; estimates must be labelled estimates.
+
+The same rollup is available in-process without SQL via
+`summarizeHibernationTelemetry(events, retention?)` and
+`formatHibernationTelemetry(summary)` in `broker-core` (fed by
+`getRecentAgentLifecycleEvents` / `getAgentLifecycleRetentionInfo`). Both are pure
+derivations of already-sanitized events — headline counts, mean/nearest-rank-p95
+wake latency, max queue depth/age, estimated recovered RSS, and top refusal
+reasons — so they are safe to surface in a CLI, dashboard, or Slack status reply
+and never emit prompts, message bodies, tokens, or environment values.
 
 ## Stop/rollback conditions
 
