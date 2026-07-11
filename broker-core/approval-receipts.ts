@@ -146,6 +146,18 @@ export interface ApprovalStatus {
   readonly envelopeDigest: string;
 }
 
+/** Aggregate-only health data: no payload, recipient, or per-approval fields. */
+export interface ApprovalOperationalHealth {
+  readonly status: "ok";
+  readonly checkedAt: string;
+  readonly pending: number;
+  readonly stalePending: number;
+  readonly active: number;
+  readonly cancelled: number;
+  readonly expired: number;
+  readonly consumed: number;
+}
+
 type JsonValue =
   | null
   | boolean
@@ -650,6 +662,43 @@ export class ApprovalAuditStore {
     });
   }
 
+  health(now: Date): ApprovalOperationalHealth {
+    const checkedAt = now.toISOString();
+    const integrity = this.db.prepare("PRAGMA quick_check").get() as
+      | { quick_check: string }
+      | undefined;
+    if (integrity?.quick_check !== "ok") throw new Error("Approval audit integrity check failed");
+    const counts = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN record_state = 'pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN record_state = 'pending' AND lease_expires_at <= ? THEN 1 ELSE 0 END) AS stale_pending,
+           SUM(CASE WHEN record_state = 'issued' AND cancelled_at IS NULL AND consumed_at IS NULL AND expires_at > ? THEN 1 ELSE 0 END) AS active,
+           SUM(CASE WHEN record_state = 'issued' AND cancelled_at IS NOT NULL THEN 1 ELSE 0 END) AS cancelled,
+           SUM(CASE WHEN record_state = 'issued' AND cancelled_at IS NULL AND consumed_at IS NULL AND expires_at <= ? THEN 1 ELSE 0 END) AS expired,
+           SUM(CASE WHEN record_state = 'issued' AND consumed_at IS NOT NULL THEN 1 ELSE 0 END) AS consumed
+         FROM approval_receipts`,
+      )
+      .get(checkedAt, checkedAt, checkedAt) as {
+      pending: number | null;
+      stale_pending: number | null;
+      active: number | null;
+      cancelled: number | null;
+      expired: number | null;
+      consumed: number | null;
+    };
+    return Object.freeze({
+      status: "ok",
+      checkedAt,
+      pending: counts.pending ?? 0,
+      stalePending: counts.stale_pending ?? 0,
+      active: counts.active ?? 0,
+      cancelled: counts.cancelled ?? 0,
+      expired: counts.expired ?? 0,
+      consumed: counts.consumed ?? 0,
+    });
+  }
+
   cancel(approvalId: string, principal: string, now: Date): ApprovalStatus {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -887,6 +936,47 @@ export class SlackApprovalIssuer {
   }
 }
 
+/**
+ * Deployment-pinned verifier registry for bounded key-rotation overlap.
+ * Receipt data selects only among roots already present in this immutable registry.
+ */
+export class PinnedApprovalVerifierSet {
+  private readonly verifiers: ReadonlyMap<string, PinnedApprovalSignatureVerifier>;
+
+  constructor(verifiers: readonly PinnedApprovalSignatureVerifier[]) {
+    if (verifiers.length === 0)
+      throw new Error("At least one pinned approval verifier is required");
+    const configured = new Map<string, PinnedApprovalSignatureVerifier>();
+    for (const verifier of verifiers) {
+      const keyId = requireText(verifier.keyId, "pinnedVerifier.keyId");
+      if (keyId !== verifier.keyId) {
+        throw new Error("pinnedVerifier.keyId must not have surrounding whitespace");
+      }
+      if (verifier.algorithm !== APPROVAL_SIGNATURE_ALGORITHM) {
+        throw new Error("pinnedVerifier.algorithm must be Ed25519");
+      }
+      if (configured.has(keyId)) throw new Error(`Duplicate pinned approval keyId: ${keyId}`);
+      configured.set(
+        keyId,
+        Object.freeze({
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId,
+          verify: (canonicalClaims: string, signature: string) =>
+            verifier.verify(canonicalClaims, signature),
+        }),
+      );
+    }
+    this.verifiers = configured;
+    Object.freeze(this);
+  }
+
+  require(keyId: string): PinnedApprovalSignatureVerifier {
+    const verifier = this.verifiers.get(keyId);
+    if (!verifier) throw new Error("Approval keyId is not in the pinned verifier set");
+    return verifier;
+  }
+}
+
 /** Complete semantic verifier and atomic one-time consumer for executor use. */
 export class ApprovalReceiptVerifier {
   constructor(
@@ -931,5 +1021,28 @@ export class ApprovalReceiptVerifier {
       throw new Error("Approval signature is invalid");
     }
     this.audit.consume(receipt, now);
+  }
+}
+
+/** Rotation-aware executor verifier backed only by a deployment-pinned root set. */
+export class RotatingApprovalReceiptVerifier {
+  constructor(
+    private readonly expectedPrincipal: string,
+    private readonly pinnedVerifiers: PinnedApprovalVerifierSet,
+    private readonly audit: ApprovalAuditStore,
+    private readonly now: () => Date = () => new Date(),
+  ) {
+    requireText(expectedPrincipal, "expectedPrincipal");
+  }
+
+  verifyAndConsume(receipt: ApprovalReceipt, expected: ExpectedApproval): void {
+    assertReceiptShape(receipt);
+    const verifier = this.pinnedVerifiers.require(receipt.claims.keyId);
+    new ApprovalReceiptVerifier(
+      this.expectedPrincipal,
+      verifier,
+      this.audit,
+      this.now,
+    ).verifyAndConsume(receipt, expected);
   }
 }

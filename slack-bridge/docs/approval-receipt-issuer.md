@@ -2,6 +2,8 @@
 
 Tracking: [#920](https://github.com/gugu91/extensions/issues/920)
 
+Deployment specifications: [external signer/runbook](external-approval-signer-runbook.md) and [issuer-to-executor compatibility gate](approval-receipt-compatibility.md). Both are explicitly non-production and unexecuted.
+
 ## Implemented library security boundary (not deployment status)
 
 `SlackApprovalIssuer` is an issuer protocol, not an executor or provider transport. It exposes only semantic `create`, `status`, and `cancel` operations; there is no `sign(bytes)` operation. The library implementation and tests described here do not mean that a Slack route, signing secret, signer service, or trust root has been deployed.
@@ -37,9 +39,9 @@ The endpoint rejects every other operation, especially raw byte signing. It pars
 
 Before durable finalization, issuer code rejects a signer response unless its shape is exact, algorithm is `Ed25519`, key ID equals both the configured signer and pinned verifier, signature encoding is strict/canonical unpadded base64url, decoded signature length is exactly 64 bytes, and cryptographic verification of the canonical claims succeeds against the pinned public-key verifier. Any malformed or wrong response is an ambiguous outcome: no issued row or consumption is possible, and the pending reservation and operation ID remain for reconciliation.
 
-Executor code uses `ApprovalReceiptVerifier`, constructed with a fixed expected principal, `ApprovalAuditStore`, and the same kind of `PinnedApprovalSignatureVerifier`. No verification method accepts a caller public key or key ID. The deployment trust object must pin exactly the configured key ID, explicit `Ed25519` algorithm, and public root from an operator-owned, non-caller-writable resource. The repository provides no production key and no fallback verifier.
+Executor code uses `ApprovalReceiptVerifier`, constructed with a fixed expected principal, `ApprovalAuditStore`, and the same kind of `PinnedApprovalSignatureVerifier`. No verification method accepts a caller public key or key ID. For bounded root rotation, `PinnedApprovalVerifierSet` is an immutable deployment-pinned registry and `RotatingApprovalReceiptVerifier` selects only among its preconfigured roots; a receipt cannot supply a root. Removing a key ID from the set is immediate revocation. The deployment trust object must pin the configured key IDs, explicit `Ed25519` algorithm, and public roots from an operator-owned, non-caller-writable resource. The repository provides no production key and no fallback verifier. Exact overlap, drain, emergency revocation, monotonic manifest generation, and rollback procedures are in the external signer runbook.
 
-Synthetic generated keys appear only in the isolated broker-core regression test and are marked non-production.
+Synthetic generated keys appear only in `.test.ts` regression/compatibility files that are excluded from broker-core build output and package exports. The compatibility harness has no environment/config switch, key loader, network, provider, or send capability, so it cannot be enabled as a production signer fallback.
 
 ## Receipt semantics
 
@@ -59,7 +61,7 @@ Signer calls have a 15-second default timeout and receive an abort signal plus a
 
 `ApprovalReceiptVerifier.verifyAndConsume` checks the exact receipt shape, version, pinned key ID and signature, fixed expected principal, canonical issue/expiry times, non-future issuance, five-minute maximum lifetime, and exact equality for the expected approval and every envelope field. It then checks the issued audit reservation, cancellation, expiry, and replay state and records consumption in one `BEGIN IMMEDIATE` transaction before returning. Cancellation and consumption serialize against each other. A successful receipt is usable once only.
 
-SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, signature digest, reservation state, cancellation, and consumption state. They never contain message bodies, rendered payloads, or recipients.
+SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, signature digest, reservation state, cancellation, and consumption state. They never contain message bodies, rendered payloads, or recipients. `ApprovalAuditStore.health()` runs SQLite `quick_check` and exposes only checked time and aggregate pending/stale/active/cancelled/expired/consumed counts. The body-free log/metric allowlist and readiness alerts are defined in the external signer runbook.
 
 ## Deployment actions not authorized by #920
 
@@ -90,5 +92,7 @@ SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, sign
 4. Preserve the body-free audit database for incident analysis.
 5. Revoke the signer identity and rotate the pinned root before re-enable.
 6. Confirm no receipt from the disabled key remains within its validity window (at most five minutes).
+
+For ordinary rollback, retain uncompromised old/new roots through the bounded TTL/skew/propagation drain and use a monotonically higher manifest generation. For suspected compromise, disable issuance/execution and remove the affected root immediately with no overlap. See the external signer runbook for the exact decision procedure.
 
 Rollback must not install an executor, invoke provider transport, or perform a synthetic/live send.
