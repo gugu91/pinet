@@ -190,6 +190,7 @@ interface WakeFence {
   wakeLeaseId: string;
   fenceToken: number;
   runtimeGeneration: number;
+  reservationNonce: string;
 }
 
 interface RegistrationSnapshot {
@@ -877,6 +878,7 @@ export class BrokerClient {
             wakeLeaseId: snapshot.wakeFence.wakeLeaseId,
             fenceToken: snapshot.wakeFence.fenceToken,
             runtimeGeneration: snapshot.wakeFence.runtimeGeneration,
+            reservationNonce: snapshot.wakeFence.reservationNonce,
           }
         : {}),
     })) as RegistrationResult;

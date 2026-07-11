@@ -33,6 +33,8 @@ export interface RuntimeLaunchContext {
   wakeLeaseId: string;
   fenceToken: number;
   reservedGeneration: number;
+  /** Per-attempt nonce the launched runtime must echo back on registration. */
+  reservationNonce: string;
   correlationId: string;
   spec: AgentRuntimeSpec;
 }
@@ -613,6 +615,7 @@ export class HibernationOrchestrator {
           wakeLeaseId: lease.leaseId,
           fenceToken: lease.fenceToken,
           reservedGeneration: reservation.reservedGeneration,
+          reservationNonce: reservation.reservationNonce,
           correlationId,
           spec,
         };
@@ -656,9 +659,33 @@ export class HibernationOrchestrator {
           };
         }
 
-        // Failed attempt: clear this reservation so a stale runtime cannot later
-        // claim it, and record the retry.
-        this.db.clearAgentWakeReservation(agentId);
+        // Failed attempt. If a runtime was actually launched but not accepted,
+        // its liveness is now ambiguous — it may just be slow to register. We
+        // must not relaunch on top of a possibly-live runtime, so before any
+        // retry we best-effort stop it and only continue if we can confirm it is
+        // gone; otherwise fail closed (quarantine) rather than risk two runtimes
+        // for one identity. (The per-attempt nonce independently fences a
+        // superseded runtime out of a later reservation, but a leaked *process*
+        // is still a safety issue, so we prove-stop before relaunch.)
+        if (launch.launched && attempt < maxAttempts) {
+          const stop = await this.process.stopRuntime(spec);
+          const stillAlive = await this.process.isRuntimeAlive(spec);
+          if (!stop.stopped || stillAlive) {
+            return this.quarantineWake(
+              agentId,
+              versionCursor,
+              correlationId,
+              actor,
+              "wake_ambiguous_launch",
+              lease,
+              attempt,
+            );
+          }
+        }
+        // The prior attempt's runtime is confirmed gone (or nothing launched).
+        // Do NOT clear the reservation here: re-reserving on the next attempt
+        // mints a fresh nonce that overwrites this row (fencing the prior
+        // runtime), and quarantine/acceptance clears it on the terminal paths.
         this.db.recordAgentLifecycleEvent({
           agentId,
           fromState: "waking",
@@ -722,6 +749,7 @@ export class HibernationOrchestrator {
     wakeLeaseId: string;
     fenceToken: number;
     reservedGeneration: number;
+    reservationNonce: string;
   }): RuntimeGenerationAcceptance {
     const acceptance = this.db.acceptRuntimeGeneration({ ...input, now: this.now() });
     if (!acceptance.accepted) {
@@ -910,13 +938,23 @@ export class HibernationOrchestrator {
         });
       } catch {
         // wake() is designed to fail closed without throwing, but a dispatching
-        // queue row must never be stranded: cancel it and continue draining.
-        this.db.completeWakeQueueEntry(claimed.id, "cancelled");
+        // queue row must never strand the drain pass. Guard the finalization
+        // write ITSELF: if cancelling the row also throws (transient DB fault),
+        // leave the row `dispatching` — it carries no held lease and is requeued
+        // by `recoverStrandedWakes` on the next reconciliation pass — rather than
+        // letting the exception crash the loop and strand every other queued row.
+        let lifecycleState = "waking";
+        try {
+          this.db.completeWakeQueueEntry(claimed.id, "cancelled");
+          lifecycleState = this.db.getAgentById(claimed.agentId)?.lifecycleState ?? "waking";
+        } catch {
+          // Finalization write failed; the row stays reclaimable via reconciliation.
+        }
         results.push({
           ok: false,
           agentId: claimed.agentId,
           correlationId: claimed.correlationId,
-          state: this.db.getAgentById(claimed.agentId)?.lifecycleState ?? "waking",
+          state: lifecycleState,
           reason: "wake_fault",
         });
         continue;

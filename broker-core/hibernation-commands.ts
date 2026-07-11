@@ -388,22 +388,40 @@ export async function executeWakeCommand(
       retryable: true,
     };
   }
+  // Classify the failure by REASON, not just state. Some non-quarantined
+  // failures are terminal: a bare retry cannot change the outcome because the
+  // target is not a wakeable hibernated identity, or its durable launch manifest
+  // is gone. Marking those retryable would send an operator into a futile retry
+  // loop instead of the corrective action (investigate / re-spawn the worker).
+  const quarantined = result.state === "reap-candidate";
+  const notHibernated = result.reason.startsWith("not_hibernated");
+  const terminalReason =
+    quarantined ||
+    notHibernated ||
+    result.reason === "unknown_agent" ||
+    result.reason === "missing_runtime_spec";
+  const failDetail = quarantined
+    ? "Wake failed and the agent was quarantined as reap-candidate for manual review."
+    : result.reason === "missing_runtime_spec"
+      ? "Wake failed: no durable runtime manifest exists for this identity, so it cannot be relaunched. Re-spawn the worker instead of retrying."
+      : result.reason === "unknown_agent"
+        ? "No such agent is known to the broker; there is nothing to wake."
+        : notHibernated
+          ? `Agent is not in a wakeable hibernated state (${result.state}); nothing to wake.`
+          : "Wake failed; agent left in a safe state — a retry may succeed.";
   return {
     command: "wake",
     agentId: input.agentId,
     outcome: result.ok ? "executed" : "refused",
     state: result.state,
     reason: safeResultReason(result.reason),
-    detail: result.ok
-      ? "Agent runtime woken; queued messages will drain in order."
-      : result.state === "reap-candidate"
-        ? "Wake failed and the agent was quarantined as reap-candidate for manual review."
-        : "Wake failed; agent left in a safe state — a retry may succeed.",
+    detail: result.ok ? "Agent runtime woken; queued messages will drain in order." : failDetail,
     runtimeGeneration: result.ok ? (result.runtimeGeneration ?? null) : null,
     attempts: result.attempts,
     durationMs: result.durationMs,
-    // A quarantined wake needs manual review; other failures are safe to retry.
-    retryable: result.ok ? undefined : result.state !== "reap-candidate",
+    // Quarantine and terminal-reason failures need operator action, not a retry;
+    // only genuinely transient safe-state failures are retryable.
+    retryable: result.ok ? undefined : !terminalReason,
   };
 }
 

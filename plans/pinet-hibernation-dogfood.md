@@ -18,7 +18,7 @@ The durable identity survives a _graceful_ worker shutdown. During teardown the 
 
 Crucially, that soft-disconnect is also protected from **routine maintenance**. A hibernated row is intentionally `disconnected` (no live socket), which would otherwise make it eligible for the ordinary disconnect-driven reapers. `pruneStaleAgents`, `purgeDisconnectedAgents`, and `repairThreadOwnership` all exclude the preserved lifecycle states (`hibernating`, `hibernated`, `waking`, and quarantined `reap-candidate`) via a fixed `lifecycle_state NOT IN (…)` predicate, so a maintenance pass never releases a hibernated identity's owned threads, requeues its inbox, or deletes the row. `terminated` remains ordinarily purgeable, and non-hibernation disconnected agents are still pruned/purged/repaired as before — the exclusion is targeted, not a blanket bypass.
 
-Wake identity revival is fenced in independent layers. First, lifecycle **transitions** bind the _live, matching_ lease: a presented fence must equal the held lease's fence, and when the caller also binds lease identity (`leaseId` + `expectedOperation` + `now`) the DB additionally rejects an expired-but-unsuperseded lease and a wrong-operation lease. Lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a superseded holder is rejected on the fence; the identity binding closes the remaining "expired token still matches" and "hibernate lease drives a wake transition" holes. The orchestrator reads `now` fresh per transition, so a lease that expires mid-operation cannot authorize a later step. Second, socket registration into a durable identity is **state-gated then preflight-then-accept**: registration into a `hibernating` (mid-teardown), `reap-candidate` (quarantined), or `terminated` (closed) identity is rejected fail-closed regardless of any presented fence — only an exact fenced `waking`/`hibernated` revival is admissible. For that admissible case, `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, and the registration mutation plus generation acceptance run **atomically in one broker transaction** (`registerAgentWithGenerationAcceptance`): if acceptance is rejected — e.g. the wake lease expires in the sub-millisecond window after the preflight — the whole registration mutation rolls back, so a refused revival never leaves the durable row with a mutated pid/metadata/connectivity. A later name conflict or registration failure therefore never advances the generation for a runtime that did not register, and the connection binds to the revived identity only on full success.
+Wake identity revival is fenced in independent layers. Successive wake attempts for one identity necessarily reuse the same lease id, fence token, and reserved generation (`runtime_generation + 1`, which does not advance until a runtime is accepted), so those three fields alone cannot tell a slow, timed-out earlier attempt's runtime apart from the current attempt's runtime. Each reservation therefore also mints a fresh **per-attempt nonce** (`reservation_nonce`, schema v20) that is threaded through the launch context into the runtime's registration; acceptance rejects a stale nonce (`nonce_mismatch`), fencing a superseded runtime out of a later reservation. Independently, a _launched-but-unaccepted_ runtime from a failed attempt is a possibly-leaked process, so before any retry the orchestrator best-effort stops it and only relaunches if it can confirm the process is gone; otherwise it fails closed to `reap-candidate` (`wake_ambiguous_launch`) rather than risk two runtimes for one identity. First, lifecycle **transitions** bind the _live, matching_ lease: a presented fence must equal the held lease's fence, and when the caller also binds lease identity (`leaseId` + `expectedOperation` + `now`) the DB additionally rejects an expired-but-unsuperseded lease and a wrong-operation lease. Lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a superseded holder is rejected on the fence; the identity binding closes the remaining "expired token still matches" and "hibernate lease drives a wake transition" holes. The orchestrator reads `now` fresh per transition, so a lease that expires mid-operation cannot authorize a later step. Second, socket registration into a durable identity is **state-gated then preflight-then-accept**: registration into a `hibernating` (mid-teardown), `reap-candidate` (quarantined), or `terminated` (closed) identity is rejected fail-closed regardless of any presented fence — only an exact fenced `waking`/`hibernated` revival is admissible. For that admissible case, `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, and the registration mutation plus generation acceptance run **atomically in one broker transaction** (`registerAgentWithGenerationAcceptance`): if acceptance is rejected — e.g. the wake lease expires in the sub-millisecond window after the preflight — the whole registration mutation rolls back, so a refused revival never leaves the durable row with a mutated pid/metadata/connectivity. A later name conflict or registration failure therefore never advances the generation for a runtime that did not register, and the connection binds to the revived identity only on full success.
 
 Because a legitimately long wake (process launch + runtime registration, retried across attempts) can outrun a single wake-lease TTL, the orchestrator **renews the lease per attempt** (`renewAgentLifecycleLease`) — extending the expiry without bumping the fence, and only while the lease is still held and unexpired, which preserves the crash-takeover guarantee. If renewal fails (ownership was lost to another broker), the wake fails closed. And the fail-closed **quarantine/abort transitions are deliberately unfenced administrative CAS transitions**: a recovery to `reap-candidate`/`active` must be able to fire even if our own lease expired mid-operation (otherwise the agent would be stranded in `waking`/`hibernating`), while the version CAS inside `transitionAgentLifecycle` still prevents clobbering a concurrent legitimate writer.
 
@@ -53,7 +53,7 @@ Configuration defaults to **disabled** and observe-only:
 
 ## Migration
 
-Schema v19 is additive. Existing rows remain `live`; old disconnected rows are not inferred as hibernated. New lifecycle tables hold sanitized runtime specs, one fenced active lease per logical agent, and append-only structured events. Event retention is bounded to the newest 10,000 rows. No prompt/message body, token, credential, or unrestricted environment is stored.
+Schema v19–v20 is additive (v20 adds an `agent_wake_reservations.reservation_nonce` column, defaulted for existing rows). Existing rows remain `live`; old disconnected rows are not inferred as hibernated. New lifecycle tables hold sanitized runtime specs, one fenced active lease per logical agent, and append-only structured events. Event retention is bounded to the newest 10,000 rows. No prompt/message body, token, credential, or unrestricted environment is stored.
 
 Downgrade leaves additive columns/tables in place. Roll back application code by disabling hibernation first, waking and draining all hibernated identities, then using the prior binary. Do not rewrite hibernated rows as disconnected ghosts.
 
@@ -142,6 +142,13 @@ non-secret key/flag name so the reason stays actionable — and then
 `redactPathLikeTokens` redacts path-like tokens, now fail-closed on ambiguous
 relative paths (any single-separator token that is not a small allowlisted prose
 connective such as `and/or` is redacted, so `accounts/acme` is caught). The
+`redactSecretAssignments` pass is a **whole-string, quote- and punctuation-aware,
+fail-closed scanner** rather than a whitespace tokenizer, closing the earlier
+bypasses where a quoted value (`TOKEN="dead beef"`), a spaced assignment
+(`TOKEN = deadbeef`), or a punctuation-wrapped flag (`(--api-key=sk-123)`) leaked
+part of the secret: quoted spans are redacted wholesale (that is exactly where a
+space-separated secret hides), `key=value`/`key = value` keeps only the key name,
+and a flag followed by a separate value token redacts the value. The
 telemetry rollup redacts reason keys defense-in-depth. An _unresolved_ command
 target is never echoed at all — not even redacted: `unknownHibernationTarget`
 emits a stable, non-reversible `target:#<fingerprint>` so an operator can
@@ -167,6 +174,19 @@ held lease (e.g. a lingering `hibernate` lease around a crash) resolves as a
 distinct, retryable `wake_lease_contended` refusal, and the dispatcher requeues
 the row (deferring that agent for the rest of the pass so the held lease cannot
 spin the loop) rather than consuming it.
+
+Command-result **retryability is classified by reason, not only by state**, so an
+operator is never sent into a futile retry loop. A quarantine (`reap-candidate`)
+needs manual review; a `missing_runtime_spec` failure (the durable launch
+manifest is gone, so no relaunch can reconstruct it — re-spawn instead), an
+`unknown_agent`, and a `not_hibernated:<state>` race are all **terminal
+non-retryable** refusals carrying corrective guidance. Only a genuinely transient
+safe-state failure (or the `wake_lease_contended` requeue above) is marked
+retryable. In the dispatch drain loop, both the `wake()`-throws path and the
+result path route their queue-row finalization through guarded writes: if the
+`completeWakeQueueEntry` cancel/complete write itself throws, the row is left
+`dispatching` (holding no lease) for `recoverStrandedWakes` to requeue rather than
+crashing the pass and stranding every other queued agent.
 
 Both the `agents` and `sessions` reads surface the redacted lifecycle
 projection: a scannable per-agent tag in compact output, a compact redacted

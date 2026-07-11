@@ -109,6 +109,7 @@ interface WakeRevival {
     wakeLeaseId: string;
     fenceToken: number;
     reservedGeneration: number;
+    reservationNonce: string;
   };
 }
 
@@ -604,6 +605,7 @@ export class BrokerSocketServer {
       wakeLeaseId: string | undefined;
       fenceToken: number | undefined;
       reservedGeneration: number | undefined;
+      reservationNonce: string | undefined;
     },
   ): { rejection: JsonRpcResponse | null; revive?: WakeRevival } {
     if (!stableId) return { rejection: null };
@@ -622,9 +624,12 @@ export class BrokerSocketServer {
       lifecycleState === "reap-candidate" ||
       lifecycleState === "terminated";
 
-    const { wakeLeaseId, fenceToken, reservedGeneration } = fence;
+    const { wakeLeaseId, fenceToken, reservedGeneration, reservationNonce } = fence;
     const hasFence =
-      wakeLeaseId !== undefined || fenceToken !== undefined || reservedGeneration !== undefined;
+      wakeLeaseId !== undefined ||
+      fenceToken !== undefined ||
+      reservedGeneration !== undefined ||
+      reservationNonce !== undefined;
 
     if (registrationBlocked) {
       return {
@@ -658,12 +663,17 @@ export class BrokerSocketServer {
       return { rejection: null };
     }
 
-    if (wakeLeaseId === undefined || fenceToken === undefined || reservedGeneration === undefined) {
+    if (
+      wakeLeaseId === undefined ||
+      fenceToken === undefined ||
+      reservedGeneration === undefined ||
+      reservationNonce === undefined
+    ) {
       return {
         rejection: rpcError(
           req.id,
           RPC_AGENT_WAKE_FENCE_REJECTED,
-          "Registration into a hibernated identity requires a broker-issued wake lease, fence token, and runtime generation.",
+          "Registration into a hibernated identity requires a broker-issued wake lease, fence token, runtime generation, and reservation nonce.",
           { code: "WAKE_FENCE_REJECTED", reason: "missing_fence", retryable: false },
         ),
       };
@@ -681,6 +691,7 @@ export class BrokerSocketServer {
       wakeLeaseId,
       fenceToken,
       reservedGeneration,
+      reservationNonce,
     };
     const preflight = this.db.checkRuntimeGenerationAcceptable(accept);
     if (!preflight.accepted) {
@@ -740,6 +751,8 @@ export class BrokerSocketServer {
       fenceToken: typeof params.fenceToken === "number" ? params.fenceToken : undefined,
       reservedGeneration:
         typeof params.runtimeGeneration === "number" ? params.runtimeGeneration : undefined,
+      reservationNonce:
+        typeof params.reservationNonce === "string" ? params.reservationNonce : undefined,
     });
     if (wakeFence.rejection) return wakeFence.rejection;
 

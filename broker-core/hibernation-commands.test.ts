@@ -378,6 +378,7 @@ function buildOrch(
         wakeLeaseId: presented.wakeLeaseId,
         fenceToken: presented.fenceToken,
         reservedGeneration: presented.reservedGeneration,
+        reservationNonce: presented.reservationNonce,
       });
       return acceptance.accepted;
     },
@@ -551,6 +552,47 @@ describe("executeWakeCommand — against the real orchestrator", () => {
     expect(result.retryable).toBe(false);
     expect(result.detail).toContain("quarantined");
     expect(db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+  });
+
+  it("marks a missing-runtime-spec wake failure NON-retryable with corrective guidance", async () => {
+    const db = freshDb();
+    const orch = buildOrch(db, new FakeProcess(), new FakeTmux());
+    seedAgent(db);
+    await hibernate(db, orch);
+    // The durable launch manifest is gone: no retry can reconstruct it, so this
+    // must be a terminal refusal directing the operator to re-spawn, not retry.
+    db.deleteAgentRuntimeSpec("worker-1");
+    const result = await executeWakeCommand({
+      executor: orch,
+      agentId: "worker-1",
+      state: "hibernated",
+      policy: ENABLED,
+    });
+    expect(result.outcome).toBe("refused");
+    expect(result.reason).toBe("missing_runtime_spec");
+    expect(result.retryable).toBe(false);
+    expect(result.detail).toContain("Re-spawn");
+    // The identity is left untouched (still hibernated), not quarantined.
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
+  });
+
+  it("marks a not-hibernated wake failure NON-retryable (state raced past hibernated)", async () => {
+    const db = freshDb();
+    const orch = buildOrch(db, new FakeProcess(), new FakeTmux());
+    seedAgent(db);
+    // Simulate a race: the caller saw `hibernated` (so the gate proceeds), but by
+    // the time the executor runs the agent is no longer hibernated. The
+    // orchestrator refuses with `not_hibernated:<actual>` — a terminal refusal,
+    // not a retryable transient one.
+    const result = await executeWakeCommand({
+      executor: orch,
+      agentId: "worker-1",
+      state: "hibernated",
+      policy: ENABLED,
+    });
+    expect(result.outcome).toBe("refused");
+    expect(result.reason).toContain("not_hibernated");
+    expect(result.retryable).toBe(false);
   });
 
   it("wakes even when hibernation is disabled (drain must not be stranded)", async () => {

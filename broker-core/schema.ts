@@ -947,7 +947,7 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 19;
+export const CURRENT_BROKER_SCHEMA_VERSION = 20;
 
 /**
  * Lifecycle states whose durable identity, inbox, thread ownership, and runtime
@@ -1767,7 +1767,8 @@ function createAgentHibernationTables(db: DatabaseSync): void {
       ON agent_checkpoint_receipts(agent_id, runtime_generation DESC);
     CREATE TABLE IF NOT EXISTS agent_wake_reservations (
       agent_id TEXT PRIMARY KEY NOT NULL, wake_lease_id TEXT NOT NULL, fence_token INTEGER NOT NULL,
-      reserved_generation INTEGER NOT NULL, correlation_id TEXT NOT NULL, created_at TEXT NOT NULL
+      reserved_generation INTEGER NOT NULL, reservation_nonce TEXT NOT NULL DEFAULT '',
+      correlation_id TEXT NOT NULL, created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS agent_wake_queue (
       id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, repo_root TEXT,
@@ -1782,6 +1783,26 @@ function createAgentHibernationTables(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_agent_wake_queue_dispatch
       ON agent_wake_queue(status, priority, id);
   `);
+}
+
+/**
+ * Per-attempt wake nonce: a fresh, opaque token minted on every wake reservation
+ * so that two wake attempts for the same identity (which necessarily reuse the
+ * same lease id, fence token, and `runtime_generation + 1`) are distinguishable.
+ * Without it a slow runtime from an earlier, timed-out attempt could satisfy a
+ * later attempt's otherwise-identical reservation. Added for dogfood DBs already
+ * at v19 (fresh DBs get the column from the CREATE TABLE above).
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: one-function-per-
+// migration-case is the established schema-migration seam (mirrors case 19's
+// createAgentHibernationTables); keeps the version switch a readable index.
+function addWakeReservationNonceColumn(db: DatabaseSync): void {
+  ensureColumn(
+    db,
+    "agent_wake_reservations",
+    "reservation_nonce",
+    "ALTER TABLE agent_wake_reservations ADD COLUMN reservation_nonce TEXT NOT NULL DEFAULT ''",
+  );
 }
 
 function runSchemaMigrations(db: DatabaseSync): void {
@@ -1854,6 +1875,9 @@ function runSchemaMigrations(db: DatabaseSync): void {
           break;
         case 19:
           createAgentHibernationTables(db);
+          break;
+        case 20:
+          addWakeReservationNonceColumn(db);
           break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
@@ -2716,6 +2740,8 @@ export class BrokerDB implements BrokerDBInterface {
     wakeLeaseId: string;
     fenceToken: number;
     correlationId: string;
+    /** Optional injected nonce (tests); production mints a fresh UUID. */
+    reservationNonce?: string;
     now?: number;
   }): AgentWakeReservation {
     return this.withTransaction(() => {
@@ -2738,18 +2764,29 @@ export class BrokerDB implements BrokerDBInterface {
       const agent = this.getAgentById(input.agentId);
       if (!agent) throw new Error(`Unknown agent for wake reservation: ${input.agentId}`);
       const reservedGeneration = (agent.runtimeGeneration ?? 0) + 1;
+      // Mint a fresh per-attempt nonce. Successive wake attempts for the same
+      // identity necessarily reuse the same lease id, fence token, and
+      // `reserved_generation` (= runtime_generation + 1, which does not advance
+      // until a runtime is accepted), so those three fields alone cannot tell a
+      // slow, timed-out earlier attempt's runtime apart from the current
+      // attempt's runtime. The nonce, minted here and threaded through the launch
+      // context into the runtime's registration, fences the earlier runtime out.
+      const reservationNonce = input.reservationNonce ?? crypto.randomUUID();
       db.prepare(
         `INSERT INTO agent_wake_reservations
-         (agent_id, wake_lease_id, fence_token, reserved_generation, correlation_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+         (agent_id, wake_lease_id, fence_token, reserved_generation, reservation_nonce,
+          correlation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(agent_id) DO UPDATE SET wake_lease_id=excluded.wake_lease_id,
            fence_token=excluded.fence_token, reserved_generation=excluded.reserved_generation,
+           reservation_nonce=excluded.reservation_nonce,
            correlation_id=excluded.correlation_id, created_at=excluded.created_at`,
       ).run(
         input.agentId,
         input.wakeLeaseId,
         input.fenceToken,
         reservedGeneration,
+        reservationNonce,
         input.correlationId,
         nowIso,
       );
@@ -2758,6 +2795,7 @@ export class BrokerDB implements BrokerDBInterface {
         wakeLeaseId: input.wakeLeaseId,
         fenceToken: input.fenceToken,
         reservedGeneration,
+        reservationNonce,
         correlationId: input.correlationId,
         createdAt: nowIso,
       };
@@ -2767,7 +2805,8 @@ export class BrokerDB implements BrokerDBInterface {
   getAgentWakeReservation(agentId: string): AgentWakeReservation | null {
     const row = this.getDb()
       .prepare(
-        `SELECT agent_id, wake_lease_id, fence_token, reserved_generation, correlation_id, created_at
+        `SELECT agent_id, wake_lease_id, fence_token, reserved_generation, reservation_nonce,
+                correlation_id, created_at
          FROM agent_wake_reservations WHERE agent_id = ?`,
       )
       .get(agentId) as
@@ -2776,6 +2815,7 @@ export class BrokerDB implements BrokerDBInterface {
           wake_lease_id: string;
           fence_token: number;
           reserved_generation: number;
+          reservation_nonce: string;
           correlation_id: string;
           created_at: string;
         }
@@ -2786,6 +2826,7 @@ export class BrokerDB implements BrokerDBInterface {
       wakeLeaseId: row.wake_lease_id,
       fenceToken: row.fence_token,
       reservedGeneration: row.reserved_generation,
+      reservationNonce: row.reservation_nonce,
       correlationId: row.correlation_id,
       createdAt: row.created_at,
     };
@@ -2825,6 +2866,13 @@ export class BrokerDB implements BrokerDBInterface {
     }
     if (reservation.reservedGeneration !== input.reservedGeneration) {
       return { accepted: false, reason: "generation_mismatch" };
+    }
+    // Per-attempt nonce: a matching lease/fence/generation is NOT sufficient,
+    // because retries reuse all three. Only the runtime launched by THIS
+    // attempt carries the current reservation's nonce; a slow runtime from a
+    // superseded earlier attempt presents a stale nonce and is fenced out.
+    if (reservation.reservationNonce !== input.reservationNonce) {
+      return { accepted: false, reason: "nonce_mismatch" };
     }
     const lease = this.getAgentLifecycleLease(input.agentId);
     if (!lease || lease.leaseId !== input.wakeLeaseId || lease.fenceToken !== input.fenceToken) {

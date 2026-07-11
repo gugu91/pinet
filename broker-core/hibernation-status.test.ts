@@ -370,6 +370,31 @@ describe("redactPathLikeTokens / sanitizeOperatorReason path redaction", () => {
     expect(sanitizeOperatorReason("blocked on accounts/acme")).toBe("blocked on <path>");
   });
 
+  it("sanitizeOperatorReason closes quote/space/punctuation redaction bypasses (fail-closed)", () => {
+    // Quoted value with an internal space — whitespace tokenization used to leak
+    // the trailing `beef"` token. The whole quoted span must be redacted.
+    const quoted = sanitizeOperatorReason('stalled with TOKEN="dead beef" set');
+    expect(quoted).toBe("stalled with TOKEN=<redacted> set");
+    expect(quoted).not.toContain("beef");
+    // Spaced assignment `TOKEN = deadbeef` — the value was previously untouched.
+    const spaced = sanitizeOperatorReason("stalled with TOKEN = deadbeef set");
+    expect(spaced).toBe("stalled with TOKEN=<redacted> set");
+    expect(spaced).not.toContain("deadbeef");
+    // Punctuation-wrapped flag assignment — the leading `(` used to defeat the
+    // flag matcher, leaking the value.
+    const wrapped = sanitizeOperatorReason("failed (--api-key=sk-live-123)");
+    expect(wrapped).toContain("api-key=<redacted>");
+    expect(wrapped).not.toContain("sk-live-123");
+    // Quoted flag value with internal spaces — every token of the secret must go.
+    const quotedFlag = sanitizeOperatorReason('ran --api-key "sk live 123" now');
+    expect(quotedFlag).toBe("ran --api-key <redacted> now");
+    expect(quotedFlag).not.toContain("sk");
+    expect(quotedFlag).not.toContain("123");
+    // An unterminated quote around an assignment value is still redacted.
+    const unterminated = sanitizeOperatorReason('crashed TOKEN="deadbeef');
+    expect(unterminated).not.toContain("deadbeef");
+  });
+
   it("sanitizeCheckpointReasonCode allowlists safe codes by shape, else `unspecified`", () => {
     // Well-formed single-token machine codes pass (normalized to lowercase).
     expect(sanitizeCheckpointReasonCode("active_port_lease")).toBe("active_port_lease");

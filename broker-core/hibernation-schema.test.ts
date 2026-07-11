@@ -36,7 +36,7 @@ function driveToWaking(
   db: BrokerDB,
   agentId: string,
   now: number,
-): { leaseId: string; fenceToken: number; reservedGeneration: number } {
+): { leaseId: string; fenceToken: number; reservedGeneration: number; reservationNonce: string } {
   const lease = db.acquireAgentLifecycleLease({
     agentId,
     operation: "wake",
@@ -66,6 +66,7 @@ function driveToWaking(
     leaseId: "wake-1",
     fenceToken: lease.fenceToken,
     reservedGeneration: reservation.reservedGeneration,
+    reservationNonce: reservation.reservationNonce,
   };
 }
 
@@ -467,7 +468,11 @@ describe("registerAgentWithGenerationAcceptance atomicity", () => {
     db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
     db.upsertAgentRuntimeSpec(spec("worker-1"));
     driveToHibernated(db, "worker-1");
-    const { leaseId, fenceToken, reservedGeneration } = driveToWaking(db, "worker-1", 1_000_000);
+    const { leaseId, fenceToken, reservedGeneration, reservationNonce } = driveToWaking(
+      db,
+      "worker-1",
+      1_000_000,
+    );
 
     const revived = db.registerAgentWithGenerationAcceptance({
       registration: {
@@ -483,6 +488,7 @@ describe("registerAgentWithGenerationAcceptance atomicity", () => {
         wakeLeaseId: leaseId,
         fenceToken,
         reservedGeneration,
+        reservationNonce,
         now: 1_000_000,
       },
     });
@@ -499,7 +505,11 @@ describe("registerAgentWithGenerationAcceptance atomicity", () => {
     db.registerAgent("worker-1", "W", "🦉", 1, { marker: "original" }, "host:session:worker-1");
     db.upsertAgentRuntimeSpec(spec("worker-1"));
     driveToHibernated(db, "worker-1");
-    const { leaseId, fenceToken, reservedGeneration } = driveToWaking(db, "worker-1", 1_000_000);
+    const { leaseId, fenceToken, reservedGeneration, reservationNonce } = driveToWaking(
+      db,
+      "worker-1",
+      1_000_000,
+    );
 
     // A bad fence must reject acceptance AND roll back the registration mutation
     // so the durable row is never left with a mutated pid/metadata.
@@ -517,6 +527,7 @@ describe("registerAgentWithGenerationAcceptance atomicity", () => {
         wakeLeaseId: leaseId,
         fenceToken: fenceToken + 1, // wrong fence
         reservedGeneration,
+        reservationNonce,
         now: 1_000_000,
       },
     });

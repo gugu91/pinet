@@ -111,6 +111,7 @@ class E2eTmux implements HibernationTmuxController {
         wakeLeaseId: string;
         fenceToken: number;
         runtimeGeneration: number;
+        reservationNonce: string;
       })
     | null = null;
 
@@ -126,6 +127,7 @@ class E2eTmux implements HibernationTmuxController {
       wakeLeaseId: ctx.wakeLeaseId,
       fenceToken: ctx.fenceToken,
       runtimeGeneration: ctx.reservedGeneration,
+      reservationNonce: ctx.reservationNonce,
     };
     try {
       await client.register(
@@ -448,6 +450,7 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
       wakeLeaseId: c.wakeLeaseId,
       fenceToken: c.fenceToken + 999, // stale fence
       runtimeGeneration: c.reservedGeneration,
+      reservationNonce: c.reservationNonce,
     });
     const orch = orchestratorFor(new E2eProcess(() => original), tmux);
     orch.prepareHibernation(agentId);
@@ -457,6 +460,32 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     expect(woke.ok).toBe(false);
     expect(woke.state).toBe("reap-candidate");
     expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+  });
+
+  it("rejects a runtime presenting a stale per-attempt nonce (superseded earlier attempt)", async () => {
+    // A slow runtime from a timed-out earlier wake attempt would present a stale
+    // nonce even though its lease, fence, and generation still match. The socket
+    // registration path must reject it, so the wake fails and quarantines rather
+    // than binding the wrong runtime to the identity.
+    const original = await registerOriginal();
+    const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
+    const tmux = new E2eTmux(() => ctx.connect());
+    tmux.mutateFence = (c) => ({
+      wakeLeaseId: c.wakeLeaseId,
+      fenceToken: c.fenceToken,
+      runtimeGeneration: c.reservedGeneration,
+      reservationNonce: "stale-nonce-from-earlier-attempt", // superseded attempt
+    });
+    const orch = orchestratorFor(new E2eProcess(() => original), tmux);
+    orch.prepareHibernation(agentId);
+    await orch.hibernate(agentId);
+
+    const woke = await orch.wake(agentId, { trigger: "manual" });
+    expect(woke.ok).toBe(false);
+    expect(woke.state).toBe("reap-candidate");
+    // The wrong runtime was never accepted; the generation never advanced.
+    expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+    expect(ctx.db.getAgentWakeReservation(agentId)).toBeNull();
   });
 
   it("survives a broker restart while hibernated and wakes afterwards", async () => {

@@ -195,34 +195,38 @@ const PROSE_SLASH_TOKENS = new Set([
  * flag values (`--api-key secret` / `--api-key=secret` → `--api-key <redacted>`).
  * The env var name / flag name is kept (it is not itself the secret) so the
  * reason stays actionable, while the value can never reach an operator surface.
+ *
+ * Whole-string, quote- and punctuation-aware, and fail-closed. Earlier
+ * whitespace tokenization leaked on quoted (`TOKEN="dead beef"`), spaced
+ * (`TOKEN = deadbeef`), and punctuation-wrapped (`(--api-key=sk-123)`) secrets;
+ * these three ordered passes close those holes:
+ *   1. A quoted span anywhere (`'…'` / `"…"` / `` `…` ``) is redacted wholesale —
+ *      that is exactly where a space-separated secret would hide from tokenizing.
+ *   2. `key=value` / `key = value` (value is a non-space run) keeps the key name
+ *      and redacts the value; the key matcher ignores a leading `--`/punctuation
+ *      so `(--api-key=sk-123)` and `TOKEN = x` are both caught.
+ *   3. A flag followed by a separate value token (`--flag value` / `-f value`)
+ *      redacts the value unless it is itself another flag.
  */
-// agent-standards-ignore prefer-inline-single-use-helper: distinct stateful
-// secret-redaction pass (flag/value tracking across tokens); composed with the
-// path-redaction pass in sanitizeOperatorReason and kept separate for clarity.
+// agent-standards-ignore prefer-inline-single-use-helper: distinct multi-pass
+// secret-redaction (quoted spans, key=value assignments, flag values); composed
+// with the path-redaction pass in sanitizeOperatorReason and kept separate for
+// readability of each fail-closed pass.
 function redactSecretAssignments(value: string): string {
-  let redactNextValue = false;
-  return value
-    .split(/(\s+)/)
-    .map((token) => {
-      if (token.length === 0 || /\s/.test(token)) return token;
-      // A value expected immediately after a bare flag (`--flag value`).
-      if (redactNextValue) {
-        redactNextValue = false;
-        if (!/^-/.test(token)) return "<redacted>";
-      }
-      // Flags: `-f`, `--flag`, and the assignment forms `-f=v` / `--flag=v`.
-      if (/^--?[A-Za-z]/.test(token)) {
-        const eq = token.indexOf("=");
-        if (eq >= 0) return `${token.slice(0, eq)}=<redacted>`;
-        redactNextValue = true; // the following token is this flag's value
-        return token;
-      }
-      // Env/CLI assignment: `KEY=value` → keep the (non-secret) key only.
-      const assign = /^([A-Za-z_][A-Za-z0-9_.-]*)=.+$/.exec(token);
-      if (assign) return `${assign[1]}=<redacted>`;
-      return token;
-    })
-    .join("");
+  let out = value;
+  // 1) Quoted spans (including unmatched-escape safety) → redact wholesale.
+  out = out.replace(/(['"`])(?:\\.|(?!\1)[\s\S])*?\1/g, "<redacted>");
+  // 2) key=value / key = value → keep the key name, redact the value run.
+  out = out.replace(
+    /([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*\S+/g,
+    (_match, key: string) => `${key}=<redacted>`,
+  );
+  // 3) `--flag value` / `-f value` → redact the value unless it is another flag.
+  out = out.replace(
+    /((?:^|\s)--?[A-Za-z][A-Za-z0-9_-]*)\s+(?!--?[A-Za-z])\S+/g,
+    (_match, flag: string) => `${flag} <redacted>`,
+  );
+  return out;
 }
 
 /**

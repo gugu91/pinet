@@ -124,7 +124,12 @@ interface Harness {
  */
 function harness(
   overrides: {
-    registerBehavior?: "accept" | "stale_fence" | "stale_generation" | "no_register";
+    registerBehavior?:
+      | "accept"
+      | "stale_fence"
+      | "stale_generation"
+      | "stale_nonce"
+      | "no_register";
   } = {},
 ): Harness {
   const db = freshDb();
@@ -148,12 +153,15 @@ function harness(
           ? { ...ctx, fenceToken: ctx.fenceToken + 99 }
           : behavior === "stale_generation"
             ? { ...ctx, reservedGeneration: ctx.reservedGeneration + 5 }
-            : ctx;
+            : behavior === "stale_nonce"
+              ? { ...ctx, reservationNonce: "stale-nonce-from-earlier-attempt" }
+              : ctx;
       const acceptance = db.acceptRuntimeGeneration({
         agentId: presented.agentId,
         wakeLeaseId: presented.wakeLeaseId,
         fenceToken: presented.fenceToken,
         reservedGeneration: presented.reservedGeneration,
+        reservationNonce: presented.reservationNonce,
         now: clock.ms,
       });
       return acceptance.accepted;
@@ -405,6 +413,21 @@ describe("HibernationOrchestrator — wake", () => {
     expect(again.ok).toBe(false);
     expect(again.reason).toContain("not_hibernated");
   });
+
+  it("fences out a superseded earlier attempt's runtime (stale nonce) and quarantines", async () => {
+    // A runtime that registers with a stale per-attempt nonce (as a slow runtime
+    // from a timed-out earlier attempt would) is rejected even though its lease,
+    // fence, and generation still match the current reservation. Every attempt
+    // presents the stale nonce, so all fail and the wake quarantines.
+    const staleNonce = harness({ registerBehavior: "stale_nonce" });
+    seedAgent(staleNonce.db);
+    await hibernateFrom(staleNonce);
+    const result = await staleNonce.orch.wake("worker-1", { trigger: "manual" });
+    expect(result.ok).toBe(false);
+    expect(result.state).toBe("reap-candidate");
+    // Never accepted → generation never advanced past the hibernated value.
+    expect(staleNonce.db.getAgentById("worker-1")?.runtimeGeneration).toBe(0);
+  });
 });
 
 describe("acceptRuntimeGeneration fencing", () => {
@@ -413,10 +436,11 @@ describe("acceptRuntimeGeneration fencing", () => {
    * held unexpired `wake` lease, a `waking` lifecycle CAS, and a reserved
    * generation — exactly what the socket server presents at registration.
    */
+  const DRIVEN_NONCE = "nonce-attempt-1";
   function driveToWaking(
     h: Harness,
     opts: { ttlMs?: number } = {},
-  ): { leaseId: string; fenceToken: number } {
+  ): { leaseId: string; fenceToken: number; reservationNonce: string } {
     const agent = h.db.getAgentById("worker-1");
     const lease = h.db.acquireAgentLifecycleLease({
       agentId: "worker-1",
@@ -441,17 +465,19 @@ describe("acceptRuntimeGeneration fencing", () => {
       wakeLeaseId: "wake-1",
       fenceToken: lease!.fenceToken,
       correlationId: "corr",
+      reservationNonce: DRIVEN_NONCE,
       now: h.clock.ms,
     });
     expect(reservation.reservedGeneration).toBe(1);
-    return { leaseId: "wake-1", fenceToken: lease!.fenceToken };
+    expect(reservation.reservationNonce).toBe(DRIVEN_NONCE);
+    return { leaseId: "wake-1", fenceToken: lease!.fenceToken, reservationNonce: DRIVEN_NONCE };
   }
 
   it("accepts exactly one matching generation and rejects duplicates/stale", async () => {
     const h = harness();
     seedAgent(h.db);
     await hibernateFrom(h);
-    const { fenceToken } = driveToWaking(h);
+    const { fenceToken, reservationNonce } = driveToWaking(h);
 
     // Stale fence rejected.
     expect(
@@ -460,9 +486,23 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken: fenceToken + 1,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: false, reason: "fence_mismatch" });
+
+    // A stale nonce (a superseded earlier wake attempt's runtime) is rejected
+    // even though its lease/fence/generation all match.
+    expect(
+      h.db.acceptRuntimeGeneration({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken,
+        reservedGeneration: 1,
+        reservationNonce: "stale-earlier-attempt-nonce",
+        now: h.clock.ms,
+      }),
+    ).toMatchObject({ accepted: false, reason: "nonce_mismatch" });
 
     // Correct acceptance.
     expect(
@@ -471,6 +511,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: true, runtimeGeneration: 1 });
@@ -482,6 +523,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: false, reason: "no_reservation" });
@@ -491,7 +533,7 @@ describe("acceptRuntimeGeneration fencing", () => {
     const h = harness();
     seedAgent(h.db);
     await hibernateFrom(h);
-    const { fenceToken } = driveToWaking(h, { ttlMs: 90_000 });
+    const { fenceToken, reservationNonce } = driveToWaking(h, { ttlMs: 90_000 });
 
     // Present the otherwise-matching reservation after the lease has expired.
     expect(
@@ -500,6 +542,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms + 90_001,
       }),
     ).toMatchObject({ accepted: false, reason: "lease_expired" });
@@ -535,6 +578,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken: lease!.fenceToken,
         reservedGeneration: reservation.reservedGeneration,
+        reservationNonce: reservation.reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: false, reason: "not_waking" });
@@ -559,7 +603,7 @@ describe("acceptRuntimeGeneration fencing", () => {
     const h = harness();
     seedAgent(h.db);
     await hibernateFrom(h);
-    const { fenceToken } = driveToWaking(h);
+    const { fenceToken, reservationNonce } = driveToWaking(h);
 
     // A bad fence is rejected with no mutation.
     expect(
@@ -568,6 +612,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken: fenceToken + 1,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: false, reason: "fence_mismatch" });
@@ -581,6 +626,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: true, runtimeGeneration: 1 });
@@ -594,6 +640,7 @@ describe("acceptRuntimeGeneration fencing", () => {
         wakeLeaseId: "wake-1",
         fenceToken,
         reservedGeneration: 1,
+        reservationNonce,
         now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: true, runtimeGeneration: 1 });
@@ -900,6 +947,7 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
           wakeLeaseId: ctx.wakeLeaseId,
           fenceToken: ctx.fenceToken,
           reservedGeneration: ctx.reservedGeneration,
+          reservationNonce: ctx.reservationNonce,
           now: clock.ms,
         }).accepted;
       },
@@ -910,6 +958,41 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     const result = await orch.wake("worker-1");
     expect(result).toMatchObject({ ok: true, state: "live", attempts: 3 });
     expect(clock.ms - 1_000_000).toBeGreaterThan(90_000); // proves waits outran one TTL
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // released in finally
+  });
+
+  it("fails closed (quarantines) rather than relaunch when a launched runtime cannot be confirmed stopped", async () => {
+    // A runtime launched but never accepted has ambiguous liveness. If the
+    // broker cannot confirm it is stopped, relaunching would risk two runtimes
+    // for one identity — so the wake must quarantine instead of retrying.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux(); // launched:true, but registration never accepts
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 3 },
+      awaitRuntimeRegistration: async () => false, // launched, never registers
+    });
+    // Hibernate with a healthy stop first, then make the *wake-time* stop
+    // unconfirmable so the retry path must fail closed.
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+    proc.stopResult = { stopped: false, rssBytes: null }; // stop cannot confirm
+    proc.alive = true; // still alive after the stop attempt
+    proc.stopCalls = 0;
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result).toMatchObject({ ok: false, state: "reap-candidate" });
+    expect(result.reason).toBe("wake_ambiguous_launch");
+    // Quarantined on the FIRST ambiguous attempt — did not relaunch on top of a
+    // possibly-live runtime.
+    expect(tmux.respawnCalls.length).toBe(1);
+    expect(proc.stopCalls).toBe(1);
     expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // released in finally
   });
 
@@ -945,6 +1028,7 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
           wakeLeaseId: ctx.wakeLeaseId,
           fenceToken: ctx.fenceToken,
           reservedGeneration: ctx.reservedGeneration,
+          reservationNonce: ctx.reservationNonce,
           now: clock.ms,
         }).accepted;
         // Generation is accepted; then the final promotion is delayed past the
@@ -1035,6 +1119,7 @@ describe("recoverStrandedWakes (crash between acceptance and live)", () => {
         wakeLeaseId: "wake-1",
         fenceToken: lease.fenceToken,
         reservedGeneration: reservation.reservedGeneration,
+        reservationNonce: reservation.reservationNonce,
         now: h.clock.ms,
       }).accepted,
     ).toBe(true);
@@ -1203,6 +1288,7 @@ describe("recoverStrandedWakes (crash between acceptance and live)", () => {
         wakeLeaseId: "wake-prior",
         fenceToken: lease.fenceToken,
         reservedGeneration: reservation.reservedGeneration,
+        reservationNonce: reservation.reservationNonce,
         now: h.clock.ms,
       }).accepted,
     ).toBe(true);
@@ -1330,6 +1416,53 @@ describe("wake queue", () => {
     h.db.completeWakeQueueEntry = original;
     expect(h.db.listWakeQueue("dispatching")).toHaveLength(1);
     const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toContainEqual({ agentId: "worker-1", action: "requeued" });
+  });
+
+  it("does not crash the drain pass when wake() throws AND the cancel-finalizer also fails", async () => {
+    // The worst case: wake() itself throws (it is designed not to, but a bug or
+    // adapter fault could), and the throw-path's `completeWakeQueueEntry(id,
+    // "cancelled")` ALSO fails. The pass must still not throw; the row stays
+    // reclaimable via reconciliation rather than stranding every other row.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux();
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+    orch.enqueueWakeTrigger({ agentId: "worker-1", triggerKind: "manual", reason: "manual" });
+
+    // Force wake() to throw for this row.
+    const realWake = orch.wake.bind(orch);
+    orch.wake = (async () => {
+      throw new Error("unexpected wake fault");
+    }) as typeof orch.wake;
+    // And force the throw-path cancel finalizer to also fail.
+    let cancelAttempted = false;
+    const originalComplete = db.completeWakeQueueEntry.bind(db);
+    db.completeWakeQueueEntry = ((_id: number, _status: "done" | "cancelled") => {
+      cancelAttempted = true;
+      throw new Error("transient sqlite write failure");
+    }) as typeof db.completeWakeQueueEntry;
+
+    const results = await orch.dispatchWakeQueue();
+    expect(cancelAttempted).toBe(true);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.reason).toBe("wake_fault");
+
+    // Restore and confirm the row is reclaimable (still `dispatching`).
+    db.completeWakeQueueEntry = originalComplete;
+    orch.wake = realWake;
+    expect(db.listWakeQueue("dispatching")).toHaveLength(1);
+    const recovered = orch.recoverStrandedWakes({ now: clock.ms });
     expect(recovered).toContainEqual({ agentId: "worker-1", action: "requeued" });
   });
 });

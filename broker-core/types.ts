@@ -195,6 +195,8 @@ export interface AgentWakeReservation {
   wakeLeaseId: string;
   fenceToken: number;
   reservedGeneration: number;
+  /** Fresh per-attempt token distinguishing this reservation from a retry's. */
+  reservationNonce: string;
   correlationId: string;
   createdAt: string;
 }
@@ -204,6 +206,8 @@ export interface AcceptRuntimeGenerationInput {
   wakeLeaseId: string;
   fenceToken: number;
   reservedGeneration: number;
+  /** Must equal the current reservation's nonce; fences out superseded attempts. */
+  reservationNonce: string;
   /** Epoch ms for lease-expiry comparison. Defaults to Date.now(). */
   now?: number;
 }
