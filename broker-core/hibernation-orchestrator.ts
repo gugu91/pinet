@@ -558,9 +558,14 @@ export class HibernationOrchestrator {
     //  - `inFlightHandle`/`inFlightLaunched`: a launched-but-unaccepted attempt that
     //    may still be running. Any escape must prove-stop it (via its attempt-bound
     //    handle) or fail closed as `wake_ambiguous_launch` rather than leak it.
+    //  - `inFlightReservedGeneration`/`inFlightReservationNonce`: the in-flight
+    //    attempt's reservation identity, so the outer catch can settle it against
+    //    the acceptance boundary (`finalizeWakeAttempt`) before prove-stopping.
     let acceptedGeneration = false;
     let inFlightLaunched = false;
     let inFlightHandle: RuntimeAttemptHandle | null = null;
+    let inFlightReservedGeneration: number | null = null;
+    let inFlightReservationNonce: string | null = null;
 
     const agent = this.db.getAgentById(agentId);
     if (!agent) return this.refuseWake(agentId, correlationId, "live", "unknown_agent", actor);
@@ -658,16 +663,37 @@ export class HibernationOrchestrator {
           correlationId,
           spec,
         };
+        inFlightReservedGeneration = reservation.reservedGeneration;
+        inFlightReservationNonce = reservation.reservationNonce;
 
         // Launch the replacement runtime. A throw MID-LAUNCH leaves an unknown
-        // process with no handle to address, so its liveness is unprovable → fail
-        // closed (never fall through to the generic fault path, which would leak it).
+        // process with no handle to address, so its liveness is unprovable. But
+        // the socket layer accepts a generation ATOMICALLY, so even a launch that
+        // threw may have registered+accepted in the race window — so we still
+        // settle against the acceptance boundary before failing closed, and only
+        // quarantine (`wake_ambiguous_launch`) when the generation was NOT accepted.
         inFlightLaunched = true;
         inFlightHandle = null;
         let launch: { launched: boolean; handle: RuntimeAttemptHandle | null };
         try {
           launch = await this.tmux.respawnRuntime(launchCtx);
         } catch {
+          const settled = this.settleWakeAttempt(agentId, reservation);
+          if (settled.accepted) {
+            acceptedGeneration = true;
+            inFlightLaunched = false;
+            inFlightHandle = null;
+            return this.promoteAcceptedWake({
+              agentId,
+              versionCursor,
+              reason,
+              actor,
+              correlationId,
+              reservedGeneration: reservation.reservedGeneration,
+              attempt,
+              startedAt,
+            });
+          }
           return this.quarantineWake(
             agentId,
             versionCursor,
@@ -683,85 +709,49 @@ export class HibernationOrchestrator {
 
         // Wait for the woken runtime to re-register and present its fence. The
         // socket layer accepts the generation ATOMICALLY on a valid registration,
-        // so acceptance can happen even if the wait — or the acceptance read —
-        // throws afterward. Catch and re-confirm from the durable row rather than
-        // assuming failure (which would prove-stop an already-accepted runtime).
-        let registered = false;
-        let accepted = false;
+        // so acceptance can happen even if the wait throws afterward — we swallow
+        // it and let the race-free settle below decide.
         try {
-          registered = launch.launched ? await this.awaitRuntimeRegistration(launchCtx) : false;
-          if (registered) {
-            accepted =
-              this.db.getAgentById(agentId)?.runtimeGeneration === reservation.reservedGeneration;
-          }
+          if (launch.launched) await this.awaitRuntimeRegistration(launchCtx);
         } catch {
-          accepted = this.isGenerationAccepted(agentId, reservation.reservedGeneration);
+          // Ignore: `settleWakeAttempt` is the authoritative, race-free classifier.
         }
 
-        if (accepted) {
+        // AUTHORITATIVE, RACE-FREE acceptance classification. The socket accepts a
+        // generation atomically, so acceptance can land between our last waiter
+        // read and now. `finalizeWakeAttempt` runs in one transaction: if our
+        // generation was accepted it returns accepted; otherwise it consumes THIS
+        // attempt's exact-nonce reservation so the launched runtime can never be
+        // accepted afterwards, making the subsequent prove-stop safe.
+        const settled = this.settleWakeAttempt(agentId, reservation);
+        if (settled.accepted) {
           // The socket layer already bound this runtime to our exact
           // lease/fence/reservation and atomically advanced+consumed the
           // generation, so from here acceptance is IRREVERSIBLE: the runtime is
-          // live and connected and must NEVER be quarantined. The `waking -> live`
-          // promotion is pure bookkeeping — drive it with an unfenced
-          // administrative CAS (a lease that expired *after* acceptance must not
-          // throw a fenced transition and quarantine an already-live runtime) and
-          // GUARD it so that any post-acceptance DB fault (transition, inbox
-          // count, wake completion) leaves the identity in `waking` for
-          // `recoverStrandedWakes` to finish to `live`, rather than quarantining.
+          // live and connected and must NEVER be quarantined.
           acceptedGeneration = true;
           inFlightLaunched = false; // the attempt IS the live runtime; never stop it
           inFlightHandle = null;
-          const durationMs = this.now() - startedAt;
-          try {
-            const live = this.transitionAdministrative({
-              agentId,
-              expectedVersion: versionCursor,
-              toState: "live",
-              reason,
-              actor,
-              correlationId,
-              durationMs,
-              queueDepth: this.db.getUnreadInboxCount(agentId),
-            });
-            this.db.completeWakeForAgent(agentId);
-            return {
-              ok: true,
-              agentId,
-              correlationId,
-              state: live.lifecycleState ?? "live",
-              reason: "woken",
-              runtimeGeneration: reservation.reservedGeneration,
-              attempts: attempt,
-              durationMs,
-            };
-          } catch {
-            // Post-acceptance bookkeeping faulted. The worker is awake; leave
-            // `waking` for recovery to finalize. Report success on the material
-            // outcome with a recovery-pending hint (never quarantine).
-            return {
-              ok: true,
-              agentId,
-              correlationId,
-              state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
-              reason: "woken_recovery_pending",
-              runtimeGeneration: reservation.reservedGeneration,
-              attempts: attempt,
-            };
-          }
+          return this.promoteAcceptedWake({
+            agentId,
+            versionCursor,
+            reason,
+            actor,
+            correlationId,
+            reservedGeneration: reservation.reservedGeneration,
+            attempt,
+            startedAt,
+          });
         }
 
-        // Failed attempt. If a runtime was actually launched but not accepted,
-        // its liveness is now ambiguous — it may just be slow to register. We
-        // must never leave a possibly-live runtime behind (whether we are about
-        // to relaunch on top of it OR about to quarantine and hand the durable
-        // row to a spec-addressed reaper that cannot see this PID), so on ANY
-        // launched-but-unaccepted attempt we best-effort stop it and only proceed
-        // if we can PROVE it is gone; otherwise fail closed (`wake_ambiguous_launch`)
-        // rather than risk two runtimes for one identity. Running on the final
-        // attempt too closes the same leak symmetrically. (The per-attempt nonce
-        // independently fences a superseded runtime out of a later reservation,
-        // but a leaked *process* is still a safety issue.)
+        // Failed attempt. The reservation is now consumed (settle above), so the
+        // launched runtime can never be accepted. But a launched-but-unaccepted
+        // process may still be RUNNING, and we must never leave one behind
+        // (whether we are about to relaunch on top of it OR about to quarantine
+        // and hand the durable row to a spec-addressed reaper that cannot see this
+        // PID), so we best-effort stop it and only proceed if we can PROVE it is
+        // gone; otherwise fail closed (`wake_ambiguous_launch`). Running on the
+        // final attempt too closes the same leak symmetrically.
         //
         // The stop/liveness proof is addressed by the attempt-bound handle from
         // THIS launch (`launch.handle`), not the durable spec. Using the spec
@@ -783,10 +773,8 @@ export class HibernationOrchestrator {
         }
         inFlightLaunched = false; // this attempt is confirmed gone (or nothing launched)
         inFlightHandle = null;
-        // The prior attempt's runtime is confirmed gone (or nothing launched).
-        // Do NOT clear the reservation here: re-reserving on the next attempt
-        // mints a fresh nonce that overwrites this row (fencing the prior
-        // runtime), and quarantine/acceptance clears it on the terminal paths.
+        inFlightReservedGeneration = null;
+        inFlightReservationNonce = null;
         this.db.recordAgentLifecycleEvent({
           agentId,
           fromState: "waking",
@@ -796,7 +784,7 @@ export class HibernationOrchestrator {
           actor,
           correlationId,
           outcome: attempt < maxAttempts ? "wake_retry" : "wake_exhausted",
-          errorCode: registered ? "generation_not_accepted" : "launch_or_registration_timeout",
+          errorCode: "launch_or_registration_not_accepted",
           fenceToken: lease.fenceToken,
         });
       }
@@ -827,11 +815,39 @@ export class HibernationOrchestrator {
           reason: "woken_recovery_pending",
         };
       }
-      //  2. A launched-but-unaccepted attempt may still be running. Prove-stop it
-      //     via its attempt-bound handle; if it cannot be confirmed gone (or there
-      //     is no handle), fail closed as `wake_ambiguous_launch` rather than leak
-      //     a runtime. Otherwise it is a plain fault. Static reasons only; never
-      //     surface raw errors.
+      //  2. A launched-but-unaccepted attempt may still be running AND may have
+      //     raced to accept before this fault. Settle it against the acceptance
+      //     boundary first: if it was accepted, it is live — never quarantine it
+      //     (leave `waking` for recovery). Otherwise the settle consumed its
+      //     reservation, so prove-stop it via its attempt-bound handle; if it
+      //     cannot be confirmed gone (or there is no handle), fail closed as
+      //     `wake_ambiguous_launch` rather than leak a runtime. Static reasons
+      //     only; never surface raw errors.
+      if (
+        inFlightLaunched &&
+        inFlightReservedGeneration !== null &&
+        inFlightReservationNonce !== null
+      ) {
+        let settledAccepted = false;
+        try {
+          settledAccepted = this.db.finalizeWakeAttempt({
+            agentId,
+            reservedGeneration: inFlightReservedGeneration,
+            reservationNonce: inFlightReservationNonce,
+          }).accepted;
+        } catch {
+          settledAccepted = this.isGenerationAccepted(agentId, inFlightReservedGeneration);
+        }
+        if (settledAccepted) {
+          return {
+            ok: true,
+            agentId,
+            correlationId,
+            state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
+            reason: "woken_recovery_pending",
+          };
+        }
+      }
       const faultReason =
         inFlightLaunched && !(await this.proveAttemptStopped(inFlightHandle))
           ? "wake_ambiguous_launch"
@@ -875,6 +891,91 @@ export class HibernationOrchestrator {
       return !(await this.process.isLaunchedAttemptAlive(handle));
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Race-free settle of a wake attempt against the acceptance boundary. Delegates
+   * to the transactional {@link BrokerDB.finalizeWakeAttempt}: returns
+   * `{ accepted: true }` if the socket already accepted our generation (never
+   * stop that runtime), otherwise consumes THIS attempt's exact-nonce reservation
+   * so the launched runtime can never be accepted afterwards (making a subsequent
+   * prove-stop safe). A DB throw falls back to a best-effort accepted read and
+   * fails closed to "not accepted" so the caller still prove-stops the attempt.
+   */
+  // agent-standards-ignore prefer-inline-single-use-helper: shared by the
+  // per-attempt path and the respawn-throw path; a real acceptance-boundary seam.
+  private settleWakeAttempt(
+    agentId: string,
+    reservation: { reservedGeneration: number; reservationNonce: string },
+  ): { accepted: boolean } {
+    try {
+      return this.db.finalizeWakeAttempt({
+        agentId,
+        reservedGeneration: reservation.reservedGeneration,
+        reservationNonce: reservation.reservationNonce,
+      });
+    } catch {
+      return { accepted: this.isGenerationAccepted(agentId, reservation.reservedGeneration) };
+    }
+  }
+
+  /**
+   * Finalize an ACCEPTED wake to `live`. Acceptance is irreversible: the socket
+   * bound this runtime to our exact lease/fence/reservation and atomically
+   * advanced+consumed the generation, so the runtime is live+connected. The
+   * `waking -> live` promotion is pure bookkeeping — driven with an unfenced
+   * administrative CAS (a lease that expired *after* acceptance must not throw a
+   * fenced transition and quarantine an already-live runtime) and GUARDED so any
+   * post-acceptance DB fault (transition, inbox count, wake completion) leaves the
+   * identity in `waking` (`woken_recovery_pending`) for `recoverStrandedWakes` to
+   * finish to `live`, rather than quarantining a live worker.
+   */
+  // agent-standards-ignore prefer-inline-single-use-helper: shared by the
+  // per-attempt accepted path and the respawn-throw accepted path.
+  private promoteAcceptedWake(params: {
+    agentId: string;
+    versionCursor: number;
+    reason: string;
+    actor: string;
+    correlationId: string;
+    reservedGeneration: number;
+    attempt: number;
+    startedAt: number;
+  }): WakeResult {
+    const durationMs = this.now() - params.startedAt;
+    try {
+      const live = this.transitionAdministrative({
+        agentId: params.agentId,
+        expectedVersion: params.versionCursor,
+        toState: "live",
+        reason: params.reason,
+        actor: params.actor,
+        correlationId: params.correlationId,
+        durationMs,
+        queueDepth: this.db.getUnreadInboxCount(params.agentId),
+      });
+      this.db.completeWakeForAgent(params.agentId);
+      return {
+        ok: true,
+        agentId: params.agentId,
+        correlationId: params.correlationId,
+        state: live.lifecycleState ?? "live",
+        reason: "woken",
+        runtimeGeneration: params.reservedGeneration,
+        attempts: params.attempt,
+        durationMs,
+      };
+    } catch {
+      return {
+        ok: true,
+        agentId: params.agentId,
+        correlationId: params.correlationId,
+        state: this.db.getAgentById(params.agentId)?.lifecycleState ?? "waking",
+        reason: "woken_recovery_pending",
+        runtimeGeneration: params.reservedGeneration,
+        attempts: params.attempt,
+      };
     }
   }
 

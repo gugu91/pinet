@@ -31,6 +31,25 @@ export function fingerprintToken(value: string): string {
  * paths, and private socket paths are never surfaced. This is the sanctioned
  * redaction-by-construction boundary for any operator/status/inspect surface.
  */
+/**
+ * Fail-closed sanitizer for an otherwise-unconstrained runtime-spec facet
+ * (`configFingerprint`, `expectedHost`, `launchSource`). `AgentRuntimeSpec` puts
+ * no shape constraint on these adapter-authored strings, so a path, unix socket
+ * path, `KEY=value` assignment, quoted span, or other secret-bearing value could
+ * be persisted into one and then copied verbatim onto an operator/JSON surface,
+ * bypassing the redaction-by-construction boundary. Only a strict machine token
+ * (hostname / hash / short machine code: an alphanumeric-anchored run of
+ * `[A-Za-z0-9_.-]`, no separator/quote/assignment/whitespace) is passed through;
+ * ANY other shape collapses to an opaque, non-reversible `#<fingerprint>` so an
+ * operator can still correlate the value across reads without exposing it.
+ */
+function sanitizeSpecFacet(value: string | null | undefined): string {
+  const raw = (value ?? "").trim();
+  if (raw.length === 0) return "";
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(raw)) return raw;
+  return `#${fingerprintToken(raw)}`;
+}
+
 export function redactRuntimeSpec(spec: AgentRuntimeSpec): RedactedAgentRuntimeSpec {
   const rawRef = spec.sessionResumeRef;
   const separatorIndex = rawRef.indexOf(":");
@@ -54,20 +73,26 @@ export function redactRuntimeSpec(spec: AgentRuntimeSpec): RedactedAgentRuntimeS
   const repoSegments = spec.repoRoot.split(/[\\/]/).filter(Boolean);
   const repo = repoSegments.length > 0 ? repoSegments[repoSegments.length - 1] : null;
 
+  // These adapter-authored facets are shape-unconstrained on the spec, so they
+  // are sanitized fail-closed before reaching any operator/JSON surface: a strict
+  // machine token passes through, anything else is fingerprinted (see
+  // `sanitizeSpecFacet`). Applies to the mirrored `session.host` too.
+  const expectedHost = sanitizeSpecFacet(spec.expectedHost);
+
   return {
     agentId: spec.agentId,
     session: {
       kind,
       ref,
-      host: spec.expectedHost,
+      host: expectedHost,
       hasPath,
     },
     repo,
     hasWorktree: Boolean(spec.worktreePath),
     hasTmuxSession: Boolean(spec.tmuxSession),
-    configFingerprint: spec.configFingerprint,
-    expectedHost: spec.expectedHost,
-    launchSource: spec.launchSource,
+    configFingerprint: sanitizeSpecFacet(spec.configFingerprint),
+    expectedHost,
+    launchSource: sanitizeSpecFacet(spec.launchSource),
     envAllowlistCount: spec.envAllowlist.length,
     updatedAt: spec.updatedAt,
   };

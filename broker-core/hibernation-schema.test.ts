@@ -545,3 +545,130 @@ describe("registerAgentWithGenerationAcceptance atomicity", () => {
     db.close();
   });
 });
+
+describe("finalizeWakeAttempt (acceptance-boundary settle)", () => {
+  it("reports accepted and leaves state intact when the generation was already accepted", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    driveToHibernated(db, "worker-1");
+    const { leaseId, fenceToken, reservedGeneration, reservationNonce } = driveToWaking(
+      db,
+      "worker-1",
+      1_000_000,
+    );
+    const acceptance = db.acceptRuntimeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: leaseId,
+      fenceToken,
+      reservedGeneration,
+      reservationNonce,
+      now: 1_000_000,
+    });
+    expect(acceptance.accepted).toBe(true);
+
+    const settled = db.finalizeWakeAttempt({
+      agentId: "worker-1",
+      reservedGeneration,
+      reservationNonce,
+    });
+    expect(settled.accepted).toBe(true);
+    expect(db.getAgentById("worker-1")?.runtimeGeneration).toBe(reservedGeneration);
+    db.close();
+  });
+
+  it("consumes only THIS attempt's reservation when not accepted, blocking a late acceptance", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    driveToHibernated(db, "worker-1");
+    const { leaseId, fenceToken, reservedGeneration, reservationNonce } = driveToWaking(
+      db,
+      "worker-1",
+      1_000_000,
+    );
+
+    const settled = db.finalizeWakeAttempt({
+      agentId: "worker-1",
+      reservedGeneration,
+      reservationNonce,
+    });
+    expect(settled.accepted).toBe(false);
+    expect(db.getAgentWakeReservation("worker-1")).toBeNull(); // reservation consumed
+
+    // A late registration replay for this exact attempt can no longer be accepted.
+    const late = db.acceptRuntimeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: leaseId,
+      fenceToken,
+      reservedGeneration,
+      reservationNonce,
+      now: 1_000_000,
+    });
+    expect(late).toMatchObject({ accepted: false, reason: "no_reservation" });
+    db.close();
+  });
+
+  it("leaves a superseded newer attempt's reservation intact (different nonce)", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    driveToHibernated(db, "worker-1");
+    const { reservedGeneration } = driveToWaking(db, "worker-1", 1_000_000);
+
+    // Settling a STALE nonce must not consume the current reservation.
+    const settled = db.finalizeWakeAttempt({
+      agentId: "worker-1",
+      reservedGeneration,
+      reservationNonce: "stale-nonce-from-earlier-attempt",
+    });
+    expect(settled.accepted).toBe(false);
+    expect(db.getAgentWakeReservation("worker-1")).not.toBeNull(); // current reservation intact
+    db.close();
+  });
+});
+
+describe("wake acceptance receipt", () => {
+  it("writes a receipt on acceptance and clears it on the next wake reservation", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    driveToHibernated(db, "worker-1");
+    const r1 = driveToWaking(db, "worker-1", 1_000_000);
+
+    const accepted = db.acceptRuntimeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: r1.leaseId,
+      fenceToken: r1.fenceToken,
+      reservedGeneration: r1.reservedGeneration,
+      reservationNonce: r1.reservationNonce,
+      now: 1_000_000,
+    });
+    expect(accepted.accepted).toBe(true);
+    const receipt = db.getAgentWakeAcceptanceReceipt("worker-1");
+    expect(receipt).toMatchObject({
+      agentId: "worker-1",
+      stableId: "host:session:worker-1",
+      wakeLeaseId: r1.leaseId,
+      fenceToken: r1.fenceToken,
+      reservedGeneration: r1.reservedGeneration,
+      reservationNonce: r1.reservationNonce,
+    });
+
+    // A NEW wake reservation supersedes the acceptance, clearing the receipt so a
+    // stale fence can never rebind during a fresh wake window.
+    db.reserveWakeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: r1.leaseId,
+      fenceToken: r1.fenceToken,
+      correlationId: "c2",
+      now: 1_000_000,
+    });
+    expect(db.getAgentWakeAcceptanceReceipt("worker-1")).toBeNull();
+    db.close();
+  });
+});

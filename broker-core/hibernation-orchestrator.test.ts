@@ -1205,6 +1205,100 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     expect(proc.stopAttemptCalls).toBe(1);
   });
 
+  it("promotes an acceptance that lands AFTER a false registration timeout, never stopping it", async () => {
+    // Blocker 1 (timeout-boundary race): the socket accepts a generation
+    // atomically, so acceptance can commit in the window between the waiter's
+    // last read and the orchestrator's decision to stop the attempt. Here the
+    // injected waiter reports `false` (timeout) even though the generation was
+    // accepted. The race-free settle (`finalizeWakeAttempt`) must observe the
+    // advanced generation and PROMOTE the runtime rather than prove-stop and
+    // quarantine an already-live runtime.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+      awaitRuntimeRegistration: async (ctx: RuntimeLaunchContext) => {
+        db.registerAgent(
+          ctx.agentId,
+          "Worker",
+          "🦉",
+          5555,
+          { ...AGENT_METADATA },
+          ctx.spec.stableId,
+        );
+        db.acceptRuntimeGeneration({
+          agentId: ctx.agentId,
+          wakeLeaseId: ctx.wakeLeaseId,
+          fenceToken: ctx.fenceToken,
+          reservedGeneration: ctx.reservedGeneration,
+          reservationNonce: ctx.reservationNonce,
+          now: clock.ms,
+        });
+        return false; // waiter reports timeout despite the accepted generation
+      },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result.ok).toBe(true);
+    expect(result.state).toBe("live");
+    expect(result.reason).toBe("woken");
+    expect(result.runtimeGeneration).toBe(1);
+    expect(proc.stopAttemptCalls).toBe(0); // never stopped the accepted runtime
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("live");
+    expect(db.getAgentWakeReservation("worker-1")).toBeNull();
+  });
+
+  it("consumes THIS attempt's reservation on a truly-failed attempt so a late runtime cannot accept", async () => {
+    // Blocker 1: when settle observes NO acceptance it must consume this
+    // attempt's exact-nonce reservation, so a runtime that registers after we
+    // decide to stop it can never be accepted (`no_reservation`).
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const captured: { ctx: RuntimeLaunchContext | null } = { ctx: null };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+      awaitRuntimeRegistration: async (ctx: RuntimeLaunchContext) => {
+        captured.ctx = ctx; // a slow runtime that has NOT yet accepted
+        return false;
+      },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result.ok).toBe(false);
+    expect(db.getAgentWakeReservation("worker-1")).toBeNull(); // reservation consumed
+
+    // A late registration replay for this attempt can no longer be accepted.
+    const ctx = captured.ctx;
+    if (!ctx) throw new Error("expected a captured launch context");
+    const late = db.acceptRuntimeGeneration({
+      agentId: ctx.agentId,
+      wakeLeaseId: ctx.wakeLeaseId,
+      fenceToken: ctx.fenceToken,
+      reservedGeneration: ctx.reservedGeneration,
+      reservationNonce: ctx.reservationNonce,
+      now: clock.ms,
+    });
+    expect(late.accepted).toBe(false);
+  });
+
   it("never quarantines an ACCEPTED runtime when post-acceptance promotion faults (recoverable to live)", async () => {
     // Blocker 2: once the socket layer atomically accepts the generation the
     // runtime is live+connected. A subsequent bookkeeping fault (here: the

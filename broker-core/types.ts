@@ -212,6 +212,23 @@ export interface AcceptRuntimeGenerationInput {
   now?: number;
 }
 
+/**
+ * Durable record of the EXACT wake fence that accepted a generation, written in
+ * the acceptance transaction. Enables idempotent re-binding of a runtime whose
+ * acceptance committed but whose register RPC response was lost to a broker crash
+ * (so the client replays its single-use wake fence). Superseded by the next wake
+ * reservation so a stale fence cannot rebind during a fresh wake window.
+ */
+export interface AgentWakeAcceptanceReceipt {
+  agentId: string;
+  stableId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+  reservationNonce: string;
+  acceptedAt: string;
+}
+
 export type RuntimeGenerationAcceptance =
   | { accepted: true; runtimeGeneration: number }
   | { accepted: false; reason: string };

@@ -104,6 +104,46 @@ describe("redactRuntimeSpec", () => {
     expect(serialized).not.toContain("alice");
     expect(serialized).not.toContain("C:");
   });
+
+  it("passes strict machine tokens through for configFingerprint/expectedHost/launchSource", () => {
+    const redacted = redactRuntimeSpec(
+      runtimeSpec({
+        configFingerprint: "sha256-deadbeefcafe.v2",
+        expectedHost: "prod-web-01.internal",
+        launchSource: "broker_wake",
+      }),
+    );
+    expect(redacted.configFingerprint).toBe("sha256-deadbeefcafe.v2");
+    expect(redacted.expectedHost).toBe("prod-web-01.internal");
+    expect(redacted.session.host).toBe("prod-web-01.internal");
+    expect(redacted.launchSource).toBe("broker_wake");
+  });
+
+  it("fingerprints path-/assignment-/socket-/flag-shaped facet values (never emits them verbatim)", () => {
+    const redacted = redactRuntimeSpec(
+      runtimeSpec({
+        // A path smuggled into launchSource.
+        launchSource: "/Users/secret/launch --api-key sk-live-9999",
+        // A unix socket path smuggled into expectedHost.
+        expectedHost: "unix:/private/tmp/pinet-broker.sock",
+        // A KEY=value secret assignment smuggled into configFingerprint.
+        configFingerprint: "AWS_SECRET=deadbeefdeadbeef",
+      }),
+    );
+    // Every facet collapses to an opaque, non-reversible fingerprint.
+    expect(redacted.launchSource).toMatch(/^#[0-9a-f]{8}$/);
+    expect(redacted.expectedHost).toMatch(/^#[0-9a-f]{8}$/);
+    expect(redacted.session.host).toMatch(/^#[0-9a-f]{8}$/);
+    expect(redacted.configFingerprint).toMatch(/^#[0-9a-f]{8}$/);
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("/Users/secret");
+    expect(serialized).not.toContain("sk-live-9999");
+    expect(serialized).not.toContain("--api-key");
+    expect(serialized).not.toContain("/private/tmp");
+    expect(serialized).not.toContain(".sock");
+    expect(serialized).not.toContain("AWS_SECRET");
+    expect(serialized).not.toContain("deadbeefdeadbeef");
+  });
 });
 
 describe("buildAgentLifecycleStatus", () => {

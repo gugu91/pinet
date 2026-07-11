@@ -52,6 +52,7 @@ import type {
   AgentCheckpointReceipt,
   AgentCheckpointReceiptInput,
   AgentWakeReservation,
+  AgentWakeAcceptanceReceipt,
   AcceptRuntimeGenerationInput,
   RuntimeGenerationAcceptance,
   AgentWakeQueueEntry,
@@ -947,7 +948,7 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 20;
+export const CURRENT_BROKER_SCHEMA_VERSION = 21;
 
 /**
  * Lifecycle states whose durable identity, inbox, thread ownership, and runtime
@@ -1805,6 +1806,33 @@ function addWakeReservationNonceColumn(db: DatabaseSync): void {
   );
 }
 
+/**
+ * Acceptance receipt: a single-row-per-agent record of the EXACT wake fence that
+ * accepted a generation. It lets a runtime whose registration was accepted but
+ * whose register RPC response was lost to a broker crash (committed acceptance
+ * but never bound the socket / returned) replay its single-use wake fence and be
+ * re-bound idempotently instead of being rejected and stranded. Superseded by
+ * the next wake reservation (cleared in `reserveWakeGeneration`) so a stale fence
+ * can never rebind during a fresh wake window. Added for dogfood DBs already at
+ * v20 (fresh DBs also create it via this migration).
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: one-function-per-
+// migration-case is the established schema-migration seam; keeps the version
+// switch a readable index.
+function createWakeAcceptanceReceiptTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_wake_acceptance_receipts (
+      agent_id TEXT PRIMARY KEY NOT NULL,
+      stable_id TEXT NOT NULL,
+      wake_lease_id TEXT NOT NULL,
+      fence_token INTEGER NOT NULL,
+      reserved_generation INTEGER NOT NULL,
+      reservation_nonce TEXT NOT NULL,
+      accepted_at TEXT NOT NULL
+    );
+  `);
+}
+
 function runSchemaMigrations(db: DatabaseSync): void {
   const currentVersion = getUserVersion(db);
   if (currentVersion >= CURRENT_BROKER_SCHEMA_VERSION) {
@@ -1878,6 +1906,9 @@ function runSchemaMigrations(db: DatabaseSync): void {
           break;
         case 20:
           addWakeReservationNonceColumn(db);
+          break;
+        case 21:
+          createWakeAcceptanceReceiptTable(db);
           break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
@@ -2772,6 +2803,12 @@ export class BrokerDB implements BrokerDBInterface {
       // attempt's runtime. The nonce, minted here and threaded through the launch
       // context into the runtime's registration, fences the earlier runtime out.
       const reservationNonce = input.reservationNonce ?? crypto.randomUUID();
+      // A NEW wake attempt supersedes any prior acceptance receipt: clear it so a
+      // stale fence from a previously-accepted (crash-stranded) runtime can never
+      // be replayed to rebind during this fresh wake window.
+      db.prepare("DELETE FROM agent_wake_acceptance_receipts WHERE agent_id = ?").run(
+        input.agentId,
+      );
       db.prepare(
         `INSERT INTO agent_wake_reservations
          (agent_id, wake_lease_id, fence_token, reserved_generation, reservation_nonce,
@@ -2834,6 +2871,73 @@ export class BrokerDB implements BrokerDBInterface {
 
   clearAgentWakeReservation(agentId: string): void {
     this.getDb().prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(agentId);
+  }
+
+  /**
+   * Record the EXACT wake fence that just accepted a generation, so a runtime
+   * whose register RPC response was lost to a crash can replay its single-use
+   * fence and be re-bound idempotently. Called INSIDE the acceptance transaction
+   * (via {@link acceptRuntimeGeneration} / {@link registerAgentWithGenerationAcceptance})
+   * so the receipt is atomic with the generation advance. The stable id is read
+   * from the just-registered row so the receipt binds to the durable identity.
+   */
+  private writeWakeAcceptanceReceipt(input: AcceptRuntimeGenerationInput, nowMs: number): void {
+    const db = this.getDb();
+    const row = db.prepare("SELECT stable_id FROM agents WHERE id = ?").get(input.agentId) as
+      | { stable_id: string | null }
+      | undefined;
+    const stableId = row?.stable_id;
+    // Only a durable stable identity can be revived by a fenced replay; a row
+    // without a stable id cannot be a hibernation identity, so no receipt.
+    if (!stableId) return;
+    db.prepare(
+      `INSERT INTO agent_wake_acceptance_receipts
+         (agent_id, stable_id, wake_lease_id, fence_token, reserved_generation,
+          reservation_nonce, accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET stable_id=excluded.stable_id,
+         wake_lease_id=excluded.wake_lease_id, fence_token=excluded.fence_token,
+         reserved_generation=excluded.reserved_generation,
+         reservation_nonce=excluded.reservation_nonce, accepted_at=excluded.accepted_at`,
+    ).run(
+      input.agentId,
+      stableId,
+      input.wakeLeaseId,
+      input.fenceToken,
+      input.reservedGeneration,
+      input.reservationNonce,
+      new Date(nowMs).toISOString(),
+    );
+  }
+
+  getAgentWakeAcceptanceReceipt(agentId: string): AgentWakeAcceptanceReceipt | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, stable_id, wake_lease_id, fence_token, reserved_generation,
+                reservation_nonce, accepted_at
+         FROM agent_wake_acceptance_receipts WHERE agent_id = ?`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          stable_id: string;
+          wake_lease_id: string;
+          fence_token: number;
+          reserved_generation: number;
+          reservation_nonce: string;
+          accepted_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      stableId: row.stable_id,
+      wakeLeaseId: row.wake_lease_id,
+      fenceToken: row.fence_token,
+      reservedGeneration: row.reserved_generation,
+      reservationNonce: row.reservation_nonce,
+      acceptedAt: row.accepted_at,
+    };
   }
 
   /**
@@ -2915,7 +3019,54 @@ export class BrokerDB implements BrokerDBInterface {
         return { accepted: false as const, reason: "generation_race" };
       }
       db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(input.agentId);
+      // Persist the accepting fence so a crash between this commit and the socket
+      // bind/response can be recovered by an idempotent fenced replay.
+      this.writeWakeAcceptanceReceipt(input, nowMs);
       return { accepted: true as const, runtimeGeneration: input.reservedGeneration };
+    });
+  }
+
+  /**
+   * Atomically settle a wake attempt against the acceptance boundary BEFORE the
+   * orchestrator stops or quarantines a launched-but-unaccepted runtime. This
+   * closes the timeout-boundary race: the socket layer accepts a generation
+   * atomically, so an acceptance can land in the window between the
+   * orchestrator's last waiter read and its decision to stop the attempt. In one
+   * transaction:
+   *
+   *  - If the reserved generation was ALREADY accepted (the agent's
+   *    `runtime_generation` reached `reservedGeneration` — the socket won the
+   *    race), report `{ accepted: true }` and leave the accepted runtime and its
+   *    (already consumed) reservation untouched. The caller must then treat the
+   *    attempt as the live runtime and NEVER stop it.
+   *  - Otherwise, consume ONLY this attempt's exact-nonce reservation, so any
+   *    later registration by the launched runtime can no longer be accepted
+   *    (`no_reservation`). This makes the caller's subsequent prove-stop safe:
+   *    once this returns `{ accepted: false }` the launched runtime can never
+   *    become live. A reservation minted by a superseded/newer attempt (a
+   *    different nonce) is left intact.
+   *
+   * `runtime_generation === reservedGeneration` uniquely identifies acceptance of
+   * THIS attempt because reserved generations are `current_generation + 1` at
+   * reserve time and only advance on acceptance.
+   */
+  finalizeWakeAttempt(input: {
+    agentId: string;
+    reservedGeneration: number;
+    reservationNonce: string;
+  }): { accepted: boolean } {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const row = db
+        .prepare("SELECT runtime_generation FROM agents WHERE id = ?")
+        .get(input.agentId) as { runtime_generation: number } | undefined;
+      if (row && Number(row.runtime_generation) === input.reservedGeneration) {
+        return { accepted: true };
+      }
+      db.prepare(
+        "DELETE FROM agent_wake_reservations WHERE agent_id = ? AND reservation_nonce = ?",
+      ).run(input.agentId, input.reservationNonce);
+      return { accepted: false };
     });
   }
 
@@ -2972,6 +3123,10 @@ export class BrokerDB implements BrokerDBInterface {
         db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(
           input.accept.agentId,
         );
+        // Persist the accepting fence (atomic with the registration + acceptance)
+        // so a crash before this connection is bound/acknowledged can be recovered
+        // by an idempotent fenced replay of the same single-use wake fence.
+        this.writeWakeAcceptanceReceipt(input.accept, nowMs);
         return {
           agent,
           acceptance: {

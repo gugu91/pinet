@@ -229,7 +229,127 @@ async function registerOriginal(): Promise<BrokerClient> {
   return client;
 }
 
+/**
+ * Drive a hibernated identity into the "accepted but crash-stranded, then
+ * recovered to live" state: acquire a wake lease, transition to `waking`,
+ * reserve a generation, ATOMICALLY register+accept it (writing the acceptance
+ * receipt) as the socket layer would, then simulate the crash (release the
+ * orphaned lease) and run crash recovery which promotes the accepted-but-stranded
+ * wake to `live`. Returns the exact wake fence the crashed runtime would replay.
+ */
+async function acceptedCrashStrandedToLive(): Promise<{
+  agentId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+  reservationNonce: string;
+}> {
+  const original = await registerOriginal();
+  const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
+  const orch = orchestratorFor(new E2eProcess(() => original), new E2eTmux(() => ctx.connect()));
+  orch.prepareHibernation(agentId);
+  await orch.hibernate(agentId);
+
+  const now = Date.now();
+  const wakeLeaseId = "wake-crash";
+  const lease = ctx.db.acquireAgentLifecycleLease({
+    agentId,
+    operation: "wake",
+    ownerBrokerInstanceId: "broker-1",
+    leaseId: wakeLeaseId,
+    ttlMs: 90_000,
+    now,
+  })!;
+  ctx.db.transitionAgentLifecycle({
+    agentId,
+    expectedVersion: ctx.db.getAgentById(agentId)!.lifecycleVersion ?? 0,
+    toState: "waking",
+    reason: "wake",
+    actor: "broker",
+    correlationId: "c",
+    fenceToken: lease.fenceToken,
+  });
+  const res = ctx.db.reserveWakeGeneration({
+    agentId,
+    wakeLeaseId,
+    fenceToken: lease.fenceToken,
+    correlationId: "c",
+    now,
+  });
+  const accepted = ctx.db.registerAgentWithGenerationAcceptance({
+    registration: {
+      id: agentId,
+      name: AGENT_NAME,
+      emoji: "🦉",
+      pid: 4242,
+      metadata: { ...AGENT_METADATA },
+      stableId: STABLE_ID,
+    },
+    accept: {
+      agentId,
+      wakeLeaseId,
+      fenceToken: lease.fenceToken,
+      reservedGeneration: res.reservedGeneration,
+      reservationNonce: res.reservationNonce,
+      now,
+    },
+  });
+  expect(accepted.acceptance.accepted).toBe(true);
+  // The register response is "lost to the crash": the connection was never bound.
+  // Release the orphaned lease and run recovery → promote the accepted wake to live.
+  ctx.db.releaseAgentLifecycleLease(agentId, wakeLeaseId, lease.fenceToken);
+  const recovered = orch.recoverStrandedWakes({ now });
+  expect(recovered).toContainEqual({ agentId, action: "completed" });
+  expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("live");
+  return {
+    agentId,
+    wakeLeaseId,
+    fenceToken: lease.fenceToken,
+    reservedGeneration: res.reservedGeneration,
+    reservationNonce: res.reservationNonce,
+  };
+}
+
 describe("hibernation E2E — real socket server + SQLite, fake process/tmux", () => {
+  it("idempotently re-binds a crash-stranded ACCEPTED runtime that replays its wake fence", async () => {
+    // Blocker 2: the socket accepts+commits a generation BEFORE binding the
+    // connection / returning the register response. A crash in that window leaves
+    // an accepted generation whose client still holds (and replays) its single-use
+    // wake fence; recovery promotes it to `live`. The replay must then be re-bound
+    // idempotently via the acceptance receipt rather than rejected and stranded.
+    const fence = await acceptedCrashStrandedToLive();
+
+    const replay = await ctx.connect();
+    const reg = await replay.register(AGENT_NAME, "🦉", { ...AGENT_METADATA }, STABLE_ID, {
+      wakeLeaseId: fence.wakeLeaseId,
+      fenceToken: fence.fenceToken,
+      runtimeGeneration: fence.reservedGeneration,
+      reservationNonce: fence.reservationNonce,
+    });
+    // Idempotent rebind: same identity, generation unchanged, still live+bound.
+    expect(reg.agentId).toBe(fence.agentId);
+    expect(ctx.db.getAgentById(fence.agentId)?.runtimeGeneration).toBe(fence.reservedGeneration);
+    expect(ctx.db.getAgentById(fence.agentId)?.lifecycleState).toBe("live");
+  });
+
+  it("rejects a crash-recovery replay that does not exactly match the acceptance receipt", async () => {
+    // Only an EXACT single-use fence match may idempotently rebind; a mismatched
+    // fence is not the accepted runtime and must be rejected fail-closed.
+    const fence = await acceptedCrashStrandedToLive();
+
+    const replay = await ctx.connect();
+    await expect(
+      replay.register(AGENT_NAME, "🦉", { ...AGENT_METADATA }, STABLE_ID, {
+        wakeLeaseId: fence.wakeLeaseId,
+        fenceToken: fence.fenceToken + 999, // wrong fence
+        runtimeGeneration: fence.reservedGeneration,
+        reservationNonce: fence.reservationNonce,
+      }),
+    ).rejects.toThrow();
+    // The live identity is untouched by the rejected replay.
+    expect(ctx.db.getAgentById(fence.agentId)?.runtimeGeneration).toBe(fence.reservedGeneration);
+  });
+
   it("legacy (non-wake) registration is unaffected by the fence", async () => {
     const client = await ctx.connect();
     const reg = await client.register("Plain Worker", "🤖", undefined, "host:session:plainplain01");

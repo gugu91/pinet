@@ -607,7 +607,7 @@ export class BrokerSocketServer {
       reservedGeneration: number | undefined;
       reservationNonce: string | undefined;
     },
-  ): { rejection: JsonRpcResponse | null; revive?: WakeRevival } {
+  ): { rejection: JsonRpcResponse | null; revive?: WakeRevival; rebind?: { agentId: string } } {
     const { wakeLeaseId, fenceToken, reservedGeneration, reservationNonce } = fence;
     const hasFence =
       wakeLeaseId !== undefined ||
@@ -670,6 +670,39 @@ export class BrokerSocketServer {
       // identity to revive is a stale/mismatched wake — reject fail-closed
       // rather than silently registering a fresh row.
       if (hasFence) {
+        // EXCEPTION — idempotent crash-recovery replay. If the durable row is now
+        // `live` with the generation ALREADY advanced to the reserved generation,
+        // and an exact acceptance receipt matches the presented single-use fence,
+        // this is a runtime whose acceptance committed but whose register RPC
+        // response was lost to a broker crash (recovery then promoted the
+        // accepted-but-stranded wake to `live`). Re-bind it idempotently WITHOUT
+        // accepting a new generation, rather than reject a legitimate,
+        // already-accepted runtime and strand it. Fail-closed: only an EXACT
+        // receipt match on a `live` identity qualifies; the receipt is cleared by
+        // the next wake reservation, so a stale fence cannot rebind during a fresh
+        // wake window. A live duplicate connection is already rejected earlier by
+        // `findLiveStableIdConflict`, so this never double-binds a running runtime.
+        if (
+          lifecycleState === "live" &&
+          existing &&
+          wakeLeaseId !== undefined &&
+          fenceToken !== undefined &&
+          reservedGeneration !== undefined &&
+          reservationNonce !== undefined
+        ) {
+          const receipt = this.db.getAgentWakeAcceptanceReceipt(existing.id);
+          if (
+            receipt &&
+            receipt.stableId === stableId &&
+            receipt.wakeLeaseId === wakeLeaseId &&
+            receipt.fenceToken === fenceToken &&
+            receipt.reservedGeneration === reservedGeneration &&
+            receipt.reservationNonce === reservationNonce &&
+            existing.runtimeGeneration === reservedGeneration
+          ) {
+            return { rejection: null, rebind: { agentId: existing.id } };
+          }
+        }
         return {
           rejection: rpcError(
             req.id,
@@ -778,8 +811,15 @@ export class BrokerSocketServer {
     // A fenced revival targets the existing hibernated row so registerAgent
     // updates it (preserving lifecycle + generation) instead of minting a new
     // one. state.agentId is bound only after full success below, so a failure
-    // path never leaves this connection authorized as the revived agent.
-    const candidateId = wakeFence.revive?.agentId ?? state.agentId ?? crypto.randomUUID();
+    // path never leaves this connection authorized as the revived agent. An
+    // idempotent crash-recovery rebind likewise targets the existing (now `live`)
+    // row: the plain-register branch below updates its pid/metadata and binds the
+    // socket WITHOUT accepting a new generation (already accepted).
+    const candidateId =
+      wakeFence.revive?.agentId ??
+      wakeFence.rebind?.agentId ??
+      state.agentId ??
+      crypto.randomUUID();
     const resolved = this.agentRegistrationResolver?.({
       agentId: candidateId,
       name: requestedName,
