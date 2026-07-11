@@ -210,6 +210,28 @@ export function buildAgentLifecycleStatus(input: AgentLifecycleStatusInput): Age
 }
 
 /**
+ * Render a single scannable, operator-safe lifecycle tag for inline use in the
+ * `agents`/`sessions` compact read paths. Sanitized: state, generation, queue
+ * position, checkpoint age/safety, and refusal/quarantine reason code only.
+ */
+export function formatAgentLifecycleTag(status: AgentLifecycleStatus): string {
+  const parts: string[] = [status.state];
+  if (status.runtimeGeneration !== null) parts.push(`gen${status.runtimeGeneration}`);
+  if (status.wake.queued && status.wake.position !== null) parts.push(`q#${status.wake.position}`);
+  if (status.checkpoint.present) {
+    const age =
+      status.checkpoint.ageMs === null ? "?" : `${Math.round(status.checkpoint.ageMs / 1000)}s`;
+    parts.push(`ckpt ${age}${status.checkpoint.hibernateSafe === false ? " unsafe" : ""}`);
+  }
+  if (status.quarantined) {
+    parts.push(`\u26a0${status.refusal ? ` ${status.refusal.reason}` : ""}`);
+  } else if (status.refusal) {
+    parts.push(`refused:${status.refusal.reason}`);
+  }
+  return parts.join(" \u00b7 ");
+}
+
+/**
  * Render a compact, operator-safe status block. Contains only sanitized
  * lifecycle facts — never prompts, message bodies, tokens, argv, env values, or
  * filesystem paths.
