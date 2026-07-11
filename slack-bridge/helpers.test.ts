@@ -279,6 +279,25 @@ describe("loadSettings", () => {
 });
 
 describe("resolvePinetMeshAuth", () => {
+  // Keep these cases hermetic: several spread `...process.env`, so an ambient
+  // PINET_MESH_SECRET/PINET_MESH_SECRET_PATH in the broker shell would leak in.
+  // Save/clear/restore the values without ever reading or exposing them.
+  const meshEnvKeys = ["PINET_MESH_SECRET", "PINET_MESH_SECRET_PATH"] as const;
+  const savedMeshEnv: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const key of meshEnvKeys) {
+      savedMeshEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+  afterEach(() => {
+    for (const key of meshEnvKeys) {
+      const original = savedMeshEnv[key];
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+    }
+  });
+
   it("returns nulls when no mesh auth is configured", () => {
     expect(resolvePinetMeshAuth({}, {})).toEqual({
       meshSecret: null,

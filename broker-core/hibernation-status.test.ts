@@ -1,0 +1,256 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildAgentLifecycleStatus,
+  formatAgentLifecycleStatus,
+  redactRuntimeSpec,
+  type AgentLifecycleStatusInput,
+} from "./hibernation-status.js";
+import type { AgentCheckpointReceipt, AgentRuntimeSpec, AgentWakeQueueEntry } from "./types.js";
+
+function runtimeSpec(overrides: Partial<AgentRuntimeSpec> = {}): AgentRuntimeSpec {
+  return {
+    agentId: "agent-a",
+    stableId: "stable-a",
+    brokerOwnerId: "broker-1",
+    cwd: "/Users/secret/work/extensions",
+    repoRoot: "/Users/secret/work/extensions",
+    worktreePath: "/Users/secret/work/extensions/.worktrees/x",
+    tmuxSocket: "/private/tmp/tmux-501/pinet",
+    tmuxSession: "pinet-agent-a",
+    tmuxTarget: "pinet-agent-a:0.0",
+    executable: "/opt/homebrew/bin/pi",
+    argv: ["--model", "openai-codex/gpt-5.6-sol", "--secret-flag", "hunter2"],
+    envAllowlist: ["PATH", "HOME", "PINET_MESH_SECRET"],
+    sessionResumeRef: "session:1a2b3c4d5e6f",
+    configFingerprint: "cfg-abc123",
+    expectedHost: "mac-1",
+    expectedUser: "secret",
+    launchSource: "broker",
+    createdAt: "2026-07-11T07:00:00.000Z",
+    updatedAt: "2026-07-11T07:30:00.000Z",
+    ...overrides,
+  };
+}
+
+function baseInput(overrides: Partial<AgentLifecycleStatusInput> = {}): AgentLifecycleStatusInput {
+  return {
+    agent: {
+      id: "agent-a",
+      lifecycleState: "hibernated",
+      lifecycleVersion: 4,
+      runtimeGeneration: 7,
+      hibernatePolicy: "auto",
+      hibernatedAt: "2026-07-11T07:30:00.000Z",
+      graceUntil: null,
+      idleEligibleAt: null,
+      hibernateReason: "idle_debounce",
+      lastWakeReason: null,
+    },
+    now: Date.parse("2026-07-11T07:35:00.000Z"),
+    ...overrides,
+  };
+}
+
+describe("redactRuntimeSpec", () => {
+  it("exposes only presence flags, counts, and opaque refs — never argv/env/paths", () => {
+    const redacted = redactRuntimeSpec(runtimeSpec());
+    expect(redacted.hasWorktree).toBe(true);
+    expect(redacted.hasTmuxSession).toBe(true);
+    expect(redacted.envAllowlistCount).toBe(3);
+    expect(redacted.repo).toBe("extensions");
+    expect(redacted.session).toEqual({
+      kind: "session",
+      ref: "session:1a2b3c4d5e6f",
+      host: "mac-1",
+      hasPath: false,
+    });
+
+    const serialized = JSON.stringify(redacted);
+    // No raw argv values, env values, or filesystem/socket paths leak.
+    expect(serialized).not.toContain("hunter2");
+    expect(serialized).not.toContain("--secret-flag");
+    expect(serialized).not.toContain("/Users/secret");
+    expect(serialized).not.toContain("/private/tmp");
+    expect(serialized).not.toContain("pinet-agent-a");
+  });
+
+  it("marks unknown session kinds when the ref prefix is unrecognized", () => {
+    const redacted = redactRuntimeSpec(runtimeSpec({ sessionResumeRef: "opaque-ref-no-colon" }));
+    expect(redacted.session.kind).toBe("unknown");
+  });
+});
+
+describe("buildAgentLifecycleStatus", () => {
+  it("summarizes state, generation, checkpoint age, and redacted runtime-spec presence", () => {
+    const checkpoint: AgentCheckpointReceipt = {
+      agentId: "agent-a",
+      runtimeGeneration: 7,
+      correlationId: "corr-1",
+      hibernateSafe: true,
+      reason: null,
+      sessionResumeRef: "session:1a2b3c4d5e6f",
+      pendingInboxCount: 2,
+      rssBytes: 1024,
+      createdAt: "2026-07-11T07:30:00.000Z",
+    };
+    const status = buildAgentLifecycleStatus(
+      baseInput({ latestCheckpoint: checkpoint, runtimeSpec: runtimeSpec() }),
+    );
+    expect(status.state).toBe("hibernated");
+    expect(status.runtimeGeneration).toBe(7);
+    expect(status.checkpoint.present).toBe(true);
+    expect(status.checkpoint.hibernateSafe).toBe(true);
+    expect(status.checkpoint.ageMs).toBe(5 * 60_000);
+    expect(status.checkpoint.pendingInboxCount).toBe(2);
+    expect(status.runtimeSpec?.hasWorktree).toBe(true);
+    expect(status.runtimeSpec?.envAllowlistCount).toBe(3);
+    expect(status.quarantined).toBe(false);
+  });
+
+  it("reports 1-based wake queue position and reason within the ordered queue", () => {
+    const queue: AgentWakeQueueEntry[] = [
+      {
+        id: 1,
+        agentId: "agent-b",
+        repoRoot: null,
+        triggerKind: "direct_a2a",
+        triggerMessageId: null,
+        priority: 0,
+        reason: "b work",
+        correlationId: "c-b",
+        status: "queued",
+        attempt: 0,
+        enqueuedAt: "2026-07-11T07:31:00.000Z",
+        updatedAt: "2026-07-11T07:31:00.000Z",
+      },
+      {
+        id: 2,
+        agentId: "agent-a",
+        repoRoot: null,
+        triggerKind: "slack_thread",
+        triggerMessageId: 42,
+        priority: 5,
+        reason: "slack reply",
+        correlationId: "c-a",
+        status: "queued",
+        attempt: 1,
+        enqueuedAt: "2026-07-11T07:32:00.000Z",
+        updatedAt: "2026-07-11T07:32:00.000Z",
+      },
+    ];
+    const status = buildAgentLifecycleStatus(baseInput({ orderedWakeQueue: queue }));
+    expect(status.wake.queued).toBe(true);
+    expect(status.wake.position).toBe(2);
+    expect(status.wake.triggerKind).toBe("slack_thread");
+    expect(status.wake.reason).toBe("slack reply");
+    expect(status.wake.attempt).toBe(1);
+  });
+
+  it("surfaces bounded capacity with at-capacity flags", () => {
+    const status = buildAgentLifecycleStatus(
+      baseInput({
+        capacity: {
+          maxConcurrentWakes: 2,
+          inflightWakes: 2,
+          maxConcurrentWakesPerRepo: 1,
+          inflightWakesForRepo: 0,
+        },
+      }),
+    );
+    expect(status.capacity?.global).toEqual({ inflight: 2, max: 2, atCapacity: true });
+    expect(status.capacity?.repo).toEqual({ inflight: 0, max: 1, atCapacity: false });
+  });
+
+  it("surfaces the most recent non-accepted lifecycle outcome as the refusal cause", () => {
+    const status = buildAgentLifecycleStatus(
+      baseInput({
+        recentEvents: [
+          {
+            id: 1,
+            correlationId: "c1",
+            agentId: "agent-a",
+            fromState: "waking",
+            toState: "waking",
+            lifecycleVersion: 4,
+            fenceToken: 9,
+            reason: "wake",
+            triggerSource: "manual",
+            actor: "broker",
+            outcome: "stale_fence",
+            errorCode: "WAKE_FENCE_REJECTED",
+            queueDepth: null,
+            oldestQueueAgeMs: null,
+            durationMs: null,
+            rssBytesBefore: null,
+            rssBytesAfter: null,
+            createdAt: "2026-07-11T07:33:00.000Z",
+          },
+          {
+            id: 2,
+            correlationId: "c2",
+            agentId: "agent-a",
+            fromState: "idle",
+            toState: "hibernated",
+            lifecycleVersion: 4,
+            fenceToken: null,
+            reason: "idle",
+            triggerSource: null,
+            actor: "broker",
+            outcome: "accepted",
+            errorCode: null,
+            queueDepth: null,
+            oldestQueueAgeMs: null,
+            durationMs: null,
+            rssBytesBefore: null,
+            rssBytesAfter: null,
+            createdAt: "2026-07-11T07:30:00.000Z",
+          },
+        ],
+      }),
+    );
+    expect(status.refusal).toEqual({
+      reason: "WAKE_FENCE_REJECTED",
+      outcome: "stale_fence",
+      at: "2026-07-11T07:33:00.000Z",
+    });
+  });
+
+  it("flags reap-candidate quarantine", () => {
+    const status = buildAgentLifecycleStatus(
+      baseInput({ agent: { ...baseInput().agent, lifecycleState: "reap-candidate" } }),
+    );
+    expect(status.quarantined).toBe(true);
+  });
+});
+
+describe("formatAgentLifecycleStatus", () => {
+  it("renders an operator-safe block without argv/env/paths", () => {
+    const status = buildAgentLifecycleStatus(
+      baseInput({
+        runtimeSpec: runtimeSpec(),
+        capacity: {
+          maxConcurrentWakes: 2,
+          inflightWakes: 1,
+          maxConcurrentWakesPerRepo: 1,
+          inflightWakesForRepo: 1,
+        },
+      }),
+    );
+    const text = formatAgentLifecycleStatus(status);
+    expect(text).toContain("agent-a: hibernated");
+    expect(text).toContain("gen 7");
+    expect(text).toContain("runtime spec: present");
+    expect(text).toContain("env_allow=3");
+    expect(text).toContain("repo=extensions");
+    expect(text).toContain("(at capacity)");
+    expect(text).not.toContain("hunter2");
+    expect(text).not.toContain("/Users/secret");
+    expect(text).not.toMatch(/prompt|token|secret/i);
+  });
+
+  it("flags a missing runtime spec for a durable hibernation state", () => {
+    const status = buildAgentLifecycleStatus(baseInput({ runtimeSpec: null }));
+    const text = formatAgentLifecycleStatus(status);
+    expect(text).toContain("runtime spec: MISSING");
+  });
+});
