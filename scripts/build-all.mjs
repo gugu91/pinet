@@ -20,6 +20,7 @@ export const buildTiers = [
     "model-aware-compaction",
   ],
   ["broker-core", "imessage-bridge"],
+  ["superhuman-send-executor"],
   ["pinet-core"],
   ["slack-bridge"],
 ];

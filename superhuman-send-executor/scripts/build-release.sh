@@ -15,6 +15,21 @@ trap '/bin/rm -rf "$PRIVATE_STAGE"' EXIT HUP INT TERM
 /usr/bin/install -d "$PRIVATE_STAGE/source"
 /usr/bin/git -C "$REPOSITORY" archive HEAD | /usr/bin/tar -x -C "$PRIVATE_STAGE/source"
 ROOT="$PRIVATE_STAGE/source"
+REVIEWED_INPUTS="$ROOT/superhuman-send-executor/release/reviewed-inputs.env"
+NODE_SHA256=$(/usr/bin/awk -F= '$1 == "node_sha256" { print $2 }' "$REVIEWED_INPUTS")
+SHM_SHA256=$(/usr/bin/awk -F= '$1 == "shm_sha256" { print $2 }' "$REVIEWED_INPUTS")
+case "$NODE_SHA256:$SHM_SHA256" in
+  UNPINNED:*|*:UNPINNED|*[!a-f0-9:]*|*:*:*|????????????????????????????????????????????????????????????????:????????????????????????????????????????????????????????????????) ;;
+  *) echo "reviewed release input hashes are missing or invalid" >&2; exit 1 ;;
+esac
+[ "$NODE_SHA256" != "UNPINNED" ] && [ "$SHM_SHA256" != "UNPINNED" ] || {
+  echo "reviewed release input hashes are not pinned at exact HEAD" >&2
+  exit 1
+}
+ACTUAL_NODE_SHA256=$(/usr/bin/shasum -a 256 "$PRIVATE_STAGE/node" | /usr/bin/awk '{print $1}')
+ACTUAL_SHM_SHA256=$(/usr/bin/shasum -a 256 "$PRIVATE_STAGE/shm" | /usr/bin/awk '{print $1}')
+[ "$ACTUAL_NODE_SHA256" = "$NODE_SHA256" ] || { echo "Node does not match reviewed input hash" >&2; exit 1; }
+[ "$ACTUAL_SHM_SHA256" = "$SHM_SHA256" ] || { echo "shm does not match reviewed input hash" >&2; exit 1; }
 (cd "$ROOT" && pnpm install --offline --frozen-lockfile --ignore-scripts)
 NODE_BIN="$PRIVATE_STAGE/node"
 SHM_BIN="$PRIVATE_STAGE/shm"

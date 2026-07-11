@@ -14,12 +14,14 @@ const expectedBuildPackages = [
   "openai-execution-shaping",
   "model-aware-compaction",
   "slack-bridge",
+  "superhuman-send-executor",
 ];
 
 const distExportDependencies = {
   "broker-core": ["transport-core"],
   "imessage-bridge": ["transport-core"],
   "pinet-core": ["broker-core", "transport-core"],
+  "superhuman-send-executor": ["broker-core", "transport-core"],
   "slack-bridge": ["broker-core", "imessage-bridge", "pinet-core", "transport-core"],
 };
 

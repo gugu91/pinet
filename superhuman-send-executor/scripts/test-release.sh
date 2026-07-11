@@ -34,9 +34,8 @@ EOF
 cat >"$TMP/trust.json" <<'EOF'
 {"expectedPrincipal":"U0AF5S3LQ5C","brokerCoreVersion":"0.2.4","callerGid":20,"approvalAuditPath":"/var/db/pinet/approval.sqlite","pinnedIssuerKeys":[{"keyId":"test","publicKeyPem":"test"}]}
 EOF
-"$ROOT/superhuman-send-executor/scripts/build-release.sh" "$TMP/node" "$TMP/shm" "$TMP/trust.json" - "$TMP/Executor.app"
-/usr/bin/codesign --verify --deep --strict "$TMP/Executor.app"
-if /usr/bin/grep -R -q REPLACE_DURING_SIGNED_RELEASE "$TMP/Executor.app"; then
-  echo "release retained fail-closed hash sentinel" >&2
+if "$ROOT/superhuman-send-executor/scripts/build-release.sh" "$TMP/node" "$TMP/shm" "$TMP/trust.json" - "$TMP/Executor.app" 2>"$TMP/build.err"; then
+  echo "release unexpectedly accepted unpinned Node/shm inputs" >&2
   exit 1
 fi
+/usr/bin/grep -q "reviewed release input hashes are not pinned at exact HEAD" "$TMP/build.err"
