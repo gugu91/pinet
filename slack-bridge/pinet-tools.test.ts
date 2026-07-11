@@ -824,7 +824,15 @@ describe("registerPinetTools", () => {
     })) as { content: Array<{ text: string }> };
 
     expectJsonStatus(result.content[0]?.text, "succeeded");
-    expect(result.content[0]?.text).toContain('"args_schema"');
+    const envelope = JSON.parse(result.content[0]?.text ?? "{}") as {
+      data?: { details?: { fullOutputPath?: string } };
+    };
+    const fullOutputPath = envelope.data?.details?.fullOutputPath;
+    if (fullOutputPath) {
+      expect(readFileSync(fullOutputPath, "utf8")).toContain('"args_schema"');
+    } else {
+      expect(result.content[0]?.text).toContain('"args_schema"');
+    }
   });
 
   it("preserves valid structured help output flags when a sibling output flag is invalid", async () => {

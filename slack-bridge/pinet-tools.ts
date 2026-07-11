@@ -545,7 +545,8 @@ function wrapDispatcherEnvelope(
   displayText?: string;
 } {
   const structuredEnvelopeText = JSON.stringify(envelope, null, output.full ? 2 : 0);
-  const renderedText = shouldRenderStructuredPinetEnvelope(envelope, output)
+  const renderStructured = shouldRenderStructuredPinetEnvelope(envelope, output);
+  const renderedText = renderStructured
     ? structuredEnvelopeText
     : getPinetEnvelopeCliText(envelope);
   const data =
@@ -665,7 +666,7 @@ function wrapDispatcherEnvelope(
       envelope.errors,
       [...envelope.warnings, warning],
     );
-    returnedText = shouldRenderStructuredPinetEnvelope(returnedEnvelope, output)
+    returnedText = renderStructured
       ? JSON.stringify(returnedEnvelope, null, output.full ? 2 : 0)
       : getPinetEnvelopeCliText(returnedEnvelope);
     returnedDisplayText = getPinetEnvelopeCliText(returnedEnvelope);
