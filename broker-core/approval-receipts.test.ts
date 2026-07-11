@@ -2,8 +2,9 @@ import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  APPROVAL_SIGNATURE_ALGORITHM,
   ApprovalAuditStore,
   ApprovalReceiptVerifier,
   ApprovalSignerPreSignRejection,
@@ -15,6 +16,7 @@ import {
   type ApprovalEnvelope,
   type ApprovalReceipt,
   type ApprovalSigner,
+  type ApprovalSignerResponse,
   type ExpectedApproval,
   type PinnedApprovalSignatureVerifier,
   type SlackApprovalContextAuthenticator,
@@ -102,6 +104,8 @@ describe("broker-core approval receipts", () => {
       issueApproval: async (claims: ApprovalClaims) => {
         signerCalls += 1;
         return {
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: "synthetic-test-root",
           signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
             "base64url",
           ),
@@ -109,6 +113,7 @@ describe("broker-core approval receipts", () => {
       },
     };
     pinnedVerifier = {
+      algorithm: APPROVAL_SIGNATURE_ALGORITHM,
       keyId: "synthetic-test-root",
       verify: (canonicalClaims, signature) =>
         verify(null, Buffer.from(canonicalClaims), publicKey, Buffer.from(signature, "base64url")),
@@ -129,6 +134,7 @@ describe("broker-core approval receipts", () => {
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       signer,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
     );
@@ -141,6 +147,7 @@ describe("broker-core approval receipts", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     audit.close();
     rmSync(directory, { recursive: true, force: true });
   });
@@ -192,6 +199,7 @@ describe("broker-core approval receipts", () => {
     const wrongPrincipalIssuer = new SlackApprovalIssuer(
       wrongPrincipalAuthenticator as SlackV0ApprovalContextAuthenticator,
       signer,
+      pinnedVerifier,
       audit,
     );
     await expect(
@@ -575,6 +583,8 @@ describe("broker-core approval receipts", () => {
         signedClaims = claims;
         await signerGate;
         return {
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: "synthetic-test-root",
           signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
             "base64url",
           ),
@@ -584,6 +594,7 @@ describe("broker-core approval receipts", () => {
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       gatedSigner,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
     );
@@ -644,6 +655,101 @@ describe("broker-core approval receipts", () => {
     expect(signerCalls).toBe(1);
   });
 
+  it.each([
+    {
+      name: "malformed base64url encoding",
+      alter: (valid: ApprovalSignerResponse): ApprovalSignerResponse => ({
+        ...valid,
+        signature: `${valid.signature}=`,
+      }),
+      error: "base64url encoding",
+    },
+    {
+      name: "wrong decoded signature length",
+      alter: (valid: ApprovalSignerResponse): ApprovalSignerResponse => ({
+        ...valid,
+        signature: Buffer.alloc(63).toString("base64url"),
+      }),
+      error: "exactly 64 bytes",
+    },
+    {
+      name: "wrong keyId",
+      alter: (valid: ApprovalSignerResponse): ApprovalSignerResponse => ({
+        ...valid,
+        keyId: "attacker-root",
+      }),
+      error: "keyId",
+    },
+    {
+      name: "wrong algorithm",
+      alter: (valid: ApprovalSignerResponse): ApprovalSignerResponse => ({
+        ...valid,
+        algorithm: "RSA" as typeof APPROVAL_SIGNATURE_ALGORITHM,
+      }),
+      error: "algorithm",
+    },
+    {
+      name: "wrong Ed25519 signature",
+      alter: (valid: ApprovalSignerResponse): ApprovalSignerResponse => ({
+        ...valid,
+        signature: Buffer.alloc(64).toString("base64url"),
+      }),
+      error: "signature is invalid",
+    },
+  ])(
+    "fails closed on $name and reconciles the same operation identity",
+    async ({ alter, error }) => {
+      const finalizeSpy = vi.spyOn(audit, "finalize");
+      const operationIds: string[] = [];
+      let first = true;
+      const validatingSigner: ApprovalSigner = {
+        keyId: "synthetic-test-root",
+        issueApproval: async (claims, request) => {
+          operationIds.push(request.operationId);
+          const valid: ApprovalSignerResponse = {
+            algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+            keyId: "synthetic-test-root",
+            signature: sign(
+              null,
+              Buffer.from(serializeApprovalClaims(claims)),
+              privateKey,
+            ).toString("base64url"),
+          };
+          if (first) {
+            first = false;
+            return alter(valid);
+          }
+          return valid;
+        },
+      };
+      issuer = new SlackApprovalIssuer(
+        contextAuthenticator as SlackV0ApprovalContextAuthenticator,
+        validatingSigner,
+        pinnedVerifier,
+        audit,
+        () => new Date(nowMs),
+        { signerTimeoutMs: 10, reservationLeaseMs: 30 },
+      );
+
+      await expect(issue()).rejects.toThrow(error);
+      expect(finalizeSpy).not.toHaveBeenCalled();
+      expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")).toBeNull();
+      await expect(issue()).rejects.toThrow("already reserved");
+      nowMs += 31;
+      const reconciled = await issue();
+
+      expect(operationIds).toHaveLength(2);
+      expect(operationIds[1]).toBe(operationIds[0]);
+      expect(finalizeSpy).toHaveBeenCalledTimes(1);
+      expect(() =>
+        receiptVerifier.verifyAndConsume(reconciled, expected(reconciled)),
+      ).not.toThrow();
+      expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")?.state).toBe(
+        "consumed",
+      );
+    },
+  );
+
   it("releases only an operation-bound definitive pre-sign rejection", async () => {
     let fail = true;
     const failOnceSigner: ApprovalSigner = {
@@ -657,6 +763,8 @@ describe("broker-core approval receipts", () => {
           );
         }
         return {
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: "synthetic-test-root",
           signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
             "base64url",
           ),
@@ -666,6 +774,7 @@ describe("broker-core approval receipts", () => {
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       failOnceSigner,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
     );
@@ -683,6 +792,7 @@ describe("broker-core approval receipts", () => {
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       mismatchedSigner,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
     );
@@ -702,6 +812,8 @@ describe("broker-core approval receipts", () => {
           throw new Error("transport disconnected after request delivery");
         }
         return {
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: "synthetic-test-root",
           signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
             "base64url",
           ),
@@ -711,6 +823,7 @@ describe("broker-core approval receipts", () => {
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       ambiguousOnceSigner,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
       { signerTimeoutMs: 10, reservationLeaseMs: 30 },
@@ -731,6 +844,7 @@ describe("broker-core approval receipts", () => {
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       hungSigner,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
       { signerTimeoutMs: 10, reservationLeaseMs: 50 },
@@ -739,7 +853,9 @@ describe("broker-core approval receipts", () => {
     await expect(issue()).rejects.toThrow("already reserved");
   });
 
-  it("fences an abort-ignoring stale signer completion from finalizing or deleting its successor", async () => {
+  it("lets a successor win while an abort-ignoring signer remains live, then fences its late finalize", async () => {
+    vi.useFakeTimers();
+    const finalizeSpy = vi.spyOn(audit, "finalize");
     const operationIds: string[] = [];
     let firstSignal: AbortSignal | undefined;
     let resolveFirst: (() => void) | undefined;
@@ -748,46 +864,61 @@ describe("broker-core approval receipts", () => {
       keyId: "synthetic-test-root",
       issueApproval: (claims, request) => {
         operationIds.push(request.operationId);
-        const signature = sign(
-          null,
-          Buffer.from(serializeApprovalClaims(claims)),
-          privateKey,
-        ).toString("base64url");
+        const response = {
+          algorithm: APPROVAL_SIGNATURE_ALGORITHM,
+          keyId: "synthetic-test-root",
+          signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
+            "base64url",
+          ),
+        };
         if (operationIds.length === 1) {
           firstSignal = request.signal;
           return new Promise((resolve) => {
-            resolveFirst = () => resolve({ signature });
+            resolveFirst = () => resolve(response);
           });
         }
         return new Promise((resolve) => {
-          resolveSuccessor = () => resolve({ signature });
+          resolveSuccessor = () => resolve(response);
         });
       },
     };
     issuer = new SlackApprovalIssuer(
       contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       recoveringSigner,
+      pinnedVerifier,
       audit,
       () => new Date(nowMs),
       { signerTimeoutMs: 100, reservationLeaseMs: 200 },
     );
-    await expect(issue()).rejects.toThrow("timed out");
+    const original = issue();
+    const originalOutcome = expect(original).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(100);
+    await originalOutcome;
     expect(firstSignal?.aborted).toBe(true);
 
     nowMs += 201;
     const successor = issue();
+    await Promise.resolve();
     expect(operationIds).toHaveLength(2);
     expect(operationIds[1]).toBe(operationIds[0]);
+
+    resolveSuccessor?.();
+    const successorReceipt = await successor;
+    expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")?.state).toBe("active");
 
     resolveFirst?.();
     await Promise.resolve();
     await Promise.resolve();
-    expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")).toBeNull();
-    await expect(issue()).rejects.toThrow("already reserved");
-
-    resolveSuccessor?.();
-    await expect(successor).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+    expect(finalizeSpy).toHaveBeenCalledTimes(2);
+    expect(finalizeSpy.mock.results.map((result) => result.type)).toEqual(["return", "throw"]);
     expect(issuer.status(contextFor("approval-1", envelope()), "approval-1")?.state).toBe("active");
+
+    expect(() =>
+      receiptVerifier.verifyAndConsume(successorReceipt, expected(successorReceipt)),
+    ).not.toThrow();
+    expect(() =>
+      receiptVerifier.verifyAndConsume(successorReceipt, expected(successorReceipt)),
+    ).toThrow("consumed");
   });
 
   it("enforces TTL and complete To/Cc/Bcc and screenshot validation", async () => {

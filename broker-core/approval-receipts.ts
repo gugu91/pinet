@@ -6,6 +6,7 @@ import type {
 } from "./slack-approval-authenticator.js";
 
 export const APPROVAL_RECEIPT_VERSION = "shm-approval-receipt/v1" as const;
+export const APPROVAL_SIGNATURE_ALGORITHM = "Ed25519" as const;
 export const MAX_APPROVAL_TTL_MS = 5 * 60 * 1000;
 export const DEFAULT_SIGNER_TIMEOUT_MS = 15_000;
 export const DEFAULT_RESERVATION_LEASE_MS = 30_000;
@@ -75,16 +76,22 @@ export class ApprovalSignerPreSignRejection extends Error {
   }
 }
 
+export interface ApprovalSignerResponse {
+  readonly algorithm: typeof APPROVAL_SIGNATURE_ALGORITHM;
+  readonly keyId: string;
+  readonly signature: string;
+}
+
 export interface ApprovalSigner {
   readonly keyId: string;
   /**
    * The external signer must provide durable idempotency/single-flight by
-   * operationId, returning the same signature for an already completed call.
+   * operationId, returning the same complete response for an already completed call.
    */
   issueApproval(
     claims: ApprovalClaims,
     request: ApprovalSignerRequest,
-  ): Promise<{ readonly signature: string }>;
+  ): Promise<ApprovalSignerResponse>;
 }
 
 /** Transport data passed through unchanged to the configured authenticator. */
@@ -124,6 +131,7 @@ export interface ExpectedApproval {
 
 /** Pinned deployment trust object. Callers never supply a public key per receipt. */
 export interface PinnedApprovalSignatureVerifier {
+  readonly algorithm: typeof APPROVAL_SIGNATURE_ALGORITHM;
   readonly keyId: string;
   verify(canonicalClaims: string, signature: string): boolean;
 }
@@ -361,7 +369,44 @@ function assertReceiptShape(receipt: ApprovalReceipt): void {
     "claims",
   );
   validateEnvelope(receipt.claims.envelope);
-  requireText(receipt.signature, "signature");
+  assertCanonicalEd25519Signature(receipt.signature);
+}
+
+function assertCanonicalEd25519Signature(signature: string): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(signature)) {
+    throw new Error("Approval signature must use strict unpadded base64url encoding");
+  }
+  const decoded = Buffer.from(signature, "base64url");
+  if (decoded.length !== 64) {
+    throw new Error("Approval Ed25519 signature must decode to exactly 64 bytes");
+  }
+  if (decoded.toString("base64url") !== signature) {
+    throw new Error("Approval signature must use canonical base64url encoding");
+  }
+}
+
+// agent-standards-ignore prefer-inline-single-use-helper: signer response validation is the durable-finalization trust boundary
+function validateSignerResponse(
+  response: ApprovalSignerResponse,
+  claims: ApprovalClaims,
+  signerKeyId: string,
+  pinnedVerifier: PinnedApprovalSignatureVerifier,
+): string {
+  if (typeof response !== "object" || response === null) {
+    throw new Error("Approval signer response is malformed");
+  }
+  assertExactKeys(response, ["algorithm", "keyId", "signature"], "signer response");
+  if (response.algorithm !== APPROVAL_SIGNATURE_ALGORITHM) {
+    throw new Error("Approval signer response algorithm must be Ed25519");
+  }
+  if (response.keyId !== signerKeyId || response.keyId !== claims.keyId) {
+    throw new Error("Approval signer response keyId does not match the expected signing key");
+  }
+  assertCanonicalEd25519Signature(response.signature);
+  if (!pinnedVerifier.verify(serializeApprovalClaims(claims), response.signature)) {
+    throw new Error("Approval signer response signature is invalid");
+  }
+  return response.signature;
 }
 
 // agent-standards-ignore prefer-inline-single-use-helper: exhaustive delivery matching is a reviewable semantic boundary
@@ -684,11 +729,19 @@ export class SlackApprovalIssuer {
   constructor(
     private readonly contextAuthenticator: SlackV0ApprovalContextAuthenticator,
     private readonly signer: ApprovalSigner,
+    private readonly pinnedSignerVerifier: PinnedApprovalSignatureVerifier,
     private readonly audit: ApprovalAuditStore,
     private readonly now: () => Date = () => new Date(),
     options: SlackApprovalIssuerOptions = {},
   ) {
     requireText(signer.keyId, "signer.keyId");
+    requireText(pinnedSignerVerifier.keyId, "pinnedSignerVerifier.keyId");
+    if (pinnedSignerVerifier.algorithm !== APPROVAL_SIGNATURE_ALGORITHM) {
+      throw new Error("pinnedSignerVerifier.algorithm must be Ed25519");
+    }
+    if (pinnedSignerVerifier.keyId !== signer.keyId) {
+      throw new Error("Signer keyId does not match pinned signer verifier");
+    }
     this.signerTimeoutMs = options.signerTimeoutMs ?? DEFAULT_SIGNER_TIMEOUT_MS;
     this.reservationLeaseMs = options.reservationLeaseMs ?? DEFAULT_RESERVATION_LEASE_MS;
     if (!Number.isInteger(this.signerTimeoutMs) || this.signerTimeoutMs <= 0) {
@@ -746,11 +799,37 @@ export class SlackApprovalIssuer {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const signed = await Promise.race([
-        this.signer.issueApproval(claims, {
-          operationId: reservation.operationId,
-          signal: controller.signal,
-        }),
+      const issuance = Promise.resolve()
+        .then(() =>
+          this.signer.issueApproval(claims, {
+            operationId: reservation.operationId,
+            signal: controller.signal,
+          }),
+        )
+        .then((signed) => {
+          const receipt = Object.freeze({
+            claims,
+            signature: validateSignerResponse(
+              signed,
+              claims,
+              this.signer.keyId,
+              this.pinnedSignerVerifier,
+            ),
+          });
+          this.audit.finalize(receipt, reservation);
+          return receipt;
+        })
+        .catch((error: Error) => {
+          if (
+            error instanceof ApprovalSignerPreSignRejection &&
+            error.operationId === reservation.operationId
+          ) {
+            this.audit.releasePreSignRejectedReservation(claims.approvalId, reservation);
+          }
+          throw error;
+        });
+      return await Promise.race([
+        issuance,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => {
             controller.abort();
@@ -758,20 +837,6 @@ export class SlackApprovalIssuer {
           }, this.signerTimeoutMs);
         }),
       ]);
-      const receipt = Object.freeze({
-        claims,
-        signature: requireText(signed.signature, "signature"),
-      });
-      this.audit.finalize(receipt, reservation);
-      return receipt;
-    } catch (error) {
-      if (
-        error instanceof ApprovalSignerPreSignRejection &&
-        error.operationId === reservation.operationId
-      ) {
-        this.audit.releasePreSignRejectedReservation(claims.approvalId, reservation);
-      }
-      throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -832,6 +897,9 @@ export class ApprovalReceiptVerifier {
   ) {
     requireText(expectedPrincipal, "expectedPrincipal");
     requireText(pinnedVerifier.keyId, "pinnedVerifier.keyId");
+    if (pinnedVerifier.algorithm !== APPROVAL_SIGNATURE_ALGORITHM) {
+      throw new Error("pinnedVerifier.algorithm must be Ed25519");
+    }
   }
 
   verifyAndConsume(receipt: ApprovalReceipt, expectedInput: ExpectedApproval): void {
