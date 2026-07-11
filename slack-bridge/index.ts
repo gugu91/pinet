@@ -975,9 +975,24 @@ export default function (pi: ExtensionAPI) {
       allowedRepos: hib.allowedRepos,
     };
     const state = (agent.lifecycleState ?? "live") as AgentLifecycleState;
-    const repoRootRaw = agent.metadata?.repoRoot;
-    const repoRoot = typeof repoRootRaw === "string" ? repoRootRaw : null;
-    const repoIdentifier = repoRoot ? (repoRoot.split("/").filter(Boolean).pop() ?? null) : null;
+    // Provenance: prefer the broker-authored durable runtime spec's repoRoot
+    // (captured at spawn) over mutable, agent-declared metadata so a worker
+    // cannot self-declare its way into the allowlist. Derive an owner/repo slug
+    // (last two path segments) when available so operators can allowlist either
+    // an exact "owner/repo" slug or a bare basename without basename collapse.
+    const specRepoRoot = db.getAgentRuntimeSpec(agent.id)?.repoRoot;
+    const repoRootRaw =
+      typeof specRepoRoot === "string" && specRepoRoot.length > 0
+        ? specRepoRoot
+        : agent.metadata?.repoRoot;
+    const repoSegments =
+      typeof repoRootRaw === "string" ? repoRootRaw.split("/").filter(Boolean) : [];
+    const repoIdentifier =
+      repoSegments.length >= 2
+        ? `${repoSegments[repoSegments.length - 2]}/${repoSegments[repoSegments.length - 1]}`
+        : repoSegments.length === 1
+          ? repoSegments[0]
+          : null;
 
     // Live process/tmux checkpoint/respawn adapters are a separate, explicitly
     // gated activation step (default-off, unactivated). In the default disabled
@@ -1404,13 +1419,13 @@ export default function (pi: ExtensionAPI) {
       runHibernateCommand: ({ target, reason }) =>
         runHibernationCommand("hibernate", target, reason),
       runWakeCommand: ({ target, reason }) => runHibernationCommand("wake", target, reason),
-      getAgentLifecycleProjection: (agentIds: string[]): AgentLifecycleStatus[] => {
+      getAgentLifecycleProjection: (agentIds?: string[]): AgentLifecycleStatus[] => {
         if (brokerRole !== "broker") return [];
         const db = getActiveBrokerDb();
         if (!db) return [];
         const hib = resolveHibernationSettings(settings);
         return collectAgentLifecycleStatuses(db, {
-          agentIds,
+          ...(agentIds ? { agentIds } : {}),
           maxConcurrentWakes: hib.maxConcurrentWakes,
           maxConcurrentWakesPerRepo: hib.maxConcurrentWakesPerRepo,
         });

@@ -2704,14 +2704,17 @@ export class BrokerDB implements BrokerDBInterface {
 
   /**
    * Accept exactly one runtime generation for a waking agent. The registration
-   * must present the same wake lease id, fence token, and reserved generation.
-   * A stale or duplicate registration returns `{ accepted: false }` without
+   * must present the same wake lease id, fence token, and reserved generation,
+   * AND the bound lease must still be an unexpired `wake` lease while the agent
+   * is still in the `waking` lifecycle state. A stale, expired, wrong-operation,
+   * wrong-state, or duplicate registration returns `{ accepted: false }` without
    * mutating state. On success the agent's runtime_generation is advanced and
-   * the reservation is consumed.
+   * the reservation is consumed. `now` (epoch ms) is injectable for tests.
    */
   acceptRuntimeGeneration(input: AcceptRuntimeGenerationInput): RuntimeGenerationAcceptance {
     return this.withTransaction(() => {
       const db = this.getDb();
+      const nowMs = input.now ?? Date.now();
       const reservation = this.getAgentWakeReservation(input.agentId);
       if (!reservation) return { accepted: false as const, reason: "no_reservation" };
       if (reservation.wakeLeaseId !== input.wakeLeaseId) {
@@ -2726,6 +2729,24 @@ export class BrokerDB implements BrokerDBInterface {
       const lease = this.getAgentLifecycleLease(input.agentId);
       if (!lease || lease.leaseId !== input.wakeLeaseId || lease.fenceToken !== input.fenceToken) {
         return { accepted: false as const, reason: "lease_lost" };
+      }
+      // Strict lease binding: only an unexpired wake lease may accept a
+      // generation, and only while the agent is still waking. This closes the
+      // window where a delayed runtime presents an otherwise matching
+      // reservation under an expired/wrong-operation lease or after the wake
+      // was already resolved/aborted.
+      if (lease.operation !== "wake") {
+        return { accepted: false as const, reason: "lease_not_wake" };
+      }
+      const leaseExpiryMs = Date.parse(lease.expiresAt);
+      if (!Number.isFinite(leaseExpiryMs) || leaseExpiryMs <= nowMs) {
+        return { accepted: false as const, reason: "lease_expired" };
+      }
+      const stateRow = db
+        .prepare("SELECT lifecycle_state FROM agents WHERE id = ?")
+        .get(input.agentId) as { lifecycle_state: string } | undefined;
+      if (!stateRow || stateRow.lifecycle_state !== "waking") {
+        return { accepted: false as const, reason: "not_waking" };
       }
       const result = db
         .prepare("UPDATE agents SET runtime_generation = ? WHERE id = ? AND runtime_generation = ?")
@@ -2907,6 +2928,18 @@ export class BrokerDB implements BrokerDBInterface {
 
     this.withTransaction(() => {
       const agent = this.getAgentById(id);
+      // Durable hibernation identities MUST survive a graceful worker disconnect.
+      // During hibernation teardown the broker stops the worker process, whose
+      // shutdown path may send an `unregister`. A full teardown here would
+      // delete the queued inbox and release owned threads — exactly the durable
+      // state a later wake is supposed to drain. For hibernation lifecycle
+      // states, treat unregister as a soft disconnect that preserves the inbox,
+      // thread ownership, and resumability instead of tearing them down.
+      const state = agent?.lifecycleState;
+      if (state === "hibernating" || state === "hibernated" || state === "waking") {
+        db.prepare("UPDATE agents SET disconnected_at = ? WHERE id = ?").run(now, id);
+        return;
+      }
       this.requeueUndeliveredMessagesInternal(id, "agent_disconnected");
       db.prepare("DELETE FROM inbox WHERE agent_id = ?").run(id);
       db.prepare("UPDATE agents SET disconnected_at = ?, resumable_until = NULL WHERE id = ?").run(

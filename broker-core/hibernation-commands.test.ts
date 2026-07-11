@@ -24,7 +24,9 @@ import type { AgentRuntimeSpecInput } from "./types.js";
 const ENABLED: HibernationCommandPolicy = {
   enabled: true,
   mode: "manual",
-  allowedRepos: ["gugu91/extensions"],
+  // Bare-basename entry: intentionally admits agents whose repo basename is
+  // "extensions" (slug-vs-basename semantics are exercised explicitly below).
+  allowedRepos: ["extensions"],
 };
 
 // ─── Pure gate coverage ──────────────────────────────────────────────
@@ -74,7 +76,7 @@ describe("evaluateHibernateCommandGate", () => {
     ).toMatchObject({ outcome: "refused", refusal: { reason: "terminated" } });
   });
 
-  it("refuses a repo outside the allowlist (matches by basename or slug)", () => {
+  it("refuses a repo outside the allowlist", () => {
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
@@ -82,25 +84,51 @@ describe("evaluateHibernateCommandGate", () => {
         policy: ENABLED,
       }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
+  });
+
+  it("bare-basename allowlist entry admits matching slug or basename", () => {
+    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["extensions"] };
+    expect(
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "extensions", policy }),
+    ).toMatchObject({ outcome: "proceed" });
+    expect(
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/extensions", policy }),
+    ).toMatchObject({ outcome: "proceed" });
+  });
+
+  it("slug allowlist entry requires an exact slug — no basename collapse", () => {
+    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["gugu91/extensions"] };
+    // Exact slug proceeds.
+    expect(
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/extensions", policy }),
+    ).toMatchObject({ outcome: "proceed" });
+    // A different owner with the same basename must NOT be admitted.
+    expect(
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "evil/extensions", policy }),
+    ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
+    // A bare basename does not collapse into a slug entry either.
+    expect(
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "extensions", policy }),
+    ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
+  });
+
+  it("rejects blank identifiers and blank allowlist entries (fail-closed)", () => {
+    expect(
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: null, policy: ENABLED }),
+    ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
+    expect(
+      evaluateHibernateCommandGate({
+        state: "idle",
+        repoIdentifier: "   ",
+        policy: { ...ENABLED, allowedRepos: ["extensions"] },
+      }),
+    ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
         repoIdentifier: "extensions",
-        policy: ENABLED,
+        policy: { ...ENABLED, allowedRepos: ["", "  "] },
       }),
-    ).toMatchObject({ outcome: "proceed" });
-    expect(
-      evaluateHibernateCommandGate({
-        state: "idle",
-        repoIdentifier: "gugu91/extensions",
-        policy: ENABLED,
-      }),
-    ).toMatchObject({ outcome: "proceed" });
-  });
-
-  it("refuses when no repo could be resolved", () => {
-    expect(
-      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: null, policy: ENABLED }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 });
@@ -139,6 +167,13 @@ describe("evaluateWakeCommandGate", () => {
       refusal: { reason: "hibernate_in_progress" },
     });
   });
+
+  it("treats an already-waking target as a noop (in-flight wake), not a false proceed", () => {
+    expect(evaluateWakeCommandGate({ state: "waking", policy: ENABLED })).toMatchObject({
+      outcome: "noop",
+      reason: "wake_in_progress",
+    });
+  });
 });
 
 describe("unknownHibernationTarget + formatter", () => {
@@ -149,6 +184,15 @@ describe("unknownHibernationTarget + formatter", () => {
       reason: "unknown_target",
       state: "unknown",
     });
+  });
+
+  it("control-strips and length-bounds the echoed unknown target", () => {
+    const result = unknownHibernationTarget("hibernate", `evil\n${"a".repeat(200)}\u0000`);
+    expect(result.agentId).not.toContain("\n");
+    expect(result.agentId).not.toContain("\u0000");
+    expect(result.agentId.length).toBeLessThanOrEqual(64);
+    // Empty/whitespace-only target degrades to a safe placeholder.
+    expect(unknownHibernationTarget("wake", "   ").agentId).toBe("(unnamed)");
   });
 
   it("formats without leaking anything beyond machine reason/detail/state", () => {
@@ -409,7 +453,9 @@ describe("executeWakeCommand — against the real orchestrator", () => {
       policy: ENABLED,
     });
     expect(result.outcome).toBe("refused");
-    expect(result.retryable).toBe(true);
+    // Quarantine (reap-candidate) needs manual review, not a blind retry.
+    expect(result.retryable).toBe(false);
+    expect(result.detail).toContain("quarantined");
     expect(db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
   });
 

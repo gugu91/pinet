@@ -73,13 +73,23 @@ class E2eProcess implements HibernationProcessController {
     pendingInboxCount: 0,
     rssBytes: 111_000_000,
   };
-  constructor(private readonly getLiveClient: () => BrokerClient | null) {}
+  constructor(
+    private readonly getLiveClient: () => BrokerClient | null,
+    /** When true, tear down via the real graceful `unregister` RPC over the wire. */
+    private readonly graceful = false,
+  ) {}
   async requestCheckpoint(): Promise<HibernationCheckpointOutcome> {
     return this.checkpoint;
   }
   async stopRuntime(): Promise<{ stopped: boolean; rssBytes: number | null }> {
-    // Simulate the Pi runtime exiting: drop its broker connection.
-    this.getLiveClient()?.disconnect();
+    // Simulate the Pi runtime exiting. A graceful shutdown sends the real
+    // `unregister` RPC (which must preserve a hibernating durable identity);
+    // otherwise the connection is dropped abruptly.
+    const client = this.getLiveClient();
+    if (client) {
+      if (this.graceful) await client.disconnectGracefully();
+      else client.disconnect();
+    }
     await new Promise((r) => setTimeout(r, 20));
     return { stopped: true, rssBytes: 0 };
   }
@@ -253,6 +263,50 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     expect(inbox.map((m) => m.message.body)).toEqual(["first", "second"]);
     await woken.ackMessages(inbox.map((m) => m.inboxId));
     expect(await woken.pollInbox()).toHaveLength(0);
+  });
+
+  it("preserves the durable identity, inbox, and owned thread across a graceful unregister", async () => {
+    const original = await registerOriginal();
+    const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
+
+    // The worker owns a thread before hibernating. A graceful shutdown's
+    // `unregister` (fired at stopRuntime, while the inbox is legitimately empty)
+    // must NOT release that ownership or tear down the durable identity.
+    ctx.db.claimThread("a2a:e2e", agentId);
+
+    // Hibernate with a REAL graceful teardown (sends `unregister` over the wire).
+    const proc = new E2eProcess(() => original, /* graceful */ true);
+    const tmux = new E2eTmux(() => ctx.connect());
+    const orch = orchestratorFor(proc, tmux);
+    expect(orch.prepareHibernation(agentId).ready).toBe(true);
+    const hib = await orch.hibernate(agentId);
+    expect(hib.ok).toBe(true);
+    expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernated");
+
+    // The graceful `unregister` did not tear down the durable identity or its
+    // owned thread (an abrupt teardown-agnostic fix in unregisterAgent).
+    expect(ctx.db.getThread("a2a:e2e")?.ownerAgent).toBe(agentId);
+    expect(ctx.db.getAgentRuntimeSpec(agentId)).not.toBeNull();
+
+    // Work arriving after hibernation is durably queued to the preserved inbox.
+    ctx.db.queueMessage(agentId, {
+      threadId: "a2a:e2e",
+      source: "a2a",
+      userId: "peer",
+      channel: "a2a:e2e",
+      text: "survive-graceful",
+      timestamp: "1700000000.000009",
+      metadata: {},
+    });
+
+    // Wake and confirm the queued message drains exactly once, ownership intact.
+    const woke = await orch.wake(agentId, { trigger: "direct_a2a" });
+    expect(woke.ok).toBe(true);
+    expect(woke.state).toBe("live");
+    const woken = tmux.launched.at(-1)!;
+    const inbox = await woken.pollInbox();
+    expect(inbox.map((m) => m.message.body)).toEqual(["survive-graceful"]);
+    expect(ctx.db.getThread("a2a:e2e")?.ownerAgent).toBe(agentId);
   });
 
   it("aborts hibernation to active when work arrives at the checkpoint boundary (never exits)", async () => {

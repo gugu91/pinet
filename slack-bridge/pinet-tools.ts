@@ -184,9 +184,12 @@ export interface RegisterPinetToolsDeps {
   }) => Promise<HibernationCommandResult>;
   // Read-only lifecycle projection for the `agents`/`sessions` operator read
   // paths. Present only on the broker (it reads the durable broker DB). Returns
-  // sanitized per-agent lifecycle status for hibernation-relevant agents in the
-  // requested id set; never argv/env/paths/bodies.
-  getAgentLifecycleProjection?: (agentIds: string[]) => AgentLifecycleStatus[];
+  // sanitized per-agent lifecycle status for hibernation-relevant agents; never
+  // argv/env/paths/bodies. With no `agentIds` it returns ALL durable
+  // hibernation-relevant agents (hibernated/quarantined runtimes are
+  // disconnected and would otherwise be invisible to `agents`); with `agentIds`
+  // it scopes to that set (used to annotate `sessions` results).
+  getAgentLifecycleProjection?: (agentIds?: string[]) => AgentLifecycleStatus[];
 }
 
 interface PinetAgentsRoutingHint {
@@ -2108,11 +2111,11 @@ function runPinetAgentsAction(
     // Read-only hibernation lifecycle projection wired into the existing agents
     // read path. Compact output shows a scannable per-agent tag; full/JSON
     // exposes the complete redacted lifecycle structure. Broker-only (the dep
-    // is undefined on followers) and sanitized by construction.
-    const lifecycle =
-      deps.getAgentLifecycleProjection && agents.length > 0
-        ? deps.getAgentLifecycleProjection(agents.map((agent) => agent.id))
-        : [];
+    // is undefined on followers) and sanitized by construction. Called with NO
+    // id filter so durable hibernated/quarantined runtimes — which are
+    // disconnected and therefore absent from the visible roster — are still
+    // surfaced (this is exactly when operators need lifecycle visibility).
+    const lifecycle = deps.getAgentLifecycleProjection ? deps.getAgentLifecycleProjection() : [];
 
     const header = hasHint && output.full ? `${buildPinetAgentsHintText(hint)}\n\n` : "";
     const text = `${header}${
@@ -2125,7 +2128,7 @@ function runPinetAgentsAction(
       content: [{ type: "text", text }],
       details: { agents, hint, ...(lifecycle.length > 0 ? { lifecycle } : {}) },
       compactDetails: buildCompactAgentDetails(agents, hint),
-      fullDetails: { agents, hint, lifecycle },
+      fullDetails: { agents, hint, ...(lifecycle.length > 0 ? { lifecycle } : {}) },
       expandedText,
     };
   })();
@@ -2278,7 +2281,7 @@ function runPinetSessionsAction(
         count: sessions.length,
         options,
         sessions: sessions.map(buildPinetSessionFullDetails),
-        lifecycle,
+        ...(lifecycle.length > 0 ? { lifecycle } : {}),
       },
       expandedText: text,
     };

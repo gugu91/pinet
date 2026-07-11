@@ -3,7 +3,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BrokerDB } from "./schema.js";
-import type { AgentRuntimeSpecInput } from "./types.js";
+import type { AgentLifecycleState, AgentRuntimeSpecInput } from "./types.js";
+
+function driveToHibernating(db: BrokerDB, agentId: string): void {
+  const path: AgentLifecycleState[] = ["grace", "idle", "hibernating"];
+  for (const toState of path) {
+    const agent = db.getAgentById(agentId);
+    db.transitionAgentLifecycle({
+      agentId,
+      expectedVersion: agent?.lifecycleVersion ?? 0,
+      toState,
+      reason: "test",
+      actor: "broker",
+      correlationId: "c",
+    });
+  }
+}
 
 const tempDirs: string[] = [];
 function dbPath(): string {
@@ -208,6 +223,46 @@ describe("wake queue + reservations durability", () => {
     expect(db.countInflightWakes("/other")).toBe(0);
     db.completeWakeQueueEntry(e1.id, "done");
     expect(db.countInflightWakes()).toBe(0);
+    db.close();
+  });
+});
+
+describe("unregisterAgent preserves durable hibernation identities", () => {
+  it("keeps inbox + owned threads when a hibernating identity gracefully unregisters", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    expect(db.claimThread("thread-1", "worker-1")).toBe(true);
+    db.insertMessage("thread-1", "a2a", "inbound", "worker-2", "queued work", ["worker-1"]);
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+
+    // The broker stops the worker during hibernation; its graceful shutdown
+    // sends `unregister`. This must NOT tear down the durable identity.
+    driveToHibernating(db, "worker-1");
+    db.unregisterAgent("worker-1");
+
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+    expect(db.getThread("thread-1")?.ownerAgent).toBe("worker-1");
+    const agent = db.getAgentById("worker-1");
+    expect(agent?.lifecycleState).toBe("hibernating");
+    expect(agent?.disconnectedAt).toBeTruthy();
+    expect(db.getAgentRuntimeSpec("worker-1")).not.toBeNull();
+    db.close();
+  });
+
+  it("still tears down an ordinary (non-hibernation) agent on unregister", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    expect(db.claimThread("thread-1", "worker-1")).toBe(true);
+    db.insertMessage("thread-1", "a2a", "inbound", "worker-2", "queued work", ["worker-1"]);
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+
+    db.unregisterAgent("worker-1");
+
+    expect(db.getUnreadInboxCount("worker-1")).toBe(0);
+    expect(db.getThread("thread-1")?.ownerAgent).toBeNull();
     db.close();
   });
 });

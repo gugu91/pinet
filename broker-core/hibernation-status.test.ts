@@ -58,12 +58,12 @@ describe("redactRuntimeSpec", () => {
     expect(redacted.hasTmuxSession).toBe(true);
     expect(redacted.envAllowlistCount).toBe(3);
     expect(redacted.repo).toBe("extensions");
-    expect(redacted.session).toEqual({
-      kind: "session",
-      ref: "session:1a2b3c4d5e6f",
-      host: "mac-1",
-      hasPath: false,
-    });
+    // The ref is fingerprinted, not verbatim: kind prefix + non-reversible fp.
+    expect(redacted.session.kind).toBe("session");
+    expect(redacted.session.host).toBe("mac-1");
+    expect(redacted.session.hasPath).toBe(false);
+    expect(redacted.session.ref).toMatch(/^session:#[0-9a-f]{8}$/);
+    expect(redacted.session.ref).not.toContain("1a2b3c4d5e6f");
 
     const serialized = JSON.stringify(redacted);
     // No raw argv values, env values, or filesystem/socket paths leak.
@@ -74,9 +74,22 @@ describe("redactRuntimeSpec", () => {
     expect(serialized).not.toContain("pinet-agent-a");
   });
 
+  it("never surfaces a path-bearing session ref payload (cwd/leaf kinds)", () => {
+    const redacted = redactRuntimeSpec(
+      runtimeSpec({ sessionResumeRef: "cwd:/Users/secret/worktrees/agent-a" }),
+    );
+    expect(redacted.session.kind).toBe("cwd");
+    expect(redacted.session.hasPath).toBe(true);
+    expect(redacted.session.ref).toMatch(/^cwd:#[0-9a-f]{8}$/);
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("/Users/secret");
+    expect(serialized).not.toContain("worktrees");
+  });
+
   it("marks unknown session kinds when the ref prefix is unrecognized", () => {
     const redacted = redactRuntimeSpec(runtimeSpec({ sessionResumeRef: "opaque-ref-no-colon" }));
     expect(redacted.session.kind).toBe("unknown");
+    expect(redacted.session.ref).toMatch(/^unknown:#[0-9a-f]{8}$/);
   });
 });
 
@@ -105,6 +118,33 @@ describe("buildAgentLifecycleStatus", () => {
     expect(status.runtimeSpec?.hasWorktree).toBe(true);
     expect(status.runtimeSpec?.envAllowlistCount).toBe(3);
     expect(status.quarantined).toBe(false);
+  });
+
+  it("sanitizes free-form operator reasons (control-strip + length-bound)", () => {
+    const noisy = `line-one\nline-two\ttab\u0007bell ${"x".repeat(200)}`;
+    const status = buildAgentLifecycleStatus(
+      baseInput({
+        agent: {
+          id: "agent-a",
+          lifecycleState: "hibernated",
+          lifecycleVersion: 4,
+          runtimeGeneration: 7,
+          hibernatePolicy: "manual",
+          hibernatedAt: "2026-07-11T07:30:00.000Z",
+          graceUntil: null,
+          idleEligibleAt: null,
+          hibernateReason: noisy,
+          lastWakeReason: "   ",
+        },
+      }),
+    );
+    // Single-line, no control chars, length-bounded.
+    expect(status.hibernateReason).not.toContain("\n");
+    expect(status.hibernateReason).not.toContain("\t");
+    expect(status.hibernateReason).not.toContain("\u0007");
+    expect((status.hibernateReason ?? "").length).toBeLessThanOrEqual(120);
+    // Whitespace-only reason collapses to null.
+    expect(status.lastWakeReason).toBeNull();
   });
 
   it("reports 1-based wake queue position and reason within the ordered queue", () => {

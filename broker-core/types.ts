@@ -193,6 +193,8 @@ export interface AcceptRuntimeGenerationInput {
   wakeLeaseId: string;
   fenceToken: number;
   reservedGeneration: number;
+  /** Epoch ms for lease-expiry comparison. Defaults to Date.now(). */
+  now?: number;
 }
 
 export type RuntimeGenerationAcceptance =
@@ -273,9 +275,15 @@ export type AgentSessionKind = "session" | "leaf" | "cwd" | "broker" | "unknown"
 
 export interface AgentSessionSummary {
   kind: AgentSessionKind;
-  /** Broker-safe, path-free stable session reference such as "session:1a2b3c4d5e6f". */
+  /**
+   * Broker-safe, path-free session reference of the form "<kind>:#<fp>" where
+   * <fp> is a stable, non-reversible fingerprint of the raw session resume ref.
+   * The raw payload (which for cwd/leaf kinds may be a filesystem path) is never
+   * surfaced.
+   */
   ref: string;
   host?: string | null;
+  /** True when the raw ref payload looked path-like (still never exposed). */
   hasPath?: boolean;
 }
 

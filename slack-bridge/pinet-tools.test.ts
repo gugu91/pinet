@@ -2320,7 +2320,7 @@ describe("registerPinetTools", () => {
         args: {},
       })) as { details: { data: { text: string } } };
 
-      expect(getAgentLifecycleProjection).toHaveBeenCalledWith(["agent-1"]);
+      expect(getAgentLifecycleProjection).toHaveBeenCalledWith();
       const text = result.details.data.text;
       expect(text).toContain("Hibernation lifecycle:");
       expect(text).toContain("agent-1: hibernated");
@@ -2329,6 +2329,28 @@ describe("registerPinetTools", () => {
       // Redaction-by-construction: no argv/env/paths leak into operator output.
       expect(text).not.toContain("/Users/");
       expect(text).not.toContain("--model");
+    });
+
+    it("surfaces durable hibernated identities that are absent from the visible roster", async () => {
+      // Regression: hibernated/quarantined runtimes are disconnected and never
+      // appear in the live `agents` roster. The projection must NOT be keyed to
+      // the visible roster, or lifecycle visibility vanishes exactly when it is
+      // needed most. The visible roster here is only [agent-1]; the durable
+      // hibernated identity `ghost-hibernated-9` must still render.
+      const getAgentLifecycleProjection = vi.fn(() => [
+        makeLifecycleStatus({ agentId: "ghost-hibernated-9" }),
+      ]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-ghost", {
+        action: "agents",
+        args: {},
+      })) as { details: { data: { text: string } } };
+
+      expect(getAgentLifecycleProjection).toHaveBeenCalledWith();
+      const text = result.details.data.text;
+      expect(text).toContain("Hibernation lifecycle:");
+      expect(text).toContain("ghost-hibernated-9: hibernated");
     });
 
     it("exposes the complete redacted lifecycle structure in full agents output", async () => {

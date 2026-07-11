@@ -14,6 +14,8 @@
 
 Hibernation is reversible and distinct from `exit`/`reap`. A hibernated row retains stable identity, routing ownership, inbox, threads, lanes, tasks, scheduled wakes, runtime mapping, and tmux identity. Ambiguous evidence transitions to `reap-candidate`; it never guesses, reroutes affinity work, or kills a PID based on PID alone.
 
+The durable identity survives a _graceful_ worker shutdown. During teardown the broker stops the worker process, whose shutdown path may send an `unregister`. For agents in a hibernation lifecycle state (`hibernating`/`hibernated`/`waking`), `BrokerDB.unregisterAgent` performs a soft disconnect — it records `disconnected_at` but preserves the inbox, owned threads, and resumability — instead of the ordinary full teardown (which deletes the inbox and releases threads). This keeps hibernation teardown correct regardless of whether the runtime exits abruptly or unregisters cleanly.
+
 Configuration defaults to **disabled** and observe-only:
 
 ```json
@@ -44,7 +46,7 @@ Downgrade leaves additive columns/tables in place. Roll back application code by
 
 ## Controlled activation (future, separate approval)
 
-1. Back up the broker DB and record exact extension commit.
+1. Back up the broker DB and record exact extension commit. On broker startup (before dispatching any wakes), call `HibernationOrchestrator.recoverStrandedWakes()` once to reconcile any agent left in `waking` by a prior crash: if its generation was already accepted (reservation consumed, `runtime_generation` advanced past the checkpoint generation) it is completed to `live`; otherwise the wake outcome is uncertain and it fails closed to `reap-candidate` for manual review rather than risking a double launch. Agents whose wake lease is still held are skipped.
 2. Run observe-only for 24 hours; inspect refusal reasons and verify no runtime exits.
 3. Permit one broker-managed root worker in this repository, `mode=manual`.
 4. Confirm no active lane, pending outbound/control operation, port lease, detached UI/tool state, child process, private tmux socket, or uncommitted in-memory-only work.

@@ -101,17 +101,21 @@ export function evaluateHibernateCommandGate(
       break;
   }
 
-  const wantedBasename = repoIdentifier
-    ? (repoIdentifier.split("/").filter(Boolean).pop() ?? repoIdentifier)
-    : null;
+  // Fail-closed allowlist with NO basename collapse for slug entries: an
+  // allowlist entry that contains "/" (an owner/repo slug) must match the
+  // identifier's normalized slug exactly, so "gugu91/extensions" never admits
+  // "evil/extensions". Only a deliberately bare-basename entry ("extensions")
+  // opts into basename matching. Blank identifiers/entries never match.
+  const repo = (repoIdentifier ?? "").trim().replace(/\/+$/, "");
+  const repoBasename = repo.split("/").filter(Boolean).pop() ?? "";
   const repoAllowlisted =
-    repoIdentifier != null &&
-    wantedBasename != null &&
-    policy.allowedRepos.some(
-      (entry) =>
-        entry === repoIdentifier ||
-        (entry.split("/").filter(Boolean).pop() ?? entry) === wantedBasename,
-    );
+    repo.length > 0 &&
+    policy.allowedRepos.some((raw) => {
+      const entry = raw.trim().replace(/\/+$/, "");
+      if (entry.length === 0) return false;
+      if (entry.includes("/")) return entry === repo;
+      return entry === repo || entry === repoBasename;
+    });
   if (!repoAllowlisted) {
     return refusal(
       "repo_not_allowlisted",
@@ -136,8 +140,16 @@ export interface WakeCommandGateInput {
 export function evaluateWakeCommandGate(input: WakeCommandGateInput): HibernationCommandGate {
   switch (input.state) {
     case "hibernated":
-    case "waking":
       return { outcome: "proceed" };
+    case "waking":
+      // A wake is already in flight; there is nothing more for this command to
+      // do. Surfacing this as a noop (rather than proceeding to an executor
+      // that would refuse) keeps the operator signal accurate.
+      return {
+        outcome: "noop",
+        reason: "wake_in_progress",
+        detail: "Agent is already waking; the in-flight wake will deliver queued messages.",
+      };
     case "live":
     case "active":
     case "grace":
@@ -201,9 +213,21 @@ export function unknownHibernationTarget(
   command: "hibernate" | "wake",
   target: string,
 ): HibernationCommandResult {
+  // Echo a control-stripped, length-bounded rendering of the operator's target
+  // so the failure is actionable without surfacing arbitrary/free-form input
+  // (which could carry newlines or overly long paste content) verbatim.
+  const safeTarget =
+    Array.from(target)
+      .map((ch) => {
+        const code = ch.codePointAt(0) ?? 0;
+        return code <= 0x1f || code === 0x7f ? " " : ch;
+      })
+      .join("")
+      .trim()
+      .slice(0, 64) || "(unnamed)";
   return {
     command,
-    agentId: target,
+    agentId: safeTarget,
     outcome: "refused",
     state: "unknown",
     reason: "unknown_target",
@@ -269,9 +293,13 @@ export async function executeHibernateCommand(
     reason: result.reason,
     detail: result.ok
       ? "Agent runtime checkpointed and hibernated."
-      : "Hibernation aborted; the runtime was left running.",
+      : result.state === "reap-candidate"
+        ? "Hibernation could not complete cleanly; agent quarantined as reap-candidate for manual review."
+        : "Hibernation aborted; the runtime was left running.",
     durationMs: result.durationMs,
-    retryable: result.ok ? undefined : true,
+    // Quarantine needs manual review, not a blind retry; an abort-to-active is
+    // safe to retry once the transient condition clears.
+    retryable: result.ok ? undefined : result.state !== "reap-candidate",
   };
 }
 
@@ -322,11 +350,14 @@ export async function executeWakeCommand(
     reason: result.reason,
     detail: result.ok
       ? "Agent runtime woken; queued messages will drain in order."
-      : "Wake failed; agent left in a safe state.",
+      : result.state === "reap-candidate"
+        ? "Wake failed and the agent was quarantined as reap-candidate for manual review."
+        : "Wake failed; agent left in a safe state — a retry may succeed.",
     runtimeGeneration: result.ok ? (result.runtimeGeneration ?? null) : null,
     attempts: result.attempts,
     durationMs: result.durationMs,
-    retryable: result.ok ? undefined : true,
+    // A quarantined wake needs manual review; other failures are safe to retry.
+    retryable: result.ok ? undefined : result.state !== "reap-candidate",
   };
 }
 

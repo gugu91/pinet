@@ -18,12 +18,26 @@ import type {
  * redaction-by-construction boundary for any operator/status/inspect surface.
  */
 export function redactRuntimeSpec(spec: AgentRuntimeSpec): RedactedAgentRuntimeSpec {
-  const separatorIndex = spec.sessionResumeRef.indexOf(":");
-  const kindHint = separatorIndex > 0 ? spec.sessionResumeRef.slice(0, separatorIndex) : "";
+  const rawRef = spec.sessionResumeRef;
+  const separatorIndex = rawRef.indexOf(":");
+  const kindHint = separatorIndex > 0 ? rawRef.slice(0, separatorIndex) : "";
   const knownKinds: AgentSessionKind[] = ["session", "leaf", "cwd", "broker"];
   const kind: AgentSessionKind = knownKinds.includes(kindHint as AgentSessionKind)
     ? (kindHint as AgentSessionKind)
     : "unknown";
+  // The session ref payload is NEVER surfaced verbatim: for `cwd`/`leaf` kinds
+  // (and unrecognized producers) it can be a filesystem path or otherwise
+  // sensitive. Instead emit `<kind>:#<fingerprint>` — a stable, short,
+  // non-reversible FNV-1a digest that lets operators correlate identity across
+  // reads without exposing the payload — and flag whether it looked path-like.
+  const payload = separatorIndex > 0 ? rawRef.slice(separatorIndex + 1) : rawRef;
+  const hasPath = /[\\/]/.test(payload) || payload.startsWith("~");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < rawRef.length; i += 1) {
+    hash ^= rawRef.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const ref = `${kind}:#${(hash >>> 0).toString(16).padStart(8, "0")}`;
   // Repo is reported as a path-free basename so operators can group agents
   // without exposing the worktree/repo-root filesystem path.
   const repoSegments = spec.repoRoot.split("/").filter(Boolean);
@@ -33,9 +47,9 @@ export function redactRuntimeSpec(spec: AgentRuntimeSpec): RedactedAgentRuntimeS
     agentId: spec.agentId,
     session: {
       kind,
-      ref: spec.sessionResumeRef,
+      ref,
       host: spec.expectedHost,
-      hasPath: false,
+      hasPath,
     },
     repo,
     hasWorktree: Boolean(spec.worktreePath),
@@ -122,6 +136,28 @@ export interface AgentLifecycleStatus {
 const DURABLE_HIBERNATION_STATES = new Set<AgentLifecycleState>(["hibernated", "waking"]);
 
 /**
+ * Bound and control-strip a free-form reason string for operator-safe display.
+ * Reasons can originate from operator input (hibernate/wake commands) and flow
+ * durably into lifecycle rows; this is the redaction-by-construction boundary
+ * that keeps such strings single-line, control-char free, and length-bounded
+ * before they reach any operator/status/JSON surface. Returns null for
+ * empty/whitespace-only input.
+ */
+export function sanitizeOperatorReason(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const cleaned = Array.from(value)
+    .map((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code <= 0x1f || code === 0x7f ? " " : ch;
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length === 0) return null;
+  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}\u2026` : cleaned;
+}
+
+/**
  * Compose an operator-safe, actionable per-agent lifecycle status from already
  * sanitized inputs. Pure: it performs no IO and never emits raw argv, env
  * values, or filesystem/socket paths.
@@ -154,7 +190,7 @@ export function buildAgentLifecycleStatus(input: AgentLifecycleStatusInput): Age
     if (event.agentId !== input.agent.id || event.outcome === "accepted") continue;
     if (refusal === null || event.createdAt > refusal.at) {
       refusal = {
-        reason: event.errorCode ?? event.reason,
+        reason: sanitizeOperatorReason(event.errorCode ?? event.reason) ?? "unknown",
         outcome: event.outcome,
         at: event.createdAt,
       };
@@ -184,8 +220,8 @@ export function buildAgentLifecycleStatus(input: AgentLifecycleStatusInput): Age
     runtimeGeneration: input.agent.runtimeGeneration ?? null,
     hibernatePolicy: input.agent.hibernatePolicy ?? null,
     hibernatedAt: input.agent.hibernatedAt ?? null,
-    hibernateReason: input.agent.hibernateReason ?? null,
-    lastWakeReason: input.agent.lastWakeReason ?? null,
+    hibernateReason: sanitizeOperatorReason(input.agent.hibernateReason),
+    lastWakeReason: sanitizeOperatorReason(input.agent.lastWakeReason),
     graceUntil: input.agent.graceUntil ?? null,
     idleEligibleAt: input.agent.idleEligibleAt ?? null,
     quarantined: state === "reap-candidate",
@@ -201,7 +237,7 @@ export function buildAgentLifecycleStatus(input: AgentLifecycleStatusInput): Age
       queued: queuedEntry !== null,
       position: queuePosition,
       triggerKind: queuedEntry ? queuedEntry.triggerKind : null,
-      reason: queuedEntry ? queuedEntry.reason : null,
+      reason: queuedEntry ? sanitizeOperatorReason(queuedEntry.reason) : null,
       attempt: queuedEntry ? queuedEntry.attempt : null,
     },
     capacity,

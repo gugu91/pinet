@@ -154,6 +154,7 @@ function harness(
         wakeLeaseId: presented.wakeLeaseId,
         fenceToken: presented.fenceToken,
         reservedGeneration: presented.reservedGeneration,
+        now: clock.ms,
       });
       return acceptance.accepted;
     },
@@ -384,19 +385,34 @@ describe("HibernationOrchestrator — wake", () => {
 });
 
 describe("acceptRuntimeGeneration fencing", () => {
-  it("accepts exactly one matching generation and rejects duplicates/stale", async () => {
-    const h = harness();
-    seedAgent(h.db);
-    await hibernateFrom(h);
+  /**
+   * Drive an already-hibernated agent to the real pre-acceptance wake state: a
+   * held unexpired `wake` lease, a `waking` lifecycle CAS, and a reserved
+   * generation — exactly what the socket server presents at registration.
+   */
+  function driveToWaking(
+    h: Harness,
+    opts: { ttlMs?: number } = {},
+  ): { leaseId: string; fenceToken: number } {
+    const agent = h.db.getAgentById("worker-1");
     const lease = h.db.acquireAgentLifecycleLease({
       agentId: "worker-1",
       operation: "wake",
       ownerBrokerInstanceId: "broker-1",
       leaseId: "wake-1",
-      ttlMs: 90_000,
+      ttlMs: opts.ttlMs ?? 90_000,
       now: h.clock.ms,
     });
     expect(lease).not.toBeNull();
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent!.lifecycleVersion ?? 0,
+      toState: "waking",
+      reason: "wake",
+      actor: "broker",
+      correlationId: "corr",
+      fenceToken: lease!.fenceToken,
+    });
     const reservation = h.db.reserveWakeGeneration({
       agentId: "worker-1",
       wakeLeaseId: "wake-1",
@@ -405,14 +421,23 @@ describe("acceptRuntimeGeneration fencing", () => {
       now: h.clock.ms,
     });
     expect(reservation.reservedGeneration).toBe(1);
+    return { leaseId: "wake-1", fenceToken: lease!.fenceToken };
+  }
+
+  it("accepts exactly one matching generation and rejects duplicates/stale", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const { fenceToken } = driveToWaking(h);
 
     // Stale fence rejected.
     expect(
       h.db.acceptRuntimeGeneration({
         agentId: "worker-1",
         wakeLeaseId: "wake-1",
-        fenceToken: lease!.fenceToken + 1,
+        fenceToken: fenceToken + 1,
         reservedGeneration: 1,
+        now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: false, reason: "fence_mismatch" });
 
@@ -421,8 +446,9 @@ describe("acceptRuntimeGeneration fencing", () => {
       h.db.acceptRuntimeGeneration({
         agentId: "worker-1",
         wakeLeaseId: "wake-1",
-        fenceToken: lease!.fenceToken,
+        fenceToken,
         reservedGeneration: 1,
+        now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: true, runtimeGeneration: 1 });
 
@@ -431,10 +457,65 @@ describe("acceptRuntimeGeneration fencing", () => {
       h.db.acceptRuntimeGeneration({
         agentId: "worker-1",
         wakeLeaseId: "wake-1",
-        fenceToken: lease!.fenceToken,
+        fenceToken,
         reservedGeneration: 1,
+        now: h.clock.ms,
       }),
     ).toMatchObject({ accepted: false, reason: "no_reservation" });
+  });
+
+  it("rejects acceptance under an expired wake lease (strict lease binding)", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const { fenceToken } = driveToWaking(h, { ttlMs: 90_000 });
+
+    // Present the otherwise-matching reservation after the lease has expired.
+    expect(
+      h.db.acceptRuntimeGeneration({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken,
+        reservedGeneration: 1,
+        now: h.clock.ms + 90_001,
+      }),
+    ).toMatchObject({ accepted: false, reason: "lease_expired" });
+
+    // The generation must NOT have advanced.
+    expect(h.db.getAgentById("worker-1")?.runtimeGeneration).toBe(0);
+  });
+
+  it("rejects acceptance when the agent is no longer waking", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    // Held wake lease + reservation, but the CAS to `waking` never happened
+    // (agent still hibernated) — a late/duplicate registration must fail closed.
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-1",
+      leaseId: "wake-1",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    });
+    const reservation = h.db.reserveWakeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: "wake-1",
+      fenceToken: lease!.fenceToken,
+      correlationId: "corr",
+      now: h.clock.ms,
+    });
+    expect(
+      h.db.acceptRuntimeGeneration({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken: lease!.fenceToken,
+        reservedGeneration: reservation.reservedGeneration,
+        now: h.clock.ms,
+      }),
+    ).toMatchObject({ accepted: false, reason: "not_waking" });
+    expect(h.db.getAgentById("worker-1")?.runtimeGeneration).toBe(0);
   });
 
   it("requires a held wake lease to reserve a generation", () => {
@@ -449,6 +530,179 @@ describe("acceptRuntimeGeneration fencing", () => {
         now: h.clock.ms,
       }),
     ).toThrow(/matching held wake lease/);
+  });
+});
+
+describe("fail-closed fault handling (adapter/DB rejections)", () => {
+  it("aborts to active when the checkpoint handshake throws (runtime still alive)", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    h.orch.prepareHibernation("worker-1");
+    h.proc.requestCheckpoint = async () => {
+      throw new Error("adapter boom /Users/secret/leak");
+    };
+    const result = await h.orch.hibernate("worker-1");
+    expect(result).toMatchObject({ ok: false, reason: "hibernate_fault", state: "active" });
+    // Static fault reason — no raw error/path leaks.
+    expect(result.reason).not.toContain("/Users/secret");
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("active");
+    expect(h.proc.alive).toBe(true);
+    expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
+
+  it("quarantines when teardown has begun and an adapter throws (liveness unknown)", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    h.orch.prepareHibernation("worker-1");
+    h.proc.stopRuntime = async () => {
+      throw new Error("stop boom");
+    };
+    const result = await h.orch.hibernate("worker-1");
+    expect(result).toMatchObject({ ok: false, reason: "hibernate_fault", state: "reap-candidate" });
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+    expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
+
+  it("quarantines a wake when respawn throws, never stranding `waking`", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    h.tmux.respawnRuntime = async () => {
+      throw new Error("respawn boom");
+    };
+    const result = await h.orch.wake("worker-1");
+    expect(result).toMatchObject({ ok: false, reason: "wake_fault", state: "reap-candidate" });
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+    expect(h.db.getAgentWakeReservation("worker-1")).toBeNull();
+    expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
+
+  it("never strands a dispatching wake-queue row when a wake fails", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    h.tmux.respawnRuntime = async () => {
+      throw new Error("respawn boom");
+    };
+    h.orch.enqueueWakeTrigger({ agentId: "worker-1", triggerKind: "direct_a2a", reason: "dm" });
+    const results = await h.orch.dispatchWakeQueue();
+    expect(results.some((r) => !r.ok)).toBe(true);
+    expect(h.db.listWakeQueue("queued")).toHaveLength(0);
+    expect(h.db.listWakeQueue("dispatching")).toHaveLength(0);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+  });
+});
+
+describe("recoverStrandedWakes (crash between acceptance and live)", () => {
+  it("completes a waking agent whose generation was already accepted", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-1",
+      leaseId: "wake-1",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "waking",
+      reason: "wake",
+      actor: "broker",
+      correlationId: "c",
+      fenceToken: lease.fenceToken,
+    });
+    const reservation = h.db.reserveWakeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: "wake-1",
+      fenceToken: lease.fenceToken,
+      correlationId: "c",
+      now: h.clock.ms,
+    });
+    // Generation accepted, but the final waking->live transition is "lost".
+    expect(
+      h.db.acceptRuntimeGeneration({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken: lease.fenceToken,
+        reservedGeneration: reservation.reservedGeneration,
+        now: h.clock.ms,
+      }).accepted,
+    ).toBe(true);
+    h.db.releaseAgentLifecycleLease("worker-1", lease.leaseId, lease.fenceToken);
+
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toEqual([{ agentId: "worker-1", action: "completed" }]);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("live");
+  });
+
+  it("quarantines a waking agent with no accepted generation", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-1",
+      leaseId: "wake-1",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "waking",
+      reason: "wake",
+      actor: "broker",
+      correlationId: "c",
+      fenceToken: lease.fenceToken,
+    });
+    h.db.reserveWakeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: "wake-1",
+      fenceToken: lease.fenceToken,
+      correlationId: "c",
+      now: h.clock.ms,
+    });
+    h.db.releaseAgentLifecycleLease("worker-1", lease.leaseId, lease.fenceToken);
+
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toEqual([{ agentId: "worker-1", action: "quarantined" }]);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+    expect(h.db.getAgentWakeReservation("worker-1")).toBeNull();
+  });
+
+  it("skips a waking agent whose wake lease is still held", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-1",
+      leaseId: "wake-1",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "waking",
+      reason: "wake",
+      actor: "broker",
+      correlationId: "c",
+      fenceToken: lease.fenceToken,
+    });
+    // Lease still held and unexpired → an owner is actively waking; skip.
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toHaveLength(0);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("waking");
   });
 });
 

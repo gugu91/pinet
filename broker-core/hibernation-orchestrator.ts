@@ -126,6 +126,13 @@ export interface WakeResult {
   durationMs?: number;
 }
 
+/** Outcome of reconciling one agent stranded mid-wake by a broker crash. */
+export interface StrandedWakeRecovery {
+  agentId: string;
+  /** completed = generation was accepted, finished to live; quarantined = uncertain wake. */
+  action: "completed" | "quarantined";
+}
+
 const HIBERNATABLE_PRIORITY: Record<WakeTriggerKind, number> = {
   direct_a2a: 10,
   slack_thread: 20,
@@ -294,11 +301,18 @@ export class HibernationOrchestrator {
       return this.refuseHibernate(agentId, correlationId, "idle", "lease_contended", actor);
     }
 
+    // Fail-closed fault tracking: an unexpected adapter/DB rejection must never
+    // leave the agent stranded in `hibernating`. `enteredHibernating` records
+    // that we own the CAS transition; `teardownStarted` records that the
+    // process stop was attempted (so the runtime's liveness is now unknown).
+    let versionCursor = agent.lifecycleVersion ?? 0;
+    let enteredHibernating = false;
+    let teardownStarted = false;
     try {
       // idle -> hibernating (fenced CAS)
-      let current = this.db.transitionAgentLifecycle({
+      const hibernating = this.db.transitionAgentLifecycle({
         agentId,
-        expectedVersion: agent.lifecycleVersion ?? 0,
+        expectedVersion: versionCursor,
         toState: "hibernating",
         reason,
         actor,
@@ -306,6 +320,8 @@ export class HibernationOrchestrator {
         triggerSource: opts.trigger,
         fenceToken: lease.fenceToken,
       });
+      versionCursor = hibernating.lifecycleVersion ?? versionCursor + 1;
+      enteredHibernating = true;
 
       // Cooperative checkpoint handshake (fail closed on timeout).
       const checkpoint = await withTimeout(
@@ -337,9 +353,9 @@ export class HibernationOrchestrator {
         const abortReason = !checkpoint.hibernateSafe
           ? `checkpoint_unsafe:${checkpoint.reason ?? "unconfirmed"}`
           : "work_arrived_during_checkpoint";
-        current = this.db.transitionAgentLifecycle({
+        const active = this.db.transitionAgentLifecycle({
           agentId,
-          expectedVersion: current.lifecycleVersion ?? 0,
+          expectedVersion: versionCursor,
           toState: "active",
           reason: abortReason,
           actor,
@@ -350,18 +366,20 @@ export class HibernationOrchestrator {
           ok: false,
           agentId,
           correlationId,
-          state: current.lifecycleState ?? "active",
+          state: active.lifecycleState ?? "active",
           reason: abortReason,
         };
       }
 
-      // Graceful teardown.
+      // Graceful teardown. Past this point the runtime has been asked to stop,
+      // so any subsequent fault leaves its liveness unknown → quarantine.
+      teardownStarted = true;
       const stop = await this.process.stopRuntime(spec);
       const stillAlive = await this.process.isRuntimeAlive(spec);
       if (!stop.stopped || stillAlive) {
         return this.quarantine(
           agentId,
-          current.lifecycleVersion ?? 0,
+          versionCursor,
           correlationId,
           actor,
           "runtime_survived_stop",
@@ -373,7 +391,7 @@ export class HibernationOrchestrator {
       if (!attachable) {
         return this.quarantine(
           agentId,
-          current.lifecycleVersion ?? 0,
+          versionCursor,
           correlationId,
           actor,
           "tmux_session_missing",
@@ -383,9 +401,9 @@ export class HibernationOrchestrator {
 
       // hibernating -> hibernated.
       const durationMs = this.now() - startedAt;
-      current = this.db.transitionAgentLifecycle({
+      const hibernated = this.db.transitionAgentLifecycle({
         agentId,
-        expectedVersion: current.lifecycleVersion ?? 0,
+        expectedVersion: versionCursor,
         toState: "hibernated",
         reason,
         actor,
@@ -399,12 +417,69 @@ export class HibernationOrchestrator {
         ok: true,
         agentId,
         correlationId,
-        state: current.lifecycleState ?? "hibernated",
+        state: hibernated.lifecycleState ?? "hibernated",
         reason: "hibernated",
         rssBytesBefore: checkpoint.rssBytes,
         rssBytesAfter: stop.rssBytes,
         durationMs,
       };
+    } catch {
+      // Redaction-by-construction: never surface the raw error (it can carry
+      // paths). Use a static fault code and fail closed based on how far we got.
+      const faultReason = "hibernate_fault";
+      if (!enteredHibernating) {
+        // State was never changed by us; surface a refusal without forcing a
+        // transition that might not be valid from the current state.
+        this.recordRefusal(agentId, "hibernate_refused", faultReason, actor, correlationId);
+        return {
+          ok: false,
+          agentId,
+          correlationId,
+          state: this.db.getAgentById(agentId)?.lifecycleState ?? "idle",
+          reason: faultReason,
+        };
+      }
+      try {
+        if (!teardownStarted) {
+          // The runtime was never asked to stop, so it is still alive: abort
+          // back to active rather than quarantine.
+          const active = this.db.transitionAgentLifecycle({
+            agentId,
+            expectedVersion: versionCursor,
+            toState: "active",
+            reason: faultReason,
+            actor,
+            correlationId,
+            fenceToken: lease.fenceToken,
+          });
+          return {
+            ok: false,
+            agentId,
+            correlationId,
+            state: active.lifecycleState ?? "active",
+            reason: faultReason,
+          };
+        }
+        // Teardown began; runtime liveness is unknown → quarantine for review.
+        return this.quarantine(
+          agentId,
+          versionCursor,
+          correlationId,
+          actor,
+          faultReason,
+          lease.fenceToken,
+        );
+      } catch {
+        // Even the recovery transition failed (e.g. version raced). Report a
+        // safe failure; the lease still releases in `finally`.
+        return {
+          ok: false,
+          agentId,
+          correlationId,
+          state: this.db.getAgentById(agentId)?.lifecycleState ?? "hibernating",
+          reason: faultReason,
+        };
+      }
     } finally {
       this.db.releaseAgentLifecycleLease(agentId, lease.leaseId, lease.fenceToken);
     }
@@ -554,6 +629,30 @@ export class HibernationOrchestrator {
         lease.fenceToken,
         maxAttempts,
       );
+    } catch {
+      // Fail-closed: an unexpected adapter/DB fault (e.g. respawn/registration
+      // rejection) must not strand the agent in `waking`. Any partially
+      // launched runtime's liveness is unknown → clear the reservation and
+      // quarantine for manual review. Static reason; never surface raw errors.
+      try {
+        return this.quarantineWake(
+          agentId,
+          versionCursor,
+          correlationId,
+          actor,
+          "wake_fault",
+          lease.fenceToken,
+          0,
+        );
+      } catch {
+        return {
+          ok: false,
+          agentId,
+          correlationId,
+          state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
+          reason: "wake_fault",
+        };
+      }
     } finally {
       this.db.releaseAgentLifecycleLease(agentId, lease.leaseId, lease.fenceToken);
     }
@@ -570,7 +669,7 @@ export class HibernationOrchestrator {
     fenceToken: number;
     reservedGeneration: number;
   }): RuntimeGenerationAcceptance {
-    const acceptance = this.db.acceptRuntimeGeneration(input);
+    const acceptance = this.db.acceptRuntimeGeneration({ ...input, now: this.now() });
     if (!acceptance.accepted) {
       const agent = this.db.getAgentById(input.agentId);
       this.db.recordAgentLifecycleEvent({
@@ -587,6 +686,73 @@ export class HibernationOrchestrator {
       });
     }
     return acceptance;
+  }
+
+  /**
+   * Reconcile agents left in `waking` by a broker crash between generation
+   * acceptance and the final `waking -> live` transition. Intended to run once
+   * on broker startup (and is safe to re-run). DB-only and idempotent:
+   *
+   * - If a runtime already accepted its generation (reservation consumed and
+   *   runtime_generation advanced past the checkpoint's generation) only the
+   *   final live transition was lost → complete to `live` so the inbox drains.
+   * - Otherwise the wake outcome is uncertain (a runtime may or may not have
+   *   launched) → fail closed to `reap-candidate` for manual review rather than
+   *   risk a double launch by silently re-waking.
+   *
+   * Agents whose wake lease is still held (unexpired) are skipped: another
+   * broker/thread is actively waking them.
+   */
+  recoverStrandedWakes(opts: { now?: number } = {}): StrandedWakeRecovery[] {
+    const now = opts.now ?? this.now();
+    const recovered: StrandedWakeRecovery[] = [];
+    for (const agent of this.db.getAllAgents()) {
+      if (agent.lifecycleState !== "waking") continue;
+      const lease = this.db.getAgentLifecycleLease(agent.id);
+      const leaseHeld =
+        lease !== null && lease.operation === "wake" && Date.parse(lease.expiresAt) > now;
+      if (leaseHeld) continue;
+
+      const version = agent.lifecycleVersion ?? 0;
+      const reservation = this.db.getAgentWakeReservation(agent.id);
+      const checkpointGeneration =
+        this.db.getLatestAgentCheckpointReceipt(agent.id)?.runtimeGeneration ?? null;
+      const currentGeneration = agent.runtimeGeneration ?? 0;
+      const generationAccepted =
+        reservation === null &&
+        checkpointGeneration !== null &&
+        currentGeneration > checkpointGeneration;
+
+      const correlationId = this.newId();
+      try {
+        if (generationAccepted) {
+          this.db.transitionAgentLifecycle({
+            agentId: agent.id,
+            expectedVersion: version,
+            toState: "live",
+            reason: "wake_recovery_complete",
+            actor: "broker",
+            correlationId,
+          });
+          this.db.completeWakeForAgent(agent.id);
+          recovered.push({ agentId: agent.id, action: "completed" });
+        } else {
+          this.db.clearAgentWakeReservation(agent.id);
+          this.db.transitionAgentLifecycle({
+            agentId: agent.id,
+            expectedVersion: version,
+            toState: "reap-candidate",
+            reason: "wake_recovery_stranded",
+            actor: "broker",
+            correlationId,
+          });
+          recovered.push({ agentId: agent.id, action: "quarantined" });
+        }
+      } catch {
+        // Raced with a live owner or a concurrent recovery pass; leave it be.
+      }
+    }
+    return recovered;
   }
 
   // ─── Wake queue dispatch ────────────────────────────────────────
@@ -628,11 +794,26 @@ export class HibernationOrchestrator {
       if (!next) break;
       const claimed = this.db.markWakeDispatching(next.id);
       if (!claimed) continue;
-      const result = await this.wake(claimed.agentId, {
-        trigger: claimed.triggerKind,
-        reason: claimed.reason,
-        correlationId: claimed.correlationId,
-      });
+      let result: WakeResult;
+      try {
+        result = await this.wake(claimed.agentId, {
+          trigger: claimed.triggerKind,
+          reason: claimed.reason,
+          correlationId: claimed.correlationId,
+        });
+      } catch {
+        // wake() is designed to fail closed without throwing, but a dispatching
+        // queue row must never be stranded: cancel it and continue draining.
+        this.db.completeWakeQueueEntry(claimed.id, "cancelled");
+        results.push({
+          ok: false,
+          agentId: claimed.agentId,
+          correlationId: claimed.correlationId,
+          state: this.db.getAgentById(claimed.agentId)?.lifecycleState ?? "waking",
+          reason: "wake_fault",
+        });
+        continue;
+      }
       if (!result.ok && result.reason === "wake_in_progress") {
         // Another lease owner is handling it; leave the queue entry consumed.
         this.db.completeWakeQueueEntry(claimed.id, "done");
