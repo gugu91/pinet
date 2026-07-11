@@ -4,7 +4,7 @@
 <key>Label</key><string>ai.pinet.superhuman-send-executor</string>
 <key>ProgramArguments</key><array>
 <string>/usr/local/libexec/pinet-superhuman-send-executor/current/node</string>
-<string>/usr/local/libexec/pinet-superhuman-send-executor/current/dist/src/daemon.js</string>
+<string>/usr/local/libexec/pinet-superhuman-send-executor/current/../Resources/runtime/dist/src/daemon.js</string>
 </array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ProcessType</key><string>Interactive</string>

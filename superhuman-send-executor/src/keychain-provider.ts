@@ -1,19 +1,22 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { ProviderPreSendRejection, type Provider, type RenderedDraft } from "./executor.js";
 import { parseJson, parseRenderedDraft, parseSendResult } from "./parse.js";
 const execFileAsync = promisify(execFile);
-const BRIDGE = "/usr/local/libexec/pinet-superhuman-send-executor/current/credential-bridge";
+const BRIDGE_LINK = "/usr/local/libexec/pinet-superhuman-send-executor/current/credential-bridge";
+let bridge: string | undefined;
 const PINNED_BRIDGE_SHA256 = "REPLACE_DURING_SIGNED_RELEASE";
 async function run(args: readonly string[]): Promise<string> {
+  bridge ??= realpathSync(BRIDGE_LINK);
   const digest = createHash("sha256")
-    .update(await readFile(BRIDGE))
+    .update(await readFile(bridge))
     .digest("hex");
   if (PINNED_BRIDGE_SHA256 === "REPLACE_DURING_SIGNED_RELEASE" || digest !== PINNED_BRIDGE_SHA256)
     throw new Error("untrusted_credential_bridge");
-  const { stdout } = await execFileAsync(BRIDGE, [...args], {
+  const { stdout } = await execFileAsync(bridge, [...args], {
     encoding: "utf8",
     env: { PATH: "/usr/bin:/bin" },
     maxBuffer: 1024 * 1024,
