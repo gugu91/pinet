@@ -414,6 +414,32 @@ describe("executeHibernateCommand — against the real orchestrator", () => {
     expect(proc.alive).toBe(true);
   });
 
+  it("redacts a path-bearing checkpoint reason in the command result", async () => {
+    const db = freshDb();
+    const proc = new FakeProcess();
+    // A runtime-authored checkpoint reason that embeds a private path.
+    proc.checkpoint = {
+      ...proc.checkpoint,
+      hibernateSafe: false,
+      reason: "blocked by /Users/tm/secret/creds.json",
+    };
+    const orch = buildOrch(db, proc, new FakeTmux());
+    seedAgent(db);
+    const result = await executeHibernateCommand({
+      executor: orch,
+      agentId: "worker-1",
+      state: "idle",
+      repoIdentifier: "extensions",
+      policy: ENABLED,
+    });
+    expect(result.outcome).toBe("refused");
+    expect(result.reason).toContain("checkpoint_unsafe:");
+    expect(result.reason).toContain("<path>");
+    expect(result.reason).not.toContain("/Users/tm/secret");
+    // The compact operator line is likewise path-free.
+    expect(formatHibernationCommandResult(result)).not.toContain("/Users/tm/secret");
+  });
+
   it("refuses a working agent via the orchestrator eligibility gate", async () => {
     const db = freshDb();
     const orch = buildOrch(db, new FakeProcess(), new FakeTmux());

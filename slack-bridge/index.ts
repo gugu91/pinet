@@ -975,16 +975,18 @@ export default function (pi: ExtensionAPI) {
       allowedRepos: hib.allowedRepos,
     };
     const state = (agent.lifecycleState ?? "live") as AgentLifecycleState;
-    // Provenance: prefer the broker-authored durable runtime spec's repoRoot
-    // (captured at spawn) over mutable, agent-declared metadata so a worker
-    // cannot self-declare its way into the allowlist. Derive an owner/repo slug
-    // (last two path segments) when available so operators can allowlist either
-    // an exact "owner/repo" slug or a bare basename without basename collapse.
+    // Provenance: the repo allowlist is a security boundary, so authorization
+    // trusts ONLY the broker-authored durable runtime spec's repoRoot (captured
+    // at spawn). Mutable, worker-declared `agent.metadata.repoRoot` is NEVER used
+    // as a fallback — a worker could otherwise self-declare an allowlisted
+    // repository. When no trusted spec exists the identifier stays null and the
+    // fail-closed gate refuses (a non-hibernatable agent has no spec to wake
+    // from anyway). Derive an owner/repo slug (last two path segments) so
+    // operators can allowlist an exact "owner/repo" slug or a bare basename
+    // without basename collapse.
     const specRepoRoot = db.getAgentRuntimeSpec(agent.id)?.repoRoot;
     const repoRootRaw =
-      typeof specRepoRoot === "string" && specRepoRoot.length > 0
-        ? specRepoRoot
-        : agent.metadata?.repoRoot;
+      typeof specRepoRoot === "string" && specRepoRoot.length > 0 ? specRepoRoot : null;
     // Normalize Windows backslash separators before deriving the slug so a
     // "C:\\path\\owner\\repo" root yields the same owner/repo identifier a POSIX
     // path would.

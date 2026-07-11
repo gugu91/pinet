@@ -5,8 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BrokerDB } from "./schema.js";
 import type { AgentLifecycleState, AgentRuntimeSpecInput } from "./types.js";
 
-function driveToHibernating(db: BrokerDB, agentId: string): void {
-  const path: AgentLifecycleState[] = ["grace", "idle", "hibernating"];
+function driveTo(db: BrokerDB, agentId: string, path: AgentLifecycleState[]): void {
   for (const toState of path) {
     const agent = db.getAgentById(agentId);
     db.transitionAgentLifecycle({
@@ -18,6 +17,56 @@ function driveToHibernating(db: BrokerDB, agentId: string): void {
       correlationId: "c",
     });
   }
+}
+
+function driveToHibernating(db: BrokerDB, agentId: string): void {
+  driveTo(db, agentId, ["grace", "idle", "hibernating"]);
+}
+
+/** Drive a fresh agent all the way to a resting `hibernated` identity. */
+function driveToHibernated(db: BrokerDB, agentId: string): void {
+  driveTo(db, agentId, ["grace", "idle", "hibernating", "hibernated"]);
+}
+
+/**
+ * Drive an already-hibernated agent to the pre-acceptance wake state: a held
+ * unexpired wake lease, a `waking` CAS, and a reserved generation.
+ */
+function driveToWaking(
+  db: BrokerDB,
+  agentId: string,
+  now: number,
+): { leaseId: string; fenceToken: number; reservedGeneration: number } {
+  const lease = db.acquireAgentLifecycleLease({
+    agentId,
+    operation: "wake",
+    ownerBrokerInstanceId: "broker-1",
+    leaseId: "wake-1",
+    ttlMs: 90_000,
+    now,
+  })!;
+  const agent = db.getAgentById(agentId);
+  db.transitionAgentLifecycle({
+    agentId,
+    expectedVersion: agent?.lifecycleVersion ?? 0,
+    toState: "waking",
+    reason: "wake",
+    actor: "broker",
+    correlationId: "c",
+    fenceToken: lease.fenceToken,
+  });
+  const reservation = db.reserveWakeGeneration({
+    agentId,
+    wakeLeaseId: "wake-1",
+    fenceToken: lease.fenceToken,
+    correlationId: "c",
+    now,
+  });
+  return {
+    leaseId: "wake-1",
+    fenceToken: lease.fenceToken,
+    reservedGeneration: reservation.reservedGeneration,
+  };
 }
 
 const tempDirs: string[] = [];
@@ -263,6 +312,201 @@ describe("unregisterAgent preserves durable hibernation identities", () => {
 
     expect(db.getUnreadInboxCount("worker-1")).toBe(0);
     expect(db.getThread("thread-1")?.ownerAgent).toBeNull();
+    db.close();
+  });
+});
+
+describe("maintenance preserves durable hibernation identities", () => {
+  it("prune/purge/repair never dismantle a hibernated identity's inbox or ownership", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    expect(db.claimThread("thread-1", "worker-1")).toBe(true);
+    db.insertMessage("thread-1", "a2a", "inbound", "worker-2", "queued work", ["worker-1"]);
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+
+    // Rest at hibernated, then a graceful worker shutdown soft-disconnects it.
+    driveToHibernated(db, "worker-1");
+    db.unregisterAgent("worker-1");
+
+    // A full maintenance pass: everything is "stale" (staleAfterMs=0), the owner
+    // is disconnected (repair), and the disconnect grace is elapsed (purge=0).
+    db.pruneStaleAgents(0);
+    const repaired = db.repairThreadOwnership();
+    db.purgeDisconnectedAgents(0);
+
+    // The durable identity, inbox, thread ownership, and runtime spec all survive
+    // — exactly the state a later wake is supposed to drain.
+    const agent = db.getAgentById("worker-1");
+    expect(agent?.lifecycleState).toBe("hibernated");
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+    expect(db.getThread("thread-1")?.ownerAgent).toBe("worker-1");
+    expect(db.getAgentRuntimeSpec("worker-1")).not.toBeNull();
+    expect(repaired.releasedAgentIds).not.toContain("worker-1");
+    db.close();
+  });
+
+  it("still prunes/repairs/purges an ordinary disconnected agent (targeted predicate)", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-x", "X", "🦉", 1, undefined, "host:session:worker-x");
+    expect(db.claimThread("thread-x", "worker-x")).toBe(true);
+    // Ordinary disconnect with an already-elapsed resumable window.
+    db.disconnectAgent("worker-x", 0);
+
+    expect(db.repairThreadOwnership().releasedAgentIds).toContain("worker-x");
+    expect(db.getThread("thread-x")?.ownerAgent).toBeNull();
+    db.purgeDisconnectedAgents(0);
+    expect(db.getAgentById("worker-x")).toBeNull();
+    db.close();
+  });
+});
+
+describe("renewAgentLifecycleLease", () => {
+  it("extends a held, unexpired lease without bumping the fence", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("w", "W", "🦉", 1, undefined, "host:session:w");
+    const lease = db.acquireAgentLifecycleLease({
+      agentId: "w",
+      operation: "wake",
+      ownerBrokerInstanceId: "b1",
+      leaseId: "L1",
+      ttlMs: 1_000,
+      now: 1_000_000,
+    })!;
+    const renewed = db.renewAgentLifecycleLease({
+      agentId: "w",
+      leaseId: "L1",
+      fenceToken: lease.fenceToken,
+      ttlMs: 5_000,
+      now: 1_000_500,
+    });
+    expect(renewed).not.toBeNull();
+    expect(renewed!.fenceToken).toBe(lease.fenceToken); // fence preserved
+    expect(Date.parse(renewed!.expiresAt)).toBe(1_000_500 + 5_000);
+    db.close();
+  });
+
+  it("refuses to renew a wrong-fence, released, or already-expired lease (fail closed)", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("w", "W", "🦉", 1, undefined, "host:session:w");
+    const lease = db.acquireAgentLifecycleLease({
+      agentId: "w",
+      operation: "wake",
+      ownerBrokerInstanceId: "b1",
+      leaseId: "L1",
+      ttlMs: 1_000,
+      now: 1_000_000,
+    })!;
+    // Wrong fence.
+    expect(
+      db.renewAgentLifecycleLease({
+        agentId: "w",
+        leaseId: "L1",
+        fenceToken: lease.fenceToken + 1,
+        ttlMs: 5_000,
+        now: 1_000_500,
+      }),
+    ).toBeNull();
+    // Already expired (past the 1s TTL) — preserves the takeover guarantee.
+    expect(
+      db.renewAgentLifecycleLease({
+        agentId: "w",
+        leaseId: "L1",
+        fenceToken: lease.fenceToken,
+        ttlMs: 5_000,
+        now: 1_002_000,
+      }),
+    ).toBeNull();
+    // Released.
+    db.releaseAgentLifecycleLease("w", lease.leaseId, lease.fenceToken);
+    expect(
+      db.renewAgentLifecycleLease({
+        agentId: "w",
+        leaseId: "L1",
+        fenceToken: lease.fenceToken,
+        ttlMs: 5_000,
+        now: 1_000_500,
+      }),
+    ).toBeNull();
+    db.close();
+  });
+});
+
+describe("registerAgentWithGenerationAcceptance atomicity", () => {
+  it("registers and accepts the generation atomically on success", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    driveToHibernated(db, "worker-1");
+    const { leaseId, fenceToken, reservedGeneration } = driveToWaking(db, "worker-1", 1_000_000);
+
+    const revived = db.registerAgentWithGenerationAcceptance({
+      registration: {
+        id: "worker-1",
+        name: "W",
+        emoji: "🦉",
+        pid: 999,
+        metadata: { marker: "revived" },
+        stableId: "host:session:worker-1",
+      },
+      accept: {
+        agentId: "worker-1",
+        wakeLeaseId: leaseId,
+        fenceToken,
+        reservedGeneration,
+        now: 1_000_000,
+      },
+    });
+    expect(revived.acceptance.accepted).toBe(true);
+    expect(revived.agent?.pid).toBe(999);
+    expect(db.getAgentById("worker-1")?.runtimeGeneration).toBe(reservedGeneration);
+    expect(db.getAgentWakeReservation("worker-1")).toBeNull(); // reservation consumed
+    db.close();
+  });
+
+  it("rolls back the registration mutation when acceptance is rejected", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, { marker: "original" }, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    driveToHibernated(db, "worker-1");
+    const { leaseId, fenceToken, reservedGeneration } = driveToWaking(db, "worker-1", 1_000_000);
+
+    // A bad fence must reject acceptance AND roll back the registration mutation
+    // so the durable row is never left with a mutated pid/metadata.
+    const revived = db.registerAgentWithGenerationAcceptance({
+      registration: {
+        id: "worker-1",
+        name: "W",
+        emoji: "🦉",
+        pid: 999,
+        metadata: { marker: "attacker" },
+        stableId: "host:session:worker-1",
+      },
+      accept: {
+        agentId: "worker-1",
+        wakeLeaseId: leaseId,
+        fenceToken: fenceToken + 1, // wrong fence
+        reservedGeneration,
+        now: 1_000_000,
+      },
+    });
+    expect(revived.agent).toBeNull();
+    expect(revived.acceptance).toMatchObject({ accepted: false, reason: "fence_mismatch" });
+
+    // Registration mutation rolled back: pid/metadata unchanged, generation not
+    // advanced, still waking, and the reservation is intact for a real retry.
+    const agent = db.getAgentById("worker-1");
+    expect(agent?.pid).toBe(1);
+    expect(agent?.metadata).toMatchObject({ marker: "original" });
+    expect(agent?.runtimeGeneration).toBe(0);
+    expect(agent?.lifecycleState).toBe("waking");
+    expect(db.getAgentWakeReservation("worker-1")).not.toBeNull();
     db.close();
   });
 });

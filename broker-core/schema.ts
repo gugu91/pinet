@@ -949,6 +949,19 @@ export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
 export const CURRENT_BROKER_SCHEMA_VERSION = 19;
 
+/**
+ * Lifecycle states whose durable identity, inbox, thread ownership, and runtime
+ * mapping MUST survive routine maintenance. A hibernation identity is
+ * intentionally "disconnected" (no live socket) yet must be revivable by a later
+ * wake, so ordinary disconnect-driven prune/purge/ownership-repair would destroy
+ * exactly the state hibernation preserves. `reap-candidate` is quarantined
+ * pending manual review and must likewise not be auto-released or deleted (that
+ * would discard evidence). `terminated` is a closed identity and remains
+ * ordinarily purgeable. This is a fixed constant list — never interpolated with
+ * external input — so it is safe to embed directly in SQL predicates.
+ */
+const PRESERVED_LIFECYCLE_STATES_SQL = "'hibernating','hibernated','waking','reap-candidate'";
+
 const REQUIRED_AGENT_LIFECYCLE_COLUMNS = [
   "stable_id",
   "metadata",
@@ -1860,6 +1873,19 @@ function runSchemaMigrations(db: DatabaseSync): void {
 
 // ─── BrokerDB ────────────────────────────────────────────
 
+/**
+ * Internal sentinel used to roll back a combined register+accept transaction:
+ * thrown when generation acceptance is rejected so `withTransaction` rolls back
+ * the registration mutation, then caught at the method boundary and converted
+ * back into a normal rejection result (never propagated to callers).
+ */
+class GenerationAcceptanceRollback extends Error {
+  constructor(readonly rejection: Extract<RuntimeGenerationAcceptance, { accepted: false }>) {
+    super("generation_acceptance_rollback");
+    this.name = "GenerationAcceptanceRollback";
+  }
+}
+
 export class BrokerDB implements BrokerDBInterface {
   private db: DatabaseSync | null = null;
   private readonly dbPath: string;
@@ -2406,6 +2432,43 @@ export class BrokerDB implements BrokerDBInterface {
     return Number(result.changes) === 1;
   }
 
+  /**
+   * Extend an already-held, still-valid lease's expiry WITHOUT bumping the
+   * fence, so a legitimately long-running operation (e.g. a wake that waits on
+   * process launch + runtime registration across several attempts) keeps a valid
+   * lease across adapter waits and can still complete its fenced forward
+   * transition. The fence is preserved so revival fencing is unaffected.
+   *
+   * Renewal only succeeds while the lease is still unexpired and held by this
+   * exact owner (matching `leaseId` + `fenceToken`); this preserves the takeover
+   * guarantee (a stalled owner past expiry cannot reclaim a lease another broker
+   * may take over). Returns the refreshed lease, or null when ownership was lost
+   * (expired, released, or the fence moved) — a null result means the caller
+   * must fail closed rather than continue driving forward transitions.
+   */
+  renewAgentLifecycleLease(input: {
+    agentId: string;
+    leaseId: string;
+    fenceToken: number;
+    ttlMs: number;
+    now?: number;
+  }): AgentLifecycleLease | null {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowMs = input.now ?? Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const expiresAt = new Date(nowMs + input.ttlMs).toISOString();
+      const result = db
+        .prepare(
+          `UPDATE agent_lifecycle_leases SET expires_at = ?
+           WHERE agent_id = ? AND lease_id = ? AND fence_token = ? AND expires_at > ?`,
+        )
+        .run(expiresAt, input.agentId, input.leaseId, input.fenceToken, nowIso);
+      if (Number(result.changes) !== 1) return null;
+      return this.getAgentLifecycleLease(input.agentId);
+    });
+  }
+
   /** Set the opt-in hibernation policy for an agent (auto | manual | never). */
   setAgentHibernatePolicy(agentId: string, policy: AgentHibernatePolicy): void {
     this.getDb()
@@ -2806,6 +2869,75 @@ export class BrokerDB implements BrokerDBInterface {
       db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(input.agentId);
       return { accepted: true as const, runtimeGeneration: input.reservedGeneration };
     });
+  }
+
+  /**
+   * Atomically revive a hibernated identity: perform the agent registration
+   * mutation AND accept the reserved runtime generation in ONE transaction, so a
+   * rejected acceptance rolls the registration mutation back. This closes the
+   * window where a revival whose wake lease expires between the socket-layer
+   * preflight and acceptance would otherwise leave the durable row with a
+   * mutated pid/metadata/connectivity even though the socket is refused and
+   * unbound. On rejection the transaction is rolled back and `agent` is null.
+   */
+  registerAgentWithGenerationAcceptance(input: {
+    registration: {
+      id: string;
+      name: string;
+      emoji: string;
+      pid: number;
+      // Reuse the roster metadata shape rather than restating it, so this stays
+      // in lockstep with `registerAgent` / `AgentInfo`.
+      metadata?: NonNullable<AgentInfo["metadata"]>;
+      stableId?: string;
+    };
+    accept: AcceptRuntimeGenerationInput;
+  }): { agent: AgentInfo | null; acceptance: RuntimeGenerationAcceptance } {
+    try {
+      return this.withTransaction(() => {
+        const db = this.getDb();
+        const nowMs = input.accept.now ?? Date.now();
+        // Register first so the durable row exists/updates, then accept the
+        // generation against that just-registered row within the same tx.
+        const agent = this.registerAgent(
+          input.registration.id,
+          input.registration.name,
+          input.registration.emoji,
+          input.registration.pid,
+          input.registration.metadata,
+          input.registration.stableId,
+        );
+        const rejection = this.validateRuntimeGenerationAcceptance(input.accept, nowMs);
+        if (rejection) throw new GenerationAcceptanceRollback(rejection);
+        const result = db
+          .prepare(
+            "UPDATE agents SET runtime_generation = ? WHERE id = ? AND runtime_generation = ?",
+          )
+          .run(
+            input.accept.reservedGeneration,
+            input.accept.agentId,
+            input.accept.reservedGeneration - 1,
+          );
+        if (Number(result.changes) !== 1) {
+          throw new GenerationAcceptanceRollback({ accepted: false, reason: "generation_race" });
+        }
+        db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(
+          input.accept.agentId,
+        );
+        return {
+          agent,
+          acceptance: {
+            accepted: true as const,
+            runtimeGeneration: input.accept.reservedGeneration,
+          },
+        };
+      });
+    } catch (err) {
+      if (err instanceof GenerationAcceptanceRollback) {
+        return { agent: null, acceptance: err.rejection };
+      }
+      throw err;
+    }
   }
 
   /**
@@ -3610,8 +3742,9 @@ export class BrokerDB implements BrokerDBInterface {
       const staleRows = db
         .prepare(
           `SELECT * FROM agents
-           WHERE (disconnected_at IS NULL AND last_heartbeat <= ?)
-              OR (disconnected_at IS NOT NULL AND resumable_until IS NOT NULL AND resumable_until <= ?)`,
+           WHERE lifecycle_state NOT IN (${PRESERVED_LIFECYCLE_STATES_SQL})
+             AND ((disconnected_at IS NULL AND last_heartbeat <= ?)
+              OR (disconnected_at IS NOT NULL AND resumable_until IS NOT NULL AND resumable_until <= ?))`,
         )
         .all(cutoff, now) as unknown as AgentRow[];
 
@@ -3651,7 +3784,8 @@ export class BrokerDB implements BrokerDBInterface {
       const rows = db
         .prepare(
           `SELECT * FROM agents
-           WHERE disconnected_at IS NOT NULL
+           WHERE lifecycle_state NOT IN (${PRESERVED_LIFECYCLE_STATES_SQL})
+             AND disconnected_at IS NOT NULL
              AND disconnected_at <= ?
              AND (resumable_until IS NULL OR resumable_until <= ?)`,
         )
@@ -3682,7 +3816,8 @@ export class BrokerDB implements BrokerDBInterface {
 
       db.prepare(
         `DELETE FROM agents
-         WHERE disconnected_at IS NOT NULL
+         WHERE lifecycle_state NOT IN (${PRESERVED_LIFECYCLE_STATES_SQL})
+           AND disconnected_at IS NOT NULL
            AND disconnected_at <= ?
            AND (resumable_until IS NULL OR resumable_until <= ?)`,
       ).run(cutoff, nowIso);
@@ -4891,13 +5026,18 @@ export class BrokerDB implements BrokerDBInterface {
     const db = this.getDb();
 
     return this.withTransaction(() => {
+      // Preserve ownership for live agents AND for durable hibernation /
+      // quarantine identities: a hibernated owner is intentionally disconnected
+      // but must keep its owned threads so a later wake resumes them.
       const rows = db
         .prepare(
           `SELECT owner_agent, COUNT(*) AS claim_count
            FROM threads
            WHERE owner_agent IS NOT NULL
              AND owner_agent NOT IN (
-               SELECT id FROM agents WHERE disconnected_at IS NULL
+               SELECT id FROM agents
+               WHERE disconnected_at IS NULL
+                  OR lifecycle_state IN (${PRESERVED_LIFECYCLE_STATES_SQL})
              )
            GROUP BY owner_agent`,
         )
@@ -4912,7 +5052,9 @@ export class BrokerDB implements BrokerDBInterface {
          SET owner_agent = NULL
          WHERE owner_agent IS NOT NULL
            AND owner_agent NOT IN (
-             SELECT id FROM agents WHERE disconnected_at IS NULL
+             SELECT id FROM agents
+             WHERE disconnected_at IS NULL
+                OR lifecycle_state IN (${PRESERVED_LIFECYCLE_STATES_SQL})
            )`,
       ).run();
 

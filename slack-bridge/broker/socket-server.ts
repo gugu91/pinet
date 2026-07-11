@@ -783,30 +783,45 @@ export class BrokerSocketServer {
       }
     }
 
-    const agent = this.db.registerAgent(
-      candidateId,
-      finalName,
-      finalEmoji,
-      pid,
-      finalMetadata,
-      stableId,
-    );
-
-    // Fenced revival: accept the reserved generation ONLY now that registration
-    // has committed. If acceptance somehow fails (unreachable after a passing
-    // synchronous preflight), fail closed WITHOUT binding the socket so the
-    // orchestrator's registration wait times out and quarantines rather than
-    // promoting a half-revived identity to live.
+    let agent: AgentInfo;
     if (wakeFence.revive) {
-      const acceptance = this.db.acceptRuntimeGeneration(wakeFence.revive.accept);
-      if (!acceptance.accepted) {
+      // Fenced revival: perform the registration mutation AND accept the reserved
+      // generation in ONE broker transaction. If acceptance fails (e.g. the wake
+      // lease expires in the sub-ms window after the preflight), the whole
+      // registration mutation rolls back and the socket is refused and unbound —
+      // the durable row is never left with a mutated pid/metadata/connectivity.
+      // The orchestrator's registration wait then times out and quarantines
+      // rather than promoting a half-revived identity to live.
+      const revived = this.db.registerAgentWithGenerationAcceptance({
+        registration: {
+          id: candidateId,
+          name: finalName,
+          emoji: finalEmoji,
+          pid,
+          metadata: finalMetadata,
+          stableId,
+        },
+        accept: wakeFence.revive.accept,
+      });
+      if (!revived.agent || !revived.acceptance.accepted) {
+        const reason = revived.acceptance.accepted ? "unknown" : revived.acceptance.reason;
         return rpcError(
           req.id,
           RPC_AGENT_WAKE_FENCE_REJECTED,
-          `Wake fence rejected after registration: ${acceptance.reason}.`,
-          { code: "WAKE_FENCE_REJECTED", reason: acceptance.reason, retryable: false },
+          `Wake fence rejected during revival: ${reason}.`,
+          { code: "WAKE_FENCE_REJECTED", reason, retryable: false },
         );
       }
+      agent = revived.agent;
+    } else {
+      agent = this.db.registerAgent(
+        candidateId,
+        finalName,
+        finalEmoji,
+        pid,
+        finalMetadata,
+        stableId,
+      );
     }
 
     this.disconnectDuplicateConnections(agent.id, socket);

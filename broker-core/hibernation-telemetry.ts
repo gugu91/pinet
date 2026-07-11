@@ -1,3 +1,4 @@
+import { sanitizeOperatorReason } from "./hibernation-status.js";
 import type { AgentLifecycleEvent, AgentLifecycleRetentionInfo } from "./types.js";
 
 /**
@@ -73,7 +74,10 @@ export function summarizeHibernationTelemetry(
 
     if (event.outcome !== ACCEPTED_OUTCOME) {
       failures += 1;
-      const reason = event.errorCode ?? event.reason;
+      // Defense-in-depth: reasons SHOULD be sanitized at write time, but a
+      // path-bearing reason must never reach this rendered aggregate even if an
+      // upstream writer regresses.
+      const reason = sanitizeOperatorReason(event.errorCode ?? event.reason) ?? "unspecified";
       refusalCounts.set(reason, (refusalCounts.get(reason) ?? 0) + 1);
       continue;
     }

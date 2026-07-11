@@ -1,5 +1,17 @@
-import { redactPathLikeTokens } from "./hibernation-status.js";
+import { redactPathLikeTokens, sanitizeOperatorReason } from "./hibernation-status.js";
 import type { AgentLifecycleState } from "./types.js";
+
+/**
+ * Reduce an executor/adapter-produced reason to an operator-safe string.
+ *
+ * Executor results (e.g. an aborted checkpoint) may fold runtime-authored text
+ * into their `reason`, which can carry a filesystem/socket path. Machine reason
+ * codes pass through unchanged; anything path-like is redacted. Falls back to a
+ * static code so the result always carries a non-empty reason.
+ */
+function safeResultReason(reason: string): string {
+  return sanitizeOperatorReason(reason) ?? "unspecified";
+}
 
 /**
  * Broker-managed hibernate/wake operator commands.
@@ -294,7 +306,7 @@ export async function executeHibernateCommand(
     agentId: input.agentId,
     outcome: result.ok ? "executed" : "refused",
     state: result.state,
-    reason: result.reason,
+    reason: safeResultReason(result.reason),
     detail: result.ok
       ? "Agent runtime checkpointed and hibernated."
       : result.state === "reap-candidate"
@@ -381,7 +393,7 @@ export async function executeWakeCommand(
     agentId: input.agentId,
     outcome: result.ok ? "executed" : "refused",
     state: result.state,
-    reason: result.reason,
+    reason: safeResultReason(result.reason),
     detail: result.ok
       ? "Agent runtime woken; queued messages will drain in order."
       : result.state === "reap-candidate"

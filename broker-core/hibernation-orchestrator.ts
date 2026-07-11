@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import type { BrokerDB } from "./schema.js";
 import { evaluateHibernateEligibility } from "./lifecycle.js";
+import { sanitizeOperatorReason } from "./hibernation-status.js";
 import type {
   AgentInfo,
   AgentLifecycleLease,
@@ -359,8 +360,11 @@ export class HibernationOrchestrator {
       // live/active state — never exit the process.
       const freshInbox = this.db.getUnreadInboxCount(agentId);
       if (!checkpoint.hibernateSafe || freshInbox > 0 || checkpoint.pendingInboxCount > 0) {
+        // `checkpoint.reason` is runtime-authored and may embed a filesystem or
+        // socket path; sanitize before it becomes an operator/telemetry-visible
+        // reason so no private path leaks through the abort surface.
         const abortReason = !checkpoint.hibernateSafe
-          ? `checkpoint_unsafe:${checkpoint.reason ?? "unconfirmed"}`
+          ? `checkpoint_unsafe:${sanitizeOperatorReason(checkpoint.reason) ?? "unconfirmed"}`
           : "work_arrived_during_checkpoint";
         const active = this.transitionFenced(lease, {
           agentId,
@@ -560,6 +564,30 @@ export class HibernationOrchestrator {
 
       const maxAttempts = Math.max(1, this.config.maxWakeAttempts);
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        // Keep the lease valid across this attempt's launch + registration waits
+        // so a legitimately long wake (whose cumulative waits can outrun a single
+        // lease TTL) still completes its fenced `live` transition instead of
+        // being quarantined on expiry. Renewal preserves the fence, so revival
+        // fencing is unchanged. A null result means ownership was lost to another
+        // broker → fail closed (quarantine) rather than double-drive the wake.
+        const renewed = this.db.renewAgentLifecycleLease({
+          agentId,
+          leaseId: lease.leaseId,
+          fenceToken: lease.fenceToken,
+          ttlMs: this.config.wakeLeaseMs,
+          now: this.now(),
+        });
+        if (!renewed) {
+          return this.quarantineWake(
+            agentId,
+            versionCursor,
+            correlationId,
+            actor,
+            "wake_lease_lost",
+            lease,
+            attempt - 1,
+          );
+        }
         const reservation = this.db.reserveWakeGeneration({
           agentId,
           wakeLeaseId: lease.leaseId,
@@ -969,15 +997,34 @@ export class HibernationOrchestrator {
     });
   }
 
+  /**
+   * Fail-closed *safety* transition to a quarantine/abort state. Unlike a
+   * forward-progress transition this is deliberately UNFENCED: it must be able
+   * to fire even when our own lease has expired mid-operation (e.g. a wake whose
+   * cumulative adapter waits outran the lease TTL), otherwise the agent would be
+   * stranded in `waking`/`hibernating`. Safety is preserved by the version CAS
+   * inside `transitionAgentLifecycle`: if another broker legitimately advanced
+   * the agent (bumping the version) our recovery CAS fails and we do not clobber
+   * it; if nobody else touched it, we move it to the safe state.
+   */
+  private transitionAdministrative(
+    input: Omit<
+      AgentLifecycleTransitionInput,
+      "fenceToken" | "leaseId" | "expectedOperation" | "now"
+    >,
+  ): AgentInfo {
+    return this.db.transitionAgentLifecycle(input);
+  }
+
   private quarantine(
     agentId: string,
     expectedVersion: number,
     correlationId: string,
     actor: string,
     reason: string,
-    lease: AgentLifecycleLease,
+    _lease: AgentLifecycleLease,
   ): HibernateResult {
-    const current = this.transitionFenced(lease, {
+    const current = this.transitionAdministrative({
       agentId,
       expectedVersion,
       toState: "reap-candidate",
@@ -1000,11 +1047,11 @@ export class HibernationOrchestrator {
     correlationId: string,
     actor: string,
     reason: string,
-    lease: AgentLifecycleLease,
+    _lease: AgentLifecycleLease,
     attempts: number,
   ): WakeResult {
     this.db.clearAgentWakeReservation(agentId);
-    const current = this.transitionFenced(lease, {
+    const current = this.transitionAdministrative({
       agentId,
       expectedVersion,
       toState: "reap-candidate",

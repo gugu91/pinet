@@ -84,6 +84,30 @@ describe("summarizeHibernationTelemetry", () => {
     expect(summary.refusalReasons[1]).toEqual({ reason: "not_idle", count: 1 });
   });
 
+  it("redacts a path-bearing reason before aggregating/rendering (defense-in-depth)", () => {
+    const summary = summarizeHibernationTelemetry([
+      event({
+        outcome: "refused",
+        errorCode: null,
+        reason: "checkpoint blocked at /Users/tm/secret/x",
+      }),
+      event({
+        outcome: "refused",
+        errorCode: null,
+        reason: "checkpoint blocked at /Users/tm/secret/y",
+      }),
+    ]);
+    // Both path-bearing reasons collapse to the same redacted key (descriptive
+    // prose preserved, private path replaced).
+    expect(summary.refusalReasons[0]).toEqual({
+      reason: "checkpoint blocked at <path>",
+      count: 2,
+    });
+    const text = formatHibernationTelemetry(summary);
+    expect(text).not.toContain("/Users/tm/secret");
+    expect(text).toContain("<path>");
+  });
+
   it("tracks max queue depth and oldest queue age across events", () => {
     const summary = summarizeHibernationTelemetry([
       event({ queueDepth: 3, oldestQueueAgeMs: 1000 }),

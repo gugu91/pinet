@@ -226,6 +226,25 @@ describe("HibernationOrchestrator — hibernate", () => {
     expect(h.proc.stopCalls).toBe(0);
   });
 
+  it("redacts a path-bearing runtime-authored checkpoint reason in the abort surface", async () => {
+    h.orch.prepareHibernation("worker-1");
+    // A worker-authored checkpoint reason could embed a private filesystem path.
+    h.proc.checkpoint = {
+      ...h.proc.checkpoint,
+      hibernateSafe: false,
+      reason: "held /Users/tm/secret/creds.json open",
+    };
+    const result = await h.orch.hibernate("worker-1");
+    expect(result.reason).toContain("checkpoint_unsafe:");
+    expect(result.reason).toContain("<path>");
+    expect(result.reason).not.toContain("/Users/tm/secret");
+    // The recorded lifecycle event reason is likewise redacted.
+    const events = h.db.getRecentAgentLifecycleEvents("worker-1");
+    const abort = events.find((e) => e.toState === "active");
+    expect(abort?.reason ?? "").not.toContain("/Users/tm/secret");
+    expect(abort?.reason ?? "").toContain("<path>");
+  });
+
   it("quarantines to reap-candidate when the runtime survives stop (PID anomaly)", async () => {
     h.orch.prepareHibernation("worker-1");
     h.proc.stopResult = { stopped: false, rssBytes: null };
@@ -794,6 +813,95 @@ describe("fail-closed fault handling (adapter/DB rejections)", () => {
     expect(h.db.listWakeQueue("queued")).toHaveLength(1);
     expect(h.db.listWakeQueue("dispatching")).toHaveLength(0);
     expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
+  });
+});
+
+describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
+  it("renews per attempt so a wake whose cumulative waits exceed one lease TTL still completes", async () => {
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux();
+    const clock = { ms: 1_000_000 };
+    let calls = 0;
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: {
+        registrationTimeoutMs: 200,
+        handshakeTimeoutMs: 200,
+        maxWakeAttempts: 3,
+        wakeLeaseMs: 90_000,
+      },
+      // Each attempt "waits" 60s. The first two fail; the third registers and
+      // accepts. Cumulative 180s > the 90s lease TTL, so this only completes if
+      // the lease is renewed per attempt.
+      awaitRuntimeRegistration: async (ctx: RuntimeLaunchContext) => {
+        calls += 1;
+        clock.ms += 60_000;
+        if (calls < 3) return false;
+        db.registerAgent(
+          ctx.agentId,
+          "Worker",
+          "🦉",
+          5555,
+          { ...AGENT_METADATA },
+          ctx.spec.stableId,
+        );
+        return db.acceptRuntimeGeneration({
+          agentId: ctx.agentId,
+          wakeLeaseId: ctx.wakeLeaseId,
+          fenceToken: ctx.fenceToken,
+          reservedGeneration: ctx.reservedGeneration,
+          now: clock.ms,
+        }).accepted;
+      },
+    });
+    // Drive to hibernated using a throwaway orchestrator's hibernate path.
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1");
+    expect(result).toMatchObject({ ok: true, state: "live", attempts: 3 });
+    expect(clock.ms - 1_000_000).toBeGreaterThan(90_000); // proves waits outran one TTL
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // released in finally
+  });
+
+  it("quarantines fail-closed (never strands `waking`) when the lease is lost mid-wake", async () => {
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux();
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: {
+        registrationTimeoutMs: 200,
+        handshakeTimeoutMs: 200,
+        maxWakeAttempts: 2,
+        wakeLeaseMs: 90_000,
+      },
+      // Attempt 1 "waits" past the full lease TTL without registering, so the
+      // per-attempt renewal at attempt 2 fails (ownership lost). This must
+      // quarantine, not strand the agent in `waking` and not double-drive it.
+      awaitRuntimeRegistration: async () => {
+        clock.ms += 90_001;
+        return false;
+      },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1");
+    expect(result).toMatchObject({ ok: false, reason: "wake_lease_lost", state: "reap-candidate" });
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+    expect(db.getAgentWakeReservation("worker-1")).toBeNull();
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull();
   });
 });
 

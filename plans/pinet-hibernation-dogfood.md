@@ -16,7 +16,11 @@ Hibernation is reversible and distinct from `exit`/`reap`. A hibernated row reta
 
 The durable identity survives a _graceful_ worker shutdown. During teardown the broker stops the worker process, whose shutdown path may send an `unregister`. For agents in a hibernation lifecycle state (`hibernating`/`hibernated`/`waking`), `BrokerDB.unregisterAgent` performs a soft disconnect — it records `disconnected_at` but preserves the inbox, owned threads, and resumability — instead of the ordinary full teardown (which deletes the inbox and releases threads). This keeps hibernation teardown correct regardless of whether the runtime exits abruptly or unregisters cleanly.
 
-Wake identity revival is fenced in independent layers. First, lifecycle **transitions** bind the _live, matching_ lease: a presented fence must equal the held lease's fence, and when the caller also binds lease identity (`leaseId` + `expectedOperation` + `now`) the DB additionally rejects an expired-but-unsuperseded lease and a wrong-operation lease. Lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a superseded holder is rejected on the fence; the identity binding closes the remaining "expired token still matches" and "hibernate lease drives a wake transition" holes. The orchestrator reads `now` fresh per transition, so a lease that expires mid-operation cannot authorize a later step. Second, socket registration into a durable identity is **state-gated then preflight-then-accept**: registration into a `hibernating` (mid-teardown), `reap-candidate` (quarantined), or `terminated` (closed) identity is rejected fail-closed regardless of any presented fence — only an exact fenced `waking`/`hibernated` revival is admissible. For that admissible case, `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, the agent registration commits, and only afterwards is the reserved runtime generation accepted (`acceptRuntimeGeneration`). A later name conflict or registration failure therefore never advances the generation for a runtime that did not register, and the connection binds to the revived identity only on full success.
+Crucially, that soft-disconnect is also protected from **routine maintenance**. A hibernated row is intentionally `disconnected` (no live socket), which would otherwise make it eligible for the ordinary disconnect-driven reapers. `pruneStaleAgents`, `purgeDisconnectedAgents`, and `repairThreadOwnership` all exclude the preserved lifecycle states (`hibernating`, `hibernated`, `waking`, and quarantined `reap-candidate`) via a fixed `lifecycle_state NOT IN (…)` predicate, so a maintenance pass never releases a hibernated identity's owned threads, requeues its inbox, or deletes the row. `terminated` remains ordinarily purgeable, and non-hibernation disconnected agents are still pruned/purged/repaired as before — the exclusion is targeted, not a blanket bypass.
+
+Wake identity revival is fenced in independent layers. First, lifecycle **transitions** bind the _live, matching_ lease: a presented fence must equal the held lease's fence, and when the caller also binds lease identity (`leaseId` + `expectedOperation` + `now`) the DB additionally rejects an expired-but-unsuperseded lease and a wrong-operation lease. Lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a superseded holder is rejected on the fence; the identity binding closes the remaining "expired token still matches" and "hibernate lease drives a wake transition" holes. The orchestrator reads `now` fresh per transition, so a lease that expires mid-operation cannot authorize a later step. Second, socket registration into a durable identity is **state-gated then preflight-then-accept**: registration into a `hibernating` (mid-teardown), `reap-candidate` (quarantined), or `terminated` (closed) identity is rejected fail-closed regardless of any presented fence — only an exact fenced `waking`/`hibernated` revival is admissible. For that admissible case, `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, and the registration mutation plus generation acceptance run **atomically in one broker transaction** (`registerAgentWithGenerationAcceptance`): if acceptance is rejected — e.g. the wake lease expires in the sub-millisecond window after the preflight — the whole registration mutation rolls back, so a refused revival never leaves the durable row with a mutated pid/metadata/connectivity. A later name conflict or registration failure therefore never advances the generation for a runtime that did not register, and the connection binds to the revived identity only on full success.
+
+Because a legitimately long wake (process launch + runtime registration, retried across attempts) can outrun a single wake-lease TTL, the orchestrator **renews the lease per attempt** (`renewAgentLifecycleLease`) — extending the expiry without bumping the fence, and only while the lease is still held and unexpired, which preserves the crash-takeover guarantee. If renewal fails (ownership was lost to another broker), the wake fails closed. And the fail-closed **quarantine/abort transitions are deliberately unfenced administrative CAS transitions**: a recovery to `reap-candidate`/`active` must be able to fire even if our own lease expired mid-operation (otherwise the agent would be stranded in `waking`/`hibernating`), while the version CAS inside `transitionAgentLifecycle` still prevents clobbering a concurrent legitimate writer. Forward-progress transitions remain fully fenced.
 
 Configuration defaults to **disabled** and observe-only:
 
@@ -108,9 +112,20 @@ paths such as `accounts/acme.md`) with `<path>` so no private path or unix socke
 path leaks into operator, confirmation, or JSON output, while ordinary prose
 (e.g. `and/or`, `Node.js`) is preserved. `redactRuntimeSpec` splits the repo root
 on both `/` and `\`, so a Windows repo root is reduced to a path-free basename
-rather than emitted verbatim. The `pinet hibernate`/`wake` command layer
-normalizes Windows `\` separators before deriving the owner/repo slug and
-matching the fail-closed repo allowlist, so path provenance is OS-agnostic.
+rather than emitted verbatim. Runtime-authored `checkpoint.reason` text is
+sanitized **at ingestion** (when the orchestrator composes an abort reason) and
+again where the command layer copies an executor-produced reason into its result,
+and the telemetry rollup redacts reason keys **defense-in-depth**, so a private
+path embedded in a worker's checkpoint reason never reaches the operator, command
+JSON, or telemetry surface. The `pinet hibernate`/`wake` command layer normalizes
+Windows `\` separators before deriving the owner/repo slug and matching the
+fail-closed repo allowlist, so path provenance is OS-agnostic.
+
+Repo-allowlist authorization trusts **only** the broker-authored durable runtime
+spec's `repoRoot` (captured at spawn). Mutable, worker-declared
+`agent.metadata.repoRoot` is never used as a fallback, so a worker cannot
+self-declare its way into an allowlisted repository; when no trusted spec exists
+the identifier is null and the fail-closed gate refuses.
 
 Wake-trigger contention is disambiguated so a queued trigger is never silently
 lost: only a _matching, unexpired wake lease_ resolves as a benign
