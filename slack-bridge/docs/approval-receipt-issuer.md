@@ -6,7 +6,9 @@ Tracking: [#920](https://github.com/gugu91/extensions/issues/920)
 
 `SlackApprovalIssuer` is an issuer protocol, not an executor or provider transport. It exposes only semantic `create`, `status`, and `cancel` operations; there is no `sign(bytes)` operation.
 
-A create call contains no principal field. It must carry a `SlackBrokerApprovalContext`, which the issuer passes to a deployment-provided `SlackApprovalContextAuthenticator`. Only that trusted adapter's authenticated result supplies the principal and Slack thread. The issuer requires the authenticated principal to equal its fixed authorized principal and the authenticated thread to equal the receipt envelope thread. A production authenticator must validate Slack signatures or resolve an unforgeable broker ingress/session handle; copying a Slack user ID is not authentication.
+A create call contains no principal field. It must carry a `SlackBrokerApprovalContext` containing only an opaque handle. At authenticated Slack/broker ingress, a deployment adapter must mint that unforgeable handle against a server-side record containing the authenticated principal, exact approval ID, exact Slack thread ID, and digest of the complete canonical envelope. `SlackApprovalContextAuthenticator.authenticateAndConsume` must retrieve and delete that record in one atomic operation; a missing or previously consumed handle fails authentication. Copying a Slack user ID or accepting caller-provided bindings is not authentication.
+
+Before any reservation or signer invocation, `SlackApprovalIssuer` validates and freezes the caller envelope, computes its canonical digest, atomically consumes the handle, and compares every trusted binding: fixed authorized principal, approval ID, thread ID, and complete envelope digest. Any approval-ID or envelope-field substitution therefore fails before signing, and the consumed handle cannot be replayed or detached for a later request. `status` and `cancel` also consume a fresh bound handle and compare its approval ID and stored complete envelope digest.
 
 The broker receives an `ApprovalSigner` capability with a fixed `keyId` and one method, `issueApproval(ApprovalClaims)`. The key ID is included in the claims before signing. Production packaging **must** back that capability with a separately supervised signer process or hardware-backed service that:
 
@@ -46,7 +48,7 @@ Claims bind all of the following:
 
 Canonical JSON recursively sorts object keys by locale-independent UTF-16 code-unit order and uses JSON string/number encoding. Issuer inputs are copied into recursively frozen arrays and objects before the signer is called, so caller mutation cannot change signed, returned, or audited values.
 
-Before invoking the signer, `ApprovalAuditStore.reserve` commits a SQLite `BEGIN IMMEDIATE` reservation with unique constraints for approval ID, send ID, draft ID, draft fingerprint, and complete envelope digest. Concurrent collisions therefore make exactly one signer call. A signer failure removes only the matching still-pending reservation token; finalized records cannot be removed by failure cleanup.
+Only after the request-bound ingress context has been consumed and all of its bindings match, `ApprovalAuditStore.reserve` commits a SQLite `BEGIN IMMEDIATE` reservation with unique constraints for approval ID, send ID, draft ID, draft fingerprint, and complete envelope digest. Concurrent collisions therefore make exactly one signer call. A signer failure removes only the matching still-pending reservation token; finalized records cannot be removed by failure cleanup. Because ingress authorization is one-time, a retry after signer failure requires a newly authenticated handle for the same exact request.
 
 `ApprovalReceiptVerifier.verifyAndConsume` checks the exact receipt shape, version, pinned key ID and signature, fixed expected principal, canonical issue/expiry times, non-future issuance, five-minute maximum lifetime, and exact equality for the expected approval and every envelope field. It then checks the issued audit reservation, cancellation, expiry, and replay state and records consumption in one `BEGIN IMMEDIATE` transaction before returning. Cancellation and consumption serialize against each other. A successful receipt is usable once only.
 
@@ -65,7 +67,7 @@ SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, sign
 ## Install evidence checklist (not executed in #920)
 
 - [ ] Exact-commit build, lint, typecheck, and tests pass.
-- [ ] Slack/broker context authenticator validates real ingress provenance, not caller identity fields.
+- [ ] Slack/broker context authenticator validates real ingress provenance, atomically consumes each handle once, and returns only its server-side principal, approval ID, thread ID, and complete canonical-envelope digest bindings.
 - [ ] Signer identity and pinned public root are provisioned by an administrator outside Pi.
 - [ ] File/socket ACL inspection proves Pi/workers cannot read signer material or rewrite the trust root.
 - [ ] Process-environment inspection proves signer/provider credential separation.

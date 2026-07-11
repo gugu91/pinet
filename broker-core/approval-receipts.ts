@@ -56,15 +56,23 @@ export interface SlackBrokerApprovalContext {
   readonly authenticationHandle: string;
 }
 
-/** Result produced only after the Slack/broker adapter authenticates the context. */
+/**
+ * Trusted, request-bound authorization produced by the Slack/broker ingress.
+ * Every field comes from the authenticated ingress record, never from the caller.
+ */
 export interface AuthenticatedSlackApprovalContext {
   readonly principal: string;
+  readonly approvalId: string;
   readonly threadId: string;
+  readonly envelopeDigest: string;
 }
 
-/** Trusted adapter capability; implementations must verify Slack/broker provenance. */
+/**
+ * Trusted adapter capability. Implementations must authenticate provenance and
+ * atomically consume the opaque handle before returning its request bindings.
+ */
 export interface SlackApprovalContextAuthenticator {
-  authenticate(context: SlackBrokerApprovalContext): AuthenticatedSlackApprovalContext;
+  authenticateAndConsume(context: SlackBrokerApprovalContext): AuthenticatedSlackApprovalContext;
 }
 
 export interface CreateApprovalInput {
@@ -547,23 +555,32 @@ export class SlackApprovalIssuer {
     context: SlackBrokerApprovalContext,
     input: CreateApprovalInput,
   ): Promise<ApprovalReceipt> {
-    const authenticated = this.authenticate(context);
     if (!Number.isInteger(input.ttlMs) || input.ttlMs <= 0 || input.ttlMs > MAX_APPROVAL_TTL_MS) {
       throw new Error(`ttlMs must be an integer between 1 and ${MAX_APPROVAL_TTL_MS}`);
     }
     validateEnvelope(input.envelope);
-    if (input.envelope.threadId !== authenticated.threadId) {
+    const approvalId = requireText(input.approvalId, "approvalId");
+    const envelope = immutableEnvelope(input.envelope);
+    const envelopeDigest = digestApprovalEnvelope(envelope);
+    const authenticated = this.authenticateAndConsume(context);
+    if (approvalId !== authenticated.approvalId) {
+      throw new Error("Approval ID does not match authenticated Slack context");
+    }
+    if (envelope.threadId !== authenticated.threadId) {
       throw new Error("Approval thread does not match authenticated Slack context");
+    }
+    if (envelopeDigest !== authenticated.envelopeDigest) {
+      throw new Error("Approval envelope does not match authenticated Slack context");
     }
     const issuedAt = this.now();
     const claims = immutableClaims({
       version: APPROVAL_RECEIPT_VERSION,
       keyId: this.signer.keyId,
-      approvalId: requireText(input.approvalId, "approvalId"),
+      approvalId,
       principal: authenticated.principal,
       issuedAt: issuedAt.toISOString(),
       expiresAt: new Date(issuedAt.getTime() + input.ttlMs).toISOString(),
-      envelope: input.envelope,
+      envelope,
     });
     const reservationToken = this.audit.reserve(claims);
     try {
@@ -580,27 +597,48 @@ export class SlackApprovalIssuer {
     }
   }
 
-  status(context: SlackBrokerApprovalContext, approvalId: string): ApprovalStatus | null {
-    this.authenticate(context);
-    return this.audit.status(requireText(approvalId, "approvalId"), this.now());
+  status(context: SlackBrokerApprovalContext, approvalIdInput: string): ApprovalStatus | null {
+    const approvalId = requireText(approvalIdInput, "approvalId");
+    const authenticated = this.authenticateAndConsume(context);
+    this.assertAuthenticatedApprovalId(authenticated, approvalId);
+    const status = this.audit.status(approvalId, this.now());
+    if (status && status.envelopeDigest !== authenticated.envelopeDigest) {
+      throw new Error("Approval envelope does not match authenticated Slack context");
+    }
+    return status;
   }
 
-  cancel(context: SlackBrokerApprovalContext, approvalId: string): ApprovalStatus {
-    const authenticated = this.authenticate(context);
-    return this.audit.cancel(
-      requireText(approvalId, "approvalId"),
-      authenticated.principal,
-      this.now(),
-    );
+  cancel(context: SlackBrokerApprovalContext, approvalIdInput: string): ApprovalStatus {
+    const approvalId = requireText(approvalIdInput, "approvalId");
+    const authenticated = this.authenticateAndConsume(context);
+    this.assertAuthenticatedApprovalId(authenticated, approvalId);
+    const status = this.audit.status(approvalId, this.now());
+    if (status && status.envelopeDigest !== authenticated.envelopeDigest) {
+      throw new Error("Approval envelope does not match authenticated Slack context");
+    }
+    return this.audit.cancel(approvalId, authenticated.principal, this.now());
   }
 
-  private authenticate(context: SlackBrokerApprovalContext): AuthenticatedSlackApprovalContext {
-    const authenticated = this.contextAuthenticator.authenticate(context);
+  private authenticateAndConsume(
+    context: SlackBrokerApprovalContext,
+  ): AuthenticatedSlackApprovalContext {
+    const authenticated = this.contextAuthenticator.authenticateAndConsume(context);
     if (authenticated.principal !== this.authorizedPrincipal) {
       throw new Error("Authenticated Slack principal is not authorized");
     }
+    requireText(authenticated.approvalId, "authenticated Slack approvalId");
     requireText(authenticated.threadId, "authenticated Slack threadId");
+    requireText(authenticated.envelopeDigest, "authenticated Slack envelopeDigest");
     return authenticated;
+  }
+
+  private assertAuthenticatedApprovalId(
+    authenticated: AuthenticatedSlackApprovalContext,
+    approvalId: string,
+  ): void {
+    if (approvalId !== authenticated.approvalId) {
+      throw new Error("Approval ID does not match authenticated Slack context");
+    }
   }
 }
 

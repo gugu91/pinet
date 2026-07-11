@@ -21,8 +21,6 @@ import {
 } from "./approval-receipts.js";
 
 const AUTHORIZED_SLACK_ID = "U0AF5S3LQ5C";
-const AUTHENTICATED_HANDLE = "test-authenticated-ingress-handle";
-const CONTEXT: SlackBrokerApprovalContext = { authenticationHandle: AUTHENTICATED_HANDLE };
 
 function digest(label: string): string {
   return `sha256:${createHash("sha256").update(label).digest("hex")}`;
@@ -71,6 +69,16 @@ describe("broker-core approval receipts", () => {
   let signer: ApprovalSigner;
   let pinnedVerifier: PinnedApprovalSignatureVerifier;
   let contextAuthenticator: SlackApprovalContextAuthenticator;
+  let authenticatedContexts: Map<
+    string,
+    {
+      readonly principal: string;
+      readonly approvalId: string;
+      readonly threadId: string;
+      readonly envelopeDigest: string;
+    }
+  >;
+  let contextSequence: number;
   let nowMs: number;
   let issuer: SlackApprovalIssuer;
   let receiptVerifier: ApprovalReceiptVerifier;
@@ -101,12 +109,14 @@ describe("broker-core approval receipts", () => {
       verify: (canonicalClaims, signature) =>
         verify(null, Buffer.from(canonicalClaims), publicKey, Buffer.from(signature, "base64url")),
     };
+    authenticatedContexts = new Map();
+    contextSequence = 0;
     contextAuthenticator = {
-      authenticate: (context) => {
-        if (context.authenticationHandle !== AUTHENTICATED_HANDLE) {
-          throw new Error("Slack/broker context authentication failed");
-        }
-        return { principal: AUTHORIZED_SLACK_ID, threadId: "thread-1" };
+      authenticateAndConsume: (context) => {
+        const authenticated = authenticatedContexts.get(context.authenticationHandle);
+        if (!authenticated) throw new Error("Slack/broker context authentication failed");
+        authenticatedContexts.delete(context.authenticationHandle);
+        return authenticated;
       },
     };
     nowMs = Date.parse("2026-07-11T10:00:00.000Z");
@@ -130,15 +140,30 @@ describe("broker-core approval receipts", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
+  function contextFor(
+    approvalId: string,
+    value: ApprovalEnvelope,
+    principal = AUTHORIZED_SLACK_ID,
+  ): SlackBrokerApprovalContext {
+    const authenticationHandle = `authenticated-ingress-${contextSequence++}`;
+    authenticatedContexts.set(authenticationHandle, {
+      principal,
+      approvalId,
+      threadId: value.threadId,
+      envelopeDigest: digestApprovalEnvelope(value),
+    });
+    return { authenticationHandle };
+  }
+
   async function issue(
     approvalId = "approval-1",
     value = envelope(),
     ttlMs = MAX_APPROVAL_TTL_MS,
   ): Promise<ApprovalReceipt> {
-    return issuer.create(CONTEXT, { approvalId, ttlMs, envelope: value });
+    return issuer.create(contextFor(approvalId, value), { approvalId, ttlMs, envelope: value });
   }
 
-  it("derives principal and thread only from the trusted authenticated context", async () => {
+  it("derives every authorization binding only from one-time trusted context", async () => {
     const receipt = await issue();
     expect(receipt.claims.principal).toBe(AUTHORIZED_SLACK_ID);
     expect(receipt.claims.envelope.threadId).toBe("thread-1");
@@ -151,7 +176,12 @@ describe("broker-core approval receipts", () => {
     ).rejects.toThrow("authentication failed");
 
     const wrongPrincipalAuthenticator: SlackApprovalContextAuthenticator = {
-      authenticate: () => ({ principal: "U_ATTACKER", threadId: "thread-1" }),
+      authenticateAndConsume: () => ({
+        principal: "U_ATTACKER",
+        approvalId: "approval-3",
+        threadId: "thread-1",
+        envelopeDigest: digestApprovalEnvelope(envelope({ sendId: "send-3" })),
+      }),
     };
     const wrongPrincipalIssuer = new SlackApprovalIssuer(
       AUTHORIZED_SLACK_ID,
@@ -160,16 +190,131 @@ describe("broker-core approval receipts", () => {
       audit,
     );
     await expect(
-      wrongPrincipalIssuer.create(CONTEXT, {
-        approvalId: "approval-3",
-        ttlMs: 1_000,
-        envelope: envelope({ sendId: "send-3" }),
-      }),
+      wrongPrincipalIssuer.create(
+        { authenticationHandle: "wrong-principal" },
+        {
+          approvalId: "approval-3",
+          ttlMs: 1_000,
+          envelope: envelope({ sendId: "send-3" }),
+        },
+      ),
     ).rejects.toThrow("not authorized");
 
+    const boundEnvelope = envelope({ sendId: "send-4" });
     await expect(
-      issue("approval-4", envelope({ threadId: "caller-controlled-thread", sendId: "send-4" })),
+      issuer.create(contextFor("approval-4", boundEnvelope), {
+        approvalId: "approval-4",
+        ttlMs: 1_000,
+        envelope: { ...boundEnvelope, threadId: "caller-controlled-thread" },
+      }),
     ).rejects.toThrow("authenticated Slack context");
+  });
+
+  it("atomically consumes the request-bound context and rejects replay before signing", async () => {
+    const value = envelope();
+    const context = contextFor("approval-1", value);
+    await expect(
+      issuer.create(context, { approvalId: "approval-1", ttlMs: 1_000, envelope: value }),
+    ).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+    await expect(
+      issuer.create(context, { approvalId: "approval-1", ttlMs: 1_000, envelope: value }),
+    ).rejects.toThrow("authentication failed");
+    expect(signerCalls).toBe(1);
+  });
+
+  it("atomically allows only one concurrent issuance attempt per context handle", async () => {
+    const value = envelope();
+    const context = contextFor("approval-1", value);
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 8 }, () =>
+        issuer.create(context, {
+          approvalId: "approval-1",
+          ttlMs: 1_000,
+          envelope: value,
+        }),
+      ),
+    );
+    expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(7);
+    expect(signerCalls).toBe(1);
+  });
+
+  it("rejects approval ID substitution, consumes the detached handle, and never signs", async () => {
+    const value = envelope();
+    const context = contextFor("approval-bound", value);
+    await expect(
+      issuer.create(context, { approvalId: "approval-substituted", ttlMs: 1_000, envelope: value }),
+    ).rejects.toThrow("Approval ID");
+    await expect(
+      issuer.create(context, { approvalId: "approval-bound", ttlMs: 1_000, envelope: value }),
+    ).rejects.toThrow("authentication failed");
+    expect(signerCalls).toBe(0);
+  });
+
+  it("rejects every canonical envelope substitution before signer invocation", async () => {
+    const substitutions: Array<{
+      name: string;
+      alter: (value: ApprovalEnvelope) => ApprovalEnvelope;
+    }> = [
+      { name: "accountId", alter: (value) => ({ ...value, accountId: "altered" }) },
+      { name: "threadId", alter: (value) => ({ ...value, threadId: "altered" }) },
+      { name: "draftId", alter: (value) => ({ ...value, draftId: "altered" }) },
+      {
+        name: "draftFingerprint",
+        alter: (value) => ({ ...value, draftFingerprint: digest("altered") }),
+      },
+      { name: "attestation", alter: (value) => ({ ...value, attestation: digest("altered") }) },
+      { name: "payload", alter: (value) => ({ ...value, payload: "altered" }) },
+      {
+        name: "recipients.to",
+        alter: (value) => ({
+          ...value,
+          recipients: { ...value.recipients, to: ["altered@example.com"] },
+        }),
+      },
+      {
+        name: "recipients.cc",
+        alter: (value) => ({
+          ...value,
+          recipients: { ...value.recipients, cc: ["altered@example.com"] },
+        }),
+      },
+      {
+        name: "recipients.bcc",
+        alter: (value) => ({
+          ...value,
+          recipients: { ...value.recipients, bcc: ["altered@example.com"] },
+        }),
+      },
+      { name: "rendererBuild", alter: (value) => ({ ...value, rendererBuild: "altered" }) },
+      {
+        name: "screenshotDigests",
+        alter: (value) => ({ ...value, screenshotDigests: [digest("altered")] }),
+      },
+      { name: "sendId", alter: (value) => ({ ...value, sendId: "altered" }) },
+      { name: "delayMs", alter: (value) => ({ ...value, delayMs: value.delayMs + 1 }) },
+      { name: "scheduledFor", alter: (value) => ({ ...value, scheduledFor: null }) },
+      { name: "action", alter: (value) => ({ ...value, action: "altered" }) },
+      { name: "provider", alter: (value) => ({ ...value, provider: "altered" }) },
+    ];
+
+    for (const [index, substitution] of substitutions.entries()) {
+      const approvalId = `approval-context-substitution-${index}`;
+      const bound = envelope({
+        draftId: `draft-context-substitution-${index}`,
+        draftFingerprint: digest(`context-substitution-${index}`),
+        sendId: `send-context-substitution-${index}`,
+      });
+      await expect(
+        issuer.create(contextFor(approvalId, bound), {
+          approvalId,
+          ttlMs: 1_000,
+          envelope: substitution.alter(bound),
+        }),
+        substitution.name,
+      ).rejects.toThrow("authenticated Slack context");
+    }
+    expect(signerCalls).toBe(0);
   });
 
   it("includes keyId in signed claims and rejects an altered keyId", async () => {
@@ -182,7 +327,9 @@ describe("broker-core approval receipts", () => {
   it("uses a pinned verifier object and performs one-time semantic verification", async () => {
     const receipt = await issue();
     expect(() => receiptVerifier.verifyAndConsume(receipt, expected(receipt))).not.toThrow();
-    expect(issuer.status(CONTEXT, "approval-1")?.state).toBe("consumed");
+    expect(
+      issuer.status(contextFor("approval-1", receipt.claims.envelope), "approval-1")?.state,
+    ).toBe("consumed");
     expect(() => receiptVerifier.verifyAndConsume(receipt, expected(receipt))).toThrow("consumed");
   });
 
@@ -290,12 +437,22 @@ describe("broker-core approval receipts", () => {
     );
     expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(7);
-    expect(issuer.status(CONTEXT, receipt.claims.approvalId)?.state).toBe("consumed");
+    expect(
+      issuer.status(
+        contextFor(receipt.claims.approvalId, receipt.claims.envelope),
+        receipt.claims.approvalId,
+      )?.state,
+    ).toBe("consumed");
   });
 
   it("rejects cancellation before consumption and prevents cancellation after consumption", async () => {
     const cancelled = await issue();
-    expect(issuer.cancel(CONTEXT, cancelled.claims.approvalId).state).toBe("cancelled");
+    expect(
+      issuer.cancel(
+        contextFor(cancelled.claims.approvalId, cancelled.claims.envelope),
+        cancelled.claims.approvalId,
+      ).state,
+    ).toBe("cancelled");
     expect(() => receiptVerifier.verifyAndConsume(cancelled, expected(cancelled))).toThrow(
       "cancelled",
     );
@@ -305,7 +462,12 @@ describe("broker-core approval receipts", () => {
       envelope({ draftId: "draft-2", draftFingerprint: digest("draft-2"), sendId: "send-2" }),
     );
     receiptVerifier.verifyAndConsume(consumed, expected(consumed));
-    expect(() => issuer.cancel(CONTEXT, consumed.claims.approvalId)).toThrow("consumed");
+    expect(() =>
+      issuer.cancel(
+        contextFor(consumed.claims.approvalId, consumed.claims.envelope),
+        consumed.claims.approvalId,
+      ),
+    ).toThrow("consumed");
   });
 
   it("rejects an exact mismatch for every expected delivery field", async () => {
