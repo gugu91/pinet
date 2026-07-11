@@ -1622,6 +1622,7 @@ function createPinetLaneTables(db: DatabaseSync): void {
   `);
 }
 
+// agent-standards-ignore prefer-inline-single-use-helper: schema migrations stay isolated and auditable by version.
 function createAgentHibernationTables(db: DatabaseSync): void {
   for (const [name, sql] of [
     [
