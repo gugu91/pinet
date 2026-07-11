@@ -138,6 +138,9 @@ export function wakeTriggerPriority(kind: WakeTriggerKind): number {
   return HIBERNATABLE_PRIORITY[kind];
 }
 
+// agent-standards-ignore prefer-inline-single-use-helper: bounded fail-closed
+// timeout is a real async control-flow seam; inlining the race + timer cleanup
+// into hibernate() would obscure the checkpoint-safety path.
 async function withTimeout<T>(work: Promise<T>, timeoutMs: number, onTimeout: () => T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<T>((resolve) => {

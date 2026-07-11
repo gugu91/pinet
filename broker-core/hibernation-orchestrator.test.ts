@@ -303,6 +303,7 @@ describe("HibernationOrchestrator — wake", () => {
       userId: "peer",
       channel: "a2a:x",
       text: "first",
+      timestamp: "1700000000.000001",
       metadata: {},
     });
     h.db.queueMessage("worker-1", {
@@ -311,6 +312,7 @@ describe("HibernationOrchestrator — wake", () => {
       userId: "peer",
       channel: "a2a:x",
       text: "second",
+      timestamp: "1700000000.000002",
       metadata: {},
     });
     expect(h.db.getUnreadInboxCount("worker-1")).toBe(2);

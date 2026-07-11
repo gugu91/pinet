@@ -629,6 +629,12 @@ export const RPC_INTERNAL_ERROR = -32603;
 export const RPC_AUTH_REQUIRED = -32001;
 export const RPC_AGENT_NAME_CONFLICT = -32002;
 export const RPC_AGENT_STABLE_ID_CONFLICT = -32003;
+/**
+ * A registration targeted a durable hibernation identity but did not present a
+ * valid broker-issued wake fence (missing/stale wake lease, fence token, or
+ * runtime generation). Only a broker-initiated fenced wake may revive it.
+ */
+export const RPC_AGENT_WAKE_FENCE_REJECTED = -32004;
 
 // ─── Message adapter (canonical transport contracts) ─────
 

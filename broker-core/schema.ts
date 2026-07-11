@@ -336,9 +336,14 @@ function rowToWakeQueueEntry(row: WakeQueueRow): AgentWakeQueueEntry {
 /** Parse a JSON array-of-strings column, tolerating malformed/legacy values. */
 function parseStringArray(value: string): string[] {
   try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === "string");
+    const parsed: string[] = [];
+    const raw = JSON.parse(value);
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (typeof item === "string") parsed.push(item);
+      }
+    }
+    return parsed;
   } catch {
     return [];
   }
@@ -2257,7 +2262,7 @@ export class BrokerDB implements BrokerDBInterface {
   getRecentAgentLifecycleEvents(agentId?: string, limit = 50): AgentLifecycleEvent[] {
     const db = this.getDb();
     const cappedLimit = Math.min(Math.max(Math.trunc(limit), 1), 1000);
-    const rows = (agentId
+    const rows = agentId
       ? db
           .prepare(
             `SELECT * FROM agent_lifecycle_events WHERE agent_id = ? ORDER BY id DESC LIMIT ?`,
@@ -2265,45 +2270,26 @@ export class BrokerDB implements BrokerDBInterface {
           .all(agentId, cappedLimit)
       : db
           .prepare(`SELECT * FROM agent_lifecycle_events ORDER BY id DESC LIMIT ?`)
-          .all(cappedLimit)) as unknown as Array<{
-      id: number;
-      correlation_id: string;
-      agent_id: string;
-      from_state: string;
-      to_state: string;
-      lifecycle_version: number;
-      fence_token: number | null;
-      reason: string;
-      trigger_source: string | null;
-      actor: string;
-      outcome: string;
-      error_code: string | null;
-      queue_depth: number | null;
-      oldest_queue_age_ms: number | null;
-      duration_ms: number | null;
-      rss_bytes_before: number | null;
-      rss_bytes_after: number | null;
-      created_at: string;
-    }>;
+          .all(cappedLimit);
     return rows.map((row) => ({
-      id: row.id,
-      correlationId: row.correlation_id,
-      agentId: row.agent_id,
-      fromState: row.from_state as AgentLifecycleState,
-      toState: row.to_state as AgentLifecycleState,
-      lifecycleVersion: row.lifecycle_version,
-      fenceToken: row.fence_token,
-      reason: row.reason,
-      triggerSource: row.trigger_source,
-      actor: row.actor,
-      outcome: row.outcome,
-      errorCode: row.error_code,
-      queueDepth: row.queue_depth,
-      oldestQueueAgeMs: row.oldest_queue_age_ms,
-      durationMs: row.duration_ms,
-      rssBytesBefore: row.rss_bytes_before,
-      rssBytesAfter: row.rss_bytes_after,
-      createdAt: row.created_at,
+      id: Number(row.id),
+      correlationId: String(row.correlation_id),
+      agentId: String(row.agent_id),
+      fromState: String(row.from_state) as AgentLifecycleState,
+      toState: String(row.to_state) as AgentLifecycleState,
+      lifecycleVersion: Number(row.lifecycle_version),
+      fenceToken: row.fence_token == null ? null : Number(row.fence_token),
+      reason: String(row.reason),
+      triggerSource: row.trigger_source == null ? null : String(row.trigger_source),
+      actor: String(row.actor),
+      outcome: String(row.outcome),
+      errorCode: row.error_code == null ? null : String(row.error_code),
+      queueDepth: row.queue_depth == null ? null : Number(row.queue_depth),
+      oldestQueueAgeMs: row.oldest_queue_age_ms == null ? null : Number(row.oldest_queue_age_ms),
+      durationMs: row.duration_ms == null ? null : Number(row.duration_ms),
+      rssBytesBefore: row.rss_bytes_before == null ? null : Number(row.rss_bytes_before),
+      rssBytesAfter: row.rss_bytes_after == null ? null : Number(row.rss_bytes_after),
+      createdAt: String(row.created_at),
     }));
   }
 
@@ -2821,14 +2807,27 @@ export class BrokerDB implements BrokerDBInterface {
 
   listWakeQueue(status?: AgentWakeQueueEntry["status"]): AgentWakeQueueEntry[] {
     const db = this.getDb();
-    const rows = (status
+    const rows = status
       ? db
           .prepare("SELECT * FROM agent_wake_queue WHERE status = ? ORDER BY priority ASC, id ASC")
           .all(status)
-      : db
-          .prepare("SELECT * FROM agent_wake_queue ORDER BY priority ASC, id ASC")
-          .all()) as unknown as WakeQueueRow[];
-    return rows.map(rowToWakeQueueEntry);
+      : db.prepare("SELECT * FROM agent_wake_queue ORDER BY priority ASC, id ASC").all();
+    return rows.map((row) =>
+      rowToWakeQueueEntry({
+        id: Number(row.id),
+        agent_id: String(row.agent_id),
+        repo_root: row.repo_root == null ? null : String(row.repo_root),
+        trigger_kind: String(row.trigger_kind),
+        trigger_message_id: row.trigger_message_id == null ? null : Number(row.trigger_message_id),
+        priority: Number(row.priority),
+        reason: String(row.reason),
+        correlation_id: String(row.correlation_id),
+        status: String(row.status),
+        attempt: Number(row.attempt),
+        enqueued_at: String(row.enqueued_at),
+        updated_at: String(row.updated_at),
+      }),
+    );
   }
 
   countInflightWakes(repoRoot?: string | null): number {
