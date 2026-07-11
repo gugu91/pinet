@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -32,6 +33,12 @@ function eligibleAgent(): AgentInfo {
       tmuxSession: "worker-1",
     },
   };
+}
+
+class InspectableBrokerDB extends BrokerDB {
+  raw(): DatabaseSync {
+    return this.getDb();
+  }
 }
 
 const tempDirs: string[] = [];
@@ -101,6 +108,48 @@ describe("agent hibernation lifecycle", () => {
     expect(db.releaseAgentLifecycleLease(agent.id, "lease-a", 0)).toBe(false);
     expect(db.releaseAgentLifecycleLease(agent.id, "lease-a", 1)).toBe(true);
     db.close();
+  });
+
+  it("migrates durably across restart and reports deterministic retention pruning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pinet-lifecycle-restart-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "broker.db");
+    const first = new InspectableBrokerDB(dbPath);
+    first.initialize();
+    const insert = first.raw().prepare(`INSERT INTO agent_lifecycle_events
+      (correlation_id, agent_id, from_state, to_state, lifecycle_version, reason, actor, outcome, created_at)
+      VALUES (?, 'worker', 'idle', 'hibernating', ?, 'test', 'test', 'accepted', ?)`);
+    for (let index = 0; index < 10_005; index += 1)
+      insert.run(`corr-${index}`, index, new Date(index).toISOString());
+    first.registerAgent(
+      "worker",
+      "Worker",
+      "🦉",
+      1,
+      eligibleAgent().metadata ?? undefined,
+      "stable",
+    );
+    first.transitionAgentLifecycle({
+      agentId: "worker",
+      expectedVersion: 0,
+      toState: "grace",
+      reason: "free",
+      actor: "broker",
+      correlationId: "prune",
+    });
+    expect(first.getAgentLifecycleRetentionInfo()).toMatchObject({
+      retainedCount: 10_000,
+      prunedCount: 6,
+    });
+    first.close();
+    const restarted = new BrokerDB(dbPath);
+    restarted.initialize();
+    expect(restarted.getAgentByStableId("stable")?.lifecycleState).toBe("grace");
+    expect(restarted.getAgentLifecycleRetentionInfo()).toMatchObject({
+      retainedCount: 10_000,
+      prunedCount: 6,
+    });
+    restarted.close();
   });
 
   it("fails closed unless durable broker-managed safety evidence is complete", () => {

@@ -46,6 +46,7 @@ import type {
   AgentLifecycleLease,
   AgentLifecycleOperation,
   AgentLifecycleTransitionInput,
+  AgentLifecycleRetentionInfo,
 } from "./types.js";
 interface SqliteJournalModeResult {
   journal_mode?: string | null;
@@ -1677,6 +1678,12 @@ function createAgentHibernationTables(db: DatabaseSync): void {
       ON agent_lifecycle_events(agent_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_lifecycle_events_created
       ON agent_lifecycle_events(created_at DESC);
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_retention (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+      pruned_count INTEGER NOT NULL DEFAULT 0,
+      last_pruned_at TEXT
+    );
+    INSERT OR IGNORE INTO agent_lifecycle_retention (singleton, pruned_count) VALUES (1, 0);
   `);
 }
 
@@ -2071,15 +2078,40 @@ export class BrokerDB implements BrokerDBInterface {
         input.actor,
         now,
       );
-      db.prepare(
-        `DELETE FROM agent_lifecycle_events WHERE id IN (
-        SELECT id FROM agent_lifecycle_events ORDER BY id DESC LIMIT -1 OFFSET 10000
-      )`,
-      ).run();
+      const pruned = db
+        .prepare(
+          `DELETE FROM agent_lifecycle_events WHERE id IN (
+          SELECT id FROM agent_lifecycle_events ORDER BY id DESC LIMIT -1 OFFSET 10000
+        )`,
+        )
+        .run();
+      if (Number(pruned.changes) > 0) {
+        db.prepare(
+          `UPDATE agent_lifecycle_retention
+           SET pruned_count = pruned_count + ?, last_pruned_at = ? WHERE singleton = 1`,
+        ).run(Number(pruned.changes), now);
+      }
       const updated = this.getAgentById(input.agentId);
       if (!updated) throw new Error(`Lifecycle agent disappeared: ${input.agentId}`);
       return updated;
     });
+  }
+
+  getAgentLifecycleRetentionInfo(): AgentLifecycleRetentionInfo {
+    const db = this.getDb();
+    const retained = db.prepare("SELECT COUNT(*) AS count FROM agent_lifecycle_events").get() as
+      | { count: number }
+      | undefined;
+    const retention = db
+      .prepare(
+        "SELECT pruned_count, last_pruned_at FROM agent_lifecycle_retention WHERE singleton = 1",
+      )
+      .get() as { pruned_count: number; last_pruned_at: string | null } | undefined;
+    return {
+      retainedCount: Number(retained?.count ?? 0),
+      prunedCount: Number(retention?.pruned_count ?? 0),
+      lastPrunedAt: retention?.last_pruned_at ?? null,
+    };
   }
 
   acquireAgentLifecycleLease(input: {

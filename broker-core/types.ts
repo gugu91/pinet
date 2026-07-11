@@ -34,6 +34,12 @@ export interface AgentLifecycleLease {
   attempt: number;
   triggerMessageId: number | null;
 }
+export interface AgentLifecycleRetentionInfo {
+  retainedCount: number;
+  prunedCount: number;
+  lastPrunedAt: string | null;
+}
+
 export interface AgentLifecycleTransitionInput {
   agentId: string;
   expectedVersion: number;
