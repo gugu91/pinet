@@ -762,8 +762,11 @@ export class HibernationOrchestrator {
    *    dispatch loop is gone, so return them to `queued` (they also block the
    *    unique active-agent index until reclaimed) so a fresh pass re-dispatches.
    *
-   * Agents whose lifecycle lease is still held (unexpired) are skipped: another
-   * broker/thread may still be driving them.
+   * Only a lease held by THIS live broker instance causes a skip (we are still
+   * actively driving that operation). A lease owned by a *different* instance is
+   * orphaned from a prior, now-dead broker — a crash normally leaves precisely
+   * such an unexpired-but-orphaned lease — so it is reconciled immediately rather
+   * than waiting out its TTL (during which the row would otherwise be stranded).
    */
   recoverStrandedWakes(opts: { now?: number } = {}): StrandedWakeRecovery[] {
     const now = opts.now ?? this.now();
@@ -772,8 +775,11 @@ export class HibernationOrchestrator {
       const strandedState = agent.lifecycleState;
       if (strandedState !== "waking" && strandedState !== "hibernating") continue;
       const lease = this.db.getAgentLifecycleLease(agent.id);
-      const leaseHeld = lease !== null && Date.parse(lease.expiresAt) > now;
-      if (leaseHeld) continue;
+      const heldByThisBroker =
+        lease !== null &&
+        Date.parse(lease.expiresAt) > now &&
+        lease.ownerBrokerInstanceId === this.brokerInstanceId;
+      if (heldByThisBroker) continue;
 
       const version = agent.lifecycleVersion ?? 0;
       const correlationId = this.newId();
@@ -793,6 +799,7 @@ export class HibernationOrchestrator {
             actor: "broker",
             correlationId,
           });
+          if (lease) this.db.releaseAgentLifecycleLease(agent.id, lease.leaseId, lease.fenceToken);
           recovered.push({ agentId: agent.id, action: "quarantined" });
         } catch {
           // Raced with a live owner or a concurrent recovery pass; leave it be.
@@ -820,6 +827,7 @@ export class HibernationOrchestrator {
             correlationId,
           });
           this.db.completeWakeForAgent(agent.id);
+          if (lease) this.db.releaseAgentLifecycleLease(agent.id, lease.leaseId, lease.fenceToken);
           recovered.push({ agentId: agent.id, action: "completed" });
         } else {
           this.db.clearAgentWakeReservation(agent.id);
@@ -832,6 +840,7 @@ export class HibernationOrchestrator {
             actor: "broker",
             correlationId,
           });
+          if (lease) this.db.releaseAgentLifecycleLease(agent.id, lease.leaseId, lease.fenceToken);
           recovered.push({ agentId: agent.id, action: "quarantined" });
         }
       } catch {
@@ -912,17 +921,25 @@ export class HibernationOrchestrator {
         });
         continue;
       }
-      if (!result.ok && result.reason === "wake_in_progress") {
-        // A live wake lease owner is already draining this agent; consume the row.
-        this.db.completeWakeQueueEntry(claimed.id, "done");
-      } else if (!result.ok && result.reason === "wake_lease_contended") {
-        // A non-wake lifecycle lease is transiently holding the agent; no wake is
-        // in flight, so the trigger must survive. Requeue and defer this agent so
-        // the same lease cannot re-select it and spin this pass.
-        this.db.requeueWake(claimed.id);
-        deferred.add(claimed.agentId);
-      } else {
-        this.db.completeWakeQueueEntry(claimed.id, result.ok ? "done" : "cancelled");
+      try {
+        if (!result.ok && result.reason === "wake_in_progress") {
+          // A live wake lease owner is already draining this agent; consume the row.
+          this.db.completeWakeQueueEntry(claimed.id, "done");
+        } else if (!result.ok && result.reason === "wake_lease_contended") {
+          // A non-wake lifecycle lease is transiently holding the agent; no wake is
+          // in flight, so the trigger must survive. Requeue and defer this agent so
+          // the same lease cannot re-select it and spin this pass.
+          this.db.requeueWake(claimed.id);
+          deferred.add(claimed.agentId);
+        } else {
+          this.db.completeWakeQueueEntry(claimed.id, result.ok ? "done" : "cancelled");
+        }
+      } catch {
+        // A transient finalization-write failure must not crash the drain pass or
+        // strand the other queued agents. The wake itself already resolved durably
+        // above; the row simply stays `dispatching` and is reclaimed by
+        // `recoverStrandedWakes` (which requeues every `dispatching` row) on the
+        // next startup/reconciliation pass. Fail-closed: never lose the trigger.
       }
       results.push(result);
     }

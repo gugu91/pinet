@@ -300,6 +300,30 @@ describe("unregisterAgent preserves durable hibernation identities", () => {
     db.close();
   });
 
+  it("keeps inbox + owned threads when a quarantined (reap-candidate) identity unregisters", () => {
+    const db = new BrokerDB(dbPath());
+    db.initialize();
+    db.registerAgent("worker-1", "W", "🦉", 1, undefined, "host:session:worker-1");
+    db.upsertAgentRuntimeSpec(spec("worker-1"));
+    expect(db.claimThread("thread-1", "worker-1")).toBe(true);
+    db.insertMessage("thread-1", "a2a", "inbound", "worker-2", "queued work", ["worker-1"]);
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+
+    // A hibernate/wake fault quarantined the agent; its runtime is still exiting
+    // and later sends a graceful `unregister`. That must NOT destroy the evidence
+    // (inbox, ownership, runtime spec) an operator needs to review the quarantine.
+    driveTo(db, "worker-1", ["grace", "idle", "hibernating", "reap-candidate"]);
+    db.unregisterAgent("worker-1");
+
+    expect(db.getUnreadInboxCount("worker-1")).toBe(1);
+    expect(db.getThread("thread-1")?.ownerAgent).toBe("worker-1");
+    const agent = db.getAgentById("worker-1");
+    expect(agent?.lifecycleState).toBe("reap-candidate");
+    expect(agent?.disconnectedAt).toBeTruthy();
+    expect(db.getAgentRuntimeSpec("worker-1")).not.toBeNull();
+    db.close();
+  });
+
   it("still tears down an ordinary (non-hibernation) agent on unregister", () => {
     const db = new BrokerDB(dbPath());
     db.initialize();

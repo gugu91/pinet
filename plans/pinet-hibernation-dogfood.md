@@ -59,7 +59,7 @@ Downgrade leaves additive columns/tables in place. Roll back application code by
 
 ## Controlled activation (future, separate approval)
 
-1. Back up the broker DB and record exact extension commit. On broker startup (before dispatching any wakes), call `HibernationOrchestrator.recoverStrandedWakes()` once to reconcile crash-stranded state. It repairs three classes: (a) agents left in `waking` — completed to `live` when the generation was already accepted (reservation consumed, `runtime_generation` advanced past the checkpoint generation), otherwise failed closed to `reap-candidate`; (b) agents left in `hibernating` — the runtime's liveness is unknown so they fail closed to `reap-candidate` rather than risk a double launch on the next wake; (c) wake-queue rows orphaned in `dispatching` — returned to `queued` for a fresh dispatch pass (they also block the unique active-agent index until reclaimed). Agents whose lifecycle lease is still held (unexpired) are skipped.
+1. Back up the broker DB and record exact extension commit. On broker startup (before dispatching any wakes), call `HibernationOrchestrator.recoverStrandedWakes()` once to reconcile crash-stranded state. It repairs three classes: (a) agents left in `waking` — completed to `live` when the generation was already accepted (reservation consumed, `runtime_generation` advanced past the checkpoint generation), otherwise failed closed to `reap-candidate`; (b) agents left in `hibernating` — the runtime's liveness is unknown so they fail closed to `reap-candidate` rather than risk a double launch on the next wake; (c) wake-queue rows orphaned in `dispatching` — returned to `queued` for a fresh dispatch pass (they also block the unique active-agent index until reclaimed). Reconciliation is **owner-aware**: it skips a row only when the lifecycle lease is unexpired **and owned by this live broker instance** (an operation we are actively driving). A lease owned by a _different_ instance is orphaned from a prior, now-dead broker — a crash normally leaves precisely such an unexpired-but-orphaned lease — so it is reconciled immediately (and the orphaned lease released) rather than skipped until its TTL elapses, which is what makes the ordinary quick-restart case recover instead of stranding forever. The finalize/safety writes that run outside a crash (the pre-teardown hibernate abort, the accepted `waking->live` promotion, and each dispatch-loop queue finalization) always release the lifecycle lease in a `finally` and are wrapped so a transient DB-write failure cannot crash the drain pass; any row left `dispatching`/`waking`/`hibernating` by such a failure carries no held lease and is therefore reclaimed by the next `recoverStrandedWakes` pass. A graceful `unregister` from a runtime that is still exiting after a quarantine preserves `reap-candidate` (alongside `hibernating`/`hibernated`/`waking`) as a soft disconnect, so the inbox, thread ownership, and runtime spec an operator needs to review the quarantine are never destroyed.
 2. Run observe-only for 24 hours; inspect refusal reasons and verify no runtime exits.
 3. Permit one broker-managed root worker in this repository, `mode=manual`.
 4. Confirm no active lane, pending outbound/control operation, port lease, detached UI/tool state, child process, private tmux socket, or uncommitted in-memory-only work.
@@ -130,10 +130,23 @@ machine code (`active_port_lease`, `checkpoint_timeout`, …) passes through;
 anything else collapses to the static code `unspecified`. This runs where the
 orchestrator composes an abort reason **and** where it persists the durable
 checkpoint receipt, so no runtime-authored prose reaches the operator, command
-JSON, telemetry, or the durable receipt. Operator-authored reasons (a different
-trust class) are bounded + path-redacted with `sanitizeOperatorReason` at the
-orchestrator boundary before any lifecycle row/event is written, and the
-telemetry rollup redacts reason keys defense-in-depth.
+JSON, telemetry, or the durable receipt.
+
+Operator-authored reasons are a different trust class (a human wrote them) but
+are still hardened by `sanitizeOperatorReason` at the orchestrator boundary
+before any lifecycle row/event is written. It runs two composed passes:
+`redactSecretAssignments` strips secret-bearing NON-path shapes — env/CLI
+assignments (`TOKEN=deadbeef` → `TOKEN=<redacted>`) and CLI flag values
+(`--api-key secret` / `--api-key=secret` → `--api-key <redacted>`), keeping the
+non-secret key/flag name so the reason stays actionable — and then
+`redactPathLikeTokens` redacts path-like tokens, now fail-closed on ambiguous
+relative paths (any single-separator token that is not a small allowlisted prose
+connective such as `and/or` is redacted, so `accounts/acme` is caught). The
+telemetry rollup redacts reason keys defense-in-depth. An _unresolved_ command
+target is never echoed at all — not even redacted: `unknownHibernationTarget`
+emits a stable, non-reversible `target:#<fingerprint>` so an operator can
+correlate repeated failures of the same input without any content reaching a
+surface.
 
 Repo-allowlist authorization trusts **only** the broker-authored durable runtime
 spec's `repoRoot` (captured at spawn). Mutable, worker-declared

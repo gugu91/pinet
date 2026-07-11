@@ -12,6 +12,20 @@ import type {
 } from "./types.js";
 
 /**
+ * Short, stable, non-reversible FNV-1a digest. Lets operators correlate an
+ * opaque identity (session ref, unresolved command target) across reads without
+ * exposing the underlying payload — which may be a filesystem path or secret.
+ */
+export function fingerprintToken(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
  * Redact a durable runtime spec into an operator-safe view: presence flags,
  * counts, and opaque references only. Raw argv, environment values, filesystem
  * paths, and private socket paths are never surfaced. This is the sanctioned
@@ -32,12 +46,7 @@ export function redactRuntimeSpec(spec: AgentRuntimeSpec): RedactedAgentRuntimeS
   // reads without exposing the payload — and flag whether it looked path-like.
   const payload = separatorIndex > 0 ? rawRef.slice(separatorIndex + 1) : rawRef;
   const hasPath = /[\\/]/.test(payload) || payload.startsWith("~");
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < rawRef.length; i += 1) {
-    hash ^= rawRef.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  const ref = `${kind}:#${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  const ref = `${kind}:#${fingerprintToken(rawRef)}`;
   // Repo is reported as a path-free basename so operators can group agents
   // without exposing the worktree/repo-root filesystem path. Split on BOTH
   // separators so a Windows repo root (e.g. `C:\\Users\\alice\\secret-repo`) is
@@ -156,17 +165,75 @@ export function sanitizeOperatorReason(value: string | null | undefined): string
     .replace(/\s+/g, " ")
     .trim();
   if (cleaned.length === 0) return null;
-  const redacted = redactPathLikeTokens(cleaned);
+  // Two composed passes: first strip secret-bearing shapes (env assignments and
+  // CLI flag values) that are not paths, then redact path-like tokens. Ordering
+  // matters — a flag's value that is itself a path is caught by the first pass.
+  const redacted = redactPathLikeTokens(redactSecretAssignments(cleaned));
   return redacted.length > 120 ? `${redacted.slice(0, 117)}\u2026` : redacted;
+}
+
+// Common prose that uses a single "/" and must NOT be treated as a path. Bare
+// two-token connectives only; anything path-shaped (multi-segment, file-like,
+// absolute, or relative-prefixed) is still redacted by `redactPathLikeTokens`.
+const PROSE_SLASH_TOKENS = new Set([
+  "and/or",
+  "or/and",
+  "he/she",
+  "she/he",
+  "w/",
+  "w/o",
+  "n/a",
+  "i/o",
+  "km/h",
+  "tcp/ip",
+  "24/7",
+]);
+
+/**
+ * Redact secret-bearing NON-path shapes from an operator free-form string:
+ * environment/CLI assignments (`TOKEN=deadbeef` → `TOKEN=<redacted>`) and CLI
+ * flag values (`--api-key secret` / `--api-key=secret` → `--api-key <redacted>`).
+ * The env var name / flag name is kept (it is not itself the secret) so the
+ * reason stays actionable, while the value can never reach an operator surface.
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: distinct stateful
+// secret-redaction pass (flag/value tracking across tokens); composed with the
+// path-redaction pass in sanitizeOperatorReason and kept separate for clarity.
+function redactSecretAssignments(value: string): string {
+  let redactNextValue = false;
+  return value
+    .split(/(\s+)/)
+    .map((token) => {
+      if (token.length === 0 || /\s/.test(token)) return token;
+      // A value expected immediately after a bare flag (`--flag value`).
+      if (redactNextValue) {
+        redactNextValue = false;
+        if (!/^-/.test(token)) return "<redacted>";
+      }
+      // Flags: `-f`, `--flag`, and the assignment forms `-f=v` / `--flag=v`.
+      if (/^--?[A-Za-z]/.test(token)) {
+        const eq = token.indexOf("=");
+        if (eq >= 0) return `${token.slice(0, eq)}=<redacted>`;
+        redactNextValue = true; // the following token is this flag's value
+        return token;
+      }
+      // Env/CLI assignment: `KEY=value` → keep the (non-secret) key only.
+      const assign = /^([A-Za-z_][A-Za-z0-9_.-]*)=.+$/.exec(token);
+      if (assign) return `${assign[1]}=<redacted>`;
+      return token;
+    })
+    .join("");
 }
 
 /**
  * Replace filesystem-path-like tokens with `<path>` so operator-authored
  * free-form strings (reasons, echoed targets) can never surface private
  * absolute paths, unix socket paths, or repo-relative paths in operator/JSON
- * output. Conservative: only tokens that clearly look like paths are redacted,
- * so ordinary prose (e.g. "and/or") is preserved. This is a redaction-by-
- * construction boundary, not a security parser.
+ * output. Conservative but fail-closed on ambiguous relative paths: any
+ * single-separator token that is not a known prose connective (see
+ * `PROSE_SLASH_TOKENS`) is redacted, so `accounts/acme` is caught while
+ * "and/or" survives. This is a redaction-by-construction boundary, not a
+ * security parser.
  */
 export function redactPathLikeTokens(value: string): string {
   return value
@@ -174,16 +241,16 @@ export function redactPathLikeTokens(value: string): string {
     .map((token) => {
       if (token.length === 0 || /\s/.test(token)) return token;
       const slashCount = (token.match(/[/\\]/g) ?? []).length;
-      // A single-separator relative token that carries a file extension is
-      // file-like (e.g. `accounts/acme.md`, `src/index.ts`) and must be
-      // redacted, while extension-free prose like "and/or" is preserved.
-      const looksFileLike = slashCount >= 1 && /[^/\\]\.[A-Za-z0-9]/.test(token);
+      // Strip trailing sentence punctuation before the prose-allowlist check so
+      // "and/or," is still recognized as prose.
+      const bare = token.replace(/[.,;:!?)\]]+$/, "").toLowerCase();
+      const isProse = slashCount === 1 && PROSE_SLASH_TOKENS.has(bare);
       const pathLike =
-        /^[~/]/.test(token) || // /abs or ~/home
-        /^\.\.?[/\\]/.test(token) || // ./rel or ../rel
-        /^[A-Za-z]:[\\/]/.test(token) || // C:\ or C:/ (Windows)
-        slashCount >= 2 || // multi-segment relative path
-        looksFileLike; // single-separator file-like relative path
+        !isProse &&
+        (/^[~/]/.test(token) || // /abs or ~/home
+          /^\.\.?[/\\]/.test(token) || // ./rel or ../rel
+          /^[A-Za-z]:[\\/]/.test(token) || // C:\ or C:/ (Windows)
+          slashCount >= 1); // any relative/absolute separator (fail-closed)
       return pathLike ? "<path>" : token;
     })
     .join("");

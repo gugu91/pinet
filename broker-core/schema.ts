@@ -3138,8 +3138,19 @@ export class BrokerDB implements BrokerDBInterface {
       // state a later wake is supposed to drain. For hibernation lifecycle
       // states, treat unregister as a soft disconnect that preserves the inbox,
       // thread ownership, and resumability instead of tearing them down.
+      //
+      // `reap-candidate` is included: a hibernate/wake fault may have quarantined
+      // the agent while its runtime was still asynchronously exiting; a late
+      // unregister from that runtime must not destroy the inbox, ownership, and
+      // runtime spec an operator needs to review the quarantine. This mirrors the
+      // routine-maintenance preservation set.
       const state = agent?.lifecycleState;
-      if (state === "hibernating" || state === "hibernated" || state === "waking") {
+      if (
+        state === "hibernating" ||
+        state === "hibernated" ||
+        state === "waking" ||
+        state === "reap-candidate"
+      ) {
         db.prepare("UPDATE agents SET disconnected_at = ? WHERE id = ?").run(now, id);
         return;
       }

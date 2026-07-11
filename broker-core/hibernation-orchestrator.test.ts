@@ -1163,6 +1163,91 @@ describe("recoverStrandedWakes (crash between acceptance and live)", () => {
     expect(h.db.listWakeQueue("dispatching")).toHaveLength(0);
     expect(h.db.listWakeQueue("queued")).toHaveLength(1);
   });
+
+  it("reconciles an accepted waking row whose UNEXPIRED lease belongs to a crashed prior broker", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+    // A PRIOR broker instance drove the wake and its runtime accepted the
+    // generation — then that broker crashed. The lease is still UNEXPIRED but
+    // orphaned (owned by the dead instance). This is the ordinary quick-restart
+    // case: without owner-awareness, reconciliation would skip it forever.
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-prior",
+      leaseId: "wake-prior",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "waking",
+      reason: "wake",
+      actor: "broker",
+      correlationId: "c",
+      fenceToken: lease.fenceToken,
+    });
+    const reservation = h.db.reserveWakeGeneration({
+      agentId: "worker-1",
+      wakeLeaseId: "wake-prior",
+      fenceToken: lease.fenceToken,
+      correlationId: "c",
+      now: h.clock.ms,
+    });
+    expect(
+      h.db.acceptRuntimeGeneration({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-prior",
+        fenceToken: lease.fenceToken,
+        reservedGeneration: reservation.reservedGeneration,
+        now: h.clock.ms,
+      }).accepted,
+    ).toBe(true);
+    // The prior broker's lease is intentionally NOT released and NOT expired.
+    expect(h.db.getAgentLifecycleLease("worker-1")).not.toBeNull();
+
+    // Fresh broker ("broker-1") reconciliation must NOT skip the orphan just
+    // because its lease is unexpired — the prior owner is gone.
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toEqual([{ agentId: "worker-1", action: "completed" }]);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("live");
+    expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
+
+  it("reconciles a hibernating row whose UNEXPIRED lease belongs to a crashed prior broker", () => {
+    const h = harness();
+    seedAgent(h.db);
+    const prep = h.orch.prepareHibernation("worker-1");
+    expect(prep.ready).toBe(true);
+    const agent = h.db.getAgentById("worker-1")!;
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "hibernate",
+      ownerBrokerInstanceId: "broker-prior",
+      leaseId: "hib-prior",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "hibernating",
+      reason: "hibernate",
+      actor: "broker",
+      correlationId: "c",
+      fenceToken: lease.fenceToken,
+    });
+    // Prior broker crashed mid-hibernate; its lease is unexpired but orphaned.
+    expect(h.db.getAgentLifecycleLease("worker-1")).not.toBeNull();
+
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toEqual([{ agentId: "worker-1", action: "quarantined" }]);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+    expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
 });
 
 describe("wake queue", () => {
@@ -1206,5 +1291,45 @@ describe("wake queue", () => {
     expect(results.map((r) => r.agentId)).toEqual(["worker-2", "worker-1"]);
     expect(results.every((r) => r.ok)).toBe(true);
     expect(h.db.listWakeQueue("queued")).toHaveLength(0);
+  });
+
+  it("does not crash the drain pass if the sole queue-finalization write fails (row stays reclaimable)", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    // A live wake lease is held by another owner, so dispatch's wake() returns a
+    // benign `wake_in_progress`. In that branch `completeWakeQueueEntry(id,"done")`
+    // is the SOLE finalizer of the queue row (the success path's
+    // `completeWakeForAgent` never runs), so a failing write here is the real
+    // strand risk.
+    const held = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-other",
+      leaseId: "wake-other",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    });
+    expect(held).not.toBeNull();
+    h.orch.enqueueWakeTrigger({ agentId: "worker-1", triggerKind: "manual", reason: "manual" });
+
+    const original = h.db.completeWakeQueueEntry.bind(h.db);
+    let threw = false;
+    h.db.completeWakeQueueEntry = ((_id: number, _status: "done" | "cancelled") => {
+      threw = true;
+      throw new Error("transient sqlite write failure");
+    }) as typeof h.db.completeWakeQueueEntry;
+
+    // The pass must not throw despite the failed finalization write.
+    const results = await h.orch.dispatchWakeQueue();
+    expect(threw).toBe(true);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.reason).toBe("wake_in_progress");
+    // The row is left `dispatching` (its only finalizer failed) and is reclaimed
+    // by `recoverStrandedWakes` on the next reconciliation pass — never lost.
+    h.db.completeWakeQueueEntry = original;
+    expect(h.db.listWakeQueue("dispatching")).toHaveLength(1);
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toContainEqual({ agentId: "worker-1", action: "requeued" });
   });
 });

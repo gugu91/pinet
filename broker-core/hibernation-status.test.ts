@@ -345,6 +345,31 @@ describe("redactPathLikeTokens / sanitizeOperatorReason path redaction", () => {
     expect(sanitizeOperatorReason(null)).toBeNull();
   });
 
+  it("redactPathLikeTokens redacts extensionless relative paths, keeps prose connectives", () => {
+    // Extensionless single-separator relative paths are now fail-closed.
+    expect(redactPathLikeTokens("touched accounts/acme now")).toBe("touched <path> now");
+    expect(redactPathLikeTokens("edit config/app here")).toBe("edit <path> here");
+    // Known prose connectives with a single slash still survive.
+    expect(redactPathLikeTokens("ship and/or hold, n/a for now")).toBe(
+      "ship and/or hold, n/a for now",
+    );
+  });
+
+  it("sanitizeOperatorReason redacts env assignments and CLI flag values (secret material)", () => {
+    expect(sanitizeOperatorReason("stalled with TOKEN=deadbeef set")).toBe(
+      "stalled with TOKEN=<redacted> set",
+    );
+    expect(sanitizeOperatorReason("ran with --api-key sk-live-123 flag")).toBe(
+      "ran with --api-key <redacted> flag",
+    );
+    expect(sanitizeOperatorReason("passed --api-key=sk-live-123")).toBe(
+      "passed --api-key=<redacted>",
+    );
+    expect(sanitizeOperatorReason("short -p hunter2 here")).toBe("short -p <redacted> here");
+    // A bare extensionless relative path in an operator reason is also caught.
+    expect(sanitizeOperatorReason("blocked on accounts/acme")).toBe("blocked on <path>");
+  });
+
   it("sanitizeCheckpointReasonCode allowlists safe codes by shape, else `unspecified`", () => {
     // Well-formed single-token machine codes pass (normalized to lowercase).
     expect(sanitizeCheckpointReasonCode("active_port_lease")).toBe("active_port_lease");

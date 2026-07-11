@@ -242,10 +242,23 @@ describe("unknownHibernationTarget + formatter", () => {
     expect(unknownHibernationTarget("wake", "   ").agentId).toBe("(unnamed)");
   });
 
-  it("redacts path-like tokens in the echoed unknown target", () => {
+  it("never echoes the raw unknown target — emits a stable, opaque fingerprint", () => {
     const result = unknownHibernationTarget("hibernate", "/Users/tm/private/secret-worktree");
     expect(result.agentId).not.toContain("/Users");
-    expect(result.agentId).toContain("<path>");
+    expect(result.agentId).not.toContain("secret-worktree");
+    expect(result.agentId).toMatch(/^target:#[0-9a-f]{8}$/);
+    // Deterministic: the same input fingerprints identically for correlation…
+    expect(unknownHibernationTarget("hibernate", "/Users/tm/private/secret-worktree").agentId).toBe(
+      result.agentId,
+    );
+    // …but a different input does not collide.
+    expect(unknownHibernationTarget("hibernate", "/Users/tm/other").agentId).not.toBe(
+      result.agentId,
+    );
+  });
+
+  it("renders an empty/whitespace target as a static placeholder", () => {
+    expect(unknownHibernationTarget("wake", "   ").agentId).toBe("(unnamed)");
   });
 
   it("formats without leaking anything beyond machine reason/detail/state", () => {

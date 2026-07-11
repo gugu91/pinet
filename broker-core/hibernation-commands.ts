@@ -1,4 +1,4 @@
-import { redactPathLikeTokens, sanitizeOperatorReason } from "./hibernation-status.js";
+import { fingerprintToken, sanitizeOperatorReason } from "./hibernation-status.js";
 import type { AgentLifecycleState } from "./types.js";
 
 /**
@@ -227,9 +227,10 @@ export function unknownHibernationTarget(
   command: "hibernate" | "wake",
   target: string,
 ): HibernationCommandResult {
-  // Echo a control-stripped, length-bounded rendering of the operator's target
-  // so the failure is actionable without surfacing arbitrary/free-form input
-  // (which could carry newlines or overly long paste content) verbatim.
+  // The target is arbitrary, unresolved operator input (it may be a paste, a
+  // path, or carry secret material). Never echo it — not even redacted. Emit a
+  // stable non-reversible fingerprint so an operator can still correlate repeated
+  // failures of the *same* input without any content reaching an operator surface.
   const controlStripped = Array.from(target)
     .map((ch) => {
       const code = ch.codePointAt(0) ?? 0;
@@ -238,7 +239,8 @@ export function unknownHibernationTarget(
     .join("")
     .replace(/\s+/g, " ")
     .trim();
-  const safeTarget = redactPathLikeTokens(controlStripped).slice(0, 64) || "(unnamed)";
+  const safeTarget =
+    controlStripped.length > 0 ? `target:#${fingerprintToken(controlStripped)}` : "(unnamed)";
   return {
     command,
     agentId: safeTarget,
