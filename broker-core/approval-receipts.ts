@@ -1,8 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import type {
+  SlackV0ApprovalContextAuthenticator,
+  SlackV0RequestApprovalContext,
+} from "./slack-approval-authenticator.js";
 
 export const APPROVAL_RECEIPT_VERSION = "shm-approval-receipt/v1" as const;
 export const MAX_APPROVAL_TTL_MS = 5 * 60 * 1000;
+export const DEFAULT_SIGNER_TIMEOUT_MS = 15_000;
+export const DEFAULT_RESERVATION_LEASE_MS = 30_000;
+export const THOMAS_SLACK_USER_ID = "U0AF5S3LQ5C" as const;
 
 export interface ApprovalRecipients {
   readonly to: readonly string[];
@@ -46,14 +53,28 @@ export interface ApprovalReceipt {
  * A narrow capability implemented by the separately authenticated signer.
  * It deliberately has no generic sign(bytes) method and no key fallback.
  */
-export interface ApprovalSigner {
-  readonly keyId: string;
-  issueApproval(claims: ApprovalClaims): Promise<{ readonly signature: string }>;
+export interface ApprovalSignerRequest {
+  /** Stable across stale-reservation recovery; the signer must deduplicate it. */
+  readonly operationId: string;
+  /** The signer must stop work and reject when this signal is aborted. */
+  readonly signal: AbortSignal;
 }
 
-/** Opaque transport data passed through from the Slack/broker ingress boundary. */
+export interface ApprovalSigner {
+  readonly keyId: string;
+  /**
+   * The external signer must provide durable idempotency/single-flight by
+   * operationId, returning the same signature for an already completed call.
+   */
+  issueApproval(
+    claims: ApprovalClaims,
+    request: ApprovalSignerRequest,
+  ): Promise<{ readonly signature: string }>;
+}
+
+/** Transport data passed through unchanged to the configured authenticator. */
 export interface SlackBrokerApprovalContext {
-  readonly authenticationHandle: string;
+  readonly authenticationHandle?: string;
 }
 
 /**
@@ -124,7 +145,21 @@ interface ApprovalAuditRow {
   key_id: string;
   signature_digest: string;
   reservation_token: string;
+  lease_token: string;
+  lease_expires_at: string;
   record_state: "pending" | "issued";
+}
+
+interface ApprovalReservation {
+  readonly operationId: string;
+  readonly leaseToken: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+export interface SlackApprovalIssuerOptions {
+  readonly signerTimeoutMs?: number;
+  readonly reservationLeaseMs?: number;
 }
 
 function requireText(value: string, field: string): string {
@@ -385,21 +420,95 @@ export class ApprovalAuditStore {
         key_id TEXT NOT NULL,
         signature_digest TEXT NOT NULL,
         reservation_token TEXT NOT NULL UNIQUE,
+        lease_token TEXT NOT NULL,
+        lease_expires_at TEXT NOT NULL,
         record_state TEXT NOT NULL CHECK(record_state IN ('pending', 'issued'))
       ) STRICT;
     `);
+    const columns = this.db.prepare("PRAGMA table_info(approval_receipts)").all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === "lease_token")) {
+      this.db.exec("ALTER TABLE approval_receipts ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''");
+    }
+    if (!columns.some((column) => column.name === "lease_expires_at")) {
+      this.db.exec(
+        "ALTER TABLE approval_receipts ADD COLUMN lease_expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'",
+      );
+    }
   }
 
-  reserve(claims: ApprovalClaims): string {
-    const token = randomUUID();
+  reserveOrRecover(claims: ApprovalClaims, now: Date, leaseMs: number): ApprovalReservation {
+    const operationId = randomUUID();
+    const leaseToken = randomUUID();
+    const envelopeDigest = digestApprovalEnvelope(claims.envelope);
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const existing = this.db
+        .prepare(
+          `SELECT * FROM approval_receipts WHERE approval_id = ? OR send_id = ? OR draft_id = ?
+           OR draft_fingerprint = ? OR envelope_digest = ? LIMIT 1`,
+        )
+        .get(
+          claims.approvalId,
+          claims.envelope.sendId,
+          claims.envelope.draftId,
+          claims.envelope.draftFingerprint,
+          envelopeDigest,
+        ) as ApprovalAuditRow | undefined;
+      if (existing) {
+        const sameIdentity =
+          existing.approval_id === claims.approvalId &&
+          existing.principal === claims.principal &&
+          existing.send_id === claims.envelope.sendId &&
+          existing.draft_id === claims.envelope.draftId &&
+          existing.draft_fingerprint === claims.envelope.draftFingerprint &&
+          existing.envelope_digest === envelopeDigest &&
+          existing.key_id === claims.keyId &&
+          Date.parse(existing.expires_at) - Date.parse(existing.issued_at) ===
+            Date.parse(claims.expiresAt) - Date.parse(claims.issuedAt);
+        if (
+          existing.record_state !== "pending" ||
+          !sameIdentity ||
+          Date.parse(existing.lease_expires_at) > now.getTime()
+        ) {
+          throw new Error("Approval identity is already reserved");
+        }
+        if (Date.parse(existing.expires_at) <= now.getTime()) {
+          this.db
+            .prepare(
+              "DELETE FROM approval_receipts WHERE approval_id = ? AND record_state = 'pending'",
+            )
+            .run(existing.approval_id);
+        } else {
+          const result = this.db
+            .prepare(
+              `UPDATE approval_receipts SET lease_token = ?, lease_expires_at = ?
+               WHERE approval_id = ? AND record_state = 'pending' AND lease_expires_at <= ?`,
+            )
+            .run(
+              leaseToken,
+              new Date(now.getTime() + leaseMs).toISOString(),
+              existing.approval_id,
+              now.toISOString(),
+            );
+          if (result.changes !== 1) throw new Error("Approval reservation recovery race lost");
+          this.db.exec("COMMIT");
+          return Object.freeze({
+            operationId: existing.reservation_token,
+            leaseToken,
+            issuedAt: existing.issued_at,
+            expiresAt: existing.expires_at,
+          });
+        }
+      }
       this.db
         .prepare(
           `INSERT INTO approval_receipts
           (approval_id, principal, send_id, draft_id, draft_fingerprint, envelope_digest,
-           issued_at, expires_at, key_id, signature_digest, reservation_token, record_state)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, 'pending')`,
+           issued_at, expires_at, key_id, signature_digest, reservation_token, lease_token,
+           lease_expires_at, record_state)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, 'pending')`,
         )
         .run(
           claims.approvalId,
@@ -407,38 +516,52 @@ export class ApprovalAuditStore {
           claims.envelope.sendId,
           claims.envelope.draftId,
           claims.envelope.draftFingerprint,
-          digestApprovalEnvelope(claims.envelope),
+          envelopeDigest,
           claims.issuedAt,
           claims.expiresAt,
           claims.keyId,
-          token,
+          operationId,
+          leaseToken,
+          new Date(now.getTime() + leaseMs).toISOString(),
         );
       this.db.exec("COMMIT");
-      return token;
+      return Object.freeze({
+        operationId,
+        leaseToken,
+        issuedAt: claims.issuedAt,
+        expiresAt: claims.expiresAt,
+      });
     } catch (error) {
       this.db.exec("ROLLBACK");
+      if (error instanceof Error && error.message.startsWith("Approval ")) throw error;
       throw new Error("Approval identity is already reserved", { cause: error });
     }
   }
 
-  finalize(receipt: ApprovalReceipt, reservationToken: string): void {
+  finalize(receipt: ApprovalReceipt, reservation: ApprovalReservation): void {
     const signatureDigest = createHash("sha256").update(receipt.signature).digest("base64url");
     const result = this.db
       .prepare(
         `UPDATE approval_receipts SET signature_digest = ?, record_state = 'issued'
-         WHERE approval_id = ? AND reservation_token = ? AND record_state = 'pending'`,
+         WHERE approval_id = ? AND reservation_token = ? AND lease_token = ?
+           AND record_state = 'pending'`,
       )
-      .run(signatureDigest, receipt.claims.approvalId, reservationToken);
+      .run(
+        signatureDigest,
+        receipt.claims.approvalId,
+        reservation.operationId,
+        reservation.leaseToken,
+      );
     if (result.changes !== 1) throw new Error("Approval reservation was lost before finalization");
   }
 
-  releaseFailedReservation(approvalId: string, reservationToken: string): void {
+  releaseFailedReservation(approvalId: string, reservation: ApprovalReservation): void {
     this.db
       .prepare(
-        `DELETE FROM approval_receipts
-         WHERE approval_id = ? AND reservation_token = ? AND record_state = 'pending'`,
+        `DELETE FROM approval_receipts WHERE approval_id = ? AND reservation_token = ?
+         AND lease_token = ? AND record_state = 'pending'`,
       )
-      .run(approvalId, reservationToken);
+      .run(approvalId, reservation.operationId, reservation.leaseToken);
   }
 
   status(approvalId: string, now: Date): ApprovalStatus | null {
@@ -540,19 +663,32 @@ export class ApprovalAuditStore {
 }
 
 export class SlackApprovalIssuer {
+  private readonly signerTimeoutMs: number;
+  private readonly reservationLeaseMs: number;
+
   constructor(
-    private readonly authorizedPrincipal: string,
-    private readonly contextAuthenticator: SlackApprovalContextAuthenticator,
+    private readonly contextAuthenticator: SlackV0ApprovalContextAuthenticator,
     private readonly signer: ApprovalSigner,
     private readonly audit: ApprovalAuditStore,
     private readonly now: () => Date = () => new Date(),
+    options: SlackApprovalIssuerOptions = {},
   ) {
-    requireText(authorizedPrincipal, "authorizedPrincipal");
     requireText(signer.keyId, "signer.keyId");
+    this.signerTimeoutMs = options.signerTimeoutMs ?? DEFAULT_SIGNER_TIMEOUT_MS;
+    this.reservationLeaseMs = options.reservationLeaseMs ?? DEFAULT_RESERVATION_LEASE_MS;
+    if (!Number.isInteger(this.signerTimeoutMs) || this.signerTimeoutMs <= 0) {
+      throw new Error("signerTimeoutMs must be a positive integer");
+    }
+    if (
+      !Number.isInteger(this.reservationLeaseMs) ||
+      this.reservationLeaseMs <= this.signerTimeoutMs
+    ) {
+      throw new Error("reservationLeaseMs must be an integer greater than signerTimeoutMs");
+    }
   }
 
   async create(
-    context: SlackBrokerApprovalContext,
+    context: SlackV0RequestApprovalContext,
     input: CreateApprovalInput,
   ): Promise<ApprovalReceipt> {
     if (!Number.isInteger(input.ttlMs) || input.ttlMs <= 0 || input.ttlMs > MAX_APPROVAL_TTL_MS) {
@@ -573,7 +709,7 @@ export class SlackApprovalIssuer {
       throw new Error("Approval envelope does not match authenticated Slack context");
     }
     const issuedAt = this.now();
-    const claims = immutableClaims({
+    const proposedClaims = immutableClaims({
       version: APPROVAL_RECEIPT_VERSION,
       keyId: this.signer.keyId,
       approvalId,
@@ -582,22 +718,48 @@ export class SlackApprovalIssuer {
       expiresAt: new Date(issuedAt.getTime() + input.ttlMs).toISOString(),
       envelope,
     });
-    const reservationToken = this.audit.reserve(claims);
+    const reservation = this.audit.reserveOrRecover(
+      proposedClaims,
+      issuedAt,
+      this.reservationLeaseMs,
+    );
+    const claims = immutableClaims({
+      ...proposedClaims,
+      issuedAt: reservation.issuedAt,
+      expiresAt: reservation.expiresAt,
+    });
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const signed = await this.signer.issueApproval(claims);
+      const signed = await Promise.race([
+        this.signer.issueApproval(claims, {
+          operationId: reservation.operationId,
+          signal: controller.signal,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+            reject(new Error("Approval signer timed out"));
+          }, this.signerTimeoutMs);
+        }),
+      ]);
       const receipt = Object.freeze({
         claims,
         signature: requireText(signed.signature, "signature"),
       });
-      this.audit.finalize(receipt, reservationToken);
+      this.audit.finalize(receipt, reservation);
       return receipt;
     } catch (error) {
-      this.audit.releaseFailedReservation(claims.approvalId, reservationToken);
+      if (!timedOut) this.audit.releaseFailedReservation(claims.approvalId, reservation);
       throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
-  status(context: SlackBrokerApprovalContext, approvalIdInput: string): ApprovalStatus | null {
+  status(context: SlackV0RequestApprovalContext, approvalIdInput: string): ApprovalStatus | null {
     const approvalId = requireText(approvalIdInput, "approvalId");
     const authenticated = this.authenticateAndConsume(context);
     this.assertAuthenticatedApprovalId(authenticated, approvalId);
@@ -608,7 +770,7 @@ export class SlackApprovalIssuer {
     return status;
   }
 
-  cancel(context: SlackBrokerApprovalContext, approvalIdInput: string): ApprovalStatus {
+  cancel(context: SlackV0RequestApprovalContext, approvalIdInput: string): ApprovalStatus {
     const approvalId = requireText(approvalIdInput, "approvalId");
     const authenticated = this.authenticateAndConsume(context);
     this.assertAuthenticatedApprovalId(authenticated, approvalId);
@@ -620,10 +782,10 @@ export class SlackApprovalIssuer {
   }
 
   private authenticateAndConsume(
-    context: SlackBrokerApprovalContext,
+    context: SlackV0RequestApprovalContext,
   ): AuthenticatedSlackApprovalContext {
     const authenticated = this.contextAuthenticator.authenticateAndConsume(context);
-    if (authenticated.principal !== this.authorizedPrincipal) {
+    if (authenticated.principal !== THOMAS_SLACK_USER_ID) {
       throw new Error("Authenticated Slack principal is not authorized");
     }
     requireText(authenticated.approvalId, "authenticated Slack approvalId");

@@ -2,13 +2,15 @@
 
 Tracking: [#920](https://github.com/gugu91/extensions/issues/920)
 
-## Implemented security boundary
+## Implemented library security boundary (not deployment status)
 
-`SlackApprovalIssuer` is an issuer protocol, not an executor or provider transport. It exposes only semantic `create`, `status`, and `cancel` operations; there is no `sign(bytes)` operation.
+`SlackApprovalIssuer` is an issuer protocol, not an executor or provider transport. It exposes only semantic `create`, `status`, and `cancel` operations; there is no `sign(bytes)` operation. The library implementation and tests described here do not mean that a Slack route, signing secret, signer service, or trust root has been deployed.
 
-A create call contains no principal field. It must carry a `SlackBrokerApprovalContext` containing only an opaque handle. At authenticated Slack/broker ingress, a deployment adapter must mint that unforgeable handle against a server-side record containing the authenticated principal, exact approval ID, exact Slack thread ID, and digest of the complete canonical envelope. `SlackApprovalContextAuthenticator.authenticateAndConsume` must retrieve and delete that record in one atomic operation; a missing or previously consumed handle fails authentication. Copying a Slack user ID or accepting caller-provided bindings is not authentication.
+`SlackV0ApprovalContextAuthenticator` is the concrete ingress implementation. It accepts the exact undecoded HTTP body bytes plus `X-Slack-Request-Timestamp` and `X-Slack-Signature`, verifies Slack `v0` HMAC-SHA256 over `v0:<timestamp>:<exact raw body>` with the configured Slack signing secret, and rejects requests more than five minutes old or future-dated by more than five minutes. It then parses only the versioned approval-context fields (`contextId`, fixed Thomas user ID, approval ID, Slack thread ID, and complete canonical-envelope digest). There is no principal input or fallback authentication path.
 
-Before any reservation or signer invocation, `SlackApprovalIssuer` validates and freezes the caller envelope, computes its canonical digest, atomically consumes the handle, and compares every trusted binding: fixed authorized principal, approval ID, thread ID, and complete envelope digest. Any approval-ID or envelope-field substitution therefore fails before signing, and the consumed handle cannot be replayed or detached for a later request. `status` and `cancel` also consume a fresh bound handle and compare its approval ID and stored complete envelope digest.
+After verification, it commits digests of both the signed request identity and semantic context identity to SQLite in one `BEGIN IMMEDIATE` transaction. Both columns are unique, so an exact Slack retry and the same context re-signed at another timestamp are durably rejected, including across restarts and concurrent processes. The database stores neither raw request/message bodies nor the Slack signing secret. Operators must supply the correct signing-secret capability/config from their secret store and close the authenticator when its route shuts down.
+
+Before any reservation or signer invocation, `SlackApprovalIssuer` validates and freezes the caller envelope, computes its canonical digest, consumes the signed Slack request, and compares every trusted binding: hard-coded Thomas principal, approval ID, thread ID, and complete envelope digest. Any approval-ID or envelope-field substitution therefore fails before signing. `status` and `cancel` also require a fresh signed, bound Slack request and compare its approval ID and stored complete envelope digest.
 
 The broker receives an `ApprovalSigner` capability with a fixed `keyId` and one method, `issueApproval(ApprovalClaims)`. The key ID is included in the claims before signing. Production packaging **must** back that capability with a separately supervised signer process or hardware-backed service that:
 
@@ -26,11 +28,11 @@ The broker-side adapter implements only this logical request/response contract o
 
 ```text
 configured capability: { keyId: string }
-request:               { operation: "issueApproval", claims: ApprovalClaims }
+request:               { operation: "issueApproval", operationId: UUID, claims: ApprovalClaims }
 response:              { signature: base64url(Ed25519(canonicalClaims)) }
 ```
 
-The endpoint rejects every other operation, especially raw byte signing. It parses the complete claims object; rejects unknown or missing fields; requires the configured key ID, version, principal, and a lifetime in `(0, 300000]` milliseconds; and authenticates the broker service using an administrator-owned OS credential or mutually authenticated channel. Filesystem location or loopback reachability alone is not authentication.
+The endpoint rejects every other operation, especially raw byte signing. It parses the complete claims object; rejects unknown or missing fields; requires the configured key ID, version, principal, and a lifetime in `(0, 300000]` milliseconds; and authenticates the broker service using an administrator-owned OS credential or mutually authenticated channel. It must durably single-flight and cache the result by `operationId`, rejecting reuse with different claims. Broker abort/disconnect must cancel work when possible; a retry with the same operation ID must join or return the same result, never start a second signing operation. Filesystem location or loopback reachability alone is not authentication.
 
 Executor code uses `ApprovalReceiptVerifier`, constructed with a fixed expected principal, `ApprovalAuditStore`, and a `PinnedApprovalSignatureVerifier`. No verification method accepts a caller public key or key ID. The deployment trust object must pin exactly the configured key ID and Ed25519 public root from an operator-owned, non-caller-writable resource. The repository provides no production key and no fallback verifier.
 
@@ -48,7 +50,9 @@ Claims bind all of the following:
 
 Canonical JSON recursively sorts object keys by locale-independent UTF-16 code-unit order and uses JSON string/number encoding. Issuer inputs are copied into recursively frozen arrays and objects before the signer is called, so caller mutation cannot change signed, returned, or audited values.
 
-Only after the request-bound ingress context has been consumed and all of its bindings match, `ApprovalAuditStore.reserve` commits a SQLite `BEGIN IMMEDIATE` reservation with unique constraints for approval ID, send ID, draft ID, draft fingerprint, and complete envelope digest. Concurrent collisions therefore make exactly one signer call. A signer failure removes only the matching still-pending reservation token; finalized records cannot be removed by failure cleanup. Because ingress authorization is one-time, a retry after signer failure requires a newly authenticated handle for the same exact request.
+Only after the request-bound ingress context has been consumed and all bindings match, `ApprovalAuditStore.reserveOrRecover` commits a SQLite `BEGIN IMMEDIATE` reservation with unique constraints for approval ID, send ID, draft ID, draft fingerprint, and complete envelope digest. Concurrent fresh collisions therefore make one signer call. Each pending row has a lease token and expiry. A normal signer rejection removes only the matching lease; a timeout leaves the row pending so an unconfirmed operation is never replaced immediately.
+
+Signer calls have a 15-second default timeout and receive an abort signal plus a durable `operationId`. After the 30-second default lease expires, an exactly identity-matching request (including principal, all unique identities, envelope digest, key ID, and TTL) may take a new fenced lease while retaining the original operation ID and exact claims timestamps. The external signer contract requires durable idempotency and single-flight by that operation ID, including across broker timeout/crash and retry; this is what prevents two concurrent cryptographic signing operations. A stale caller cannot finalize after takeover because finalization also requires the current lease token. An expired stale claim is deleted before a new operation is reserved, so a late signature for it is unusable. Every retry requires a newly signed, one-time Slack request.
 
 `ApprovalReceiptVerifier.verifyAndConsume` checks the exact receipt shape, version, pinned key ID and signature, fixed expected principal, canonical issue/expiry times, non-future issuance, five-minute maximum lifetime, and exact equality for the expected approval and every envelope field. It then checks the issued audit reservation, cancellation, expiry, and replay state and records consumption in one `BEGIN IMMEDIATE` transaction before returning. Cancellation and consumption serialize against each other. A successful receipt is usable once only.
 
@@ -67,11 +71,11 @@ SQLite audit rows contain identifiers, timestamps, key ID, envelope digest, sign
 ## Install evidence checklist (not executed in #920)
 
 - [ ] Exact-commit build, lint, typecheck, and tests pass.
-- [ ] Slack/broker context authenticator validates real ingress provenance, atomically consumes each handle once, and returns only its server-side principal, approval ID, thread ID, and complete canonical-envelope digest bindings.
+- [ ] The deployed Slack route passes exact undecoded bytes and unmodified Slack headers to `SlackV0ApprovalContextAuthenticator`; its configured signing secret is verified against the intended Slack app.
 - [ ] Signer identity and pinned public root are provisioned by an administrator outside Pi.
 - [ ] File/socket ACL inspection proves Pi/workers cannot read signer material or rewrite the trust root.
 - [ ] Process-environment inspection proves signer/provider credential separation.
-- [ ] Staging tests cover altered key ID, wrong version/principal, every envelope mismatch, expiry, cancellation, replay, failed reservation cleanup, and concurrent issue/consume without a send.
+- [ ] Staging tests cover forged/modified/stale Slack requests, wrong user, request/context replay, altered key ID, every envelope mismatch, expiry, cancellation, hung signer timeout, stale lease recovery, and concurrent issue/consume without a send.
 - [ ] Exact-head independent security review is attached to the PR.
 - [ ] Package and installed artifact checksums match.
 
