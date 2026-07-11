@@ -11,10 +11,10 @@
     "@pinet/broker-core": "file:../broker-core"
   },
   "scripts": {
-    "build": "node ../scripts/build-package.mjs",
+    "build": "pnpm --filter @pinet/broker-core build && node ../scripts/build-package.mjs",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm run build && vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh"
+    "test": "pnpm run build && vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh && ./scripts/test-release.sh"
   },
   "engines": {
     "node": ">=22.5"

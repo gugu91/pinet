@@ -25,7 +25,7 @@ SQLite `audit_transitions` is the atomic body-free audit authority. JSONL is a r
 
 ## Signed release/install (not performed by this change)
 
-1. Provide a reviewed Node binary and signed-compatible `shm` whose credential-free `executor-contract` reports `shm-executor/v1:conditional-revision+draft-fingerprint`.
+1. Provide a reviewed Node binary and signed-compatible `shm` whose credential-free `executor-contract` reports `shm-executor/v1:render-envelope-json;send-conditional-revision+draft-fingerprint;exit10=definitive-pre-post`.
 2. Run `scripts/build-release.sh PINNED_NODE PINNED_SHM TRUST_POLICY SIGNING_IDENTITY OUTPUT.app`. It compiles/signs the native bridge **before** hashing it, embeds that signed hash, signs the remaining executables and enclosing app, and verifies the result.
 3. Provision the System Keychain item separately, granting access only to the signed bridge. Never place the secret in shell history or files.
 4. Run `sudo scripts/install.sh SIGNED_RELEASE.app`. It verifies the fixed root-owned designated requirement, stages and re-verifies after copy to close source-path races, atomically selects a retained code-directory-hash release, and intentionally does **not** load it.

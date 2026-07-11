@@ -3,7 +3,7 @@ set -eu
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 TARGET=${1:?usage: rollback.sh PREVIOUS_CODE_DIRECTORY_HASH}
 PREFIX=/usr/local/libexec/pinet-superhuman-send-executor
-launchctl print system/ai.pinet.superhuman-send-executor >/dev/null 2>&1 && { echo "service is loaded; bootout before rollback" >&2; exit 1; }
+/bin/launchctl print system/ai.pinet.superhuman-send-executor >/dev/null 2>&1 && { echo "service is loaded; bootout before rollback" >&2; exit 1; }
 [ -d "$PREFIX/releases/$TARGET.app" ] || { echo "unknown retained release" >&2; exit 1; }
 REQUIREMENT_FILE=/etc/pinet/superhuman-executor-release-requirement
 [ -f "$REQUIREMENT_FILE" ] || { echo "missing pinned release signing requirement" >&2; exit 1; }

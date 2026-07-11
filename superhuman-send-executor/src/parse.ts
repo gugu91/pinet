@@ -1,4 +1,8 @@
-import type { ApprovalEnvelope, ApprovalReceipt } from "@pinet/broker-core/approval-receipts";
+import {
+  MAX_APPROVAL_CLAIMS_BYTES,
+  type ApprovalEnvelope,
+  type ApprovalReceipt,
+} from "@pinet/broker-core/approval-receipts";
 import type { ExecuteRequest } from "./contracts.js";
 
 interface JsonObject {
@@ -10,14 +14,18 @@ function objectAt(value: JsonValue, label: string): JsonObject {
     throw new Error(`invalid_${label}`);
   return value as JsonObject;
 }
-function textAt(value: JsonValue | undefined, label: string, max = 8192): string {
+function textAt(
+  value: JsonValue | undefined,
+  label: string,
+  max = MAX_APPROVAL_CLAIMS_BYTES,
+): string {
   if (typeof value !== "string" || value.length === 0 || value.length > max)
     throw new Error(`invalid_${label}`);
   return value;
 }
-function textsAt(value: JsonValue | undefined, label: string, maxItems = 100): readonly string[] {
-  if (!Array.isArray(value) || value.length > maxItems) throw new Error(`invalid_${label}`);
-  return value.map((child, index) => textAt(child, `${label}_${index}`, 512));
+function textsAt(value: JsonValue | undefined, label: string): readonly string[] {
+  if (!Array.isArray(value)) throw new Error(`invalid_${label}`);
+  return value.map((child, index) => textAt(child, `${label}_${index}`));
 }
 function exactKeys(value: JsonObject, expected: readonly string[], label: string): void {
   const actual = Object.keys(value).sort();
@@ -66,36 +74,36 @@ export function parseExecuteRequest(value: JsonValue): ExecuteRequest {
   if (!Number.isSafeInteger(envelopeObject.delayMs) || (envelopeObject.delayMs as number) < 0)
     throw new Error("invalid_delay_ms");
   const envelope: ApprovalEnvelope = {
-    accountId: textAt(envelopeObject.accountId, "account_id", 128),
-    threadId: textAt(envelopeObject.threadId, "thread_id", 128),
-    draftId: textAt(envelopeObject.draftId, "draft_id", 128),
-    draftFingerprint: textAt(envelopeObject.draftFingerprint, "draft_fingerprint", 71),
-    attestation: textAt(envelopeObject.attestation, "attestation", 71),
-    payload: textAt(envelopeObject.payload, "payload", 128 * 1024),
+    accountId: textAt(envelopeObject.accountId, "account_id"),
+    threadId: textAt(envelopeObject.threadId, "thread_id"),
+    draftId: textAt(envelopeObject.draftId, "draft_id"),
+    draftFingerprint: textAt(envelopeObject.draftFingerprint, "draft_fingerprint"),
+    attestation: textAt(envelopeObject.attestation, "attestation"),
+    payload: textAt(envelopeObject.payload, "payload"),
     recipients: {
       to: textsAt(recipients.to, "to"),
       cc: textsAt(recipients.cc, "cc"),
       bcc: textsAt(recipients.bcc, "bcc"),
     },
-    rendererBuild: textAt(envelopeObject.rendererBuild, "renderer_build", 256),
-    screenshotDigests: textsAt(envelopeObject.screenshotDigests, "screenshot_digests", 32),
-    sendId: textAt(envelopeObject.sendId, "send_id", 128),
+    rendererBuild: textAt(envelopeObject.rendererBuild, "renderer_build"),
+    screenshotDigests: textsAt(envelopeObject.screenshotDigests, "screenshot_digests"),
+    sendId: textAt(envelopeObject.sendId, "send_id"),
     delayMs: envelopeObject.delayMs as number,
     scheduledFor:
       envelopeObject.scheduledFor === null
         ? null
-        : textAt(envelopeObject.scheduledFor, "scheduled_for", 64),
-    action: textAt(envelopeObject.action, "action", 128),
-    provider: textAt(envelopeObject.provider, "provider", 128),
+        : textAt(envelopeObject.scheduledFor, "scheduled_for"),
+    action: textAt(envelopeObject.action, "action"),
+    provider: textAt(envelopeObject.provider, "provider"),
   };
   const receipt: ApprovalReceipt = {
     claims: {
-      version: textAt(claims.version, "version", 64) as ApprovalReceipt["claims"]["version"],
-      keyId: textAt(claims.keyId, "key_id", 128),
-      approvalId: textAt(claims.approvalId, "approval_id", 128),
-      principal: textAt(claims.principal, "principal", 128),
-      issuedAt: textAt(claims.issuedAt, "issued_at", 64),
-      expiresAt: textAt(claims.expiresAt, "expires_at", 64),
+      version: textAt(claims.version, "version") as ApprovalReceipt["claims"]["version"],
+      keyId: textAt(claims.keyId, "key_id"),
+      approvalId: textAt(claims.approvalId, "approval_id"),
+      principal: textAt(claims.principal, "principal"),
+      issuedAt: textAt(claims.issuedAt, "issued_at"),
+      expiresAt: textAt(claims.expiresAt, "expires_at"),
       envelope,
     },
     signature: textAt(receiptObject.signature, "signature", 128),

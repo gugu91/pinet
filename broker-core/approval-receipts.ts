@@ -5,6 +5,7 @@ import type { SlackV0RequestApprovalContext } from "./slack-approval-authenticat
 export const APPROVAL_RECEIPT_VERSION = "shm-approval-receipt/v1" as const;
 export const APPROVAL_SIGNATURE_ALGORITHM = "Ed25519" as const;
 export const MAX_APPROVAL_TTL_MS = 5 * 60 * 1000;
+export const MAX_APPROVAL_CLAIMS_BYTES = 240 * 1024;
 export const DEFAULT_SIGNER_TIMEOUT_MS = 15_000;
 export const DEFAULT_RESERVATION_LEASE_MS = 30_000;
 export const THOMAS_SLACK_USER_ID = "U0AF5S3LQ5C" as const;
@@ -832,6 +833,11 @@ export class SlackApprovalIssuer {
       expiresAt: new Date(issuedAt.getTime() + input.ttlMs).toISOString(),
       envelope,
     });
+    if (
+      Buffer.byteLength(serializeApprovalClaims(proposedClaims), "utf8") > MAX_APPROVAL_CLAIMS_BYTES
+    ) {
+      throw new Error(`Approval claims exceed ${MAX_APPROVAL_CLAIMS_BYTES} bytes`);
+    }
     const reservation = this.audit.reserveOrRecover(
       proposedClaims,
       issuedAt,
@@ -996,6 +1002,11 @@ export class ApprovalReceiptVerifier {
       envelope: immutableEnvelope(expectedInput.envelope),
     });
     validateEnvelope(expected.envelope);
+    if (
+      Buffer.byteLength(serializeApprovalClaims(receipt.claims), "utf8") > MAX_APPROVAL_CLAIMS_BYTES
+    ) {
+      throw new Error(`Approval claims exceed ${MAX_APPROVAL_CLAIMS_BYTES} bytes`);
+    }
     if (receipt.claims.version !== APPROVAL_RECEIPT_VERSION) {
       throw new Error("Unsupported approval receipt version");
     }

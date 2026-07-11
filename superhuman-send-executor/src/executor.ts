@@ -37,7 +37,10 @@ export interface AuditSink {
   }): void;
 }
 export class Executor {
-  readonly #inflight = new Map<string, Promise<ExecutionStatus>>();
+  readonly #inflight = new Map<
+    string,
+    { readonly receiptHash: string; readonly execution: Promise<ExecutionStatus> }
+  >();
   constructor(
     private readonly journal: Journal,
     private readonly provider: Provider,
@@ -46,23 +49,36 @@ export class Executor {
   ) {}
   async execute(receipt: ApprovalReceipt): Promise<ExecutionStatus> {
     const key = receipt.claims.approvalId;
-    const active = this.#inflight.get(key);
-    if (active) return await active;
-    const execution = this.executeOnce(receipt).finally(() => this.#inflight.delete(key));
-    this.#inflight.set(key, execution);
-    return await execution;
-  }
-  private async executeOnce(receipt: ApprovalReceipt): Promise<ExecutionStatus> {
     const receiptHash = createHash("sha256")
       .update(serializeApprovalClaims(receipt.claims))
       .update("\n")
       .update(receipt.signature)
       .digest("hex");
+    const active = this.#inflight.get(key);
+    if (active) {
+      if (active.receiptHash !== receiptHash) throw new Error("receipt_id_conflict");
+      return await active.execution;
+    }
+    const execution = this.executeOnce(receipt, receiptHash).finally(() =>
+      this.#inflight.delete(key),
+    );
+    this.#inflight.set(key, { receiptHash, execution });
+    return await execution;
+  }
+  private async executeOnce(
+    receipt: ApprovalReceipt,
+    receiptHash: string,
+  ): Promise<ExecutionStatus> {
     const prior = this.journal.entry(receipt.claims.approvalId);
     if (prior) {
       if (prior.receiptHash !== receiptHash) throw new Error("receipt_id_conflict");
       return prior.status;
     }
+    this.verifier.verify(receipt, {
+      approvalId: receipt.claims.approvalId,
+      envelope: receipt.claims.envelope,
+    });
+    this.journal.assertActive(receipt, new Date().toISOString());
     const draft = await this.provider.render(
       receipt.claims.envelope.accountId,
       receipt.claims.envelope.draftId,

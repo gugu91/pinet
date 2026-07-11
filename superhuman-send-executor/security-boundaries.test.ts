@@ -1,10 +1,11 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { JsonlAudit } from "./src/audit.js";
+import { Journal } from "./src/journal.js";
 import { parseExecuteRequest, parseJson, parseSendResult, parseTrustPolicy } from "./src/parse.js";
 
 const execFileAsync = promisify(execFile);
@@ -44,6 +45,7 @@ describe("strict external boundaries", () => {
     const dir = mkdtempSync(join(tmpdir(), "process-race-"));
     dirs.push(dir);
     const path = join(dir, "journal.db");
+    new Journal(path);
     const worker = join(process.cwd(), "scripts/journal-race-worker.mjs");
     const results = await Promise.all(
       Array.from({ length: 8 }, () =>
@@ -54,6 +56,25 @@ describe("strict external boundaries", () => {
     );
     expect(results.filter((result) => result.stdout.trim() === "inserted")).toHaveLength(1);
     expect(results.filter((result) => result.stdout.trim() === "existing")).toHaveLength(7);
+  });
+  it("recovers a SIGKILL-interrupted process claim as unknown", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "signal-race-"));
+    dirs.push(dir);
+    const path = join(dir, "journal.db");
+    new Journal(path);
+    const worker = join(process.cwd(), "scripts/journal-race-worker.mjs");
+    const child = spawn(process.execPath, [worker, path, "receipt-signal", "hash-signal", "wait"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.stdout.once("data", () => resolve());
+    });
+    child.kill("SIGKILL");
+    await new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const restarted = new Journal(path);
+    restarted.recoverInterruptedClaims();
+    expect(restarted.status("receipt-signal")?.state).toBe("unknown");
   });
   it("writes a bounded body-free JSONL mirror schema", () => {
     const dir = mkdtempSync(join(tmpdir(), "audit-"));

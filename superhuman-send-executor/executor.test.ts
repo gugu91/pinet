@@ -117,10 +117,12 @@ async function fixture(options?: { principal?: string; now?: Date }): Promise<{
 function provider(
   envelope: ApprovalEnvelope,
   behavior: "sent" | "unknown" | "failed" = "sent",
-): Provider & { sends: number } {
+): Provider & { sends: number; renders: number } {
   return {
     sends: 0,
+    renders: 0,
     async render() {
+      this.renders++;
       return { revisionId: "revision-1", envelope };
     },
     async send() {
@@ -156,12 +158,34 @@ describe("credential-free issuer-to-executor execution", () => {
     await Promise.all(subjects.map((subject) => subject.execute(f.receipt)));
     expect(adapter.sends).toBe(1);
   });
+  it("rejects a conflicting receipt racing the same approval ID", async () => {
+    const f = await fixture();
+    let release: (() => void) | undefined;
+    const adapter: Provider = {
+      async render() {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { revisionId: "revision-1", envelope: f.envelope };
+      },
+      async send() {
+        return { messageId: "message-1" };
+      },
+    };
+    const subject = executor(f.path, f.verifier, adapter);
+    const active = subject.execute(f.receipt);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const conflicting = { ...f.receipt, signature: "A".repeat(86) };
+    await expect(subject.execute(conflicting)).rejects.toThrow("receipt_id_conflict");
+    release?.();
+    await active;
+  });
   it("rejects forged and mutated envelope fields before claiming", async () => {
     const f = await fixture();
     const forged = { ...f.receipt, signature: "A".repeat(86) };
-    await expect(
-      executor(f.path, f.verifier, provider(f.envelope)).execute(forged),
-    ).rejects.toThrow();
+    const forgedAdapter = provider(f.envelope);
+    await expect(executor(f.path, f.verifier, forgedAdapter).execute(forged)).rejects.toThrow();
+    expect(forgedAdapter.renders).toBe(0);
     const mutated = { ...f.envelope, attestation: `sha256:${"d".repeat(64)}` };
     await expect(
       executor(f.path, f.verifier, provider(mutated)).execute(f.receipt),

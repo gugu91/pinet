@@ -44,6 +44,33 @@ export class Journal {
       )
       .run();
   }
+  assertActive(receipt: ApprovalReceipt, now: string): void {
+    const signatureDigest = createHash("sha256").update(receipt.signature).digest("base64url");
+    const row = this.#db
+      .prepare(
+        `
+      SELECT 1 AS active FROM approval_receipts
+      WHERE approval_id = ? AND principal = ? AND send_id = ? AND draft_id = ?
+        AND draft_fingerprint = ? AND envelope_digest = ? AND issued_at = ? AND expires_at = ?
+        AND key_id = ? AND signature_digest = ? AND record_state = 'issued'
+        AND cancelled_at IS NULL AND consumed_at IS NULL AND expires_at > ?
+    `,
+      )
+      .get(
+        receipt.claims.approvalId,
+        receipt.claims.principal,
+        receipt.claims.envelope.sendId,
+        receipt.claims.envelope.draftId,
+        receipt.claims.envelope.draftFingerprint,
+        digestApprovalEnvelope(receipt.claims.envelope),
+        receipt.claims.issuedAt,
+        receipt.claims.expiresAt,
+        receipt.claims.keyId,
+        signatureDigest,
+        now,
+      ) as { active: number } | undefined;
+    if (row?.active !== 1) throw new Error("approval_not_active");
+  }
   consumeAndClaim(
     receipt: ApprovalReceipt,
     receiptHash: string,
