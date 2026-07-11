@@ -644,6 +644,71 @@ describe("acceptRuntimeGeneration fencing", () => {
     });
     expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("live");
   });
+
+  it("rejects a fenced transition when the held lease has expired", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+    // The fence token still matches (no re-acquisition), but the lease is expired.
+    // Binding lease identity + `now` rejects it — a fence token alone is not
+    // sufficient authority for a stale-but-unsuperseded lease.
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-A",
+      leaseId: "wake-A",
+      ttlMs: 1_000,
+      now: h.clock.ms,
+    })!;
+    expect(() =>
+      h.db.transitionAgentLifecycle({
+        agentId: "worker-1",
+        expectedVersion: agent.lifecycleVersion ?? 0,
+        toState: "waking",
+        reason: "wake",
+        actor: "broker-A",
+        correlationId: "c-exp",
+        fenceToken: lease.fenceToken,
+        leaseId: lease.leaseId,
+        expectedOperation: "wake",
+        now: h.clock.ms + 5_000, // past the 1s TTL
+      }),
+    ).toThrow(/expired/i);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
+  });
+
+  it("rejects a fenced transition when the held lease is for a different operation", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+    // A *hibernate* lease is held; a *wake* transition that binds its expected
+    // operation must be rejected even though the fence token matches.
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "hibernate",
+      ownerBrokerInstanceId: "broker-A",
+      leaseId: "hib-A",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    expect(() =>
+      h.db.transitionAgentLifecycle({
+        agentId: "worker-1",
+        expectedVersion: agent.lifecycleVersion ?? 0,
+        toState: "waking",
+        reason: "wake",
+        actor: "broker-A",
+        correlationId: "c-op",
+        fenceToken: lease.fenceToken,
+        leaseId: lease.leaseId,
+        expectedOperation: "wake",
+        now: h.clock.ms,
+      }),
+    ).toThrow(/does not authorize/i);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
+  });
 });
 
 describe("fail-closed fault handling (adapter/DB rejections)", () => {
@@ -703,6 +768,32 @@ describe("fail-closed fault handling (adapter/DB rejections)", () => {
     expect(h.db.listWakeQueue("queued")).toHaveLength(0);
     expect(h.db.listWakeQueue("dispatching")).toHaveLength(0);
     expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+  });
+
+  it("requeues (never consumes) a wake trigger when a non-wake lease transiently holds the agent", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    // A lingering *hibernate* lease is held by another owner (e.g. around a
+    // crash). No in-flight wake exists, so the queued trigger must survive.
+    const held = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "hibernate",
+      ownerBrokerInstanceId: "broker-other",
+      leaseId: "hib-other",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    });
+    expect(held).not.toBeNull();
+    h.orch.enqueueWakeTrigger({ agentId: "worker-1", triggerKind: "manual", reason: "manual" });
+
+    const results = await h.orch.dispatchWakeQueue();
+    // Distinct retryable contention (not a benign "in progress" no-op): the row
+    // is requeued and the agent is deferred so the lease cannot spin the pass.
+    expect(results.some((r) => !r.ok && r.reason === "wake_lease_contended")).toBe(true);
+    expect(h.db.listWakeQueue("queued")).toHaveLength(1);
+    expect(h.db.listWakeQueue("dispatching")).toHaveLength(0);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
   });
 });
 

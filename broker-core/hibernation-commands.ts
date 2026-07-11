@@ -360,6 +360,22 @@ export async function executeWakeCommand(
         "A wake is already in progress for this agent; the in-flight wake will deliver queued work.",
     };
   }
+  if (!result.ok && result.reason === "wake_lease_contended") {
+    // A non-wake lifecycle lease (e.g. a lingering hibernate around a crash) is
+    // transiently holding the agent. Unlike an in-flight wake, nothing will
+    // drain the inbox, so this is a distinct *retryable* refusal — the queued
+    // trigger is preserved (requeued) rather than consumed as a no-op.
+    return {
+      command: "wake",
+      agentId: input.agentId,
+      outcome: "refused",
+      state: result.state,
+      reason: result.reason,
+      detail:
+        "A non-wake lifecycle operation is transiently holding this agent; no wake is in flight. The trigger was requeued — retry shortly.",
+      retryable: true,
+    };
+  }
   return {
     command: "wake",
     agentId: input.agentId,

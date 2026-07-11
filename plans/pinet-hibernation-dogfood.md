@@ -16,7 +16,7 @@ Hibernation is reversible and distinct from `exit`/`reap`. A hibernated row reta
 
 The durable identity survives a _graceful_ worker shutdown. During teardown the broker stops the worker process, whose shutdown path may send an `unregister`. For agents in a hibernation lifecycle state (`hibernating`/`hibernated`/`waking`), `BrokerDB.unregisterAgent` performs a soft disconnect — it records `disconnected_at` but preserves the inbox, owned threads, and resumability — instead of the ordinary full teardown (which deletes the inbox and releases threads). This keeps hibernation teardown correct regardless of whether the runtime exits abruptly or unregisters cleanly.
 
-Wake identity revival is fenced in two independent layers. First, lifecycle **transitions** validate the presented fence against the currently held lease: lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a stale/superseded holder cannot drive a fenced transition on a matching version CAS alone. Second, socket registration into a hibernated identity is a **preflight-then-accept** sequence — `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, the agent registration then commits, and only afterwards is the reserved runtime generation accepted (`acceptRuntimeGeneration`). This guarantees a later name conflict or registration failure can never advance the generation for a runtime that did not actually register, and the connection is bound to the revived identity only on full success.
+Wake identity revival is fenced in independent layers. First, lifecycle **transitions** bind the _live, matching_ lease: a presented fence must equal the held lease's fence, and when the caller also binds lease identity (`leaseId` + `expectedOperation` + `now`) the DB additionally rejects an expired-but-unsuperseded lease and a wrong-operation lease. Lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a superseded holder is rejected on the fence; the identity binding closes the remaining "expired token still matches" and "hibernate lease drives a wake transition" holes. The orchestrator reads `now` fresh per transition, so a lease that expires mid-operation cannot authorize a later step. Second, socket registration into a durable identity is **state-gated then preflight-then-accept**: registration into a `hibernating` (mid-teardown), `reap-candidate` (quarantined), or `terminated` (closed) identity is rejected fail-closed regardless of any presented fence — only an exact fenced `waking`/`hibernated` revival is admissible. For that admissible case, `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, the agent registration commits, and only afterwards is the reserved runtime generation accepted (`acceptRuntimeGeneration`). A later name conflict or registration failure therefore never advances the generation for a runtime that did not register, and the connection binds to the revived identity only on full success.
 
 Configuration defaults to **disabled** and observe-only:
 
@@ -99,21 +99,32 @@ redaction-by-construction boundary that exposes only presence flags, counts, an
 opaque session ref, and a path-free repo basename, and never raw argv, env
 values, or filesystem/socket paths.
 
-Free-form operator strings (hibernate/wake reasons, echoed unknown targets)
-pass through `sanitizeOperatorReason`, which control-strips, single-lines,
-length-bounds, and — via `redactPathLikeTokens` — replaces filesystem-path-like
-tokens (absolute, `~`, `./`/`../`, Windows drive, and multi-segment paths) with
-`<path>` so no private path or unix socket path leaks into operator or JSON
-output, while ordinary prose (e.g. `and/or`) is preserved. The `pinet
-hibernate`/`wake` command layer normalizes Windows `\` separators before deriving
-the owner/repo slug and matching the fail-closed repo allowlist, so path
-provenance is OS-agnostic. A wake that loses the fenced lease race resolves as a
-benign `wake_in_progress` no-op (the in-flight wake drains the queue), not a
-retryable failure. Both the `agents` and `sessions` reads surface the redacted
-lifecycle projection: a scannable per-agent tag in compact output, a compact
-redacted summary array in compact structured (`json`) `data`, and the full
-redacted status block in full output — durable hibernated/quarantined identities
-remain visible even though they are disconnected from the live roster.
+Free-form operator strings (hibernate/wake reasons, echoed unknown targets, and
+the target/reason that enter the tool's confirmation policy) pass through
+`sanitizeOperatorReason`, which control-strips, single-lines, length-bounds, and
+— via `redactPathLikeTokens` — replaces filesystem-path-like tokens (absolute,
+`~`, `./`/`../`, Windows drive, multi-segment, and single-separator _file-like_
+paths such as `accounts/acme.md`) with `<path>` so no private path or unix socket
+path leaks into operator, confirmation, or JSON output, while ordinary prose
+(e.g. `and/or`, `Node.js`) is preserved. `redactRuntimeSpec` splits the repo root
+on both `/` and `\`, so a Windows repo root is reduced to a path-free basename
+rather than emitted verbatim. The `pinet hibernate`/`wake` command layer
+normalizes Windows `\` separators before deriving the owner/repo slug and
+matching the fail-closed repo allowlist, so path provenance is OS-agnostic.
+
+Wake-trigger contention is disambiguated so a queued trigger is never silently
+lost: only a _matching, unexpired wake lease_ resolves as a benign
+`wake_in_progress` no-op (a real in-flight wake will drain the queue); any other
+held lease (e.g. a lingering `hibernate` lease around a crash) resolves as a
+distinct, retryable `wake_lease_contended` refusal, and the dispatcher requeues
+the row (deferring that agent for the rest of the pass so the held lease cannot
+spin the loop) rather than consuming it.
+
+Both the `agents` and `sessions` reads surface the redacted lifecycle
+projection: a scannable per-agent tag in compact output, a compact redacted
+summary array in compact structured (`json`) `data`, and the full redacted status
+block in full output — durable hibernated/quarantined identities remain visible
+even though they are disconnected from the live roster.
 
 ## Stop/rollback conditions
 

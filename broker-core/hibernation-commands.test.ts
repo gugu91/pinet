@@ -534,4 +534,35 @@ describe("executeWakeCommand — against the real orchestrator", () => {
     expect(result.retryable).toBeUndefined();
     expect(db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
   });
+
+  it("maps a non-wake lease contention to a distinct retryable refusal", async () => {
+    const db = freshDb();
+    const orch = buildOrch(db, new FakeProcess(), new FakeTmux());
+    seedAgent(db);
+    await hibernate(db, orch);
+    // A lingering *hibernate* lease (not a wake) is held → nothing will drain the
+    // inbox, so this must be a distinct retryable refusal, NOT a benign no-op.
+    expect(
+      db.acquireAgentLifecycleLease({
+        agentId: "worker-1",
+        operation: "hibernate",
+        ownerBrokerInstanceId: "broker-2",
+        leaseId: "hib-2",
+        ttlMs: 90_000,
+      }),
+    ).not.toBeNull();
+
+    const result = await executeWakeCommand({
+      executor: orch,
+      agentId: "worker-1",
+      state: "hibernated",
+      policy: ENABLED,
+    });
+    expect(result).toMatchObject({
+      outcome: "refused",
+      reason: "wake_lease_contended",
+      retryable: true,
+    });
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
+  });
 });

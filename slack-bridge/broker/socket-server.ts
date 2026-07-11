@@ -608,12 +608,38 @@ export class BrokerSocketServer {
   ): { rejection: JsonRpcResponse | null; revive?: WakeRevival } {
     if (!stableId) return { rejection: null };
     const existing = this.db.getAgentByStableId(stableId);
-    const durableHibernation =
-      existing?.lifecycleState === "hibernated" || existing?.lifecycleState === "waking";
+    const lifecycleState = existing?.lifecycleState;
+    const durableHibernation = lifecycleState === "hibernated" || lifecycleState === "waking";
+    // Non-live lifecycle states that must NEVER accept a self-registration into
+    // their stable identity. `hibernating` is mid-teardown: the old runtime may
+    // still be alive and only a broker-driven wake (from `hibernated`) may revive
+    // it, so a fresh registration during the teardown window must not bind the
+    // socket. `reap-candidate` is quarantined pending manual review and
+    // `terminated` is a closed identity — neither may silently reconnect and
+    // regain broker RPC access. Fail closed regardless of any presented fence.
+    const registrationBlocked =
+      lifecycleState === "hibernating" ||
+      lifecycleState === "reap-candidate" ||
+      lifecycleState === "terminated";
 
     const { wakeLeaseId, fenceToken, reservedGeneration } = fence;
     const hasFence =
       wakeLeaseId !== undefined || fenceToken !== undefined || reservedGeneration !== undefined;
+
+    if (registrationBlocked) {
+      return {
+        rejection: rpcError(
+          req.id,
+          RPC_AGENT_WAKE_FENCE_REJECTED,
+          `Registration into a ${lifecycleState} identity is not permitted; this stableId is not awaiting wake.`,
+          {
+            code: "WAKE_FENCE_REJECTED",
+            reason: `state_${lifecycleState}`,
+            retryable: false,
+          },
+        ),
+      };
+    }
 
     if (!durableHibernation) {
       // Ordinary registration. A wake fence presented with no hibernation

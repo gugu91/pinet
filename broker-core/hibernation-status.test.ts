@@ -93,6 +93,15 @@ describe("redactRuntimeSpec", () => {
     expect(redacted.session.kind).toBe("unknown");
     expect(redacted.session.ref).toMatch(/^unknown:#[0-9a-f]{8}$/);
   });
+
+  it("reduces a Windows repo root to a path-free basename (never emits the drive path)", () => {
+    const redacted = redactRuntimeSpec(runtimeSpec({ repoRoot: "C:\\Users\\alice\\secret-repo" }));
+    expect(redacted.repo).toBe("secret-repo");
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("Users");
+    expect(serialized).not.toContain("alice");
+    expect(serialized).not.toContain("C:");
+  });
 });
 
 describe("buildAgentLifecycleStatus", () => {
@@ -318,6 +327,15 @@ describe("redactPathLikeTokens / sanitizeOperatorReason path redaction", () => {
   it("preserves ordinary prose and single-slash words", () => {
     expect(redactPathLikeTokens("retry and/or wait")).toBe("retry and/or wait");
     expect(redactPathLikeTokens("plain english reason")).toBe("plain english reason");
+  });
+
+  it("redacts a file-like single-separator relative path but preserves extension-free prose", () => {
+    // Single-separator tokens that carry a file extension are file-like paths.
+    expect(redactPathLikeTokens("edited accounts/acme.md just now")).toBe("edited <path> just now");
+    expect(redactPathLikeTokens("open src/index.ts")).toBe("open <path>");
+    // Extension-free single-separator prose and dotted non-path words survive.
+    expect(redactPathLikeTokens("either and/or both")).toBe("either and/or both");
+    expect(redactPathLikeTokens("built with Node.js today")).toBe("built with Node.js today");
   });
 
   it("sanitizeOperatorReason strips control chars, collapses space, and redacts paths", () => {

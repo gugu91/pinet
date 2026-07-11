@@ -3,6 +3,8 @@ import type { BrokerDB } from "./schema.js";
 import { evaluateHibernateEligibility } from "./lifecycle.js";
 import type {
   AgentInfo,
+  AgentLifecycleLease,
+  AgentLifecycleTransitionInput,
   AgentRuntimeSpec,
   RuntimeGenerationAcceptance,
   WakeTriggerKind,
@@ -318,7 +320,7 @@ export class HibernationOrchestrator {
     let teardownStarted = false;
     try {
       // idle -> hibernating (fenced CAS)
-      const hibernating = this.db.transitionAgentLifecycle({
+      const hibernating = this.transitionFenced(lease, {
         agentId,
         expectedVersion: versionCursor,
         toState: "hibernating",
@@ -326,7 +328,6 @@ export class HibernationOrchestrator {
         actor,
         correlationId,
         triggerSource: opts.trigger,
-        fenceToken: lease.fenceToken,
       });
       versionCursor = hibernating.lifecycleVersion ?? versionCursor + 1;
       enteredHibernating = true;
@@ -361,14 +362,13 @@ export class HibernationOrchestrator {
         const abortReason = !checkpoint.hibernateSafe
           ? `checkpoint_unsafe:${checkpoint.reason ?? "unconfirmed"}`
           : "work_arrived_during_checkpoint";
-        const active = this.db.transitionAgentLifecycle({
+        const active = this.transitionFenced(lease, {
           agentId,
           expectedVersion: versionCursor,
           toState: "active",
           reason: abortReason,
           actor,
           correlationId,
-          fenceToken: lease.fenceToken,
         });
         return {
           ok: false,
@@ -391,7 +391,7 @@ export class HibernationOrchestrator {
           correlationId,
           actor,
           "runtime_survived_stop",
-          lease.fenceToken,
+          lease,
         );
       }
 
@@ -403,20 +403,19 @@ export class HibernationOrchestrator {
           correlationId,
           actor,
           "tmux_session_missing",
-          lease.fenceToken,
+          lease,
         );
       }
 
       // hibernating -> hibernated.
       const durationMs = this.now() - startedAt;
-      const hibernated = this.db.transitionAgentLifecycle({
+      const hibernated = this.transitionFenced(lease, {
         agentId,
         expectedVersion: versionCursor,
         toState: "hibernated",
         reason,
         actor,
         correlationId,
-        fenceToken: lease.fenceToken,
         durationMs,
         rssBytesBefore: checkpoint.rssBytes,
         rssBytesAfter: stop.rssBytes,
@@ -451,14 +450,13 @@ export class HibernationOrchestrator {
         if (!teardownStarted) {
           // The runtime was never asked to stop, so it is still alive: abort
           // back to active rather than quarantine.
-          const active = this.db.transitionAgentLifecycle({
+          const active = this.transitionFenced(lease, {
             agentId,
             expectedVersion: versionCursor,
             toState: "active",
             reason: faultReason,
             actor,
             correlationId,
-            fenceToken: lease.fenceToken,
           });
           return {
             ok: false,
@@ -469,14 +467,7 @@ export class HibernationOrchestrator {
           };
         }
         // Teardown began; runtime liveness is unknown → quarantine for review.
-        return this.quarantine(
-          agentId,
-          versionCursor,
-          correlationId,
-          actor,
-          faultReason,
-          lease.fenceToken,
-        );
+        return this.quarantine(agentId, versionCursor, correlationId, actor, faultReason, lease);
       } catch {
         // Even the recovery transition failed (e.g. version raced). Report a
         // safe failure; the lease still releases in `finally`.
@@ -539,15 +530,24 @@ export class HibernationOrchestrator {
       now: this.now(),
     });
     if (!lease) {
-      // Another broker/thread is already waking this agent. That is the single
-      // winner; this trigger is satisfied by the in-flight wake.
-      return this.refuseWake(agentId, correlationId, "hibernated", "wake_in_progress", actor);
+      // The fenced lifecycle lease is held by someone else. Only a *live wake*
+      // lease actually drains the inbox, so we must distinguish:
+      //   - a matching unexpired wake lease → a real in-flight wake is the single
+      //     winner and this trigger is satisfied by it (benign no-op);
+      //   - any other held lease (e.g. a lingering/expired hibernate lease around
+      //     a crash) → no wake is in flight, so this trigger must NOT be dropped.
+      //     Report distinct, retryable contention so the dispatcher requeues it.
+      const held = this.db.getAgentLifecycleLease(agentId);
+      const wakeInFlight =
+        held !== null && held.operation === "wake" && Date.parse(held.expiresAt) > this.now();
+      const contentionReason = wakeInFlight ? "wake_in_progress" : "wake_lease_contended";
+      return this.refuseWake(agentId, correlationId, "hibernated", contentionReason, actor);
     }
 
     let versionCursor = agent.lifecycleVersion ?? 0;
     try {
       // hibernated -> waking (fenced CAS).
-      const waking = this.db.transitionAgentLifecycle({
+      const waking = this.transitionFenced(lease, {
         agentId,
         expectedVersion: versionCursor,
         toState: "waking",
@@ -555,7 +555,6 @@ export class HibernationOrchestrator {
         actor,
         correlationId,
         triggerSource: opts.trigger,
-        fenceToken: lease.fenceToken,
       });
       versionCursor = waking.lifecycleVersion ?? versionCursor + 1;
 
@@ -586,14 +585,13 @@ export class HibernationOrchestrator {
 
         if (accepted) {
           const durationMs = this.now() - startedAt;
-          const live = this.db.transitionAgentLifecycle({
+          const live = this.transitionFenced(lease, {
             agentId,
             expectedVersion: versionCursor,
             toState: "live",
             reason,
             actor,
             correlationId,
-            fenceToken: lease.fenceToken,
             durationMs,
             queueDepth: this.db.getUnreadInboxCount(agentId),
           });
@@ -634,7 +632,7 @@ export class HibernationOrchestrator {
         correlationId,
         actor,
         "wake_attempts_exhausted",
-        lease.fenceToken,
+        lease,
         maxAttempts,
       );
     } catch {
@@ -649,7 +647,7 @@ export class HibernationOrchestrator {
           correlationId,
           actor,
           "wake_fault",
-          lease.fenceToken,
+          lease,
           0,
         );
       } catch {
@@ -835,10 +833,14 @@ export class HibernationOrchestrator {
    */
   async dispatchWakeQueue(): Promise<WakeResult[]> {
     const results: WakeResult[] = [];
+    // Agents whose wake could not start this pass because a *non-wake* lease is
+    // transiently held. Their rows are requeued (not consumed); skip them for the
+    // remainder of this pass so a lingering lease cannot spin the loop.
+    const deferred = new Set<string>();
     for (;;) {
       const globalInflight = this.db.countInflightWakes();
       if (globalInflight >= this.config.maxConcurrentWakes) break;
-      const next = this.selectNextDispatchableWake();
+      const next = this.selectNextDispatchableWake(deferred);
       if (!next) break;
       const claimed = this.db.markWakeDispatching(next.id);
       if (!claimed) continue;
@@ -863,8 +865,14 @@ export class HibernationOrchestrator {
         continue;
       }
       if (!result.ok && result.reason === "wake_in_progress") {
-        // Another lease owner is handling it; leave the queue entry consumed.
+        // A live wake lease owner is already draining this agent; consume the row.
         this.db.completeWakeQueueEntry(claimed.id, "done");
+      } else if (!result.ok && result.reason === "wake_lease_contended") {
+        // A non-wake lifecycle lease is transiently holding the agent; no wake is
+        // in flight, so the trigger must survive. Requeue and defer this agent so
+        // the same lease cannot re-select it and spin this pass.
+        this.db.requeueWake(claimed.id);
+        deferred.add(claimed.agentId);
       } else {
         this.db.completeWakeQueueEntry(claimed.id, result.ok ? "done" : "cancelled");
       }
@@ -873,9 +881,10 @@ export class HibernationOrchestrator {
     return results;
   }
 
-  private selectNextDispatchableWake() {
+  private selectNextDispatchableWake(deferred?: ReadonlySet<string>) {
     const queued = this.db.listWakeQueue("queued");
     for (const entry of queued) {
+      if (deferred?.has(entry.agentId)) continue;
       const repoInflight = this.db.countInflightWakes(entry.repoRoot ?? null);
       if (repoInflight >= this.config.maxConcurrentWakesPerRepo) continue;
       return entry;
@@ -937,22 +946,44 @@ export class HibernationOrchestrator {
     });
   }
 
+  /**
+   * Drive a fenced lifecycle transition bound to the *live* held lease. Passing
+   * the full lease identity (fence + id + operation + current time) lets the DB
+   * reject an expired, superseded, or wrong-operation lease rather than trusting
+   * the fence token alone. `now` is read fresh per call so a lease that expires
+   * mid-operation cannot authorize a later transition.
+   */
+  private transitionFenced(
+    lease: AgentLifecycleLease,
+    input: Omit<
+      AgentLifecycleTransitionInput,
+      "fenceToken" | "leaseId" | "expectedOperation" | "now"
+    >,
+  ): AgentInfo {
+    return this.db.transitionAgentLifecycle({
+      ...input,
+      fenceToken: lease.fenceToken,
+      leaseId: lease.leaseId,
+      expectedOperation: lease.operation,
+      now: this.now(),
+    });
+  }
+
   private quarantine(
     agentId: string,
     expectedVersion: number,
     correlationId: string,
     actor: string,
     reason: string,
-    fenceToken: number,
+    lease: AgentLifecycleLease,
   ): HibernateResult {
-    const current = this.db.transitionAgentLifecycle({
+    const current = this.transitionFenced(lease, {
       agentId,
       expectedVersion,
       toState: "reap-candidate",
       reason,
       actor,
       correlationId,
-      fenceToken,
     });
     return {
       ok: false,
@@ -969,18 +1000,17 @@ export class HibernationOrchestrator {
     correlationId: string,
     actor: string,
     reason: string,
-    fenceToken: number,
+    lease: AgentLifecycleLease,
     attempts: number,
   ): WakeResult {
     this.db.clearAgentWakeReservation(agentId);
-    const current = this.db.transitionAgentLifecycle({
+    const current = this.transitionFenced(lease, {
       agentId,
       expectedVersion,
       toState: "reap-candidate",
       reason,
       actor,
       correlationId,
-      fenceToken,
     });
     return {
       ok: false,

@@ -7,6 +7,7 @@ import { BrokerSocketServer } from "./socket-server.js";
 import { BrokerClient } from "./client.js";
 import {
   HibernationOrchestrator,
+  type AgentLifecycleState,
   type HibernationCheckpointOutcome,
   type HibernationProcessController,
   type HibernationTmuxController,
@@ -362,6 +363,54 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     // Row stays hibernated; generation not advanced.
     expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernated");
     expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+  });
+
+  it("rejects plain registration into non-live durable/terminal identities (fail closed)", async () => {
+    const original = await registerOriginal();
+    const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
+    // Drop the original live connection so re-registration is gated by lifecycle
+    // fencing, not by the live stableId-conflict check.
+    original.disconnect();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const forceState = (pathStates: AgentLifecycleState[]) => {
+      for (const toState of pathStates) {
+        const cur = ctx.db.getAgentById(agentId)!;
+        ctx.db.transitionAgentLifecycle({
+          agentId,
+          expectedVersion: cur.lifecycleVersion ?? 0,
+          toState,
+          reason: "test-force",
+          actor: "test",
+          correlationId: `force-${toState}`,
+        });
+      }
+    };
+
+    const expectRegistrationRejected = async () => {
+      const stray = await ctx.connect();
+      await expect(
+        stray.register(AGENT_NAME, "🦉", { ...AGENT_METADATA }, STABLE_ID),
+      ).rejects.toThrow(/not permitted/i);
+      stray.disconnect();
+      await new Promise((r) => setTimeout(r, 20));
+    };
+
+    // (a) hibernating — mid-teardown window: the old runtime may still be alive
+    // and only a broker-driven wake (from `hibernated`) may revive it, so a
+    // fresh self-registration must be rejected fail-closed.
+    forceState(["grace", "idle", "hibernating"]);
+    await expectRegistrationRejected();
+    expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernating");
+
+    // (b) reap-candidate — quarantined pending manual review must not reconnect.
+    forceState(["reap-candidate"]);
+    await expectRegistrationRejected();
+
+    // (c) terminated — a closed identity must not silently reconnect and regain
+    // broker RPC access.
+    forceState(["terminated"]);
+    await expectRegistrationRejected();
   });
 
   it("does not advance the generation when fenced-revival registration fails after preflight", async () => {

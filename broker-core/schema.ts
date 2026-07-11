@@ -2121,11 +2121,13 @@ export class BrokerDB implements BrokerDBInterface {
         );
       }
       // Fence-identity validation: a transition that presents a fence token must
-      // prove it holds the matching lease. Lease fences are monotonic per agent
-      // (a re-acquisition after expiry bumps the fence), so this rejects a
-      // stale/superseded holder that would otherwise drive a fenced transition
-      // purely on a matching version CAS — the version does not advance when a
-      // competing broker re-acquires the lease at a higher fence. Unfenced
+      // prove it holds the live, matching lease. Lease fences are monotonic per
+      // agent (a re-acquisition after expiry bumps the fence), so matching the
+      // fence rejects a superseded holder that would otherwise drive a fenced
+      // transition purely on a matching version CAS. When the caller also binds
+      // the lease identity (`leaseId`/`expectedOperation`/`now`) we additionally
+      // reject an expired-but-unsuperseded lease and a wrong-operation lease —
+      // the fence token alone is not sufficient authority. Unfenced
       // administrative/recovery transitions (no fenceToken) are unaffected.
       if (input.fenceToken != null) {
         const lease = this.getAgentLifecycleLease(input.agentId);
@@ -2133,6 +2135,19 @@ export class BrokerDB implements BrokerDBInterface {
           throw new Error(
             `Lifecycle fence rejected for ${input.agentId}: presented fence ${input.fenceToken} is not the currently held lease`,
           );
+        }
+        if (input.leaseId != null && lease.leaseId !== input.leaseId) {
+          throw new Error(
+            `Lifecycle fence rejected for ${input.agentId}: presented lease is not the currently held lease`,
+          );
+        }
+        if (input.expectedOperation != null && lease.operation !== input.expectedOperation) {
+          throw new Error(
+            `Lifecycle fence rejected for ${input.agentId}: held lease operation ${lease.operation} does not authorize a ${input.expectedOperation} transition`,
+          );
+        }
+        if (input.now != null && Date.parse(lease.expiresAt) <= input.now) {
+          throw new Error(`Lifecycle fence rejected for ${input.agentId}: held lease is expired`);
         }
       }
       assertLegalLifecycleTransition(current.lifecycleState, input.toState);

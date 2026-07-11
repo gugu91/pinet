@@ -30,6 +30,7 @@ import {
   formatAgentLifecycleStatus,
   formatAgentLifecycleTag,
   formatHibernationCommandResult,
+  sanitizeOperatorReason,
   type AgentLifecycleStatus,
   type HibernationCommandResult,
 } from "@pinet/broker-core";
@@ -1321,10 +1322,17 @@ function runPinetHibernationCommandAction(
       throw new Error("target is required");
     }
 
+    // Sanitize the operator-authored target/reason before they enter the policy
+    // context, which can surface verbatim in confirmation prompts and error
+    // text. Path-like tokens (e.g. a private worktree path typed as the target)
+    // are redacted here; the raw `target` still flows to the broker runner,
+    // which resolves it server-side and redacts any unknown-target echo.
+    const safeTarget = sanitizeOperatorReason(target) ?? "(unnamed)";
+    const safeReason = sanitizeOperatorReason(reason) ?? "";
     deps.requireToolPolicy(
       toolName,
       undefined,
-      `command=${command} | target=${target} | reason=${reason ?? ""}`,
+      `command=${command} | target=${safeTarget} | reason=${safeReason}`,
     );
 
     if (!deps.pinetEnabled()) {

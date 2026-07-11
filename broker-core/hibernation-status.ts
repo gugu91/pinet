@@ -39,8 +39,10 @@ export function redactRuntimeSpec(spec: AgentRuntimeSpec): RedactedAgentRuntimeS
   }
   const ref = `${kind}:#${(hash >>> 0).toString(16).padStart(8, "0")}`;
   // Repo is reported as a path-free basename so operators can group agents
-  // without exposing the worktree/repo-root filesystem path.
-  const repoSegments = spec.repoRoot.split("/").filter(Boolean);
+  // without exposing the worktree/repo-root filesystem path. Split on BOTH
+  // separators so a Windows repo root (e.g. `C:\\Users\\alice\\secret-repo`) is
+  // never emitted verbatim as its own "basename".
+  const repoSegments = spec.repoRoot.split(/[\\/]/).filter(Boolean);
   const repo = repoSegments.length > 0 ? repoSegments[repoSegments.length - 1] : null;
 
   return {
@@ -172,11 +174,16 @@ export function redactPathLikeTokens(value: string): string {
     .map((token) => {
       if (token.length === 0 || /\s/.test(token)) return token;
       const slashCount = (token.match(/[/\\]/g) ?? []).length;
+      // A single-separator relative token that carries a file extension is
+      // file-like (e.g. `accounts/acme.md`, `src/index.ts`) and must be
+      // redacted, while extension-free prose like "and/or" is preserved.
+      const looksFileLike = slashCount >= 1 && /[^/\\]\.[A-Za-z0-9]/.test(token);
       const pathLike =
         /^[~/]/.test(token) || // /abs or ~/home
         /^\.\.?[/\\]/.test(token) || // ./rel or ../rel
         /^[A-Za-z]:[\\/]/.test(token) || // C:\ or C:/ (Windows)
-        slashCount >= 2; // multi-segment relative path
+        slashCount >= 2 || // multi-segment relative path
+        looksFileLike; // single-separator file-like relative path
       return pathLike ? "<path>" : token;
     })
     .join("");

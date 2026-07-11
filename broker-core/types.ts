@@ -58,6 +58,17 @@ export interface AgentLifecycleTransitionInput extends AgentLifecycleEventMetric
   actor: string;
   correlationId: string;
   triggerSource?: string;
+  /**
+   * Optional strict lease-identity binding for fenced transitions. When
+   * `fenceToken` is presented these tighten the fence check so that only the
+   * live, matching lease can drive the transition: `leaseId` must equal the
+   * held lease's id, `expectedOperation` its operation, and (with `now`) the
+   * lease must be unexpired. This rejects an expired, superseded, or
+   * wrong-operation lease that would otherwise pass on the fence token alone.
+   */
+  leaseId?: string;
+  expectedOperation?: AgentLifecycleOperation;
+  now?: number;
 }
 
 /**
