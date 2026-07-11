@@ -60,6 +60,21 @@ export interface ApprovalSignerRequest {
   readonly signal: AbortSignal;
 }
 
+/**
+ * The only signer failure that permits the issuer to release a reservation.
+ * Signer adapters may throw this only when the identified operation was
+ * definitively rejected before any signing work or durable signer result.
+ */
+export class ApprovalSignerPreSignRejection extends Error {
+  readonly operationId: string;
+
+  constructor(operationId: string, message = "Approval signer rejected before signing") {
+    super(message);
+    this.name = "ApprovalSignerPreSignRejection";
+    this.operationId = operationId;
+  }
+}
+
 export interface ApprovalSigner {
   readonly keyId: string;
   /**
@@ -555,7 +570,7 @@ export class ApprovalAuditStore {
     if (result.changes !== 1) throw new Error("Approval reservation was lost before finalization");
   }
 
-  releaseFailedReservation(approvalId: string, reservation: ApprovalReservation): void {
+  releasePreSignRejectedReservation(approvalId: string, reservation: ApprovalReservation): void {
     this.db
       .prepare(
         `DELETE FROM approval_receipts WHERE approval_id = ? AND reservation_token = ?
@@ -729,7 +744,6 @@ export class SlackApprovalIssuer {
       expiresAt: reservation.expiresAt,
     });
     const controller = new AbortController();
-    let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const signed = await Promise.race([
@@ -739,7 +753,6 @@ export class SlackApprovalIssuer {
         }),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => {
-            timedOut = true;
             controller.abort();
             reject(new Error("Approval signer timed out"));
           }, this.signerTimeoutMs);
@@ -752,7 +765,12 @@ export class SlackApprovalIssuer {
       this.audit.finalize(receipt, reservation);
       return receipt;
     } catch (error) {
-      if (!timedOut) this.audit.releaseFailedReservation(claims.approvalId, reservation);
+      if (
+        error instanceof ApprovalSignerPreSignRejection &&
+        error.operationId === reservation.operationId
+      ) {
+        this.audit.releasePreSignRejectedReservation(claims.approvalId, reservation);
+      }
       throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
