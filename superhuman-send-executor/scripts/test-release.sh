@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "Skipping macOS signed-release test on $(uname -s)."
+  exit 0
+fi
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 TMP=$(/usr/bin/mktemp -d)
 trap '/bin/rm -rf "$TMP"' EXIT HUP INT TERM

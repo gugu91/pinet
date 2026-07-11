@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "Skipping macOS native credential-bridge test on $(uname -s)."
+  exit 0
+fi
 OUT=$(mktemp -d)/credential-bridge
 trap 'rm -rf "$(dirname "$OUT")"' EXIT
 /usr/bin/swiftc -O -framework Security "$(dirname "$0")/../native/CredentialBridge.swift" -o "$OUT"
