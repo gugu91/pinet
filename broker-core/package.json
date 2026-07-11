@@ -27,6 +27,7 @@
     "./raw-tcp-loopback": "./dist/raw-tcp-loopback.js",
     "./router": "./dist/router.js",
     "./schema": "./dist/schema.js",
+    "./slack-approval-authenticator": "./dist/slack-approval-authenticator.js",
     "./types": "./dist/types.js",
     "./package.json": "./package.json"
   },

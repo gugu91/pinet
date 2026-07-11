@@ -17,8 +17,11 @@ import {
   type ExpectedApproval,
   type PinnedApprovalSignatureVerifier,
   type SlackApprovalContextAuthenticator,
-  type SlackBrokerApprovalContext,
 } from "./approval-receipts.js";
+import type {
+  SlackV0ApprovalContextAuthenticator,
+  SlackV0RequestApprovalContext,
+} from "./slack-approval-authenticator.js";
 
 const AUTHORIZED_SLACK_ID = "U0AF5S3LQ5C";
 
@@ -113,16 +116,17 @@ describe("broker-core approval receipts", () => {
     contextSequence = 0;
     contextAuthenticator = {
       authenticateAndConsume: (context) => {
-        const authenticated = authenticatedContexts.get(context.authenticationHandle);
+        const handle = context.authenticationHandle;
+        if (!handle) throw new Error("Slack/broker context authentication failed");
+        const authenticated = authenticatedContexts.get(handle);
         if (!authenticated) throw new Error("Slack/broker context authentication failed");
-        authenticatedContexts.delete(context.authenticationHandle);
+        authenticatedContexts.delete(handle);
         return authenticated;
       },
     };
     nowMs = Date.parse("2026-07-11T10:00:00.000Z");
     issuer = new SlackApprovalIssuer(
-      AUTHORIZED_SLACK_ID,
-      contextAuthenticator,
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       signer,
       audit,
       () => new Date(nowMs),
@@ -144,7 +148,7 @@ describe("broker-core approval receipts", () => {
     approvalId: string,
     value: ApprovalEnvelope,
     principal = AUTHORIZED_SLACK_ID,
-  ): SlackBrokerApprovalContext {
+  ): SlackV0RequestApprovalContext {
     const authenticationHandle = `authenticated-ingress-${contextSequence++}`;
     authenticatedContexts.set(authenticationHandle, {
       principal,
@@ -152,7 +156,7 @@ describe("broker-core approval receipts", () => {
       threadId: value.threadId,
       envelopeDigest: digestApprovalEnvelope(value),
     });
-    return { authenticationHandle };
+    return { authenticationHandle } as SlackV0RequestApprovalContext;
   }
 
   async function issue(
@@ -169,10 +173,11 @@ describe("broker-core approval receipts", () => {
     expect(receipt.claims.envelope.threadId).toBe("thread-1");
 
     await expect(
-      issuer.create(
-        { authenticationHandle: "caller-invented" },
-        { approvalId: "approval-2", ttlMs: 1_000, envelope: envelope({ sendId: "send-2" }) },
-      ),
+      issuer.create({ authenticationHandle: "caller-invented" } as SlackV0RequestApprovalContext, {
+        approvalId: "approval-2",
+        ttlMs: 1_000,
+        envelope: envelope({ sendId: "send-2" }),
+      }),
     ).rejects.toThrow("authentication failed");
 
     const wrongPrincipalAuthenticator: SlackApprovalContextAuthenticator = {
@@ -184,14 +189,13 @@ describe("broker-core approval receipts", () => {
       }),
     };
     const wrongPrincipalIssuer = new SlackApprovalIssuer(
-      AUTHORIZED_SLACK_ID,
-      wrongPrincipalAuthenticator,
+      wrongPrincipalAuthenticator as SlackV0ApprovalContextAuthenticator,
       signer,
       audit,
     );
     await expect(
       wrongPrincipalIssuer.create(
-        { authenticationHandle: "wrong-principal" },
+        { authenticationHandle: "wrong-principal" } as SlackV0RequestApprovalContext,
         {
           approvalId: "approval-3",
           ttlMs: 1_000,
@@ -577,8 +581,7 @@ describe("broker-core approval receipts", () => {
       },
     };
     issuer = new SlackApprovalIssuer(
-      AUTHORIZED_SLACK_ID,
-      contextAuthenticator,
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       gatedSigner,
       audit,
       () => new Date(nowMs),
@@ -657,14 +660,81 @@ describe("broker-core approval receipts", () => {
       },
     };
     issuer = new SlackApprovalIssuer(
-      AUTHORIZED_SLACK_ID,
-      contextAuthenticator,
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
       failOnceSigner,
       audit,
       () => new Date(nowMs),
     );
     await expect(issue()).rejects.toThrow("synthetic signer failure");
     await expect(issue()).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+  });
+
+  it("bounds a hung signer call and retains its reservation for safe recovery", async () => {
+    const hungSigner: ApprovalSigner = {
+      keyId: "synthetic-test-root",
+      issueApproval: () => new Promise(() => undefined),
+    };
+    issuer = new SlackApprovalIssuer(
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
+      hungSigner,
+      audit,
+      () => new Date(nowMs),
+      { signerTimeoutMs: 10, reservationLeaseMs: 50 },
+    );
+    await expect(issue()).rejects.toThrow("timed out");
+    await expect(issue()).rejects.toThrow("already reserved");
+  });
+
+  it("recovers a crash-like stale pending lease with the same idempotent signer operation", async () => {
+    const operationIds: string[] = [];
+    let first = true;
+    let active = 0;
+    let maximumActive = 0;
+    const recoveringSigner: ApprovalSigner = {
+      keyId: "synthetic-test-root",
+      issueApproval: async (claims, request) => {
+        operationIds.push(request.operationId);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        if (first) {
+          first = false;
+          await new Promise<void>((_resolve, reject) => {
+            request.signal.addEventListener("abort", () => {
+              active -= 1;
+              reject(new Error("signer aborted stale operation attempt"));
+            });
+          });
+        }
+        active -= 1;
+        return {
+          signature: sign(null, Buffer.from(serializeApprovalClaims(claims)), privateKey).toString(
+            "base64url",
+          ),
+        };
+      },
+    };
+    issuer = new SlackApprovalIssuer(
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
+      recoveringSigner,
+      audit,
+      () => new Date(nowMs),
+      { signerTimeoutMs: 10, reservationLeaseMs: 30 },
+    );
+    await expect(issue()).rejects.toThrow("timed out");
+    audit.close();
+    audit = new ApprovalAuditStore(path.join(directory, "audit.db"));
+    nowMs += 31;
+    issuer = new SlackApprovalIssuer(
+      contextAuthenticator as SlackV0ApprovalContextAuthenticator,
+      recoveringSigner,
+      audit,
+      () => new Date(nowMs),
+      { signerTimeoutMs: 10, reservationLeaseMs: 30 },
+    );
+    await expect(issue()).resolves.toMatchObject({ claims: { approvalId: "approval-1" } });
+    expect(operationIds).toHaveLength(2);
+    expect(operationIds[1]).toBe(operationIds[0]);
+    expect(maximumActive).toBe(1);
   });
 
   it("enforces TTL and complete To/Cc/Bcc and screenshot validation", async () => {
