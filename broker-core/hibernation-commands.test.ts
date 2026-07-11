@@ -323,8 +323,86 @@ function runtimeSpec(agentId: string, stableId: string): AgentRuntimeSpecInput {
     expectedHost: "host-1",
     expectedUser: "tm",
     launchSource: "pinet-spawn",
+    vcsIdentity: "gugu91/extensions",
   };
 }
+
+describe("repo allowlist authorization consumes the persisted VCS identity (never directory names)", () => {
+  // Mirror the broker gate's derivation EXACTLY (`runHibernationCommand` in
+  // index.ts): authorization reads ONLY the durable spec's broker-derived
+  // `vcsIdentity`. Filesystem directory names are never consulted, so distinct
+  // roots that share their final path segments cannot collapse onto one
+  // authorization identity, and a repo shares one identity with all its worktrees.
+  const gatePolicy: HibernationCommandPolicy = {
+    enabled: true,
+    mode: "manual",
+    allowedRepos: ["gugu91/extensions"],
+  };
+  function gateFor(db: BrokerDB, agentId: string) {
+    return evaluateHibernateCommandGate({
+      state: "idle",
+      repoIdentifier: db.getAgentRuntimeSpec(agentId)?.vcsIdentity ?? null,
+      policy: gatePolicy,
+    });
+  }
+
+  it("authorizes a normal clone AND a worktree of the same repo under one identity, regardless of root path", () => {
+    const db = freshDb();
+    // A normal clone and a git worktree of the SAME repository, at very
+    // different filesystem roots, both carry the same broker-derived remote
+    // identity — so both authorize.
+    db.registerAgent("clone", "s-clone", "🦉", 1, undefined, "host:session:clone");
+    db.upsertAgentRuntimeSpec({
+      ...runtimeSpec("clone", "host:session:clone"),
+      repoRoot: "/Users/alice/projects/extensions",
+      vcsIdentity: "gugu91/extensions",
+    });
+    db.registerAgent("wt", "s-wt", "🦉", 2, undefined, "host:session:wt");
+    db.upsertAgentRuntimeSpec({
+      ...runtimeSpec("wt", "host:session:wt"),
+      repoRoot: "/tmp/build/extensions/.worktrees/feat",
+      vcsIdentity: "gugu91/extensions",
+    });
+
+    expect(gateFor(db, "clone")).toMatchObject({ outcome: "proceed" });
+    expect(gateFor(db, "wt")).toMatchObject({ outcome: "proceed" });
+  });
+
+  it("refuses an impostor root that shares the allowlisted repo's final path segments", () => {
+    const db = freshDb();
+    // A DIFFERENT repository whose filesystem root collides on its last two
+    // segments (`gugu91/extensions`) with the allowlisted repo. A path-segment
+    // slug would have wrongly authorized it; the remote-derived identity does not.
+    db.registerAgent("impostor", "s-imp", "🦉", 1, undefined, "host:session:imp");
+    db.upsertAgentRuntimeSpec({
+      ...runtimeSpec("impostor", "host:session:imp"),
+      repoRoot: "/tmp/impostor/gugu91/extensions",
+      vcsIdentity: "impostor/extensions",
+    });
+
+    expect(gateFor(db, "impostor")).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "repo_not_allowlisted" },
+    });
+  });
+
+  it("fails closed when the spec carries no resolvable VCS identity", () => {
+    const db = freshDb();
+    // Even a root whose directory names look allowlisted must be refused when no
+    // canonical remote identity was captured at spawn.
+    db.registerAgent("noremote", "s-nr", "🦉", 1, undefined, "host:session:nr");
+    db.upsertAgentRuntimeSpec({
+      ...runtimeSpec("noremote", "host:session:nr"),
+      repoRoot: "/srv/gugu91/extensions",
+      vcsIdentity: null,
+    });
+
+    expect(gateFor(db, "noremote")).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "repo_not_allowlisted" },
+    });
+  });
+});
 
 class FakeProcess implements HibernationProcessController {
   checkpoint: HibernationCheckpointOutcome = {

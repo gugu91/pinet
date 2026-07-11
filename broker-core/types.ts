@@ -141,6 +141,15 @@ export interface AgentRuntimeSpec {
   expectedHost: string;
   expectedUser: string;
   launchSource: string;
+  /**
+   * Canonical, broker-derived VCS identity (`owner/repo`) captured at spawn from
+   * the runtime's git remote — NEVER inferred from filesystem directory names.
+   * The repo allowlist authorization matches this exactly, so distinct roots
+   * that share their final path segments never collapse onto one authorization
+   * identity and a repo shares one identity with all of its worktrees. `null`
+   * when no remote was resolvable at spawn (the fail-closed gate then refuses).
+   */
+  vcsIdentity: string | null;
   createdAt: string;
   updatedAt: string;
 }

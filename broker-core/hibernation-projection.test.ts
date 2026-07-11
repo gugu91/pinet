@@ -51,6 +51,7 @@ function runtimeSpec(agentId: string, stableId: string): AgentRuntimeSpecInput {
     expectedHost: "host-1",
     expectedUser: "tm",
     launchSource: "pinet-spawn",
+    vcsIdentity: "gugu91/extensions",
   };
 }
 

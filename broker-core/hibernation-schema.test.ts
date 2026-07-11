@@ -99,6 +99,7 @@ function spec(agentId: string): AgentRuntimeSpecInput {
     expectedHost: "host-1",
     expectedUser: "tm",
     launchSource: "pinet-spawn",
+    vcsIdentity: "gugu91/extensions",
   };
 }
 

@@ -670,8 +670,12 @@ export class HibernationOrchestrator {
         // process with no handle to address, so its liveness is unprovable. But
         // the socket layer accepts a generation ATOMICALLY, so even a launch that
         // threw may have registered+accepted in the race window — so we still
-        // settle against the acceptance boundary before failing closed, and only
-        // quarantine (`wake_ambiguous_launch`) when the generation was NOT accepted.
+        // settle TRANSACTIONALLY against the acceptance boundary before failing
+        // closed. `accepted` ⇒ the runtime is live, promote it. `unknown` ⇒ the
+        // settle did not commit, so an acceptance may still race — leave `waking`
+        // for recovery rather than quarantine. Only `fenced-unaccepted` (a
+        // committed consumption that makes acceptance impossible) quarantines
+        // (`wake_ambiguous_launch`, since the throwing launch left no handle).
         inFlightLaunched = true;
         inFlightHandle = null;
         let launch: { launched: boolean; handle: RuntimeAttemptHandle | null };
@@ -679,7 +683,7 @@ export class HibernationOrchestrator {
           launch = await this.tmux.respawnRuntime(launchCtx);
         } catch {
           const settled = this.settleWakeAttempt(agentId, reservation);
-          if (settled.accepted) {
+          if (settled === "accepted") {
             acceptedGeneration = true;
             inFlightLaunched = false;
             inFlightHandle = null;
@@ -693,6 +697,15 @@ export class HibernationOrchestrator {
               attempt,
               startedAt,
             });
+          }
+          if (settled === "unknown") {
+            return {
+              ok: true,
+              agentId,
+              correlationId,
+              state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
+              reason: "woken_recovery_pending",
+            };
           }
           return this.quarantineWake(
             agentId,
@@ -724,7 +737,7 @@ export class HibernationOrchestrator {
         // attempt's exact-nonce reservation so the launched runtime can never be
         // accepted afterwards, making the subsequent prove-stop safe.
         const settled = this.settleWakeAttempt(agentId, reservation);
-        if (settled.accepted) {
+        if (settled === "accepted") {
           // The socket layer already bound this runtime to our exact
           // lease/fence/reservation and atomically advanced+consumed the
           // generation, so from here acceptance is IRREVERSIBLE: the runtime is
@@ -743,8 +756,24 @@ export class HibernationOrchestrator {
             startedAt,
           });
         }
+        if (settled === "unknown") {
+          // The atomic settle did NOT commit, so THIS attempt's reservation was
+          // not provably consumed and an acceptance can still race any stop. We
+          // must NOT prove-stop or retry the attempt (doing so could kill a
+          // runtime that accepts a moment later). Leave the identity `waking`
+          // (never quarantine) and hand it to `recoverStrandedWakes`, which
+          // reconciles it once the transactional settle can commit.
+          return {
+            ok: true,
+            agentId,
+            correlationId,
+            state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
+            reason: "woken_recovery_pending",
+          };
+        }
 
-        // Failed attempt. The reservation is now consumed (settle above), so the
+        // Failed attempt (`fenced-unaccepted`). The reservation is now
+        // transactionally consumed (settle above), so the
         // launched runtime can never be accepted. But a launched-but-unaccepted
         // process may still be RUNNING, and we must never leave one behind
         // (whether we are about to relaunch on top of it OR about to quarantine
@@ -817,28 +846,23 @@ export class HibernationOrchestrator {
       }
       //  2. A launched-but-unaccepted attempt may still be running AND may have
       //     raced to accept before this fault. Settle it against the acceptance
-      //     boundary first: if it was accepted, it is live — never quarantine it
-      //     (leave `waking` for recovery). Otherwise the settle consumed its
-      //     reservation, so prove-stop it via its attempt-bound handle; if it
-      //     cannot be confirmed gone (or there is no handle), fail closed as
-      //     `wake_ambiguous_launch` rather than leak a runtime. Static reasons
-      //     only; never surface raw errors.
+      //     boundary TRANSACTIONALLY first: only `fenced-unaccepted` (a committed
+      //     reservation consumption) makes a prove-stop safe. `accepted` means it
+      //     is live — never quarantine it (leave `waking` for recovery). `unknown`
+      //     means the settle did not commit, so the reservation was not provably
+      //     consumed and an acceptance can still race a stop — we must NOT
+      //     prove-stop/quarantine either; leave `waking` for reconciliation.
+      //     Static reasons only; never surface raw errors.
       if (
         inFlightLaunched &&
         inFlightReservedGeneration !== null &&
         inFlightReservationNonce !== null
       ) {
-        let settledAccepted = false;
-        try {
-          settledAccepted = this.db.finalizeWakeAttempt({
-            agentId,
-            reservedGeneration: inFlightReservedGeneration,
-            reservationNonce: inFlightReservationNonce,
-          }).accepted;
-        } catch {
-          settledAccepted = this.isGenerationAccepted(agentId, inFlightReservedGeneration);
-        }
-        if (settledAccepted) {
+        const settled = this.settleWakeAttempt(agentId, {
+          reservedGeneration: inFlightReservedGeneration,
+          reservationNonce: inFlightReservationNonce,
+        });
+        if (settled === "accepted" || settled === "unknown") {
           return {
             ok: true,
             agentId,
@@ -847,6 +871,9 @@ export class HibernationOrchestrator {
             reason: "woken_recovery_pending",
           };
         }
+        // settled === "fenced-unaccepted": reservation transactionally consumed →
+        // the launched runtime can no longer be accepted, so the prove-stop below
+        // is safe.
       }
       const faultReason =
         inFlightLaunched && !(await this.proveAttemptStopped(inFlightHandle))
@@ -895,28 +922,37 @@ export class HibernationOrchestrator {
   }
 
   /**
-   * Race-free settle of a wake attempt against the acceptance boundary. Delegates
-   * to the transactional {@link BrokerDB.finalizeWakeAttempt}: returns
-   * `{ accepted: true }` if the socket already accepted our generation (never
-   * stop that runtime), otherwise consumes THIS attempt's exact-nonce reservation
-   * so the launched runtime can never be accepted afterwards (making a subsequent
-   * prove-stop safe). A DB throw falls back to a best-effort accepted read and
-   * fails closed to "not accepted" so the caller still prove-stops the attempt.
+   * Race-free, TRI-STATE settle of a wake attempt against the acceptance
+   * boundary. Delegates to the transactional {@link BrokerDB.finalizeWakeAttempt}:
+   *
+   *  - `"accepted"` — the socket already accepted our generation. The runtime is
+   *    live+bound; it must be promoted, NEVER stopped.
+   *  - `"fenced-unaccepted"` — the settle transaction COMMITTED a consumption of
+   *    THIS attempt's exact-nonce reservation, so the launched runtime can never
+   *    be accepted afterwards. Only now is a subsequent prove-stop safe.
+   *  - `"unknown"` — the settle transaction threw and did NOT commit, so the
+   *    reservation was NOT provably consumed. An acceptance may still race an
+   *    async prove-stop, so the caller must NOT stop or retry the attempt; it
+   *    leaves the identity `waking` for `recoverStrandedWakes` to reconcile once
+   *    the atomic settle can commit. A best-effort read here would be unsafe:
+   *    reading "not accepted" does not prevent a concurrent acceptance, so we
+   *    must never downgrade `unknown` to `fenced-unaccepted`.
    */
   // agent-standards-ignore prefer-inline-single-use-helper: shared by the
-  // per-attempt path and the respawn-throw path; a real acceptance-boundary seam.
+  // per-attempt path and the outer fault backstop; a real acceptance-boundary seam.
   private settleWakeAttempt(
     agentId: string,
     reservation: { reservedGeneration: number; reservationNonce: string },
-  ): { accepted: boolean } {
+  ): "accepted" | "fenced-unaccepted" | "unknown" {
     try {
-      return this.db.finalizeWakeAttempt({
+      const result = this.db.finalizeWakeAttempt({
         agentId,
         reservedGeneration: reservation.reservedGeneration,
         reservationNonce: reservation.reservationNonce,
       });
+      return result.accepted ? "accepted" : "fenced-unaccepted";
     } catch {
-      return { accepted: this.isGenerationAccepted(agentId, reservation.reservedGeneration) };
+      return "unknown";
     }
   }
 
@@ -976,20 +1012,6 @@ export class HibernationOrchestrator {
         runtimeGeneration: params.reservedGeneration,
         attempts: params.attempt,
       };
-    }
-  }
-
-  /**
-   * Confirm — best-effort, throw-swallowing — whether the durable row already
-   * reflects our accepted generation. Used when the acceptance READ faults after
-   * the socket may have atomically accepted the generation, so an accepted
-   * runtime is not misread as a failed attempt. A read fault ⇒ unconfirmable ⇒ false.
-   */
-  private isGenerationAccepted(agentId: string, reservedGeneration: number): boolean {
-    try {
-      return this.db.getAgentById(agentId)?.runtimeGeneration === reservedGeneration;
-    } catch {
-      return false;
     }
   }
 

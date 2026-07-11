@@ -948,7 +948,7 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 21;
+export const CURRENT_BROKER_SCHEMA_VERSION = 22;
 
 /**
  * Lifecycle states whose durable identity, inbox, thread ownership, and runtime
@@ -1733,6 +1733,7 @@ function createAgentHibernationTables(db: DatabaseSync): void {
       executable TEXT NOT NULL, argv_json TEXT NOT NULL, env_allowlist_json TEXT NOT NULL,
       session_resume_ref TEXT NOT NULL, config_fingerprint TEXT NOT NULL,
       expected_host TEXT NOT NULL, expected_user TEXT NOT NULL, launch_source TEXT NOT NULL,
+      vcs_identity TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS agent_lifecycle_leases (
@@ -1833,6 +1834,29 @@ function createWakeAcceptanceReceiptTable(db: DatabaseSync): void {
   `);
 }
 
+/**
+ * Canonical VCS identity column: a broker-derived `owner/repo` captured at spawn
+ * from the runtime's git remote (never inferred from directory names). The repo
+ * allowlist authorization matches this identity EXACTLY, so distinct filesystem
+ * roots that happen to share their final path segments (e.g.
+ * `/trusted/gugu91/extensions` vs `/tmp/impostor/gugu91/extensions`) do not
+ * collapse onto one authorization identity, and a repo shares one identity with
+ * all of its git worktrees. Nullable — a spec captured without a resolvable
+ * remote leaves it null and the fail-closed gate refuses. Added for dogfood DBs
+ * already at v21 (fresh DBs get the column from the CREATE TABLE above).
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: one-function-per-
+// migration-case is the established schema-migration seam; keeps the version
+// switch a readable index.
+function addRuntimeSpecVcsIdentityColumn(db: DatabaseSync): void {
+  ensureColumn(
+    db,
+    "agent_runtime_specs",
+    "vcs_identity",
+    "ALTER TABLE agent_runtime_specs ADD COLUMN vcs_identity TEXT",
+  );
+}
+
 function runSchemaMigrations(db: DatabaseSync): void {
   const currentVersion = getUserVersion(db);
   if (currentVersion >= CURRENT_BROKER_SCHEMA_VERSION) {
@@ -1909,6 +1933,9 @@ function runSchemaMigrations(db: DatabaseSync): void {
           break;
         case 21:
           createWakeAcceptanceReceiptTable(db);
+          break;
+        case 22:
+          addRuntimeSpecVcsIdentityColumn(db);
           break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
@@ -2600,8 +2627,8 @@ export class BrokerDB implements BrokerDBInterface {
          (agent_id, stable_id, broker_owner_id, cwd, repo_root, worktree_path, tmux_socket,
           tmux_session, tmux_target, executable, argv_json, env_allowlist_json,
           session_resume_ref, config_fingerprint, expected_host, expected_user, launch_source,
-          created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          vcs_identity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(agent_id) DO UPDATE SET stable_id=excluded.stable_id,
            broker_owner_id=excluded.broker_owner_id, cwd=excluded.cwd, repo_root=excluded.repo_root,
            worktree_path=excluded.worktree_path, tmux_socket=excluded.tmux_socket,
@@ -2611,6 +2638,7 @@ export class BrokerDB implements BrokerDBInterface {
            session_resume_ref=excluded.session_resume_ref,
            config_fingerprint=excluded.config_fingerprint, expected_host=excluded.expected_host,
            expected_user=excluded.expected_user, launch_source=excluded.launch_source,
+           vcs_identity=excluded.vcs_identity,
            updated_at=excluded.updated_at`,
       ).run(
         input.agentId,
@@ -2630,6 +2658,7 @@ export class BrokerDB implements BrokerDBInterface {
         input.expectedHost,
         input.expectedUser,
         input.launchSource,
+        input.vcsIdentity ?? null,
         createdAt,
         now,
       );
@@ -2661,6 +2690,7 @@ export class BrokerDB implements BrokerDBInterface {
           expected_host: string;
           expected_user: string;
           launch_source: string;
+          vcs_identity: string | null;
           created_at: string;
           updated_at: string;
         }
@@ -2684,6 +2714,7 @@ export class BrokerDB implements BrokerDBInterface {
       expectedHost: row.expected_host,
       expectedUser: row.expected_user,
       launchSource: row.launch_source,
+      vcsIdentity: row.vcs_identity ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

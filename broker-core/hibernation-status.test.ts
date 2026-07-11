@@ -30,6 +30,7 @@ function runtimeSpec(overrides: Partial<AgentRuntimeSpec> = {}): AgentRuntimeSpe
     expectedHost: "mac-1",
     expectedUser: "secret",
     launchSource: "broker",
+    vcsIdentity: "gugu91/extensions",
     createdAt: "2026-07-11T07:00:00.000Z",
     updatedAt: "2026-07-11T07:30:00.000Z",
     ...overrides,

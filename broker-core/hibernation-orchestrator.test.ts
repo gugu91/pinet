@@ -55,6 +55,7 @@ function runtimeSpec(agentId: string, stableId: string): AgentRuntimeSpecInput {
     expectedHost: "host-1",
     expectedUser: "tm",
     launchSource: "pinet-spawn",
+    vcsIdentity: "gugu91/extensions",
   };
 }
 
@@ -1297,6 +1298,80 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
       now: clock.ms,
     });
     expect(late.accepted).toBe(false);
+  });
+
+  it("on a finalize FAULT treats settlement as UNKNOWN: never prove-stops an accepted runtime, leaves waking for recovery to promote", async () => {
+    // Blocker 1 (finalize-throws race): if the transactional settle itself throws,
+    // THIS attempt's reservation was NOT provably consumed by the settle, so an
+    // acceptance may have committed concurrently (the socket's acceptance is a
+    // SEPARATE transaction). A best-effort read is unsafe (reading "not accepted"
+    // cannot prevent a concurrent acceptance), so downgrading to a prove-stop
+    // could KILL an accepted runtime. The orchestrator must treat a finalize fault
+    // as `unknown`: never prove-stop/retry the attempt; leave the identity
+    // `waking` for `recoverStrandedWakes`. Here the socket genuinely accepted
+    // (generation advanced) while finalize faults — recovery must PROMOTE it, and
+    // the runtime must never have been stopped.
+    const realDb = freshDb();
+    seedAgent(realDb);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    // Wrap the DB so ONLY `finalizeWakeAttempt` faults; everything else delegates.
+    const faultingDb = new Proxy(realDb, {
+      get(target, prop, receiver) {
+        if (prop === "finalizeWakeAttempt") {
+          return () => {
+            throw new Error("injected finalize fault");
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as BrokerDB;
+    const orch = new HibernationOrchestrator({
+      db: faultingDb,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+      awaitRuntimeRegistration: async (ctx: RuntimeLaunchContext) => {
+        // The socket ATOMICALLY accepts the generation (a separate transaction
+        // that commits regardless of the finalize fault the orchestrator hits).
+        realDb.registerAgent(
+          ctx.agentId,
+          "Worker",
+          "🦉",
+          5555,
+          { ...AGENT_METADATA },
+          ctx.spec.stableId,
+        );
+        realDb.acceptRuntimeGeneration({
+          agentId: ctx.agentId,
+          wakeLeaseId: ctx.wakeLeaseId,
+          fenceToken: ctx.fenceToken,
+          reservedGeneration: ctx.reservedGeneration,
+          reservationNonce: ctx.reservationNonce,
+          now: clock.ms,
+        });
+        return true;
+      },
+    });
+    await hibernateFrom({ db: realDb, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    // Unknown settlement: do not stop, do not quarantine — hand to recovery.
+    expect(result).toMatchObject({ ok: true, state: "waking", reason: "woken_recovery_pending" });
+    expect(proc.stopAttemptCalls).toBe(0); // NEVER prove-stopped the accepted runtime
+    // The socket's real acceptance advanced the generation and consumed the
+    // reservation (the finalize fault did NOT roll that back).
+    expect(realDb.getAgentById("worker-1")?.runtimeGeneration).toBe(1);
+    expect(realDb.getAgentWakeReservation("worker-1")).toBeNull();
+
+    // Recovery then completes the accepted-but-stranded wake to live.
+    const recovered = orch.recoverStrandedWakes({ now: clock.ms });
+    expect(recovered).toContainEqual({ agentId: "worker-1", action: "completed" });
+    expect(realDb.getAgentById("worker-1")?.lifecycleState).toBe("live");
   });
 
   it("never quarantines an ACCEPTED runtime when post-acceptance promotion faults (recoverable to live)", async () => {

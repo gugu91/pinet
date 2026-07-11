@@ -31,7 +31,7 @@ Forward-progress transitions that still hold real authority (`idle -> hibernatin
 
 Wake **fault handling is atomic around the launched runtime and the acceptance boundary**, so no code path can leak a runtime or quarantine a live one. A launch fault (`respawnRuntime` throws), a registration-wait fault (`awaitRuntimeRegistration` rejects), or a prove-stop probe fault are each caught within the attempt rather than falling through to the generic fault path with a still-running process: the launched attempt is prove-stopped through its attempt-bound handle and, if it cannot be confirmed gone (including a launch that produced no handle at all), the wake fails closed to `reap-candidate` (`wake_ambiguous_launch`) instead of leaking it.
 
-The stop-vs-accept decision is made **race-free** by a single transactional settle (`finalizeWakeAttempt`), not a plain read. Because the socket accepts a generation atomically, an acceptance can commit in the window between the orchestrator's last waiter read and its decision to stop the attempt — a plain "did it register?" read would then prove-stop and quarantine an already-live runtime. `finalizeWakeAttempt` runs in one transaction: if the reserved generation was already accepted it reports `accepted` (and the runtime is promoted, never stopped); otherwise it consumes **only this attempt's exact-nonce reservation**, so any later registration by the launched runtime can no longer be accepted (`no_reservation`) — which makes the subsequent prove-stop safe. Every path that is about to stop or quarantine a launched attempt (the per-attempt failure path, the respawn-throw path, and the outer fault backstop) settles first, so an acceptance that lands late is always promoted rather than killed.
+The stop-vs-accept decision is made **race-free** by a single transactional settle (`finalizeWakeAttempt`), not a plain read, and it is **tri-state** so a fault can never be mistaken for "not accepted". Because the socket accepts a generation atomically, an acceptance can commit in the window between the orchestrator's last waiter read and its decision to stop the attempt — a plain "did it register?" read would then prove-stop and quarantine an already-live runtime. `finalizeWakeAttempt` runs in one transaction and the orchestrator maps its outcome to one of three states: **`accepted`** (the reserved generation was already accepted → promote the live runtime, never stop it); **`fenced-unaccepted`** (the settle COMMITTED a consumption of **only this attempt's exact-nonce reservation**, so any later registration can no longer be accepted, `no_reservation`, making the subsequent prove-stop safe); or **`unknown`** (the settle transaction THREW and did not commit, so the reservation was NOT provably consumed and an acceptance can still race a stop). Only `fenced-unaccepted` permits a prove-stop. On `unknown` the orchestrator never stops or retries the attempt — a best-effort read would be unsafe because reading "not accepted" cannot prevent a concurrent acceptance — and instead leaves the identity `waking` (`woken_recovery_pending`) for `recoverStrandedWakes` to reconcile once the atomic settle can commit (if the socket did in fact accept, recovery observes the advanced generation + consumed reservation and completes it to `live`; otherwise it fails closed). Every path that is about to stop or quarantine a launched attempt (the per-attempt failure path, the respawn-throw path, and the outer fault backstop) settles first with this tri-state discipline, so an acceptance that lands late is always promoted or safely deferred to recovery, never killed.
 
 Symmetrically, generation **acceptance is an irreversible phase**: once the socket layer atomically accepts the generation the runtime is live and connected, so any subsequent bookkeeping fault (the `waking -> live` promotion, the queue-depth read, or wake completion) must never quarantine it. The promotion is guarded — on fault the identity is left in `waking` for `recoverStrandedWakes` to complete to `live` (it classifies an accepted-but-stranded wake by the consumed reservation and advanced generation), and the wake reports the material outcome (`woken_recovery_pending`) rather than moving an awake worker to `reap-candidate`.
 
@@ -63,7 +63,7 @@ Configuration defaults to **disabled** and observe-only:
 
 ## Migration
 
-Schema v19–v21 is additive (v20 adds an `agent_wake_reservations.reservation_nonce` column, defaulted for existing rows; v21 adds the `agent_wake_acceptance_receipts` table — one row per agent recording the exact fence that accepted a generation, for idempotent crash-recovery replay). Existing rows remain `live`; old disconnected rows are not inferred as hibernated. New lifecycle tables hold sanitized runtime specs, one fenced active lease per logical agent, and append-only structured events. Event retention is bounded to the newest 10,000 rows. No prompt/message body, token, credential, or unrestricted environment is stored.
+Schema v19–v22 is additive (v20 adds an `agent_wake_reservations.reservation_nonce` column, defaulted for existing rows; v21 adds the `agent_wake_acceptance_receipts` table — one row per agent recording the exact fence that accepted a generation, for idempotent crash-recovery replay; v22 adds a nullable `agent_runtime_specs.vcs_identity` column holding the broker-derived canonical `owner/repo` used for repo-allowlist authorization). Existing rows remain `live`; old disconnected rows are not inferred as hibernated. New lifecycle tables hold sanitized runtime specs, one fenced active lease per logical agent, and append-only structured events. Event retention is bounded to the newest 10,000 rows. No prompt/message body, token, credential, or unrestricted environment is stored.
 
 Downgrade leaves additive columns/tables in place. Roll back application code by disabling hibernation first, waking and draining all hibernated identities, then using the prior binary. Do not rewrite hibernated rows as disconnected ghosts.
 
@@ -182,16 +182,23 @@ so an operator can correlate repeated failures of the same input without any
 content reaching a surface.
 
 Repo-allowlist authorization trusts **only** the broker-authored durable runtime
-spec's `repoRoot` (captured at spawn). Mutable, worker-declared
-`agent.metadata.repoRoot` is never used as a fallback, so a worker cannot
-self-declare its way into an allowlisted repository; when no trusted spec exists
-the identifier is null and the fail-closed gate refuses. Matching is **exact
-identity, with no basename collapse**: the broker-derived `owner/repo` identifier
-must equal an allowlist entry exactly (after normalizing Windows `\` separators
-and trailing slashes), so a bare `extensions` entry never admits a different root
-that merely shares the basename, and an `owner/repo` entry never admits a
-different owner. Operators must therefore allowlist the exact broker-derived
-identity.
+spec's **canonical VCS identity** (`vcsIdentity`, an `owner/repo` derived at spawn
+from the runtime's git remote — schema v22). Ownership is **never inferred from
+filesystem directory names**: a path-segment slug (last two segments of
+`repoRoot`) would collapse distinct repositories that happen to share their final
+segments (`/trusted/gugu91/extensions` and `/tmp/impostor/gugu91/extensions` would
+both authorize as `gugu91/extensions`), mis-derive ordinary layouts
+(`/Users/alice/projects/extensions` → `projects/extensions`), and reduce worktree
+roots to `.worktrees/<branch>`. Matching the remote-derived identity instead means
+a repository shares one identity with all of its git worktrees (same remote), and
+an impostor filesystem root can never authorize. Mutable, worker-declared metadata
+is never used as a fallback, so a worker cannot self-declare its way into an
+allowlisted repository; when no trusted spec / resolvable remote exists the
+identifier is null and the fail-closed gate refuses. Matching is **exact identity,
+with no basename collapse**: the identity must equal an allowlist entry exactly, so
+a bare `extensions` entry never admits an `owner/repo`, and an `owner/repo` entry
+never admits a different owner. Operators must therefore allowlist the exact
+broker-derived `owner/repo` identity.
 
 Wake-trigger contention is disambiguated so a queued trigger is never silently
 lost: only a _matching, unexpired wake lease_ resolves as a benign

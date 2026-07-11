@@ -976,32 +976,19 @@ export default function (pi: ExtensionAPI) {
     };
     const state = (agent.lifecycleState ?? "live") as AgentLifecycleState;
     // Provenance: the repo allowlist is a security boundary, so authorization
-    // trusts ONLY the broker-authored durable runtime spec's repoRoot (captured
-    // at spawn). Mutable, worker-declared `agent.metadata.repoRoot` is NEVER used
-    // as a fallback — a worker could otherwise self-declare an allowlisted
-    // repository. When no trusted spec exists the identifier stays null and the
-    // fail-closed gate refuses (a non-hibernatable agent has no spec to wake
-    // from anyway). Derive an owner/repo slug (last two path segments of the
-    // broker-captured root) as the identity the allowlist matches EXACTLY (the
-    // gate performs no basename collapse). Operators must therefore allowlist the
-    // exact broker-derived "owner/repo" identity; a bare basename or a different
-    // owner sharing the same basename is refused.
-    const specRepoRoot = db.getAgentRuntimeSpec(agent.id)?.repoRoot;
-    const repoRootRaw =
-      typeof specRepoRoot === "string" && specRepoRoot.length > 0 ? specRepoRoot : null;
-    // Normalize Windows backslash separators before deriving the slug so a
-    // "C:\\path\\owner\\repo" root yields the same owner/repo identifier a POSIX
-    // path would.
-    const repoSegments =
-      typeof repoRootRaw === "string"
-        ? repoRootRaw.replace(/\\/g, "/").split("/").filter(Boolean)
-        : [];
-    const repoIdentifier =
-      repoSegments.length >= 2
-        ? `${repoSegments[repoSegments.length - 2]}/${repoSegments[repoSegments.length - 1]}`
-        : repoSegments.length === 1
-          ? repoSegments[0]
-          : null;
+    // trusts ONLY the broker-authored durable runtime spec's CANONICAL VCS
+    // IDENTITY (`owner/repo`), captured at spawn from the runtime's git remote.
+    // Ownership is NEVER inferred from filesystem directory names: a path-segment
+    // slug would collapse distinct roots that share their final segments (e.g.
+    // `/trusted/gugu91/extensions` and `/tmp/impostor/gugu91/extensions` both →
+    // `gugu91/extensions`), mis-derive ordinary layouts (`/Users/alice/projects/
+    // extensions` → `projects/extensions`), and turn worktree roots into
+    // `.worktrees/<branch>`. Matching the remote-derived identity instead means a
+    // repo shares one identity with all its worktrees and impostor roots never
+    // authorize. Mutable, worker-declared metadata is NEVER used as a fallback.
+    // When no trusted spec / resolvable remote exists the identifier stays null
+    // and the fail-closed gate refuses.
+    const repoIdentifier = db.getAgentRuntimeSpec(agent.id)?.vcsIdentity ?? null;
 
     // Live process/tmux checkpoint/respawn adapters are a separate, explicitly
     // gated activation step (default-off, unactivated). In the default disabled
