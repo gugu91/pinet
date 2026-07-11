@@ -1,7 +1,11 @@
 import Foundation
 import Security
 
-private let shmPath = "/usr/local/libexec/pinet-superhuman-send-executor/current/shm"
+private let shmPath = URL(fileURLWithPath: CommandLine.arguments[0])
+    .resolvingSymlinksInPath()
+    .deletingLastPathComponent()
+    .appendingPathComponent("shm")
+    .path
 private let service = "ai.pinet.superhuman-send-executor"
 private let account = "root"
 
