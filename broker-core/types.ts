@@ -40,7 +40,17 @@ export interface AgentLifecycleRetentionInfo {
   lastPrunedAt: string | null;
 }
 
-export interface AgentLifecycleTransitionInput {
+/** Optional structured telemetry captured alongside lifecycle events. */
+export interface AgentLifecycleEventMetrics {
+  fenceToken?: number | null;
+  queueDepth?: number | null;
+  oldestQueueAgeMs?: number | null;
+  durationMs?: number | null;
+  rssBytesBefore?: number | null;
+  rssBytesAfter?: number | null;
+}
+
+export interface AgentLifecycleTransitionInput extends AgentLifecycleEventMetrics {
   agentId: string;
   expectedVersion: number;
   toState: AgentLifecycleState;
@@ -48,6 +58,178 @@ export interface AgentLifecycleTransitionInput {
   actor: string;
   correlationId: string;
   triggerSource?: string;
+}
+
+/**
+ * Audit-only lifecycle event that records an outcome (typically a refusal,
+ * fenced stale attempt, or duplicate-launch prevention) without transitioning
+ * the agent's lifecycle state.
+ */
+export interface AgentLifecycleEventInput extends AgentLifecycleEventMetrics {
+  agentId: string;
+  fromState: AgentLifecycleState;
+  toState: AgentLifecycleState;
+  lifecycleVersion: number;
+  reason: string;
+  actor: string;
+  correlationId: string;
+  outcome: string;
+  errorCode?: string | null;
+  triggerSource?: string;
+}
+
+export interface AgentLifecycleEvent {
+  id: number;
+  correlationId: string;
+  agentId: string;
+  fromState: AgentLifecycleState;
+  toState: AgentLifecycleState;
+  lifecycleVersion: number;
+  fenceToken: number | null;
+  reason: string;
+  triggerSource: string | null;
+  actor: string;
+  outcome: string;
+  errorCode: string | null;
+  queueDepth: number | null;
+  oldestQueueAgeMs: number | null;
+  durationMs: number | null;
+  rssBytesBefore: number | null;
+  rssBytesAfter: number | null;
+  createdAt: string;
+}
+
+/**
+ * Durable, sanitized launch/resume manifest for a broker-managed follower.
+ *
+ * This is the record used to cold-wake exactly the same logical agent. It must
+ * never persist secrets, tokens, prompt/message bodies, or an unrestricted
+ * environment: only an env allowlist and opaque credential references. Secrets
+ * are injected from broker memory/config at launch time.
+ */
+export interface AgentRuntimeSpec {
+  agentId: string;
+  stableId: string;
+  brokerOwnerId: string;
+  cwd: string;
+  repoRoot: string;
+  worktreePath: string;
+  /** Canonical tmux server socket path recorded at launch; never searched for. */
+  tmuxSocket: string;
+  tmuxSession: string;
+  /** Fully-qualified tmux target (session:window.pane) recorded at launch. */
+  tmuxTarget: string;
+  executable: string;
+  /** Argument vector without secrets; credential values are references only. */
+  argv: string[];
+  /** Allowlisted environment variable names (never values). */
+  envAllowlist: string[];
+  /** Opaque, broker-resolvable session resume reference (not a raw path). */
+  sessionResumeRef: string;
+  configFingerprint: string;
+  expectedHost: string;
+  expectedUser: string;
+  launchSource: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AgentRuntimeSpecInput = Omit<AgentRuntimeSpec, "createdAt" | "updatedAt">;
+
+/**
+ * Client-facing redacted view of a runtime spec. Raw stable paths, private
+ * socket paths, and env details are withheld unless an authorized operator
+ * requests full inspection.
+ */
+export interface RedactedAgentRuntimeSpec {
+  agentId: string;
+  session: AgentSessionSummary;
+  repo: string | null;
+  hasWorktree: boolean;
+  hasTmuxSession: boolean;
+  configFingerprint: string;
+  expectedHost: string;
+  launchSource: string;
+  envAllowlistCount: number;
+  updatedAt: string;
+}
+
+/**
+ * Receipt confirming a follower cooperatively flushed a checkpoint before a
+ * clean process exit. `hibernateSafe=false` records a refusal reason so the
+ * orchestrator fails closed rather than exiting an unsafe runtime.
+ */
+export interface AgentCheckpointReceipt {
+  agentId: string;
+  runtimeGeneration: number;
+  correlationId: string;
+  hibernateSafe: boolean;
+  reason: string | null;
+  sessionResumeRef: string | null;
+  pendingInboxCount: number;
+  rssBytes: number | null;
+  createdAt: string;
+}
+
+export type AgentCheckpointReceiptInput = Omit<AgentCheckpointReceipt, "createdAt">;
+
+/**
+ * Single-winner wake reservation. Exactly one may exist per agent; it binds the
+ * wake lease/fence to the specific runtime generation the broker will accept on
+ * registration. Any registration presenting a different generation/lease/fence
+ * is a stale runtime and is rejected.
+ */
+export interface AgentWakeReservation {
+  agentId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+  correlationId: string;
+  createdAt: string;
+}
+
+export interface AcceptRuntimeGenerationInput {
+  agentId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+}
+
+export type RuntimeGenerationAcceptance =
+  | { accepted: true; runtimeGeneration: number }
+  | { accepted: false; reason: string };
+
+export type WakeTriggerKind =
+  | "slack_thread"
+  | "direct_a2a"
+  | "lane_assignment"
+  | "scheduled"
+  | "manual";
+
+export interface AgentWakeQueueEntry {
+  id: number;
+  agentId: string;
+  repoRoot: string | null;
+  triggerKind: WakeTriggerKind;
+  triggerMessageId: number | null;
+  /** Lower sorts first; targeted (direct/affinity) work uses a smaller value. */
+  priority: number;
+  reason: string;
+  correlationId: string;
+  status: "queued" | "dispatching" | "done" | "cancelled";
+  attempt: number;
+  enqueuedAt: string;
+  updatedAt: string;
+}
+
+export interface EnqueueWakeInput {
+  agentId: string;
+  repoRoot?: string | null;
+  triggerKind: WakeTriggerKind;
+  triggerMessageId?: number | null;
+  priority?: number;
+  reason: string;
+  correlationId: string;
 }
 
 export interface AgentInfo {

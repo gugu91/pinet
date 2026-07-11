@@ -277,7 +277,23 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Lifecycle states in which an agent has no live process/socket but is still a
+ * durable, affinity-bound routing target. A message to such an owner must be
+ * queued and cold-woken, never rerouted to an unrelated worker or dropped.
+ */
+const DURABLE_HIBERNATION_OWNER_STATES: ReadonlySet<string> = new Set([
+  "hibernating",
+  "hibernated",
+  "waking",
+]);
+
 function isRoutableOwner(agent: AgentInfo, now = new Date().toISOString()): boolean {
+  // Durable hibernation identities remain routable even without a live socket:
+  // the delivery layer queues to their inbox and triggers a fenced cold wake.
+  if (agent.lifecycleState && DURABLE_HIBERNATION_OWNER_STATES.has(agent.lifecycleState)) {
+    return true;
+  }
   if (!agent.disconnectedAt) return true;
   return agent.resumableUntil != null && agent.resumableUntil > now;
 }

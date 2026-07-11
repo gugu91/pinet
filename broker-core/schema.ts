@@ -47,6 +47,18 @@ import type {
   AgentLifecycleOperation,
   AgentLifecycleTransitionInput,
   AgentLifecycleRetentionInfo,
+  AgentRuntimeSpec,
+  AgentRuntimeSpecInput,
+  AgentCheckpointReceipt,
+  AgentCheckpointReceiptInput,
+  AgentWakeReservation,
+  AcceptRuntimeGenerationInput,
+  RuntimeGenerationAcceptance,
+  AgentWakeQueueEntry,
+  WakeTriggerKind,
+  EnqueueWakeInput,
+  AgentLifecycleEvent,
+  AgentLifecycleEventInput,
 } from "./types.js";
 interface SqliteJournalModeResult {
   journal_mode?: string | null;
@@ -287,6 +299,49 @@ function normalizePortLeaseStatus(value: string): PortLeaseStatus {
     return value;
   }
   return "active";
+}
+
+interface WakeQueueRow {
+  id: number;
+  agent_id: string;
+  repo_root: string | null;
+  trigger_kind: string;
+  trigger_message_id: number | null;
+  priority: number;
+  reason: string;
+  correlation_id: string;
+  status: string;
+  attempt: number;
+  enqueued_at: string;
+  updated_at: string;
+}
+
+function rowToWakeQueueEntry(row: WakeQueueRow): AgentWakeQueueEntry {
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    repoRoot: row.repo_root,
+    triggerKind: row.trigger_kind as WakeTriggerKind,
+    triggerMessageId: row.trigger_message_id,
+    priority: row.priority,
+    reason: row.reason,
+    correlationId: row.correlation_id,
+    status: row.status as AgentWakeQueueEntry["status"],
+    attempt: row.attempt,
+    enqueuedAt: row.enqueued_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Parse a JSON array-of-strings column, tolerating malformed/legacy values. */
+function parseStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
+  }
 }
 
 function getStringMetadataValue(
@@ -1684,6 +1739,30 @@ function createAgentHibernationTables(db: DatabaseSync): void {
       last_pruned_at TEXT
     );
     INSERT OR IGNORE INTO agent_lifecycle_retention (singleton, pruned_count) VALUES (1, 0);
+    CREATE TABLE IF NOT EXISTS agent_checkpoint_receipts (
+      agent_id TEXT NOT NULL, runtime_generation INTEGER NOT NULL, correlation_id TEXT NOT NULL,
+      hibernate_safe INTEGER NOT NULL, reason TEXT, session_resume_ref TEXT,
+      pending_inbox_count INTEGER NOT NULL DEFAULT 0, rss_bytes INTEGER, created_at TEXT NOT NULL,
+      PRIMARY KEY (agent_id, runtime_generation)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_checkpoint_receipts_agent
+      ON agent_checkpoint_receipts(agent_id, runtime_generation DESC);
+    CREATE TABLE IF NOT EXISTS agent_wake_reservations (
+      agent_id TEXT PRIMARY KEY NOT NULL, wake_lease_id TEXT NOT NULL, fence_token INTEGER NOT NULL,
+      reserved_generation INTEGER NOT NULL, correlation_id TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_wake_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, repo_root TEXT,
+      trigger_kind TEXT NOT NULL, trigger_message_id INTEGER, priority INTEGER NOT NULL DEFAULT 100,
+      reason TEXT NOT NULL, correlation_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued'
+        CHECK(status IN ('queued','dispatching','done','cancelled')),
+      attempt INTEGER NOT NULL DEFAULT 0, enqueued_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_wake_queue_active_agent
+      ON agent_wake_queue(agent_id) WHERE status IN ('queued','dispatching');
+    CREATE INDEX IF NOT EXISTS idx_agent_wake_queue_dispatch
+      ON agent_wake_queue(status, priority, id);
   `);
 }
 
@@ -2063,38 +2142,169 @@ export class BrokerDB implements BrokerDBInterface {
       if (Number(result.changes) !== 1)
         throw new Error(`Lifecycle CAS conflict for ${input.agentId}`);
       const nextVersion = input.expectedVersion + 1;
-      db.prepare(
-        `INSERT INTO agent_lifecycle_events
-         (correlation_id, agent_id, from_state, to_state, lifecycle_version, reason, trigger_source, actor, outcome, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)`,
-      ).run(
-        input.correlationId,
-        input.agentId,
-        current.lifecycleState,
-        input.toState,
-        nextVersion,
-        input.reason,
-        input.triggerSource ?? null,
-        input.actor,
-        now,
-      );
-      const pruned = db
-        .prepare(
-          `DELETE FROM agent_lifecycle_events WHERE id IN (
-          SELECT id FROM agent_lifecycle_events ORDER BY id DESC LIMIT -1 OFFSET 10000
-        )`,
-        )
-        .run();
-      if (Number(pruned.changes) > 0) {
-        db.prepare(
-          `UPDATE agent_lifecycle_retention
-           SET pruned_count = pruned_count + ?, last_pruned_at = ? WHERE singleton = 1`,
-        ).run(Number(pruned.changes), now);
-      }
+      this.insertLifecycleEventRow({
+        correlationId: input.correlationId,
+        agentId: input.agentId,
+        fromState: current.lifecycleState,
+        toState: input.toState,
+        lifecycleVersion: nextVersion,
+        reason: input.reason,
+        triggerSource: input.triggerSource,
+        actor: input.actor,
+        outcome: "accepted",
+        fenceToken: input.fenceToken ?? null,
+        queueDepth: input.queueDepth ?? null,
+        oldestQueueAgeMs: input.oldestQueueAgeMs ?? null,
+        durationMs: input.durationMs ?? null,
+        rssBytesBefore: input.rssBytesBefore ?? null,
+        rssBytesAfter: input.rssBytesAfter ?? null,
+        createdAt: now,
+      });
       const updated = this.getAgentById(input.agentId);
       if (!updated) throw new Error(`Lifecycle agent disappeared: ${input.agentId}`);
       return updated;
     });
+  }
+
+  /**
+   * Append an audit-only lifecycle event (a refusal, fenced stale attempt, or
+   * duplicate-launch prevention) without changing the agent's lifecycle state.
+   */
+  recordAgentLifecycleEvent(input: AgentLifecycleEventInput): void {
+    this.withTransaction(() => {
+      this.insertLifecycleEventRow({
+        correlationId: input.correlationId,
+        agentId: input.agentId,
+        fromState: input.fromState,
+        toState: input.toState,
+        lifecycleVersion: input.lifecycleVersion,
+        reason: input.reason,
+        triggerSource: input.triggerSource,
+        actor: input.actor,
+        outcome: input.outcome,
+        errorCode: input.errorCode ?? null,
+        fenceToken: input.fenceToken ?? null,
+        queueDepth: input.queueDepth ?? null,
+        oldestQueueAgeMs: input.oldestQueueAgeMs ?? null,
+        durationMs: input.durationMs ?? null,
+        rssBytesBefore: input.rssBytesBefore ?? null,
+        rssBytesAfter: input.rssBytesAfter ?? null,
+        createdAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  private insertLifecycleEventRow(row: {
+    correlationId: string;
+    agentId: string;
+    fromState: AgentLifecycleState;
+    toState: AgentLifecycleState;
+    lifecycleVersion: number;
+    reason: string;
+    triggerSource?: string | null;
+    actor: string;
+    outcome: string;
+    errorCode?: string | null;
+    fenceToken: number | null;
+    queueDepth: number | null;
+    oldestQueueAgeMs: number | null;
+    durationMs: number | null;
+    rssBytesBefore: number | null;
+    rssBytesAfter: number | null;
+    createdAt: string;
+  }): void {
+    const db = this.getDb();
+    db.prepare(
+      `INSERT INTO agent_lifecycle_events
+       (correlation_id, agent_id, from_state, to_state, lifecycle_version, fence_token, reason,
+        trigger_source, actor, outcome, error_code, queue_depth, oldest_queue_age_ms, duration_ms,
+        rss_bytes_before, rss_bytes_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.correlationId,
+      row.agentId,
+      row.fromState,
+      row.toState,
+      row.lifecycleVersion,
+      row.fenceToken,
+      row.reason,
+      row.triggerSource ?? null,
+      row.actor,
+      row.outcome,
+      row.errorCode ?? null,
+      row.queueDepth,
+      row.oldestQueueAgeMs,
+      row.durationMs,
+      row.rssBytesBefore,
+      row.rssBytesAfter,
+      row.createdAt,
+    );
+    const pruned = db
+      .prepare(
+        `DELETE FROM agent_lifecycle_events WHERE id IN (
+        SELECT id FROM agent_lifecycle_events ORDER BY id DESC LIMIT -1 OFFSET 10000
+      )`,
+      )
+      .run();
+    if (Number(pruned.changes) > 0) {
+      db.prepare(
+        `UPDATE agent_lifecycle_retention
+         SET pruned_count = pruned_count + ?, last_pruned_at = ? WHERE singleton = 1`,
+      ).run(Number(pruned.changes), row.createdAt);
+    }
+  }
+
+  getRecentAgentLifecycleEvents(agentId?: string, limit = 50): AgentLifecycleEvent[] {
+    const db = this.getDb();
+    const cappedLimit = Math.min(Math.max(Math.trunc(limit), 1), 1000);
+    const rows = (agentId
+      ? db
+          .prepare(
+            `SELECT * FROM agent_lifecycle_events WHERE agent_id = ? ORDER BY id DESC LIMIT ?`,
+          )
+          .all(agentId, cappedLimit)
+      : db
+          .prepare(`SELECT * FROM agent_lifecycle_events ORDER BY id DESC LIMIT ?`)
+          .all(cappedLimit)) as unknown as Array<{
+      id: number;
+      correlation_id: string;
+      agent_id: string;
+      from_state: string;
+      to_state: string;
+      lifecycle_version: number;
+      fence_token: number | null;
+      reason: string;
+      trigger_source: string | null;
+      actor: string;
+      outcome: string;
+      error_code: string | null;
+      queue_depth: number | null;
+      oldest_queue_age_ms: number | null;
+      duration_ms: number | null;
+      rss_bytes_before: number | null;
+      rss_bytes_after: number | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      correlationId: row.correlation_id,
+      agentId: row.agent_id,
+      fromState: row.from_state as AgentLifecycleState,
+      toState: row.to_state as AgentLifecycleState,
+      lifecycleVersion: row.lifecycle_version,
+      fenceToken: row.fence_token,
+      reason: row.reason,
+      triggerSource: row.trigger_source,
+      actor: row.actor,
+      outcome: row.outcome,
+      errorCode: row.error_code,
+      queueDepth: row.queue_depth,
+      oldestQueueAgeMs: row.oldest_queue_age_ms,
+      durationMs: row.duration_ms,
+      rssBytesBefore: row.rss_bytes_before,
+      rssBytesAfter: row.rss_bytes_after,
+      createdAt: row.created_at,
+    }));
   }
 
   getAgentLifecycleRetentionInfo(): AgentLifecycleRetentionInfo {
@@ -2178,6 +2388,518 @@ export class BrokerDB implements BrokerDBInterface {
       )
       .run(agentId, leaseId, fenceToken);
     return Number(result.changes) === 1;
+  }
+
+  /** Set the opt-in hibernation policy for an agent (auto | manual | never). */
+  setAgentHibernatePolicy(agentId: string, policy: AgentHibernatePolicy): void {
+    this.getDb()
+      .prepare("UPDATE agents SET hibernate_policy = ? WHERE id = ?")
+      .run(policy, agentId);
+  }
+
+  /** Record grace/idle eligibility timestamps used by the auto-hibernation scheduler. */
+  setAgentHibernationSchedule(
+    agentId: string,
+    schedule: { graceUntil?: string | null; idleEligibleAt?: string | null },
+  ): void {
+    const db = this.getDb();
+    if (schedule.graceUntil !== undefined) {
+      db.prepare("UPDATE agents SET grace_until = ? WHERE id = ?").run(
+        schedule.graceUntil,
+        agentId,
+      );
+    }
+    if (schedule.idleEligibleAt !== undefined) {
+      db.prepare("UPDATE agents SET idle_eligible_at = ? WHERE id = ?").run(
+        schedule.idleEligibleAt,
+        agentId,
+      );
+    }
+  }
+
+  getAgentLifecycleLease(agentId: string): AgentLifecycleLease | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, operation, fence_token, owner_broker_instance_id, lease_id,
+                acquired_at, expires_at, attempt, trigger_message_id
+         FROM agent_lifecycle_leases WHERE agent_id = ?`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          operation: string;
+          fence_token: number;
+          owner_broker_instance_id: string;
+          lease_id: string;
+          acquired_at: string;
+          expires_at: string;
+          attempt: number;
+          trigger_message_id: number | null;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      operation: row.operation as AgentLifecycleOperation,
+      fenceToken: row.fence_token,
+      ownerBrokerInstanceId: row.owner_broker_instance_id,
+      leaseId: row.lease_id,
+      acquiredAt: row.acquired_at,
+      expiresAt: row.expires_at,
+      attempt: row.attempt,
+      triggerMessageId: row.trigger_message_id,
+    };
+  }
+
+  // ─── Durable runtime specs (sanitized launch/resume manifest) ──────
+
+  upsertAgentRuntimeSpec(input: AgentRuntimeSpecInput): AgentRuntimeSpec {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const now = new Date().toISOString();
+      const existing = db
+        .prepare("SELECT created_at FROM agent_runtime_specs WHERE agent_id = ?")
+        .get(input.agentId) as { created_at: string } | undefined;
+      const createdAt = existing?.created_at ?? now;
+      db.prepare(
+        `INSERT INTO agent_runtime_specs
+         (agent_id, stable_id, broker_owner_id, cwd, repo_root, worktree_path, tmux_socket,
+          tmux_session, tmux_target, executable, argv_json, env_allowlist_json,
+          session_resume_ref, config_fingerprint, expected_host, expected_user, launch_source,
+          created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET stable_id=excluded.stable_id,
+           broker_owner_id=excluded.broker_owner_id, cwd=excluded.cwd, repo_root=excluded.repo_root,
+           worktree_path=excluded.worktree_path, tmux_socket=excluded.tmux_socket,
+           tmux_session=excluded.tmux_session, tmux_target=excluded.tmux_target,
+           executable=excluded.executable, argv_json=excluded.argv_json,
+           env_allowlist_json=excluded.env_allowlist_json,
+           session_resume_ref=excluded.session_resume_ref,
+           config_fingerprint=excluded.config_fingerprint, expected_host=excluded.expected_host,
+           expected_user=excluded.expected_user, launch_source=excluded.launch_source,
+           updated_at=excluded.updated_at`,
+      ).run(
+        input.agentId,
+        input.stableId,
+        input.brokerOwnerId,
+        input.cwd,
+        input.repoRoot,
+        input.worktreePath,
+        input.tmuxSocket,
+        input.tmuxSession,
+        input.tmuxTarget,
+        input.executable,
+        JSON.stringify(input.argv),
+        JSON.stringify(input.envAllowlist),
+        input.sessionResumeRef,
+        input.configFingerprint,
+        input.expectedHost,
+        input.expectedUser,
+        input.launchSource,
+        createdAt,
+        now,
+      );
+      const spec = this.getAgentRuntimeSpec(input.agentId);
+      if (!spec) throw new Error(`Failed to persist runtime spec for ${input.agentId}`);
+      return spec;
+    });
+  }
+
+  getAgentRuntimeSpec(agentId: string): AgentRuntimeSpec | null {
+    const row = this.getDb()
+      .prepare("SELECT * FROM agent_runtime_specs WHERE agent_id = ?")
+      .get(agentId) as
+      | {
+          agent_id: string;
+          stable_id: string;
+          broker_owner_id: string;
+          cwd: string;
+          repo_root: string;
+          worktree_path: string;
+          tmux_socket: string;
+          tmux_session: string;
+          tmux_target: string;
+          executable: string;
+          argv_json: string;
+          env_allowlist_json: string;
+          session_resume_ref: string;
+          config_fingerprint: string;
+          expected_host: string;
+          expected_user: string;
+          launch_source: string;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      stableId: row.stable_id,
+      brokerOwnerId: row.broker_owner_id,
+      cwd: row.cwd,
+      repoRoot: row.repo_root,
+      worktreePath: row.worktree_path,
+      tmuxSocket: row.tmux_socket,
+      tmuxSession: row.tmux_session,
+      tmuxTarget: row.tmux_target,
+      executable: row.executable,
+      argv: parseStringArray(row.argv_json),
+      envAllowlist: parseStringArray(row.env_allowlist_json),
+      sessionResumeRef: row.session_resume_ref,
+      configFingerprint: row.config_fingerprint,
+      expectedHost: row.expected_host,
+      expectedUser: row.expected_user,
+      launchSource: row.launch_source,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  deleteAgentRuntimeSpec(agentId: string): void {
+    this.getDb().prepare("DELETE FROM agent_runtime_specs WHERE agent_id = ?").run(agentId);
+  }
+
+  // ─── Cooperative checkpoint receipts ───────────────────────────────
+
+  recordAgentCheckpointReceipt(input: AgentCheckpointReceiptInput): AgentCheckpointReceipt {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare(
+        `INSERT INTO agent_checkpoint_receipts
+         (agent_id, runtime_generation, correlation_id, hibernate_safe, reason,
+          session_resume_ref, pending_inbox_count, rss_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id, runtime_generation) DO UPDATE SET correlation_id=excluded.correlation_id,
+           hibernate_safe=excluded.hibernate_safe, reason=excluded.reason,
+           session_resume_ref=excluded.session_resume_ref,
+           pending_inbox_count=excluded.pending_inbox_count, rss_bytes=excluded.rss_bytes,
+           created_at=excluded.created_at`,
+      )
+      .run(
+        input.agentId,
+        input.runtimeGeneration,
+        input.correlationId,
+        input.hibernateSafe ? 1 : 0,
+        input.reason ?? null,
+        input.sessionResumeRef ?? null,
+        input.pendingInboxCount,
+        input.rssBytes ?? null,
+        now,
+      );
+    return { ...input, createdAt: now };
+  }
+
+  getLatestAgentCheckpointReceipt(agentId: string): AgentCheckpointReceipt | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, runtime_generation, correlation_id, hibernate_safe, reason,
+                session_resume_ref, pending_inbox_count, rss_bytes, created_at
+         FROM agent_checkpoint_receipts WHERE agent_id = ?
+         ORDER BY runtime_generation DESC LIMIT 1`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          runtime_generation: number;
+          correlation_id: string;
+          hibernate_safe: number;
+          reason: string | null;
+          session_resume_ref: string | null;
+          pending_inbox_count: number;
+          rss_bytes: number | null;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      runtimeGeneration: row.runtime_generation,
+      correlationId: row.correlation_id,
+      hibernateSafe: row.hibernate_safe === 1,
+      reason: row.reason,
+      sessionResumeRef: row.session_resume_ref,
+      pendingInboxCount: row.pending_inbox_count,
+      rssBytes: row.rss_bytes,
+      createdAt: row.created_at,
+    };
+  }
+
+  // ─── Accepted-generation fencing (single-winner cold wake) ─────────
+
+  /**
+   * Reserve the exact runtime generation the broker will accept for a wake.
+   * Requires an unexpired wake lease held with the given fence token. Exactly
+   * one reservation may exist per agent (PK). The reserved generation is the
+   * agent's current runtime_generation + 1, so any older runtime is fenced out.
+   */
+  reserveWakeGeneration(input: {
+    agentId: string;
+    wakeLeaseId: string;
+    fenceToken: number;
+    correlationId: string;
+    now?: number;
+  }): AgentWakeReservation {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowIso = new Date(input.now ?? Date.now()).toISOString();
+      const lease = this.getAgentLifecycleLease(input.agentId);
+      if (
+        !lease ||
+        lease.operation !== "wake" ||
+        lease.leaseId !== input.wakeLeaseId ||
+        lease.fenceToken !== input.fenceToken
+      ) {
+        throw new Error(
+          `Wake reservation requires a matching held wake lease for ${input.agentId}`,
+        );
+      }
+      if (lease.expiresAt <= nowIso) {
+        throw new Error(`Wake lease for ${input.agentId} has expired`);
+      }
+      const agent = this.getAgentById(input.agentId);
+      if (!agent) throw new Error(`Unknown agent for wake reservation: ${input.agentId}`);
+      const reservedGeneration = (agent.runtimeGeneration ?? 0) + 1;
+      db.prepare(
+        `INSERT INTO agent_wake_reservations
+         (agent_id, wake_lease_id, fence_token, reserved_generation, correlation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET wake_lease_id=excluded.wake_lease_id,
+           fence_token=excluded.fence_token, reserved_generation=excluded.reserved_generation,
+           correlation_id=excluded.correlation_id, created_at=excluded.created_at`,
+      ).run(
+        input.agentId,
+        input.wakeLeaseId,
+        input.fenceToken,
+        reservedGeneration,
+        input.correlationId,
+        nowIso,
+      );
+      return {
+        agentId: input.agentId,
+        wakeLeaseId: input.wakeLeaseId,
+        fenceToken: input.fenceToken,
+        reservedGeneration,
+        correlationId: input.correlationId,
+        createdAt: nowIso,
+      };
+    });
+  }
+
+  getAgentWakeReservation(agentId: string): AgentWakeReservation | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, wake_lease_id, fence_token, reserved_generation, correlation_id, created_at
+         FROM agent_wake_reservations WHERE agent_id = ?`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          wake_lease_id: string;
+          fence_token: number;
+          reserved_generation: number;
+          correlation_id: string;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      wakeLeaseId: row.wake_lease_id,
+      fenceToken: row.fence_token,
+      reservedGeneration: row.reserved_generation,
+      correlationId: row.correlation_id,
+      createdAt: row.created_at,
+    };
+  }
+
+  clearAgentWakeReservation(agentId: string): void {
+    this.getDb().prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(agentId);
+  }
+
+  /**
+   * Accept exactly one runtime generation for a waking agent. The registration
+   * must present the same wake lease id, fence token, and reserved generation.
+   * A stale or duplicate registration returns `{ accepted: false }` without
+   * mutating state. On success the agent's runtime_generation is advanced and
+   * the reservation is consumed.
+   */
+  acceptRuntimeGeneration(input: AcceptRuntimeGenerationInput): RuntimeGenerationAcceptance {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const reservation = this.getAgentWakeReservation(input.agentId);
+      if (!reservation) return { accepted: false as const, reason: "no_reservation" };
+      if (reservation.wakeLeaseId !== input.wakeLeaseId) {
+        return { accepted: false as const, reason: "lease_mismatch" };
+      }
+      if (reservation.fenceToken !== input.fenceToken) {
+        return { accepted: false as const, reason: "fence_mismatch" };
+      }
+      if (reservation.reservedGeneration !== input.reservedGeneration) {
+        return { accepted: false as const, reason: "generation_mismatch" };
+      }
+      const lease = this.getAgentLifecycleLease(input.agentId);
+      if (!lease || lease.leaseId !== input.wakeLeaseId || lease.fenceToken !== input.fenceToken) {
+        return { accepted: false as const, reason: "lease_lost" };
+      }
+      const result = db
+        .prepare("UPDATE agents SET runtime_generation = ? WHERE id = ? AND runtime_generation = ?")
+        .run(input.reservedGeneration, input.agentId, input.reservedGeneration - 1);
+      if (Number(result.changes) !== 1) {
+        return { accepted: false as const, reason: "generation_race" };
+      }
+      db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(input.agentId);
+      return { accepted: true as const, runtimeGeneration: input.reservedGeneration };
+    });
+  }
+
+  // ─── Wake queue (ordered, capacity-bounded) ────────────────────────
+
+  /**
+   * Idempotently enqueue a wake trigger. If an active (queued/dispatching)
+   * entry already exists for the agent it is returned unchanged except that the
+   * effective priority is lowered to the strongest (smallest) trigger and the
+   * trigger message id is preserved when still unset. Never fans out.
+   */
+  enqueueWake(input: EnqueueWakeInput): AgentWakeQueueEntry {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const now = new Date().toISOString();
+      const priority = input.priority ?? 100;
+      const existing = this.getActiveWakeQueueEntry(input.agentId);
+      if (existing) {
+        const nextPriority = Math.min(existing.priority, priority);
+        const nextTriggerMessageId = existing.triggerMessageId ?? input.triggerMessageId ?? null;
+        db.prepare(
+          `UPDATE agent_wake_queue
+           SET priority = ?, trigger_message_id = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(nextPriority, nextTriggerMessageId, now, existing.id);
+        const refreshed = this.getWakeQueueEntryById(existing.id);
+        if (!refreshed) throw new Error("Failed to refresh wake queue entry");
+        return refreshed;
+      }
+      const inserted = db
+        .prepare(
+          `INSERT INTO agent_wake_queue
+           (agent_id, repo_root, trigger_kind, trigger_message_id, priority, reason,
+            correlation_id, status, attempt, enqueued_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`,
+        )
+        .run(
+          input.agentId,
+          input.repoRoot ?? null,
+          input.triggerKind,
+          input.triggerMessageId ?? null,
+          priority,
+          input.reason,
+          input.correlationId,
+          now,
+          now,
+        );
+      const entry = this.getWakeQueueEntryById(Number(inserted.lastInsertRowid));
+      if (!entry) throw new Error("Failed to enqueue wake");
+      return entry;
+    });
+  }
+
+  private getActiveWakeQueueEntry(agentId: string): AgentWakeQueueEntry | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT * FROM agent_wake_queue
+         WHERE agent_id = ? AND status IN ('queued','dispatching') LIMIT 1`,
+      )
+      .get(agentId) as WakeQueueRow | undefined;
+    return row ? rowToWakeQueueEntry(row) : null;
+  }
+
+  private getWakeQueueEntryById(id: number): AgentWakeQueueEntry | null {
+    const row = this.getDb().prepare("SELECT * FROM agent_wake_queue WHERE id = ?").get(id) as
+      | WakeQueueRow
+      | undefined;
+    return row ? rowToWakeQueueEntry(row) : null;
+  }
+
+  listWakeQueue(status?: AgentWakeQueueEntry["status"]): AgentWakeQueueEntry[] {
+    const db = this.getDb();
+    const rows = (status
+      ? db
+          .prepare("SELECT * FROM agent_wake_queue WHERE status = ? ORDER BY priority ASC, id ASC")
+          .all(status)
+      : db
+          .prepare("SELECT * FROM agent_wake_queue ORDER BY priority ASC, id ASC")
+          .all()) as unknown as WakeQueueRow[];
+    return rows.map(rowToWakeQueueEntry);
+  }
+
+  countInflightWakes(repoRoot?: string | null): number {
+    const db = this.getDb();
+    if (repoRoot === undefined) {
+      const row = db
+        .prepare("SELECT COUNT(*) AS count FROM agent_wake_queue WHERE status = 'dispatching'")
+        .get() as { count: number } | undefined;
+      return Number(row?.count ?? 0);
+    }
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM agent_wake_queue WHERE status = 'dispatching' AND repo_root IS ?",
+      )
+      .get(repoRoot) as { count: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  markWakeDispatching(id: number): AgentWakeQueueEntry | null {
+    return this.withTransaction(() => {
+      const now = new Date().toISOString();
+      const result = this.getDb()
+        .prepare(
+          `UPDATE agent_wake_queue SET status = 'dispatching', attempt = attempt + 1, updated_at = ?
+           WHERE id = ? AND status = 'queued'`,
+        )
+        .run(now, id);
+      if (Number(result.changes) !== 1) return null;
+      return this.getWakeQueueEntryById(id);
+    });
+  }
+
+  requeueWake(id: number): AgentWakeQueueEntry | null {
+    return this.withTransaction(() => {
+      const now = new Date().toISOString();
+      this.getDb()
+        .prepare(
+          `UPDATE agent_wake_queue SET status = 'queued', updated_at = ?
+           WHERE id = ? AND status = 'dispatching'`,
+        )
+        .run(now, id);
+      return this.getWakeQueueEntryById(id);
+    });
+  }
+
+  completeWakeQueueEntry(id: number, status: "done" | "cancelled" = "done"): void {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare("UPDATE agent_wake_queue SET status = ?, updated_at = ? WHERE id = ?")
+      .run(status, now, id);
+  }
+
+  cancelWake(agentId: string): void {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare(
+        `UPDATE agent_wake_queue SET status = 'cancelled', updated_at = ?
+         WHERE agent_id = ? AND status IN ('queued','dispatching')`,
+      )
+      .run(now, agentId);
+  }
+
+  /** Mark any active wake-queue entry for an agent as completed (idempotent). */
+  completeWakeForAgent(agentId: string): void {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare(
+        `UPDATE agent_wake_queue SET status = 'done', updated_at = ?
+         WHERE agent_id = ? AND status IN ('queued','dispatching')`,
+      )
+      .run(now, agentId);
   }
 
   unregisterAgent(id: string): void {
