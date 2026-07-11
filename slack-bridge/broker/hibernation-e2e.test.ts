@@ -11,6 +11,7 @@ import {
   type HibernationCheckpointOutcome,
   type HibernationProcessController,
   type HibernationTmuxController,
+  type RuntimeAttemptHandle,
   type RuntimeLaunchContext,
 } from "@pinet/broker-core";
 import type { AgentRuntimeSpecInput } from "./types.js";
@@ -97,6 +98,18 @@ class E2eProcess implements HibernationProcessController {
   async isRuntimeAlive(): Promise<boolean> {
     return false;
   }
+  // Attempt-bound cleanup: a stopped launch is modeled as gone. (In these E2E
+  // flows a successful launch accepts on the first attempt and a rejected fence
+  // returns launched:false, so the retry prove-stop branch is never reached; the
+  // methods exist to honor the controller contract and stay faithful.)
+  async stopLaunchedAttempt(): Promise<{ stopped: boolean }> {
+    const client = this.getLiveClient();
+    if (client) client.disconnect();
+    return { stopped: true };
+  }
+  async isLaunchedAttemptAlive(): Promise<boolean> {
+    return false;
+  }
 }
 
 /** Fake tmux adapter: cold-launches a real replacement client presenting the wake fence. */
@@ -120,7 +133,9 @@ class E2eTmux implements HibernationTmuxController {
   async isSessionAttachable(): Promise<boolean> {
     return this.attachable;
   }
-  async respawnRuntime(ctx: RuntimeLaunchContext): Promise<{ launched: boolean }> {
+  async respawnRuntime(
+    ctx: RuntimeLaunchContext,
+  ): Promise<{ launched: boolean; handle: RuntimeAttemptHandle | null }> {
     const client = await this.connect();
     this.launched.push(client);
     const fence = this.mutateFence?.(ctx) ?? {
@@ -137,10 +152,13 @@ class E2eTmux implements HibernationTmuxController {
         ctx.stableId,
         fence,
       );
-      return { launched: true };
+      return {
+        launched: true,
+        handle: { reservationNonce: ctx.reservationNonce, tmuxTarget: ctx.spec.tmuxTarget, pid: 0 },
+      };
     } catch {
       // Rejected wake fence: registration threw. The runtime failed to revive.
-      return { launched: false };
+      return { launched: false, handle: null };
     }
   }
 }

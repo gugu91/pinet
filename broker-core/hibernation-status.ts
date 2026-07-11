@@ -172,6 +172,30 @@ export function sanitizeOperatorReason(value: string | null | undefined): string
   return redacted.length > 120 ? `${redacted.slice(0, 117)}\u2026` : redacted;
 }
 
+/**
+ * Sanitize an operator-authored hibernation/wake TARGET before it reaches the
+ * confirmation-policy / prompt surface. Unlike a free-form reason, a target can
+ * be a durable stable id (`host:session:<ref>`, `host:cwd:<path>`) whose tail
+ * embeds the session-resume identity — the same value {@link redactRuntimeSpec}
+ * fingerprints — so it must never be echoed verbatim. Fail-closed by shape: only
+ * a plain broker-safe identifier slug (an agent name/id with no separators that
+ * could embed a session/path/secret identity) is passed through; ANY other shape
+ * (stable-id triple, session/cwd/worktree token, path, `KEY=value`, quotes,
+ * whitespace) collapses to an opaque, non-reversible `target:#<fingerprint>`
+ * (matching {@link unknownHibernationTarget}). The RAW target is unaffected — the
+ * broker still resolves it server-side; only the operator-facing echo is redacted.
+ */
+export function sanitizeOperatorTarget(target: string | null | undefined): string {
+  const raw = (target ?? "").trim();
+  if (raw.length === 0) return "(unnamed)";
+  // Broker-safe plain identifier (agent name/id): a leading optional `@`, then an
+  // alphanumeric-anchored slug of `[A-Za-z0-9_.-]`. No colon, slash, backslash,
+  // `=`, quote, or whitespace — so it cannot carry a stable-id/session/path/secret
+  // identity and is safe to echo.
+  if (/^@?[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(raw)) return raw;
+  return `target:#${fingerprintToken(raw)}`;
+}
+
 // Common prose that uses a single "/" and must NOT be treated as a path. Bare
 // two-token connectives only; anything path-shaped (multi-segment, file-like,
 // absolute, or relative-prefixed) is still redacted by `redactPathLikeTokens`.
@@ -198,32 +222,38 @@ const PROSE_SLASH_TOKENS = new Set([
  *
  * Whole-string, quote- and punctuation-aware, and fail-closed. Earlier
  * whitespace tokenization leaked on quoted (`TOKEN="dead beef"`), spaced
- * (`TOKEN = deadbeef`), and punctuation-wrapped (`(--api-key=sk-123)`) secrets;
- * these three ordered passes close those holes:
- *   1. A quoted span anywhere (`'…'` / `"…"` / `` `…` ``) is redacted wholesale —
- *      that is exactly where a space-separated secret would hide from tokenizing.
- *   2. `key=value` / `key = value` (value is a non-space run) keeps the key name
- *      and redacts the value; the key matcher ignores a leading `--`/punctuation
- *      so `(--api-key=sk-123)` and `TOKEN = x` are both caught.
- *   3. A flag followed by a separate value token (`--flag value` / `-f value`)
- *      redacts the value unless it is itself another flag.
+ * (`TOKEN = deadbeef`), and punctuation-wrapped (`(--api-key sk-123)`) secrets,
+ * and a naive per-token pass leaked the tail of a spaced value after a flag
+ * (`--api-key "sk live 123`). Two ordered passes consume each secret VALUE
+ * through its end — a possibly-unterminated quoted span OR a non-space run:
+ *   1. `key=value` / `key = value` keeps the key name and redacts the value; the
+ *      key matcher starts at the first identifier char, so a leading `--` or
+ *      punctuation (`(--api-key=…`, `TOKEN = …`) is ignored and still caught.
+ *   2. A flag followed by a separate value (`--flag value` / `-f value`, with any
+ *      leading punctuation) redacts the value — including a quoted span with
+ *      internal spaces, even if the closing quote is missing — unless the value
+ *      is itself another flag.
+ * A value is matched by `VALUE` below: a single/double/back-quoted span whose
+ * closing quote is optional (so an unterminated quote is consumed to the value's
+ * end, never leaking its spaced tail), otherwise a run of non-space characters.
  */
 // agent-standards-ignore prefer-inline-single-use-helper: distinct multi-pass
-// secret-redaction (quoted spans, key=value assignments, flag values); composed
-// with the path-redaction pass in sanitizeOperatorReason and kept separate for
-// readability of each fail-closed pass.
+// secret-redaction (key=value assignments, flag values, quoted/unterminated
+// spans); composed with the path-redaction pass in sanitizeOperatorReason and
+// kept separate for readability of each fail-closed pass.
 function redactSecretAssignments(value: string): string {
+  // A secret value: a (possibly unterminated) quoted span, else a non-space run.
+  const VALUE = `(?:"(?:\\\\.|[^"])*"?|'(?:\\\\.|[^'])*'?|\`(?:\\\\.|[^\`])*\`?|\\S+)`;
   let out = value;
-  // 1) Quoted spans (including unmatched-escape safety) → redact wholesale.
-  out = out.replace(/(['"`])(?:\\.|(?!\1)[\s\S])*?\1/g, "<redacted>");
-  // 2) key=value / key = value → keep the key name, redact the value run.
+  // 1) key=value / key = value → keep the key name, redact the value.
   out = out.replace(
-    /([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*\S+/g,
+    new RegExp(`([A-Za-z_][A-Za-z0-9_.-]*)\\s*=\\s*${VALUE}`, "g"),
     (_match, key: string) => `${key}=<redacted>`,
   );
-  // 3) `--flag value` / `-f value` → redact the value unless it is another flag.
+  // 2) `--flag value` / `-f value` (any leading punctuation) → redact the value
+  //    unless it is itself another flag.
   out = out.replace(
-    /((?:^|\s)--?[A-Za-z][A-Za-z0-9_-]*)\s+(?!--?[A-Za-z])\S+/g,
+    new RegExp(`(--?[A-Za-z][A-Za-z0-9_-]*)\\s+(?!--?[A-Za-z])${VALUE}`, "g"),
     (_match, flag: string) => `${flag} <redacted>`,
   );
   return out;

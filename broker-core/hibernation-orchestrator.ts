@@ -39,14 +39,38 @@ export interface RuntimeLaunchContext {
   spec: AgentRuntimeSpec;
 }
 
+/**
+ * Opaque, attempt-bound identity for a runtime a single wake attempt launched.
+ * Returned by {@link HibernationTmuxController.respawnRuntime} and required by
+ * the attempt-scoped stop/liveness checks so that retry cleanup proves the
+ * EXACT process THIS attempt spawned is gone — never the pre-hibernation runtime
+ * (whose recorded PID generation is already dead) nor a different attempt.
+ */
+export interface RuntimeAttemptHandle {
+  /** The reservation nonce of the launching attempt (binds the handle to it). */
+  readonly reservationNonce: string;
+  /** The tmux pane the attempt launched into (a real adapter locates the PID). */
+  readonly tmuxTarget: string;
+  /** OS pid of the launched runtime, if the adapter captured it. */
+  readonly pid: number | null;
+}
+
 /** Controls the dormant Pi runtime process (never tmux itself). */
 export interface HibernationProcessController {
   /** Ask the follower to flush a checkpoint and confirm hibernate safety. */
   requestCheckpoint(spec: AgentRuntimeSpec): Promise<HibernationCheckpointOutcome>;
-  /** Gracefully stop the Pi runtime (TERM then bounded KILL). */
+  /** Gracefully stop the live Pi runtime (TERM then bounded KILL) before hibernation. */
   stopRuntime(spec: AgentRuntimeSpec): Promise<{ stopped: boolean; rssBytes: number | null }>;
   /** True while the recorded Pi PID/process generation is still alive. */
   isRuntimeAlive(spec: AgentRuntimeSpec): Promise<boolean>;
+  /**
+   * Stop the runtime a SPECIFIC wake attempt launched, addressed by its
+   * attempt-bound handle (not the durable spec). Used by retry cleanup to prove
+   * the exact failed-attempt process is gone before relaunching.
+   */
+  stopLaunchedAttempt(handle: RuntimeAttemptHandle): Promise<{ stopped: boolean }>;
+  /** True while the runtime a SPECIFIC wake attempt launched is still alive. */
+  isLaunchedAttemptAlive(handle: RuntimeAttemptHandle): Promise<boolean>;
 }
 
 /** Reads/writes the attachable tmux shell that outlives the Pi runtime. */
@@ -57,9 +81,14 @@ export interface HibernationTmuxController {
    * Launch exactly one replacement runtime into the recorded pane. The launched
    * runtime is expected to register presenting the reservation fence. Resolves
    * once the launch command has been issued (registration is confirmed
-   * separately via {@link BrokerDB.acceptRuntimeGeneration}).
+   * separately via {@link BrokerDB.acceptRuntimeGeneration}). On a successful
+   * launch it returns an attempt-bound {@link RuntimeAttemptHandle} so retry
+   * cleanup can prove THIS attempt's runtime is stopped before relaunching; a
+   * launch that yields no handle is treated as unprovable (fail closed).
    */
-  respawnRuntime(ctx: RuntimeLaunchContext): Promise<{ launched: boolean }>;
+  respawnRuntime(
+    ctx: RuntimeLaunchContext,
+  ): Promise<{ launched: boolean; handle: RuntimeAttemptHandle | null }>;
 }
 
 export interface HibernationOrchestratorConfig {
@@ -661,16 +690,27 @@ export class HibernationOrchestrator {
 
         // Failed attempt. If a runtime was actually launched but not accepted,
         // its liveness is now ambiguous — it may just be slow to register. We
-        // must not relaunch on top of a possibly-live runtime, so before any
-        // retry we best-effort stop it and only continue if we can confirm it is
-        // gone; otherwise fail closed (quarantine) rather than risk two runtimes
-        // for one identity. (The per-attempt nonce independently fences a
-        // superseded runtime out of a later reservation, but a leaked *process*
-        // is still a safety issue, so we prove-stop before relaunch.)
-        if (launch.launched && attempt < maxAttempts) {
-          const stop = await this.process.stopRuntime(spec);
-          const stillAlive = await this.process.isRuntimeAlive(spec);
-          if (!stop.stopped || stillAlive) {
+        // must never leave a possibly-live runtime behind (whether we are about
+        // to relaunch on top of it OR about to quarantine and hand the durable
+        // row to a spec-addressed reaper that cannot see this PID), so on ANY
+        // launched-but-unaccepted attempt we best-effort stop it and only proceed
+        // if we can PROVE it is gone; otherwise fail closed (`wake_ambiguous_launch`)
+        // rather than risk two runtimes for one identity. Running on the final
+        // attempt too closes the same leak symmetrically. (The per-attempt nonce
+        // independently fences a superseded runtime out of a later reservation,
+        // but a leaked *process* is still a safety issue.)
+        //
+        // The stop/liveness proof is addressed by the attempt-bound handle from
+        // THIS launch (`launch.handle`), not the durable spec. Using the spec
+        // would target the pre-hibernation runtime's recorded PID generation —
+        // which is already dead — and so would always "confirm stopped" while the
+        // newly launched attempt kept running. A launch that produced no handle
+        // is unprovable and must fail closed.
+        if (launch.launched) {
+          const handle = launch.handle;
+          const stop = handle ? await this.process.stopLaunchedAttempt(handle) : { stopped: false };
+          const stillAlive = handle ? await this.process.isLaunchedAttemptAlive(handle) : true;
+          if (!handle || !stop.stopped || stillAlive) {
             return this.quarantineWake(
               agentId,
               versionCursor,

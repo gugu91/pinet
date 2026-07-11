@@ -6,6 +6,7 @@ import {
   redactRuntimeSpec,
   sanitizeCheckpointReasonCode,
   sanitizeOperatorReason,
+  sanitizeOperatorTarget,
   type AgentLifecycleStatusInput,
 } from "./hibernation-status.js";
 import type { AgentCheckpointReceipt, AgentRuntimeSpec, AgentWakeQueueEntry } from "./types.js";
@@ -393,6 +394,43 @@ describe("redactPathLikeTokens / sanitizeOperatorReason path redaction", () => {
     // An unterminated quote around an assignment value is still redacted.
     const unterminated = sanitizeOperatorReason('crashed TOKEN="deadbeef');
     expect(unterminated).not.toContain("deadbeef");
+    // Unterminated quote AFTER a flag — the spaced tail (`live 123`) must not leak.
+    const flagUnterminated = sanitizeOperatorReason('ran --api-key "sk live 123');
+    expect(flagUnterminated).toBe("ran --api-key <redacted>");
+    expect(flagUnterminated).not.toContain("live");
+    expect(flagUnterminated).not.toContain("123");
+    // Punctuation-prefixed, space-separated flag value — the whole value must go.
+    const punctFlag = sanitizeOperatorReason("failed (--api-key sk-live-123)");
+    expect(punctFlag).toContain("--api-key <redacted>");
+    expect(punctFlag).not.toContain("sk-live-123");
+  });
+
+  it("sanitizeOperatorTarget fingerprints stable-id/session/path/secret targets, passes plain slugs", () => {
+    // Plain broker-safe identifiers (agent name/id) pass through verbatim.
+    expect(sanitizeOperatorTarget("worker-1")).toBe("worker-1");
+    expect(sanitizeOperatorTarget("@Sales_Bot.2")).toBe("@Sales_Bot.2");
+    // A stable-id target embeds the session-resume identity in its tail; it must
+    // be fingerprinted opaquely, never echoed.
+    const sessionTarget = sanitizeOperatorTarget("host:session:abcdef123456");
+    expect(sessionTarget).toMatch(/^target:#[0-9a-f]{8}$/);
+    expect(sessionTarget).not.toContain("abcdef123456");
+    expect(sanitizeOperatorTarget("mac-1:cwd:/Users/tm/private/wt")).toMatch(
+      /^target:#[0-9a-f]{8}$/,
+    );
+    // Path, secret, and quoted shapes are also never echoed.
+    for (const hostile of [
+      "/Users/tm/private/repo",
+      "TOKEN=deadbeef",
+      'name "with spaces"',
+      "accounts/acme",
+    ]) {
+      expect(sanitizeOperatorTarget(hostile)).toMatch(/^target:#[0-9a-f]{8}$/);
+    }
+    // Deterministic: same input → same fingerprint (operators can correlate).
+    expect(sanitizeOperatorTarget("host:session:abcdef123456")).toBe(sessionTarget);
+    // Empty/whitespace collapses to a stable placeholder.
+    expect(sanitizeOperatorTarget("  ")).toBe("(unnamed)");
+    expect(sanitizeOperatorTarget(null)).toBe("(unnamed)");
   });
 
   it("sanitizeCheckpointReasonCode allowlists safe codes by shape, else `unspecified`", () => {

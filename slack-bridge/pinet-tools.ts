@@ -31,6 +31,7 @@ import {
   formatAgentLifecycleTag,
   formatHibernationCommandResult,
   sanitizeOperatorReason,
+  sanitizeOperatorTarget,
   type AgentLifecycleStatus,
   type HibernationCommandResult,
 } from "@pinet/broker-core";
@@ -1324,10 +1325,14 @@ function runPinetHibernationCommandAction(
 
     // Sanitize the operator-authored target/reason before they enter the policy
     // context, which can surface verbatim in confirmation prompts and error
-    // text. Path-like tokens (e.g. a private worktree path typed as the target)
-    // are redacted here; the raw `target` still flows to the broker runner,
-    // which resolves it server-side and redacts any unknown-target echo.
-    const safeTarget = sanitizeOperatorReason(target) ?? "(unnamed)";
+    // text. `sanitizeOperatorTarget` fingerprints anything that is not a plain
+    // broker-safe identifier slug — a stable-id/session/cwd target such as
+    // `host:session:<ref>` (which embeds the session-resume identity), a private
+    // worktree path, or a `KEY=secret` shape — to an opaque `target:#<hash>`
+    // rather than echoing it. The reason is path/secret-redacted. The raw
+    // `target` still flows to the broker runner, which resolves it server-side
+    // and redacts any unknown-target echo.
+    const safeTarget = sanitizeOperatorTarget(target);
     const safeReason = sanitizeOperatorReason(reason) ?? "";
     deps.requireToolPolicy(
       toolName,

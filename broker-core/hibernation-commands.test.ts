@@ -8,6 +8,7 @@ import {
   type HibernationCheckpointOutcome,
   type HibernationProcessController,
   type HibernationTmuxController,
+  type RuntimeAttemptHandle,
   type RuntimeLaunchContext,
 } from "./index.js";
 import {
@@ -334,6 +335,7 @@ class FakeProcess implements HibernationProcessController {
     rssBytes: 120_000_000,
   };
   alive = true;
+  readonly launchedAttempts = new Map<string, boolean>();
   async requestCheckpoint(): Promise<HibernationCheckpointOutcome> {
     return this.checkpoint;
   }
@@ -344,15 +346,39 @@ class FakeProcess implements HibernationProcessController {
   async isRuntimeAlive(): Promise<boolean> {
     return this.alive;
   }
+  registerLaunchedAttempt(handle: RuntimeAttemptHandle): void {
+    this.launchedAttempts.set(handle.reservationNonce, true);
+  }
+  async stopLaunchedAttempt(handle: RuntimeAttemptHandle): Promise<{ stopped: boolean }> {
+    if (!this.launchedAttempts.has(handle.reservationNonce)) return { stopped: false };
+    this.launchedAttempts.set(handle.reservationNonce, false);
+    return { stopped: true };
+  }
+  async isLaunchedAttemptAlive(handle: RuntimeAttemptHandle): Promise<boolean> {
+    return this.launchedAttempts.get(handle.reservationNonce) ?? false;
+  }
 }
 
 class FakeTmux implements HibernationTmuxController {
   attachable = true;
+  private linkedProcess: FakeProcess | null = null;
+  linkProcess(proc: FakeProcess): this {
+    this.linkedProcess = proc;
+    return this;
+  }
   async isSessionAttachable(): Promise<boolean> {
     return this.attachable;
   }
-  async respawnRuntime(): Promise<{ launched: boolean }> {
-    return { launched: true };
+  async respawnRuntime(
+    ctx: RuntimeLaunchContext,
+  ): Promise<{ launched: boolean; handle: RuntimeAttemptHandle | null }> {
+    const handle: RuntimeAttemptHandle = {
+      reservationNonce: ctx.reservationNonce,
+      tmuxTarget: ctx.spec.tmuxTarget,
+      pid: 5555,
+    };
+    this.linkedProcess?.registerLaunchedAttempt(handle);
+    return { launched: true, handle };
   }
 }
 
@@ -362,6 +388,7 @@ function buildOrch(
   tmux: FakeTmux,
   behavior: "accept" | "stale_fence" | "no_register" = "accept",
 ): HibernationOrchestrator {
+  tmux.linkProcess(proc);
   return new HibernationOrchestrator({
     db,
     process: proc,

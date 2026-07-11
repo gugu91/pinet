@@ -398,6 +398,49 @@ describe("registerPinetTools", () => {
     expect(res.content[0]?.text).not.toMatch(/\/Users\//);
   });
 
+  it("fingerprints a session-shaped/secret-shaped target before it enters the confirmation policy", async () => {
+    // The confirmation-policy context can surface verbatim in prompts/error text.
+    // A stable-id target embeds the session-resume identity; a `KEY=secret` target
+    // embeds a secret. Neither may reach the policy surface — both must be
+    // fingerprinted to an opaque `target:#<hash>` — while the RAW target still
+    // flows to the broker runner for server-side resolution.
+    const captured: string[] = [];
+    const runHibernateCommand = vi.fn(async (input: { target: string; reason?: string }) => ({
+      command: "hibernate" as const,
+      agentId: "worker-7",
+      outcome: "executed" as const,
+      state: "hibernated",
+      reason: "hibernated",
+      detail: "Agent runtime checkpointed and hibernated.",
+      target: input.target,
+    }));
+    const requireToolPolicy = (_tool: string, _threadTs: string | undefined, context: string) => {
+      captured.push(context);
+    };
+    const tools = registerWithDeps(createDeps({ runHibernateCommand, requireToolPolicy }));
+
+    const sessionTarget = "prod-host:session:abcdef123456";
+    await tools.get("pinet")?.execute("tc-hib-session", {
+      action: "hibernate",
+      args: { target: sessionTarget, reason: "TOKEN=deadbeef in /Users/tm/secret" },
+    });
+
+    expect(captured).toHaveLength(1);
+    const context = captured[0]!;
+    // The session-resume identity is fingerprinted, never echoed.
+    expect(context).toMatch(/target:#[0-9a-f]{8}/);
+    expect(context).not.toContain("abcdef123456");
+    expect(context).not.toContain("session:");
+    // The reason's secret/path material is redacted too.
+    expect(context).not.toContain("deadbeef");
+    expect(context).not.toMatch(/\/Users\//);
+    // The RAW target still reaches the broker runner (server-side resolution).
+    expect(runHibernateCommand).toHaveBeenCalledWith({
+      target: sessionTarget,
+      reason: "TOKEN=deadbeef in /Users/tm/secret",
+    });
+  });
+
   it("routes wake to the broker-managed command and surfaces the fenced runtime generation", async () => {
     const runWakeCommand = vi.fn(async () => ({
       command: "wake" as const,

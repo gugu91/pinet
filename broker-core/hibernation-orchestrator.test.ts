@@ -8,6 +8,7 @@ import {
   type HibernationCheckpointOutcome,
   type HibernationProcessController,
   type HibernationTmuxController,
+  type RuntimeAttemptHandle,
   type RuntimeLaunchContext,
   wakeTriggerPriority,
 } from "./index.js";
@@ -77,6 +78,13 @@ class FakeProcess implements HibernationProcessController {
   checkpointDelayMs = 0;
   checkpointCalls = 0;
   stopCalls = 0;
+  // Per-attempt launched runtimes keyed by reservation nonce, so stop/liveness
+  // proofs are addressed to the EXACT attempt (never a global flag or the
+  // pre-hibernation runtime). Registered by the linked FakeTmux on respawn.
+  readonly launchedAttempts = new Map<string, boolean>();
+  /** When false, `stopLaunchedAttempt` cannot confirm the attempt stopped. */
+  attemptStopConfirms = true;
+  stopAttemptCalls = 0;
 
   async requestCheckpoint(): Promise<HibernationCheckpointOutcome> {
     this.checkpointCalls += 1;
@@ -91,6 +99,22 @@ class FakeProcess implements HibernationProcessController {
   async isRuntimeAlive(): Promise<boolean> {
     return this.alive;
   }
+  registerLaunchedAttempt(handle: RuntimeAttemptHandle): void {
+    this.launchedAttempts.set(handle.reservationNonce, true);
+  }
+  async stopLaunchedAttempt(handle: RuntimeAttemptHandle): Promise<{ stopped: boolean }> {
+    this.stopAttemptCalls += 1;
+    // Unknown attempt ⇒ cannot prove it stopped (fail closed).
+    if (!this.launchedAttempts.has(handle.reservationNonce)) return { stopped: false };
+    if (this.attemptStopConfirms) {
+      this.launchedAttempts.set(handle.reservationNonce, false);
+      return { stopped: true };
+    }
+    return { stopped: false };
+  }
+  async isLaunchedAttemptAlive(handle: RuntimeAttemptHandle): Promise<boolean> {
+    return this.launchedAttempts.get(handle.reservationNonce) ?? false;
+  }
 }
 
 class FakeTmux implements HibernationTmuxController {
@@ -99,14 +123,31 @@ class FakeTmux implements HibernationTmuxController {
   respawnCalls: RuntimeLaunchContext[] = [];
   /** Called synchronously inside respawnRuntime to simulate the woken runtime. */
   onRespawn: ((ctx: RuntimeLaunchContext) => void) | null = null;
+  /** When true, a successful launch returns no attempt handle (unprovable). */
+  suppressHandle = false;
+  /** Linked process world so a launched attempt is registered as alive. */
+  private linkedProcess: FakeProcess | null = null;
 
+  linkProcess(proc: FakeProcess): this {
+    this.linkedProcess = proc;
+    return this;
+  }
   async isSessionAttachable(): Promise<boolean> {
     return this.attachable;
   }
-  async respawnRuntime(ctx: RuntimeLaunchContext): Promise<{ launched: boolean }> {
+  async respawnRuntime(
+    ctx: RuntimeLaunchContext,
+  ): Promise<{ launched: boolean; handle: RuntimeAttemptHandle | null }> {
     this.respawnCalls.push(ctx);
     this.onRespawn?.(ctx);
-    return { launched: this.launched };
+    if (!this.launched) return { launched: false, handle: null };
+    const handle: RuntimeAttemptHandle = {
+      reservationNonce: ctx.reservationNonce,
+      tmuxTarget: ctx.spec.tmuxTarget,
+      pid: 5555,
+    };
+    this.linkedProcess?.registerLaunchedAttempt(handle);
+    return { launched: true, handle: this.suppressHandle ? null : handle };
   }
 }
 
@@ -134,7 +175,7 @@ function harness(
 ): Harness {
   const db = freshDb();
   const proc = new FakeProcess();
-  const tmux = new FakeTmux();
+  const tmux = new FakeTmux().linkProcess(proc);
   const clock = { ms: 1_000_000 };
   const behavior = overrides.registerBehavior ?? "accept";
   const orch = new HibernationOrchestrator({
@@ -802,7 +843,7 @@ describe("fail-closed fault handling (adapter/DB rejections)", () => {
     const db = freshDb();
     seedAgent(db);
     const proc = new FakeProcess();
-    const tmux = new FakeTmux();
+    const tmux = new FakeTmux().linkProcess(proc);
     const clock = { ms: 1_000_000 };
     // The checkpoint reports unsafe, but only after the hibernate lease TTL has
     // elapsed. The rollback-to-active must still fire (unfenced administrative
@@ -912,7 +953,7 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     const db = freshDb();
     seedAgent(db);
     const proc = new FakeProcess();
-    const tmux = new FakeTmux();
+    const tmux = new FakeTmux().linkProcess(proc);
     const clock = { ms: 1_000_000 };
     let calls = 0;
     const orch = new HibernationOrchestrator({
@@ -968,7 +1009,7 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     const db = freshDb();
     seedAgent(db);
     const proc = new FakeProcess();
-    const tmux = new FakeTmux(); // launched:true, but registration never accepts
+    const tmux = new FakeTmux().linkProcess(proc); // launched:true, but registration never accepts
     const clock = { ms: 1_000_000 };
     const orch = new HibernationOrchestrator({
       db,
@@ -979,28 +1020,89 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
       config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 3 },
       awaitRuntimeRegistration: async () => false, // launched, never registers
     });
-    // Hibernate with a healthy stop first, then make the *wake-time* stop
-    // unconfirmable so the retry path must fail closed.
     await hibernateFrom({ db, proc, tmux, orch, clock });
-    proc.stopResult = { stopped: false, rssBytes: null }; // stop cannot confirm
-    proc.alive = true; // still alive after the stop attempt
-    proc.stopCalls = 0;
+    // The launched ATTEMPT's runtime (addressed by its nonce-bound handle) cannot
+    // be confirmed stopped. This is distinct from the pre-hibernation runtime:
+    // proving via the durable spec would falsely "confirm stopped" (that PID
+    // generation is already dead) and relaunch on top of the live attempt.
+    proc.attemptStopConfirms = false;
 
     const result = await orch.wake("worker-1", { trigger: "manual" });
     expect(result).toMatchObject({ ok: false, state: "reap-candidate" });
     expect(result.reason).toBe("wake_ambiguous_launch");
     // Quarantined on the FIRST ambiguous attempt — did not relaunch on top of a
-    // possibly-live runtime.
+    // possibly-live runtime. The stop/liveness proof was addressed to the
+    // attempt handle, not the durable spec.
     expect(tmux.respawnCalls.length).toBe(1);
-    expect(proc.stopCalls).toBe(1);
+    expect(proc.stopAttemptCalls).toBe(1);
+    expect(proc.launchedAttempts.get(tmux.respawnCalls[0]!.reservationNonce)).toBe(true);
     expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // released in finally
+  });
+
+  it("fails closed on the FINAL attempt too when a launched runtime cannot be proven stopped", async () => {
+    // Symmetry: a launched-but-unaccepted runtime on the last attempt is exactly
+    // as ambiguous as on an earlier one. If it cannot be proven gone, quarantine
+    // with `wake_ambiguous_launch` rather than plain `wake_attempts_exhausted`,
+    // and never leave the process behind for a spec-addressed reaper that cannot
+    // see this attempt's PID.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+      awaitRuntimeRegistration: async () => false, // launched, never registers
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+    proc.attemptStopConfirms = false; // cannot confirm the launched attempt died
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result).toMatchObject({ ok: false, state: "reap-candidate" });
+    expect(result.reason).toBe("wake_ambiguous_launch");
+    expect(tmux.respawnCalls.length).toBe(1); // only the single (final) attempt
+    expect(proc.stopAttemptCalls).toBe(1); // prove-stop ran on the final attempt
+  });
+
+  it("fails closed (quarantines) when a launch yields no attempt handle to prove-stop against", async () => {
+    // If a launch reports success but produces no attempt handle, its runtime is
+    // unaddressable, so its liveness is unprovable. Fail closed rather than
+    // relaunch blindly.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    tmux.suppressHandle = true; // launched:true, handle:null
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 3 },
+      awaitRuntimeRegistration: async () => false,
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result).toMatchObject({ ok: false, state: "reap-candidate" });
+    expect(result.reason).toBe("wake_ambiguous_launch");
+    // Quarantined on the first attempt without even attempting a stop (no handle).
+    expect(tmux.respawnCalls.length).toBe(1);
+    expect(proc.stopAttemptCalls).toBe(0);
   });
 
   it("promotes an accepted runtime to live even if the lease expires AFTER acceptance (no false quarantine)", async () => {
     const db = freshDb();
     seedAgent(db);
     const proc = new FakeProcess();
-    const tmux = new FakeTmux();
+    const tmux = new FakeTmux().linkProcess(proc);
     const clock = { ms: 1_000_000 };
     const orch = new HibernationOrchestrator({
       db,
@@ -1050,7 +1152,7 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     const db = freshDb();
     seedAgent(db);
     const proc = new FakeProcess();
-    const tmux = new FakeTmux();
+    const tmux = new FakeTmux().linkProcess(proc);
     const clock = { ms: 1_000_000 };
     const orch = new HibernationOrchestrator({
       db,
@@ -1427,7 +1529,7 @@ describe("wake queue", () => {
     const db = freshDb();
     seedAgent(db);
     const proc = new FakeProcess();
-    const tmux = new FakeTmux();
+    const tmux = new FakeTmux().linkProcess(proc);
     const clock = { ms: 1_000_000 };
     const orch = new HibernationOrchestrator({
       db,
