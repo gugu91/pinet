@@ -154,7 +154,32 @@ export function sanitizeOperatorReason(value: string | null | undefined): string
     .replace(/\s+/g, " ")
     .trim();
   if (cleaned.length === 0) return null;
-  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}\u2026` : cleaned;
+  const redacted = redactPathLikeTokens(cleaned);
+  return redacted.length > 120 ? `${redacted.slice(0, 117)}\u2026` : redacted;
+}
+
+/**
+ * Replace filesystem-path-like tokens with `<path>` so operator-authored
+ * free-form strings (reasons, echoed targets) can never surface private
+ * absolute paths, unix socket paths, or repo-relative paths in operator/JSON
+ * output. Conservative: only tokens that clearly look like paths are redacted,
+ * so ordinary prose (e.g. "and/or") is preserved. This is a redaction-by-
+ * construction boundary, not a security parser.
+ */
+export function redactPathLikeTokens(value: string): string {
+  return value
+    .split(/(\s+)/)
+    .map((token) => {
+      if (token.length === 0 || /\s/.test(token)) return token;
+      const slashCount = (token.match(/[/\\]/g) ?? []).length;
+      const pathLike =
+        /^[~/]/.test(token) || // /abs or ~/home
+        /^\.\.?[/\\]/.test(token) || // ./rel or ../rel
+        /^[A-Za-z]:[\\/]/.test(token) || // C:\ or C:/ (Windows)
+        slashCount >= 2; // multi-segment relative path
+      return pathLike ? "<path>" : token;
+    })
+    .join("");
 }
 
 /**

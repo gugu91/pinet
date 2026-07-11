@@ -2026,6 +2026,32 @@ function formatHibernationLifecycleSection(
   return `\n\nHibernation lifecycle:\n${body}`;
 }
 
+/**
+ * Minimal, already-redacted lifecycle summary for compact structured (`json`)
+ * output. Durable hibernated/quarantined identities are disconnected and absent
+ * from the visible roster, so without this an operator asking for compact JSON
+ * would see them only in the text blob and never in `data`. Keep it small: the
+ * scannable state plus the few fields an operator triages on (queue position,
+ * quarantine, checkpoint presence). Full structure stays in `fullDetails`.
+ */
+interface CompactLifecycleSummary {
+  agentId: string;
+  state: AgentLifecycleStatus["state"];
+  quarantined: boolean;
+  tag: string;
+  wakeQueuePosition?: AgentLifecycleStatus["wake"]["position"];
+}
+
+function buildCompactLifecycleDetails(statuses: AgentLifecycleStatus[]): CompactLifecycleSummary[] {
+  return statuses.map((status) => ({
+    agentId: status.agentId,
+    state: status.state,
+    quarantined: status.quarantined,
+    tag: formatAgentLifecycleTag(status),
+    ...(status.wake.queued ? { wakeQueuePosition: status.wake.position } : {}),
+  }));
+}
+
 function runPinetAgentsAction(
   params: Record<string, unknown>,
   deps: RegisterPinetToolsDeps,
@@ -2127,7 +2153,10 @@ function runPinetAgentsAction(
     return {
       content: [{ type: "text", text }],
       details: { agents, hint, ...(lifecycle.length > 0 ? { lifecycle } : {}) },
-      compactDetails: buildCompactAgentDetails(agents, hint),
+      compactDetails: {
+        ...buildCompactAgentDetails(agents, hint),
+        ...(lifecycle.length > 0 ? { lifecycle: buildCompactLifecycleDetails(lifecycle) } : {}),
+      },
       fullDetails: { agents, hint, ...(lifecycle.length > 0 ? { lifecycle } : {}) },
       expandedText,
     };
@@ -2276,6 +2305,7 @@ function runPinetSessionsAction(
         count: sessions.length,
         options,
         sessions: sessions.map(buildPinetSessionCompactDetails),
+        ...(lifecycle.length > 0 ? { lifecycle: buildCompactLifecycleDetails(lifecycle) } : {}),
       },
       fullDetails: {
         count: sessions.length,

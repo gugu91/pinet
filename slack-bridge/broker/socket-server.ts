@@ -98,6 +98,20 @@ interface ConnectionState {
   authTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * A validated fenced revival of a durable hibernation identity. `accept` is the
+ * exact input passed to `acceptRuntimeGeneration` once registration commits.
+ */
+interface WakeRevival {
+  agentId: string;
+  accept: {
+    agentId: string;
+    wakeLeaseId: string;
+    fenceToken: number;
+    reservedGeneration: number;
+  };
+}
+
 // ─── RPC helpers ─────────────────────────────────────────
 
 function rpcOk(id: number | string | null, result: unknown): JsonRpcResponse {
@@ -585,14 +599,13 @@ export class BrokerSocketServer {
    */
   private enforceWakeFence(
     req: JsonRpcRequest,
-    state: ConnectionState,
     stableId: string | undefined,
     fence: {
       wakeLeaseId: string | undefined;
       fenceToken: number | undefined;
       reservedGeneration: number | undefined;
     },
-  ): { rejection: JsonRpcResponse | null } {
+  ): { rejection: JsonRpcResponse | null; revive?: WakeRevival } {
     if (!stableId) return { rejection: null };
     const existing = this.db.getAgentByStableId(stableId);
     const durableHibernation =
@@ -630,28 +643,31 @@ export class BrokerSocketServer {
       };
     }
 
-    const acceptance = this.db.acceptRuntimeGeneration({
+    // Preflight only: validate the fence WITHOUT advancing the generation or
+    // consuming the reservation. The generation is accepted in handleRegister
+    // *after* the agent registration commits, so a later name conflict or
+    // registration failure can never advance the generation (and thus falsely
+    // signal the orchestrator that a runtime registered) for a runtime that did
+    // not actually register. Registration is synchronous, so a passing
+    // preflight is immediately followed by acceptance with no interleaving.
+    const accept = {
       agentId: existing!.id,
       wakeLeaseId,
       fenceToken,
       reservedGeneration,
-    });
-    if (!acceptance.accepted) {
+    };
+    const preflight = this.db.checkRuntimeGenerationAcceptable(accept);
+    if (!preflight.accepted) {
       return {
         rejection: rpcError(
           req.id,
           RPC_AGENT_WAKE_FENCE_REJECTED,
-          `Wake fence rejected: ${acceptance.reason}.`,
-          { code: "WAKE_FENCE_REJECTED", reason: acceptance.reason, retryable: false },
+          `Wake fence rejected: ${preflight.reason}.`,
+          { code: "WAKE_FENCE_REJECTED", reason: preflight.reason, retryable: false },
         ),
       };
     }
-
-    // Accepted: bind this connection to the revived agent id so registerAgent
-    // re-registers the existing row (preserving lifecycle + the accepted
-    // runtime generation) rather than minting a new one.
-    state.agentId = existing!.id;
-    return { rejection: null };
+    return { rejection: null, revive: { agentId: existing!.id, accept } };
   }
 
   private handleRegister(
@@ -693,7 +709,7 @@ export class BrokerSocketServer {
     // unaffected; a wake fence presented against a non-hibernation identity is
     // treated as stale and rejected. Fails closed: on any mismatch the socket
     // is not bound and the row is not revived.
-    const wakeFence = this.enforceWakeFence(req, state, stableId, {
+    const wakeFence = this.enforceWakeFence(req, stableId, {
       wakeLeaseId: typeof params.wakeLeaseId === "string" ? params.wakeLeaseId : undefined,
       fenceToken: typeof params.fenceToken === "number" ? params.fenceToken : undefined,
       reservedGeneration:
@@ -701,7 +717,11 @@ export class BrokerSocketServer {
     });
     if (wakeFence.rejection) return wakeFence.rejection;
 
-    const candidateId = state.agentId ?? crypto.randomUUID();
+    // A fenced revival targets the existing hibernated row so registerAgent
+    // updates it (preserving lifecycle + generation) instead of minting a new
+    // one. state.agentId is bound only after full success below, so a failure
+    // path never leaves this connection authorized as the revived agent.
+    const candidateId = wakeFence.revive?.agentId ?? state.agentId ?? crypto.randomUUID();
     const resolved = this.agentRegistrationResolver?.({
       agentId: candidateId,
       name: requestedName,
@@ -745,6 +765,24 @@ export class BrokerSocketServer {
       finalMetadata,
       stableId,
     );
+
+    // Fenced revival: accept the reserved generation ONLY now that registration
+    // has committed. If acceptance somehow fails (unreachable after a passing
+    // synchronous preflight), fail closed WITHOUT binding the socket so the
+    // orchestrator's registration wait times out and quarantines rather than
+    // promoting a half-revived identity to live.
+    if (wakeFence.revive) {
+      const acceptance = this.db.acceptRuntimeGeneration(wakeFence.revive.accept);
+      if (!acceptance.accepted) {
+        return rpcError(
+          req.id,
+          RPC_AGENT_WAKE_FENCE_REJECTED,
+          `Wake fence rejected after registration: ${acceptance.reason}.`,
+          { code: "WAKE_FENCE_REJECTED", reason: acceptance.reason, retryable: false },
+        );
+      }
+    }
+
     this.disconnectDuplicateConnections(agent.id, socket);
     state.agentId = agent.id;
 

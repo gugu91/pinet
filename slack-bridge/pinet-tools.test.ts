@@ -2353,6 +2353,38 @@ describe("registerPinetTools", () => {
       expect(text).toContain("ghost-hibernated-9: hibernated");
     });
 
+    it("includes a compact redacted lifecycle summary in compact structured (json) details", async () => {
+      // Regression: durable hibernated identities are disconnected and absent
+      // from the visible roster, so an operator asking for compact JSON must
+      // still see them in `data.details`, not only in the text blob.
+      const getAgentLifecycleProjection = vi.fn(() => [
+        makeLifecycleStatus({ agentId: "ghost-hibernated-9" }),
+      ]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-compact-json", {
+        action: "agents",
+        args: {},
+      })) as {
+        details: {
+          data: {
+            details: {
+              lifecycle?: Array<{ agentId: string; state: string; quarantined: boolean }>;
+            };
+          };
+        };
+      };
+
+      const lifecycle = result.details.data.details.lifecycle;
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle?.[0]?.agentId).toBe("ghost-hibernated-9");
+      expect(lifecycle?.[0]?.state).toBe("hibernated");
+      // Redaction-by-construction preserved in compact structured output too.
+      const serialized = JSON.stringify(lifecycle);
+      expect(serialized).not.toContain("/Users/");
+      expect(serialized).not.toContain("--model");
+    });
+
     it("exposes the complete redacted lifecycle structure in full agents output", async () => {
       const getAgentLifecycleProjection = vi.fn(() => [makeLifecycleStatus()]);
       const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));

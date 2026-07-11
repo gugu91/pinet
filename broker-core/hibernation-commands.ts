@@ -1,3 +1,4 @@
+import { redactPathLikeTokens } from "./hibernation-status.js";
 import type { AgentLifecycleState } from "./types.js";
 
 /**
@@ -106,12 +107,15 @@ export function evaluateHibernateCommandGate(
   // identifier's normalized slug exactly, so "gugu91/extensions" never admits
   // "evil/extensions". Only a deliberately bare-basename entry ("extensions")
   // opts into basename matching. Blank identifiers/entries never match.
-  const repo = (repoIdentifier ?? "").trim().replace(/\/+$/, "");
+  // Normalize Windows backslash separators to "/" on both the identifier and
+  // each allowlist entry so path/basename derivation is OS-agnostic (a
+  // "C:\\...\\extensions" root basename is still "extensions").
+  const repo = (repoIdentifier ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
   const repoBasename = repo.split("/").filter(Boolean).pop() ?? "";
   const repoAllowlisted =
     repo.length > 0 &&
     policy.allowedRepos.some((raw) => {
-      const entry = raw.trim().replace(/\/+$/, "");
+      const entry = raw.trim().replace(/\\/g, "/").replace(/\/+$/, "");
       if (entry.length === 0) return false;
       if (entry.includes("/")) return entry === repo;
       return entry === repo || entry === repoBasename;
@@ -216,15 +220,15 @@ export function unknownHibernationTarget(
   // Echo a control-stripped, length-bounded rendering of the operator's target
   // so the failure is actionable without surfacing arbitrary/free-form input
   // (which could carry newlines or overly long paste content) verbatim.
-  const safeTarget =
-    Array.from(target)
-      .map((ch) => {
-        const code = ch.codePointAt(0) ?? 0;
-        return code <= 0x1f || code === 0x7f ? " " : ch;
-      })
-      .join("")
-      .trim()
-      .slice(0, 64) || "(unnamed)";
+  const controlStripped = Array.from(target)
+    .map((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code <= 0x1f || code === 0x7f ? " " : ch;
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  const safeTarget = redactPathLikeTokens(controlStripped).slice(0, 64) || "(unnamed)";
   return {
     command,
     agentId: safeTarget,
@@ -342,6 +346,20 @@ export async function executeWakeCommand(
     reason: input.reason,
     correlationId: input.correlationId,
   });
+  if (!result.ok && result.reason === "wake_in_progress") {
+    // Another lease owner is already waking this agent. That is the single
+    // winner and it will deliver queued work — this is a benign no-op, not a
+    // retryable failure (mirrors an already-`waking` target at the gate).
+    return {
+      command: "wake",
+      agentId: input.agentId,
+      outcome: "noop",
+      state: result.state,
+      reason: result.reason,
+      detail:
+        "A wake is already in progress for this agent; the in-flight wake will deliver queued work.",
+    };
+  }
   return {
     command: "wake",
     agentId: input.agentId,

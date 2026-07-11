@@ -985,8 +985,13 @@ export default function (pi: ExtensionAPI) {
       typeof specRepoRoot === "string" && specRepoRoot.length > 0
         ? specRepoRoot
         : agent.metadata?.repoRoot;
+    // Normalize Windows backslash separators before deriving the slug so a
+    // "C:\\path\\owner\\repo" root yields the same owner/repo identifier a POSIX
+    // path would.
     const repoSegments =
-      typeof repoRootRaw === "string" ? repoRootRaw.split("/").filter(Boolean) : [];
+      typeof repoRootRaw === "string"
+        ? repoRootRaw.replace(/\\/g, "/").split("/").filter(Boolean)
+        : [];
     const repoIdentifier =
       repoSegments.length >= 2
         ? `${repoSegments[repoSegments.length - 2]}/${repoSegments[repoSegments.length - 1]}`

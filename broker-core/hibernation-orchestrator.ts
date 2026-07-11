@@ -126,11 +126,19 @@ export interface WakeResult {
   durationMs?: number;
 }
 
-/** Outcome of reconciling one agent stranded mid-wake by a broker crash. */
+/** Outcome of reconciling one agent/queue-row stranded by a broker crash. */
 export interface StrandedWakeRecovery {
+  /** Agent id, or (for `requeued`) the orphaned dispatch row's agent id. */
   agentId: string;
-  /** completed = generation was accepted, finished to live; quarantined = uncertain wake. */
-  action: "completed" | "quarantined";
+  /**
+   * - `completed`   — a stranded `waking` whose generation was already accepted; only the
+   *   final live transition was lost, so it was finished to `live`.
+   * - `quarantined` — a stranded `waking` or `hibernating` with an uncertain runtime; moved
+   *   to `reap-candidate` for manual review rather than risk a double launch.
+   * - `requeued`    — a `dispatching` wake-queue row orphaned mid-dispatch by a crash;
+   *   returned to `queued` so a fresh dispatch pass can pick it up.
+   */
+  action: "completed" | "quarantined" | "requeued";
 }
 
 const HIBERNATABLE_PRIORITY: Record<WakeTriggerKind, number> = {
@@ -689,31 +697,63 @@ export class HibernationOrchestrator {
   }
 
   /**
-   * Reconcile agents left in `waking` by a broker crash between generation
-   * acceptance and the final `waking -> live` transition. Intended to run once
-   * on broker startup (and is safe to re-run). DB-only and idempotent:
+   * Reconcile lifecycle + wake-queue state left inconsistent by a broker crash.
+   * Intended to run once on broker startup (and is safe to re-run). DB-only and
+   * idempotent. Three classes of strand are repaired:
    *
-   * - If a runtime already accepted its generation (reservation consumed and
-   *   runtime_generation advanced past the checkpoint's generation) only the
-   *   final live transition was lost → complete to `live` so the inbox drains.
-   * - Otherwise the wake outcome is uncertain (a runtime may or may not have
-   *   launched) → fail closed to `reap-candidate` for manual review rather than
-   *   risk a double launch by silently re-waking.
+   * 1. Agents in `waking` (crash between generation acceptance and the final
+   *    `waking -> live` transition):
+   *    - If a runtime already accepted its generation (reservation consumed and
+   *      runtime_generation advanced past the checkpoint's generation) only the
+   *      final live transition was lost → complete to `live` so the inbox drains.
+   *    - Otherwise the wake outcome is uncertain (a runtime may or may not have
+   *      launched) → fail closed to `reap-candidate` for manual review.
+   * 2. Agents in `hibernating` (crash mid-hibernate, before reaching the durable
+   *    `hibernated` state): the runtime may or may not have been torn down, so
+   *    completing to `hibernated` risks a double launch on the next wake → fail
+   *    closed to `reap-candidate` for manual review.
+   * 3. Wake-queue rows left in `dispatching` (crash mid-dispatch): the owning
+   *    dispatch loop is gone, so return them to `queued` (they also block the
+   *    unique active-agent index until reclaimed) so a fresh pass re-dispatches.
    *
-   * Agents whose wake lease is still held (unexpired) are skipped: another
-   * broker/thread is actively waking them.
+   * Agents whose lifecycle lease is still held (unexpired) are skipped: another
+   * broker/thread may still be driving them.
    */
   recoverStrandedWakes(opts: { now?: number } = {}): StrandedWakeRecovery[] {
     const now = opts.now ?? this.now();
     const recovered: StrandedWakeRecovery[] = [];
     for (const agent of this.db.getAllAgents()) {
-      if (agent.lifecycleState !== "waking") continue;
+      const strandedState = agent.lifecycleState;
+      if (strandedState !== "waking" && strandedState !== "hibernating") continue;
       const lease = this.db.getAgentLifecycleLease(agent.id);
-      const leaseHeld =
-        lease !== null && lease.operation === "wake" && Date.parse(lease.expiresAt) > now;
+      const leaseHeld = lease !== null && Date.parse(lease.expiresAt) > now;
       if (leaseHeld) continue;
 
       const version = agent.lifecycleVersion ?? 0;
+      const correlationId = this.newId();
+
+      // A stranded `hibernating` agent never reached the durable `hibernated`
+      // state; its runtime liveness is unknown, so fail closed rather than risk
+      // a double launch by completing the hibernate.
+      if (strandedState === "hibernating") {
+        try {
+          this.db.cancelWake(agent.id);
+          this.db.clearAgentWakeReservation(agent.id);
+          this.db.transitionAgentLifecycle({
+            agentId: agent.id,
+            expectedVersion: version,
+            toState: "reap-candidate",
+            reason: "hibernate_recovery_stranded",
+            actor: "broker",
+            correlationId,
+          });
+          recovered.push({ agentId: agent.id, action: "quarantined" });
+        } catch {
+          // Raced with a live owner or a concurrent recovery pass; leave it be.
+        }
+        continue;
+      }
+
       const reservation = this.db.getAgentWakeReservation(agent.id);
       const checkpointGeneration =
         this.db.getLatestAgentCheckpointReceipt(agent.id)?.runtimeGeneration ?? null;
@@ -723,7 +763,6 @@ export class HibernationOrchestrator {
         checkpointGeneration !== null &&
         currentGeneration > checkpointGeneration;
 
-      const correlationId = this.newId();
       try {
         if (generationAccepted) {
           this.db.transitionAgentLifecycle({
@@ -738,6 +777,7 @@ export class HibernationOrchestrator {
           recovered.push({ agentId: agent.id, action: "completed" });
         } else {
           this.db.clearAgentWakeReservation(agent.id);
+          this.db.cancelWake(agent.id);
           this.db.transitionAgentLifecycle({
             agentId: agent.id,
             expectedVersion: version,
@@ -751,6 +791,14 @@ export class HibernationOrchestrator {
       } catch {
         // Raced with a live owner or a concurrent recovery pass; leave it be.
       }
+    }
+
+    // Reclaim wake-queue rows orphaned mid-dispatch by the crash. On a fresh
+    // startup nothing is actively dispatching, so any `dispatching` row is
+    // stale; return it to `queued` for a fresh dispatch pass.
+    for (const row of this.db.listWakeQueue("dispatching")) {
+      const requeued = this.db.requeueWake(row.id);
+      if (requeued) recovered.push({ agentId: row.agentId, action: "requeued" });
     }
     return recovered;
   }

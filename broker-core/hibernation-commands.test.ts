@@ -131,6 +131,33 @@ describe("evaluateHibernateCommandGate", () => {
       }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
+
+  it("normalizes Windows backslash separators for slug/basename matching", () => {
+    // Backslash identifier reduced to a slug still matches a "/" slug entry.
+    expect(
+      evaluateHibernateCommandGate({
+        state: "idle",
+        repoIdentifier: "gugu91\\extensions",
+        policy: { ...ENABLED, allowedRepos: ["gugu91/extensions"] },
+      }),
+    ).toMatchObject({ outcome: "proceed" });
+    // A backslash allowlist entry is normalized too.
+    expect(
+      evaluateHibernateCommandGate({
+        state: "idle",
+        repoIdentifier: "gugu91/extensions",
+        policy: { ...ENABLED, allowedRepos: ["gugu91\\extensions"] },
+      }),
+    ).toMatchObject({ outcome: "proceed" });
+    // A full Windows path's basename still admits a bare-basename entry.
+    expect(
+      evaluateHibernateCommandGate({
+        state: "idle",
+        repoIdentifier: "C:\\Users\\tm\\repo\\extensions",
+        policy: { ...ENABLED, allowedRepos: ["extensions"] },
+      }),
+    ).toMatchObject({ outcome: "proceed" });
+  });
 });
 
 describe("evaluateWakeCommandGate", () => {
@@ -193,6 +220,12 @@ describe("unknownHibernationTarget + formatter", () => {
     expect(result.agentId.length).toBeLessThanOrEqual(64);
     // Empty/whitespace-only target degrades to a safe placeholder.
     expect(unknownHibernationTarget("wake", "   ").agentId).toBe("(unnamed)");
+  });
+
+  it("redacts path-like tokens in the echoed unknown target", () => {
+    const result = unknownHibernationTarget("hibernate", "/Users/tm/private/secret-worktree");
+    expect(result.agentId).not.toContain("/Users");
+    expect(result.agentId).toContain("<path>");
   });
 
   it("formats without leaking anything beyond machine reason/detail/state", () => {
@@ -471,5 +504,34 @@ describe("executeWakeCommand — against the real orchestrator", () => {
       policy: { enabled: false, mode: "observe", allowedRepos: [] },
     });
     expect(result.outcome).toBe("executed");
+  });
+
+  it("treats a concurrent in-flight wake as a benign no-op, not a retryable failure", async () => {
+    const db = freshDb();
+    const orch = buildOrch(db, new FakeProcess(), new FakeTmux());
+    seedAgent(db);
+    await hibernate(db, orch);
+    // Another owner already holds the wake lease → this trigger loses the race.
+    expect(
+      db.acquireAgentLifecycleLease({
+        agentId: "worker-1",
+        operation: "wake",
+        ownerBrokerInstanceId: "broker-2",
+        leaseId: "other-wake",
+        ttlMs: 90_000,
+      }),
+    ).not.toBeNull();
+
+    const result = await executeWakeCommand({
+      executor: orch,
+      agentId: "worker-1",
+      state: "hibernated",
+      policy: ENABLED,
+    });
+    // Benign no-op: the in-flight wake will deliver queued work. Not a refused,
+    // retryable failure — and the agent is left untouched (still hibernated).
+    expect(result).toMatchObject({ outcome: "noop", reason: "wake_in_progress" });
+    expect(result.retryable).toBeUndefined();
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("hibernated");
   });
 });

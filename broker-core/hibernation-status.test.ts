@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentLifecycleStatus,
   formatAgentLifecycleStatus,
+  redactPathLikeTokens,
   redactRuntimeSpec,
+  sanitizeOperatorReason,
   type AgentLifecycleStatusInput,
 } from "./hibernation-status.js";
 import type { AgentCheckpointReceipt, AgentRuntimeSpec, AgentWakeQueueEntry } from "./types.js";
@@ -292,5 +294,35 @@ describe("formatAgentLifecycleStatus", () => {
     const status = buildAgentLifecycleStatus(baseInput({ runtimeSpec: null }));
     const text = formatAgentLifecycleStatus(status);
     expect(text).toContain("runtime spec: MISSING");
+  });
+});
+
+describe("redactPathLikeTokens / sanitizeOperatorReason path redaction", () => {
+  it("redacts absolute, home, relative, and Windows path tokens", () => {
+    expect(redactPathLikeTokens("checkpoint failed at /Users/tm/secret/creds.json")).toBe(
+      "checkpoint failed at <path>",
+    );
+    expect(redactPathLikeTokens("see ~/私/tokens and ./rel/path and ../up/one")).toBe(
+      "see <path> and <path> and <path>",
+    );
+    expect(redactPathLikeTokens("failed under C:\\Users\\tm\\repo\\extensions")).toBe(
+      "failed under <path>",
+    );
+    expect(redactPathLikeTokens("multi/segment/relative here")).toBe("<path> here");
+    // Unix socket path.
+    expect(redactPathLikeTokens("socket /private/tmp/tmux-501/default gone")).toBe(
+      "socket <path> gone",
+    );
+  });
+
+  it("preserves ordinary prose and single-slash words", () => {
+    expect(redactPathLikeTokens("retry and/or wait")).toBe("retry and/or wait");
+    expect(redactPathLikeTokens("plain english reason")).toBe("plain english reason");
+  });
+
+  it("sanitizeOperatorReason strips control chars, collapses space, and redacts paths", () => {
+    expect(sanitizeOperatorReason("stalled\n\tat /Users/tm/private/x")).toBe("stalled at <path>");
+    expect(sanitizeOperatorReason("   ")).toBeNull();
+    expect(sanitizeOperatorReason(null)).toBeNull();
   });
 });

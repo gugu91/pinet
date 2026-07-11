@@ -102,6 +102,8 @@ class E2eProcess implements HibernationProcessController {
 class E2eTmux implements HibernationTmuxController {
   attachable = true;
   launched: BrokerClient[] = [];
+  /** Override the name the revived runtime registers with (to force conflicts). */
+  registerName: string | null = null;
   /** Override to corrupt the presented fence for negative tests. */
   mutateFence:
     | ((ctx: RuntimeLaunchContext) => {
@@ -125,7 +127,13 @@ class E2eTmux implements HibernationTmuxController {
       runtimeGeneration: ctx.reservedGeneration,
     };
     try {
-      await client.register(AGENT_NAME, "🦉", { ...AGENT_METADATA }, ctx.stableId, fence);
+      await client.register(
+        this.registerName ?? AGENT_NAME,
+        "🦉",
+        { ...AGENT_METADATA },
+        ctx.stableId,
+        fence,
+      );
       return { launched: true };
     } catch {
       // Rejected wake fence: registration threw. The runtime failed to revive.
@@ -354,6 +362,33 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     // Row stays hibernated; generation not advanced.
     expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernated");
     expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+  });
+
+  it("does not advance the generation when fenced-revival registration fails after preflight", async () => {
+    const original = await registerOriginal();
+    const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
+    const tmux = new E2eTmux(() => ctx.connect());
+    const orch = orchestratorFor(new E2eProcess(() => original), tmux);
+    orch.prepareHibernation(agentId);
+    await orch.hibernate(agentId);
+    expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernated");
+    expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+
+    // A live agent holds a name; the revived runtime is forced to request that
+    // same name so its registration deterministically fails at the name-conflict
+    // check — *after* the wake-fence preflight passes but *before* the
+    // generation would be accepted.
+    ctx.db.registerAgent("intruder-1", "Clash Name", "🤖", 1, undefined, "host:session:intruder01");
+    tmux.registerName = "Clash Name";
+
+    const woke = await orch.wake(agentId, { trigger: "manual" });
+    expect(woke.ok).toBe(false);
+    expect(woke.state).toBe("reap-candidate");
+    // The generation was NOT advanced for a runtime that never registered, so
+    // the orchestrator's registration wait can never mistake this for a live
+    // runtime and falsely promote a half-revived identity.
+    expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+    expect(ctx.db.getAgentWakeReservation(agentId)).toBeNull();
   });
 
   it("rejects a stale-fence wake and quarantines to reap-candidate", async () => {

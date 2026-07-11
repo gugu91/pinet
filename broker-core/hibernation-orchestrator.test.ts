@@ -531,6 +531,119 @@ describe("acceptRuntimeGeneration fencing", () => {
       }),
     ).toThrow(/matching held wake lease/);
   });
+
+  it("checkRuntimeGenerationAcceptable validates without mutating (accept happens post-register)", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const { fenceToken } = driveToWaking(h);
+
+    // A bad fence is rejected with no mutation.
+    expect(
+      h.db.checkRuntimeGenerationAcceptable({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken: fenceToken + 1,
+        reservedGeneration: 1,
+        now: h.clock.ms,
+      }),
+    ).toMatchObject({ accepted: false, reason: "fence_mismatch" });
+
+    // A valid preflight reports acceptable but does NOT advance the generation
+    // or consume the reservation — the socket layer only accepts after the agent
+    // registration has committed.
+    expect(
+      h.db.checkRuntimeGenerationAcceptable({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken,
+        reservedGeneration: 1,
+        now: h.clock.ms,
+      }),
+    ).toMatchObject({ accepted: true, runtimeGeneration: 1 });
+    expect(h.db.getAgentById("worker-1")?.runtimeGeneration).toBe(0);
+    expect(h.db.getAgentWakeReservation("worker-1")).not.toBeNull();
+
+    // The real acceptance then advances exactly once and consumes the reservation.
+    expect(
+      h.db.acceptRuntimeGeneration({
+        agentId: "worker-1",
+        wakeLeaseId: "wake-1",
+        fenceToken,
+        reservedGeneration: 1,
+        now: h.clock.ms,
+      }),
+    ).toMatchObject({ accepted: true, runtimeGeneration: 1 });
+    expect(h.db.getAgentById("worker-1")?.runtimeGeneration).toBe(1);
+    expect(h.db.getAgentWakeReservation("worker-1")).toBeNull();
+  });
+
+  it("rejects a fenced lifecycle transition from a superseded lease holder", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    const agent = h.db.getAgentById("worker-1")!;
+
+    // Broker A acquires the wake lease (fence 1) and moves the agent to waking.
+    const leaseA = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-A",
+      leaseId: "wake-A",
+      ttlMs: 1_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "waking",
+      reason: "wake",
+      actor: "broker-A",
+      correlationId: "cA",
+      fenceToken: leaseA.fenceToken,
+    });
+    const wakingVersion = h.db.getAgentById("worker-1")!.lifecycleVersion ?? 0;
+
+    // Lease A expires and Broker B re-acquires at a higher monotonic fence. The
+    // lifecycle version is unchanged by the re-acquisition.
+    const leaseB = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "wake",
+      ownerBrokerInstanceId: "broker-B",
+      leaseId: "wake-B",
+      ttlMs: 90_000,
+      now: h.clock.ms + 5_000,
+    })!;
+    expect(leaseB.fenceToken).toBeGreaterThan(leaseA.fenceToken);
+
+    // Broker A (stale) still has the matching version but a superseded fence →
+    // the fenced waking->live transition must be rejected, not admitted on the
+    // version CAS alone.
+    expect(() =>
+      h.db.transitionAgentLifecycle({
+        agentId: "worker-1",
+        expectedVersion: wakingVersion,
+        toState: "live",
+        reason: "wake_complete",
+        actor: "broker-A",
+        correlationId: "cA2",
+        fenceToken: leaseA.fenceToken,
+      }),
+    ).toThrow(/fence rejected/i);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("waking");
+
+    // The current lease holder (Broker B) may drive the transition.
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: wakingVersion,
+      toState: "live",
+      reason: "wake_complete",
+      actor: "broker-B",
+      correlationId: "cB",
+      fenceToken: leaseB.fenceToken,
+    });
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("live");
+  });
 });
 
 describe("fail-closed fault handling (adapter/DB rejections)", () => {
@@ -703,6 +816,60 @@ describe("recoverStrandedWakes (crash between acceptance and live)", () => {
     const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
     expect(recovered).toHaveLength(0);
     expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("waking");
+  });
+
+  it("quarantines a stranded hibernating agent (crash mid-hibernate)", () => {
+    const h = harness();
+    seedAgent(h.db);
+    const prep = h.orch.prepareHibernation("worker-1");
+    expect(prep.ready).toBe(true);
+    const agent = h.db.getAgentById("worker-1")!;
+    const lease = h.db.acquireAgentLifecycleLease({
+      agentId: "worker-1",
+      operation: "hibernate",
+      ownerBrokerInstanceId: "broker-1",
+      leaseId: "hib-1",
+      ttlMs: 90_000,
+      now: h.clock.ms,
+    })!;
+    h.db.transitionAgentLifecycle({
+      agentId: "worker-1",
+      expectedVersion: agent.lifecycleVersion ?? 0,
+      toState: "hibernating",
+      reason: "hibernate",
+      actor: "broker",
+      correlationId: "c",
+      fenceToken: lease.fenceToken,
+    });
+    // Crash: the hibernate never reached the durable `hibernated` state and the
+    // lease is gone.
+    h.db.releaseAgentLifecycleLease("worker-1", lease.leaseId, lease.fenceToken);
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("hibernating");
+
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toEqual([{ agentId: "worker-1", action: "quarantined" }]);
+    // Fail closed: uncertain runtime liveness → reap-candidate, not a silent
+    // completion that could double-launch on the next wake.
+    expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
+  });
+
+  it("requeues a wake-queue row orphaned in dispatching by a crash", async () => {
+    const h = harness();
+    seedAgent(h.db);
+    await hibernateFrom(h);
+    h.orch.enqueueWakeTrigger({ agentId: "worker-1", triggerKind: "manual", reason: "manual" });
+    const queuedRow = h.db.listWakeQueue("queued")[0];
+    expect(queuedRow).toBeDefined();
+    // Simulate a crash mid-dispatch: the row is claimed to `dispatching` and the
+    // owning dispatch loop then dies, stranding it (and blocking the unique
+    // active-agent index) until reclaimed.
+    expect(h.db.markWakeDispatching(queuedRow.id)).not.toBeNull();
+    expect(h.db.listWakeQueue("dispatching")).toHaveLength(1);
+
+    const recovered = h.orch.recoverStrandedWakes({ now: h.clock.ms });
+    expect(recovered).toEqual([{ agentId: "worker-1", action: "requeued" }]);
+    expect(h.db.listWakeQueue("dispatching")).toHaveLength(0);
+    expect(h.db.listWakeQueue("queued")).toHaveLength(1);
   });
 });
 

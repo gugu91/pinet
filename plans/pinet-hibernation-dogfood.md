@@ -16,6 +16,8 @@ Hibernation is reversible and distinct from `exit`/`reap`. A hibernated row reta
 
 The durable identity survives a _graceful_ worker shutdown. During teardown the broker stops the worker process, whose shutdown path may send an `unregister`. For agents in a hibernation lifecycle state (`hibernating`/`hibernated`/`waking`), `BrokerDB.unregisterAgent` performs a soft disconnect — it records `disconnected_at` but preserves the inbox, owned threads, and resumability — instead of the ordinary full teardown (which deletes the inbox and releases threads). This keeps hibernation teardown correct regardless of whether the runtime exits abruptly or unregisters cleanly.
 
+Wake identity revival is fenced in two independent layers. First, lifecycle **transitions** validate the presented fence against the currently held lease: lease fences are monotonic per agent (a re-acquisition after expiry bumps the fence), so a stale/superseded holder cannot drive a fenced transition on a matching version CAS alone. Second, socket registration into a hibernated identity is a **preflight-then-accept** sequence — `checkRuntimeGenerationAcceptable` validates the wake fence without mutating, the agent registration then commits, and only afterwards is the reserved runtime generation accepted (`acceptRuntimeGeneration`). This guarantees a later name conflict or registration failure can never advance the generation for a runtime that did not actually register, and the connection is bound to the revived identity only on full success.
+
 Configuration defaults to **disabled** and observe-only:
 
 ```json
@@ -46,7 +48,7 @@ Downgrade leaves additive columns/tables in place. Roll back application code by
 
 ## Controlled activation (future, separate approval)
 
-1. Back up the broker DB and record exact extension commit. On broker startup (before dispatching any wakes), call `HibernationOrchestrator.recoverStrandedWakes()` once to reconcile any agent left in `waking` by a prior crash: if its generation was already accepted (reservation consumed, `runtime_generation` advanced past the checkpoint generation) it is completed to `live`; otherwise the wake outcome is uncertain and it fails closed to `reap-candidate` for manual review rather than risking a double launch. Agents whose wake lease is still held are skipped.
+1. Back up the broker DB and record exact extension commit. On broker startup (before dispatching any wakes), call `HibernationOrchestrator.recoverStrandedWakes()` once to reconcile crash-stranded state. It repairs three classes: (a) agents left in `waking` — completed to `live` when the generation was already accepted (reservation consumed, `runtime_generation` advanced past the checkpoint generation), otherwise failed closed to `reap-candidate`; (b) agents left in `hibernating` — the runtime's liveness is unknown so they fail closed to `reap-candidate` rather than risk a double launch on the next wake; (c) wake-queue rows orphaned in `dispatching` — returned to `queued` for a fresh dispatch pass (they also block the unique active-agent index until reclaimed). Agents whose lifecycle lease is still held (unexpired) are skipped.
 2. Run observe-only for 24 hours; inspect refusal reasons and verify no runtime exits.
 3. Permit one broker-managed root worker in this repository, `mode=manual`.
 4. Confirm no active lane, pending outbound/control operation, port lease, detached UI/tool state, child process, private tmux socket, or uncommitted in-memory-only work.
@@ -96,6 +98,22 @@ spec is reported through `redactRuntimeSpec` — the sanctioned
 redaction-by-construction boundary that exposes only presence flags, counts, an
 opaque session ref, and a path-free repo basename, and never raw argv, env
 values, or filesystem/socket paths.
+
+Free-form operator strings (hibernate/wake reasons, echoed unknown targets)
+pass through `sanitizeOperatorReason`, which control-strips, single-lines,
+length-bounds, and — via `redactPathLikeTokens` — replaces filesystem-path-like
+tokens (absolute, `~`, `./`/`../`, Windows drive, and multi-segment paths) with
+`<path>` so no private path or unix socket path leaks into operator or JSON
+output, while ordinary prose (e.g. `and/or`) is preserved. The `pinet
+hibernate`/`wake` command layer normalizes Windows `\` separators before deriving
+the owner/repo slug and matching the fail-closed repo allowlist, so path
+provenance is OS-agnostic. A wake that loses the fenced lease race resolves as a
+benign `wake_in_progress` no-op (the in-flight wake drains the queue), not a
+retryable failure. Both the `agents` and `sessions` reads surface the redacted
+lifecycle projection: a scannable per-agent tag in compact output, a compact
+redacted summary array in compact structured (`json`) `data`, and the full
+redacted status block in full output — durable hibernated/quarantined identities
+remain visible even though they are disconnected from the live roster.
 
 ## Stop/rollback conditions
 

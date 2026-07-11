@@ -2120,6 +2120,21 @@ export class BrokerDB implements BrokerDBInterface {
           `Lifecycle CAS conflict for ${input.agentId}: expected ${input.expectedVersion}, got ${current.lifecycleVersion}`,
         );
       }
+      // Fence-identity validation: a transition that presents a fence token must
+      // prove it holds the matching lease. Lease fences are monotonic per agent
+      // (a re-acquisition after expiry bumps the fence), so this rejects a
+      // stale/superseded holder that would otherwise drive a fenced transition
+      // purely on a matching version CAS — the version does not advance when a
+      // competing broker re-acquires the lease at a higher fence. Unfenced
+      // administrative/recovery transitions (no fenceToken) are unaffected.
+      if (input.fenceToken != null) {
+        const lease = this.getAgentLifecycleLease(input.agentId);
+        if (!lease || lease.fenceToken !== input.fenceToken) {
+          throw new Error(
+            `Lifecycle fence rejected for ${input.agentId}: presented fence ${input.fenceToken} is not the currently held lease`,
+          );
+        }
+      }
       assertLegalLifecycleTransition(current.lifecycleState, input.toState);
       const now = new Date().toISOString();
       const result = db
@@ -2711,43 +2726,62 @@ export class BrokerDB implements BrokerDBInterface {
    * mutating state. On success the agent's runtime_generation is advanced and
    * the reservation is consumed. `now` (epoch ms) is injectable for tests.
    */
+  /**
+   * Non-mutating validation shared by {@link acceptRuntimeGeneration} and
+   * {@link checkRuntimeGenerationAcceptable}. Returns a `{ accepted: false }`
+   * rejection when the fence does not bind, or `null` when acceptance is legal.
+   * Never advances the generation or consumes the reservation.
+   */
+  private validateRuntimeGenerationAcceptance(
+    input: AcceptRuntimeGenerationInput,
+    nowMs: number,
+  ): Extract<RuntimeGenerationAcceptance, { accepted: false }> | null {
+    const db = this.getDb();
+    const reservation = this.getAgentWakeReservation(input.agentId);
+    if (!reservation) return { accepted: false, reason: "no_reservation" };
+    if (reservation.wakeLeaseId !== input.wakeLeaseId) {
+      return { accepted: false, reason: "lease_mismatch" };
+    }
+    if (reservation.fenceToken !== input.fenceToken) {
+      return { accepted: false, reason: "fence_mismatch" };
+    }
+    if (reservation.reservedGeneration !== input.reservedGeneration) {
+      return { accepted: false, reason: "generation_mismatch" };
+    }
+    const lease = this.getAgentLifecycleLease(input.agentId);
+    if (!lease || lease.leaseId !== input.wakeLeaseId || lease.fenceToken !== input.fenceToken) {
+      return { accepted: false, reason: "lease_lost" };
+    }
+    // Strict lease binding: only an unexpired wake lease may accept a
+    // generation, and only while the agent is still waking. This closes the
+    // window where a delayed runtime presents an otherwise matching
+    // reservation under an expired/wrong-operation lease or after the wake
+    // was already resolved/aborted.
+    if (lease.operation !== "wake") {
+      return { accepted: false, reason: "lease_not_wake" };
+    }
+    const leaseExpiryMs = Date.parse(lease.expiresAt);
+    if (!Number.isFinite(leaseExpiryMs) || leaseExpiryMs <= nowMs) {
+      return { accepted: false, reason: "lease_expired" };
+    }
+    const stateRow = db
+      .prepare("SELECT lifecycle_state, runtime_generation FROM agents WHERE id = ?")
+      .get(input.agentId) as { lifecycle_state: string; runtime_generation: number } | undefined;
+    if (!stateRow || stateRow.lifecycle_state !== "waking") {
+      return { accepted: false, reason: "not_waking" };
+    }
+    if (Number(stateRow.runtime_generation) !== input.reservedGeneration - 1) {
+      return { accepted: false, reason: "generation_race" };
+    }
+    return null;
+  }
+
   acceptRuntimeGeneration(input: AcceptRuntimeGenerationInput): RuntimeGenerationAcceptance {
     return this.withTransaction(() => {
       const db = this.getDb();
       const nowMs = input.now ?? Date.now();
-      const reservation = this.getAgentWakeReservation(input.agentId);
-      if (!reservation) return { accepted: false as const, reason: "no_reservation" };
-      if (reservation.wakeLeaseId !== input.wakeLeaseId) {
-        return { accepted: false as const, reason: "lease_mismatch" };
-      }
-      if (reservation.fenceToken !== input.fenceToken) {
-        return { accepted: false as const, reason: "fence_mismatch" };
-      }
-      if (reservation.reservedGeneration !== input.reservedGeneration) {
-        return { accepted: false as const, reason: "generation_mismatch" };
-      }
-      const lease = this.getAgentLifecycleLease(input.agentId);
-      if (!lease || lease.leaseId !== input.wakeLeaseId || lease.fenceToken !== input.fenceToken) {
-        return { accepted: false as const, reason: "lease_lost" };
-      }
-      // Strict lease binding: only an unexpired wake lease may accept a
-      // generation, and only while the agent is still waking. This closes the
-      // window where a delayed runtime presents an otherwise matching
-      // reservation under an expired/wrong-operation lease or after the wake
-      // was already resolved/aborted.
-      if (lease.operation !== "wake") {
-        return { accepted: false as const, reason: "lease_not_wake" };
-      }
-      const leaseExpiryMs = Date.parse(lease.expiresAt);
-      if (!Number.isFinite(leaseExpiryMs) || leaseExpiryMs <= nowMs) {
-        return { accepted: false as const, reason: "lease_expired" };
-      }
-      const stateRow = db
-        .prepare("SELECT lifecycle_state FROM agents WHERE id = ?")
-        .get(input.agentId) as { lifecycle_state: string } | undefined;
-      if (!stateRow || stateRow.lifecycle_state !== "waking") {
-        return { accepted: false as const, reason: "not_waking" };
-      }
+      const rejection = this.validateRuntimeGenerationAcceptance(input, nowMs);
+      if (rejection) return rejection;
       const result = db
         .prepare("UPDATE agents SET runtime_generation = ? WHERE id = ? AND runtime_generation = ?")
         .run(input.reservedGeneration, input.agentId, input.reservedGeneration - 1);
@@ -2757,6 +2791,28 @@ export class BrokerDB implements BrokerDBInterface {
       db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(input.agentId);
       return { accepted: true as const, runtimeGeneration: input.reservedGeneration };
     });
+  }
+
+  /**
+   * Non-mutating preflight for {@link acceptRuntimeGeneration}: runs the exact
+   * same fence validation without advancing the generation or consuming the
+   * reservation. The socket layer uses this to validate a wake fence BEFORE
+   * committing the agent registration, and only accepts the generation once
+   * registration has succeeded. Because broker registration is synchronous, a
+   * passing preflight followed immediately by `acceptRuntimeGeneration` cannot
+   * be interleaved by another connection, so this closes the window where a
+   * generation was advanced for a runtime whose registration then failed.
+   */
+  checkRuntimeGenerationAcceptable(
+    input: AcceptRuntimeGenerationInput,
+  ): RuntimeGenerationAcceptance {
+    const nowMs = input.now ?? Date.now();
+    return (
+      this.validateRuntimeGenerationAcceptance(input, nowMs) ?? {
+        accepted: true as const,
+        runtimeGeneration: input.reservedGeneration,
+      }
+    );
   }
 
   // ─── Wake queue (ordered, capacity-bounded) ────────────────────────
