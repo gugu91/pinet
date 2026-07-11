@@ -236,6 +236,36 @@ describe("packaged default broker prompt", () => {
     expect(defaultPrompt).toContain("{{agentEmoji}} {{agentName}}");
   });
 
+  it("scopes the prioritized-issue gate to this repo's Pinet + Pi Slack Bridge work only", async () => {
+    for (const file of ["tmux.md", "default.md"]) {
+      const promptPath = path.join(process.cwd(), "prompts", "broker", file);
+      const prompt = await fs.readFile(promptPath, "utf8");
+
+      // Gate names this repository's Pinet + Pi Slack Bridge surfaces explicitly.
+      expect(prompt).toContain(
+        "PRIORITIZED ISSUE GATE (gugu91/extensions Pinet + Pi Slack Bridge only)",
+      );
+      expect(prompt).toContain(
+        "Do not start, assign, or broadcast changes to THIS repository's Pinet or Pi Slack Bridge surfaces",
+      );
+      // Retains the ban on self-starting unprioritised Pinet/Slack Bridge changes.
+      expect(prompt).toContain(
+        "Do not self-start unprioritised Pinet/Slack Bridge changes from open issue lists",
+      );
+      // States it does not govern unrelated repositories or general extension work.
+      expect(prompt).toContain(
+        "it does NOT impose an issue/PR prerequisite on unrelated repositories, other extensions, or general user-authorised work",
+      );
+      expect(prompt).toContain(
+        "those follow their own repository instructions and the requester's explicit authority",
+      );
+      // The old global wording is gone.
+      expect(prompt).not.toContain(
+        "Do not start, assign, or broadcast extension changes unless the request names a GitHub issue/PR",
+      );
+    }
+  });
+
   it("documents consent-gated PM mode and durable lane metadata", async () => {
     const defaultPromptPath = path.join(process.cwd(), "prompts", "broker", "tmux.md");
     const defaultPrompt = await fs.readFile(defaultPromptPath, "utf8");

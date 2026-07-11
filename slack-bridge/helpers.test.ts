@@ -1882,6 +1882,26 @@ describe("buildWorkerPromptGuidelines", () => {
     expect(joined).not.toContain("@gugu91");
   });
 
+  it("scopes the prioritized-issue gate to this repo's Pinet/Slack Bridge work only", () => {
+    const guidelines = buildWorkerPromptGuidelines();
+    const joined = guidelines.join(" ");
+    // Gate names this repository's Pinet + Pi Slack Bridge surfaces explicitly.
+    expect(joined).toContain(
+      "Do not start or delegate changes to this repository's (gugu91/extensions) Pinet or Pi Slack Bridge surfaces",
+    );
+    // States it does not govern unrelated repositories or general user-authorised work.
+    expect(joined).toContain(
+      "it does not impose an issue/PR prerequisite on unrelated repositories, other extensions, or general user-authorised work",
+    );
+    expect(joined).toContain(
+      "which follow their own repository instructions and the requester's explicit authority",
+    );
+    // The old global wording is gone.
+    expect(joined).not.toContain(
+      "Do not start or delegate extension changes unless the request names a GitHub issue/PR",
+    );
+  });
+
   it("tells workers to explicitly mark themselves idle/free when work is done", () => {
     const guidelines = buildWorkerPromptGuidelines();
     const joined = guidelines.join(" ");
