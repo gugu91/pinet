@@ -608,7 +608,33 @@ export class BrokerSocketServer {
       reservationNonce: string | undefined;
     },
   ): { rejection: JsonRpcResponse | null; revive?: WakeRevival } {
-    if (!stableId) return { rejection: null };
+    const { wakeLeaseId, fenceToken, reservedGeneration, reservationNonce } = fence;
+    const hasFence =
+      wakeLeaseId !== undefined ||
+      fenceToken !== undefined ||
+      reservedGeneration !== undefined ||
+      reservationNonce !== undefined;
+
+    // A wake fence is only meaningful for a specific durable stable identity.
+    // Compute `hasFence` BEFORE the ordinary-registration fast path so a runtime
+    // cannot omit `stableId`, present its broker-issued fence, and register as a
+    // fresh authorized agent that skipped fence enforcement entirely (a malformed
+    // wake runtime could otherwise do exactly this during the wake window). A
+    // fence with no stableId has no identity to revive → reject fail-closed; only
+    // a fence-free, stableId-less registration is a legitimate ordinary one.
+    if (!stableId) {
+      if (hasFence) {
+        return {
+          rejection: rpcError(
+            req.id,
+            RPC_AGENT_WAKE_FENCE_REJECTED,
+            "Wake fence presented without a stableId; no hibernated identity to revive.",
+            { code: "WAKE_FENCE_REJECTED", reason: "fence_without_stable_id", retryable: false },
+          ),
+        };
+      }
+      return { rejection: null };
+    }
     const existing = this.db.getAgentByStableId(stableId);
     const lifecycleState = existing?.lifecycleState;
     const durableHibernation = lifecycleState === "hibernated" || lifecycleState === "waking";
@@ -623,13 +649,6 @@ export class BrokerSocketServer {
       lifecycleState === "hibernating" ||
       lifecycleState === "reap-candidate" ||
       lifecycleState === "terminated";
-
-    const { wakeLeaseId, fenceToken, reservedGeneration, reservationNonce } = fence;
-    const hasFence =
-      wakeLeaseId !== undefined ||
-      fenceToken !== undefined ||
-      reservedGeneration !== undefined ||
-      reservationNonce !== undefined;
 
     if (registrationBlocked) {
       return {

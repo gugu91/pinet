@@ -85,6 +85,8 @@ class FakeProcess implements HibernationProcessController {
   /** When false, `stopLaunchedAttempt` cannot confirm the attempt stopped. */
   attemptStopConfirms = true;
   stopAttemptCalls = 0;
+  /** When true, the attempt-bound stop/liveness probes throw (adapter fault). */
+  throwOnAttemptStop = false;
 
   async requestCheckpoint(): Promise<HibernationCheckpointOutcome> {
     this.checkpointCalls += 1;
@@ -104,6 +106,7 @@ class FakeProcess implements HibernationProcessController {
   }
   async stopLaunchedAttempt(handle: RuntimeAttemptHandle): Promise<{ stopped: boolean }> {
     this.stopAttemptCalls += 1;
+    if (this.throwOnAttemptStop) throw new Error("stopLaunchedAttempt boom");
     // Unknown attempt ⇒ cannot prove it stopped (fail closed).
     if (!this.launchedAttempts.has(handle.reservationNonce)) return { stopped: false };
     if (this.attemptStopConfirms) {
@@ -113,6 +116,7 @@ class FakeProcess implements HibernationProcessController {
     return { stopped: false };
   }
   async isLaunchedAttemptAlive(handle: RuntimeAttemptHandle): Promise<boolean> {
+    if (this.throwOnAttemptStop) throw new Error("isLaunchedAttemptAlive boom");
     return this.launchedAttempts.get(handle.reservationNonce) ?? false;
   }
 }
@@ -125,6 +129,8 @@ class FakeTmux implements HibernationTmuxController {
   onRespawn: ((ctx: RuntimeLaunchContext) => void) | null = null;
   /** When true, a successful launch returns no attempt handle (unprovable). */
   suppressHandle = false;
+  /** When true, `respawnRuntime` throws mid-launch (adapter fault, no handle). */
+  throwOnRespawn = false;
   /** Linked process world so a launched attempt is registered as alive. */
   private linkedProcess: FakeProcess | null = null;
 
@@ -139,6 +145,7 @@ class FakeTmux implements HibernationTmuxController {
     ctx: RuntimeLaunchContext,
   ): Promise<{ launched: boolean; handle: RuntimeAttemptHandle | null }> {
     this.respawnCalls.push(ctx);
+    if (this.throwOnRespawn) throw new Error("respawnRuntime boom");
     this.onRespawn?.(ctx);
     if (!this.launched) return { launched: false, handle: null };
     const handle: RuntimeAttemptHandle = {
@@ -900,7 +907,14 @@ describe("fail-closed fault handling (adapter/DB rejections)", () => {
       throw new Error("respawn boom");
     };
     const result = await h.orch.wake("worker-1");
-    expect(result).toMatchObject({ ok: false, reason: "wake_fault", state: "reap-candidate" });
+    // A respawn that THROWS may have partially launched a process with no handle
+    // to address, so its liveness is unprovable → fail closed as ambiguous
+    // (still reap-candidate), rather than a generic `wake_fault`.
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "wake_ambiguous_launch",
+      state: "reap-candidate",
+    });
     expect(h.db.getAgentById("worker-1")?.lifecycleState).toBe("reap-candidate");
     expect(h.db.getAgentWakeReservation("worker-1")).toBeNull();
     expect(h.db.getAgentLifecycleLease("worker-1")).toBeNull();
@@ -1096,6 +1110,165 @@ describe("wake lease renewal (long waits) + fail-closed lease loss", () => {
     // Quarantined on the first attempt without even attempting a stop (no handle).
     expect(tmux.respawnCalls.length).toBe(1);
     expect(proc.stopAttemptCalls).toBe(0);
+  });
+
+  it("prove-stops the launched attempt even when the registration WAIT throws (fails closed if unprovable)", async () => {
+    // Blocker 1: a throw from `awaitRuntimeRegistration` after a launch must not
+    // jump to the generic fault path leaving the attempt running. The launched
+    // attempt is prove-stopped via its handle; unprovable ⇒ `wake_ambiguous_launch`.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+      awaitRuntimeRegistration: async () => {
+        throw new Error("registration wait boom");
+      },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+    proc.attemptStopConfirms = false; // cannot confirm the launched attempt died
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result).toMatchObject({
+      ok: false,
+      state: "reap-candidate",
+      reason: "wake_ambiguous_launch",
+    });
+    expect(tmux.respawnCalls.length).toBe(1);
+    expect(proc.stopAttemptCalls).toBe(1); // prove-stop ran despite the registration throw
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
+
+  it("fails closed as ambiguous when a respawn THROWS mid-launch (no leaked runtime, no relaunch)", async () => {
+    // Blocker 1: a throw from `respawnRuntime` leaves an unknown process with no
+    // handle to address → unprovable → quarantine immediately without relaunch.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 3 },
+      awaitRuntimeRegistration: async () => false,
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+    tmux.throwOnRespawn = true;
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result).toMatchObject({
+      ok: false,
+      state: "reap-candidate",
+      reason: "wake_ambiguous_launch",
+    });
+    expect(tmux.respawnCalls.length).toBe(1); // no relaunch after the throw
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull();
+  });
+
+  it("treats a prove-stop probe THROW as unprovable → ambiguous", async () => {
+    // Blocker 1: if the stop/liveness proof itself faults, the attempt cannot be
+    // confirmed gone → fail closed rather than relaunch/strand.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 3 },
+      awaitRuntimeRegistration: async () => false,
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+    proc.throwOnAttemptStop = true;
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    expect(result).toMatchObject({
+      ok: false,
+      state: "reap-candidate",
+      reason: "wake_ambiguous_launch",
+    });
+    expect(proc.stopAttemptCalls).toBe(1);
+  });
+
+  it("never quarantines an ACCEPTED runtime when post-acceptance promotion faults (recoverable to live)", async () => {
+    // Blocker 2: once the socket layer atomically accepts the generation the
+    // runtime is live+connected. A subsequent bookkeeping fault (here: the
+    // queue-depth read backing the `waking -> live` promotion) must leave the
+    // identity in `waking` for `recoverStrandedWakes` to finish — NEVER move an
+    // awake runtime to `reap-candidate`.
+    const db = freshDb();
+    seedAgent(db);
+    const proc = new FakeProcess();
+    const tmux = new FakeTmux().linkProcess(proc);
+    const clock = { ms: 1_000_000 };
+    const orch = new HibernationOrchestrator({
+      db,
+      process: proc,
+      tmux,
+      brokerInstanceId: "broker-1",
+      now: () => clock.ms,
+      config: { registrationTimeoutMs: 200, handshakeTimeoutMs: 200, maxWakeAttempts: 1 },
+      awaitRuntimeRegistration: async (ctx: RuntimeLaunchContext) => {
+        // Simulate the socket layer atomically accepting the generation.
+        db.registerAgent(
+          ctx.agentId,
+          "Worker",
+          "🦉",
+          5555,
+          { ...AGENT_METADATA },
+          ctx.spec.stableId,
+        );
+        const acceptance = db.acceptRuntimeGeneration({
+          agentId: ctx.agentId,
+          wakeLeaseId: ctx.wakeLeaseId,
+          fenceToken: ctx.fenceToken,
+          reservedGeneration: ctx.reservedGeneration,
+          reservationNonce: ctx.reservationNonce,
+          now: clock.ms,
+        });
+        return acceptance.accepted;
+      },
+    });
+    await hibernateFrom({ db, proc, tmux, orch, clock });
+
+    // Fault the promotion bookkeeping (the queue-depth read) AFTER acceptance.
+    const originalInbox = db.getUnreadInboxCount.bind(db);
+    db.getUnreadInboxCount = (_agentId: string): number => {
+      throw new Error("promotion db fault");
+    };
+
+    const result = await orch.wake("worker-1", { trigger: "manual" });
+    // The worker is awake: reported ok, left `waking` for recovery, NOT quarantined.
+    expect(result.ok).toBe(true);
+    expect(result.state).toBe("waking");
+    expect(result.reason).toBe("woken_recovery_pending");
+    expect(result.runtimeGeneration).toBe(1);
+    const stranded = db.getAgentById("worker-1");
+    expect(stranded?.lifecycleState).toBe("waking");
+    expect(stranded?.runtimeGeneration).toBe(1); // generation was accepted
+    expect(db.getAgentWakeReservation("worker-1")).toBeNull(); // reservation consumed on accept
+    expect(db.getAgentLifecycleLease("worker-1")).toBeNull(); // lease released in finally
+
+    // recoverStrandedWakes classifies it as accepted-but-stranded and completes it.
+    db.getUnreadInboxCount = originalInbox;
+    const recovered = orch.recoverStrandedWakes({ now: clock.ms });
+    expect(recovered).toContainEqual({ agentId: "worker-1", action: "completed" });
+    expect(db.getAgentById("worker-1")?.lifecycleState).toBe("live");
   });
 
   it("promotes an accepted runtime to live even if the lease expires AFTER acceptance (no false quarantine)", async () => {

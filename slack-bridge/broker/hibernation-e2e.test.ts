@@ -506,6 +506,39 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     expect(ctx.db.getAgentWakeReservation(agentId)).toBeNull();
   });
 
+  it("rejects a wake fence presented with NO stableId (malformed wake cannot register fresh)", async () => {
+    // Blocker 3: a malformed wake runtime could omit `stableId` while presenting
+    // its broker-issued fence to slip past enforcement and register as a fresh
+    // authorized agent during the wake window. `enforceWakeFence` must compute
+    // `hasFence` BEFORE the ordinary-registration fast path and reject
+    // `hasFence && !stableId` fail-closed — no row, no socket binding, and no
+    // generation mutation on the real hibernated identity.
+    const original = await registerOriginal();
+    const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
+    const orch = orchestratorFor(new E2eProcess(() => original), new E2eTmux(() => ctx.connect()));
+    orch.prepareHibernation(agentId);
+    await orch.hibernate(agentId);
+    expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+
+    const agentsBefore = ctx.db.getAllAgents().length;
+    const stray = await ctx.connect();
+    await expect(
+      stray.register("Sneaky Worker", "🥷", { ...AGENT_METADATA }, undefined, {
+        wakeLeaseId: "forged-lease",
+        fenceToken: 1,
+        runtimeGeneration: 1,
+        reservationNonce: "forged-nonce",
+      }),
+    ).rejects.toThrow();
+
+    // No new authorized row/binding was created; the hibernated identity and its
+    // generation are untouched.
+    expect(ctx.db.getAllAgents().length).toBe(agentsBefore);
+    expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernated");
+    expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
+    stray.disconnect();
+  });
+
   it("survives a broker restart while hibernated and wakes afterwards", async () => {
     const original = await registerOriginal();
     const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;

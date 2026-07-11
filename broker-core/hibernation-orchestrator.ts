@@ -551,6 +551,16 @@ export class HibernationOrchestrator {
     // persisted into any lifecycle row / event.
     const reason = sanitizeOperatorReason(opts.reason) ?? "manual";
     const startedAt = this.now();
+    // Cross-cutting fault state, read by the outer catch:
+    //  - `acceptedGeneration`: the socket layer atomically accepted our generation,
+    //    so the runtime is live+connected. Acceptance is IRREVERSIBLE — a later
+    //    fault must NEVER quarantine it; leave `waking` for `recoverStrandedWakes`.
+    //  - `inFlightHandle`/`inFlightLaunched`: a launched-but-unaccepted attempt that
+    //    may still be running. Any escape must prove-stop it (via its attempt-bound
+    //    handle) or fail closed as `wake_ambiguous_launch` rather than leak it.
+    let acceptedGeneration = false;
+    let inFlightLaunched = false;
+    let inFlightHandle: RuntimeAttemptHandle | null = null;
 
     const agent = this.db.getAgentById(agentId);
     if (!agent) return this.refuseWake(agentId, correlationId, "live", "unknown_agent", actor);
@@ -649,43 +659,96 @@ export class HibernationOrchestrator {
           spec,
         };
 
-        const launch = await this.tmux.respawnRuntime(launchCtx);
-        const registered = launch.launched ? await this.awaitRuntimeRegistration(launchCtx) : false;
-        const refreshed = this.db.getAgentById(agentId);
-        const accepted =
-          registered && refreshed?.runtimeGeneration === reservation.reservedGeneration;
+        // Launch the replacement runtime. A throw MID-LAUNCH leaves an unknown
+        // process with no handle to address, so its liveness is unprovable → fail
+        // closed (never fall through to the generic fault path, which would leak it).
+        inFlightLaunched = true;
+        inFlightHandle = null;
+        let launch: { launched: boolean; handle: RuntimeAttemptHandle | null };
+        try {
+          launch = await this.tmux.respawnRuntime(launchCtx);
+        } catch {
+          return this.quarantineWake(
+            agentId,
+            versionCursor,
+            correlationId,
+            actor,
+            "wake_ambiguous_launch",
+            lease,
+            attempt,
+          );
+        }
+        inFlightLaunched = launch.launched;
+        inFlightHandle = launch.handle;
+
+        // Wait for the woken runtime to re-register and present its fence. The
+        // socket layer accepts the generation ATOMICALLY on a valid registration,
+        // so acceptance can happen even if the wait — or the acceptance read —
+        // throws afterward. Catch and re-confirm from the durable row rather than
+        // assuming failure (which would prove-stop an already-accepted runtime).
+        let registered = false;
+        let accepted = false;
+        try {
+          registered = launch.launched ? await this.awaitRuntimeRegistration(launchCtx) : false;
+          if (registered) {
+            accepted =
+              this.db.getAgentById(agentId)?.runtimeGeneration === reservation.reservedGeneration;
+          }
+        } catch {
+          accepted = this.isGenerationAccepted(agentId, reservation.reservedGeneration);
+        }
 
         if (accepted) {
+          // The socket layer already bound this runtime to our exact
+          // lease/fence/reservation and atomically advanced+consumed the
+          // generation, so from here acceptance is IRREVERSIBLE: the runtime is
+          // live and connected and must NEVER be quarantined. The `waking -> live`
+          // promotion is pure bookkeeping — drive it with an unfenced
+          // administrative CAS (a lease that expired *after* acceptance must not
+          // throw a fenced transition and quarantine an already-live runtime) and
+          // GUARD it so that any post-acceptance DB fault (transition, inbox
+          // count, wake completion) leaves the identity in `waking` for
+          // `recoverStrandedWakes` to finish to `live`, rather than quarantining.
+          acceptedGeneration = true;
+          inFlightLaunched = false; // the attempt IS the live runtime; never stop it
+          inFlightHandle = null;
           const durationMs = this.now() - startedAt;
-          // Generation acceptance already bound the runtime to our exact
-          // lease/fence/reservation, so the final `waking -> live` promotion is
-          // bookkeeping: drive it with an unfenced administrative CAS. Otherwise
-          // a lease that expired *after* acceptance (e.g. a slow registration on
-          // the winning attempt) would throw the fenced transition and quarantine
-          // an already-live runtime. The version CAS still guards a concurrent
-          // legitimate writer; this mirrors `recoverStrandedWakes`'s accepted->live
-          // completion.
-          const live = this.transitionAdministrative({
-            agentId,
-            expectedVersion: versionCursor,
-            toState: "live",
-            reason,
-            actor,
-            correlationId,
-            durationMs,
-            queueDepth: this.db.getUnreadInboxCount(agentId),
-          });
-          this.db.completeWakeForAgent(agentId);
-          return {
-            ok: true,
-            agentId,
-            correlationId,
-            state: live.lifecycleState ?? "live",
-            reason: "woken",
-            runtimeGeneration: reservation.reservedGeneration,
-            attempts: attempt,
-            durationMs,
-          };
+          try {
+            const live = this.transitionAdministrative({
+              agentId,
+              expectedVersion: versionCursor,
+              toState: "live",
+              reason,
+              actor,
+              correlationId,
+              durationMs,
+              queueDepth: this.db.getUnreadInboxCount(agentId),
+            });
+            this.db.completeWakeForAgent(agentId);
+            return {
+              ok: true,
+              agentId,
+              correlationId,
+              state: live.lifecycleState ?? "live",
+              reason: "woken",
+              runtimeGeneration: reservation.reservedGeneration,
+              attempts: attempt,
+              durationMs,
+            };
+          } catch {
+            // Post-acceptance bookkeeping faulted. The worker is awake; leave
+            // `waking` for recovery to finalize. Report success on the material
+            // outcome with a recovery-pending hint (never quarantine).
+            return {
+              ok: true,
+              agentId,
+              correlationId,
+              state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
+              reason: "woken_recovery_pending",
+              runtimeGeneration: reservation.reservedGeneration,
+              attempts: attempt,
+            };
+          }
         }
 
         // Failed attempt. If a runtime was actually launched but not accepted,
@@ -704,24 +767,22 @@ export class HibernationOrchestrator {
         // THIS launch (`launch.handle`), not the durable spec. Using the spec
         // would target the pre-hibernation runtime's recorded PID generation —
         // which is already dead — and so would always "confirm stopped" while the
-        // newly launched attempt kept running. A launch that produced no handle
-        // is unprovable and must fail closed.
-        if (launch.launched) {
-          const handle = launch.handle;
-          const stop = handle ? await this.process.stopLaunchedAttempt(handle) : { stopped: false };
-          const stillAlive = handle ? await this.process.isLaunchedAttemptAlive(handle) : true;
-          if (!handle || !stop.stopped || stillAlive) {
-            return this.quarantineWake(
-              agentId,
-              versionCursor,
-              correlationId,
-              actor,
-              "wake_ambiguous_launch",
-              lease,
-              attempt,
-            );
-          }
+        // newly launched attempt kept running. A launch that produced no handle,
+        // or a stop/liveness probe that throws, is unprovable and must fail closed
+        // (`proveAttemptStopped` swallows throws and returns false).
+        if (launch.launched && !(await this.proveAttemptStopped(launch.handle))) {
+          return this.quarantineWake(
+            agentId,
+            versionCursor,
+            correlationId,
+            actor,
+            "wake_ambiguous_launch",
+            lease,
+            attempt,
+          );
         }
+        inFlightLaunched = false; // this attempt is confirmed gone (or nothing launched)
+        inFlightHandle = null;
         // The prior attempt's runtime is confirmed gone (or nothing launched).
         // Do NOT clear the reservation here: re-reserving on the next attempt
         // mints a fresh nonce that overwrites this row (fencing the prior
@@ -751,17 +812,37 @@ export class HibernationOrchestrator {
         maxAttempts,
       );
     } catch {
-      // Fail-closed: an unexpected adapter/DB fault (e.g. respawn/registration
-      // rejection) must not strand the agent in `waking`. Any partially
-      // launched runtime's liveness is unknown → clear the reservation and
-      // quarantine for manual review. Static reason; never surface raw errors.
+      // Fail-closed on an unexpected adapter/DB fault that escaped the per-attempt
+      // handling. Two invariants override the generic quarantine:
+      //
+      //  1. If our generation was already ACCEPTED, the runtime is live and
+      //     socket-bound. Acceptance is irreversible: never quarantine it — leave
+      //     `waking` for `recoverStrandedWakes` to promote to `live`.
+      if (acceptedGeneration) {
+        return {
+          ok: true,
+          agentId,
+          correlationId,
+          state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
+          reason: "woken_recovery_pending",
+        };
+      }
+      //  2. A launched-but-unaccepted attempt may still be running. Prove-stop it
+      //     via its attempt-bound handle; if it cannot be confirmed gone (or there
+      //     is no handle), fail closed as `wake_ambiguous_launch` rather than leak
+      //     a runtime. Otherwise it is a plain fault. Static reasons only; never
+      //     surface raw errors.
+      const faultReason =
+        inFlightLaunched && !(await this.proveAttemptStopped(inFlightHandle))
+          ? "wake_ambiguous_launch"
+          : "wake_fault";
       try {
         return this.quarantineWake(
           agentId,
           versionCursor,
           correlationId,
           actor,
-          "wake_fault",
+          faultReason,
           lease,
           0,
         );
@@ -771,11 +852,43 @@ export class HibernationOrchestrator {
           agentId,
           correlationId,
           state: this.db.getAgentById(agentId)?.lifecycleState ?? "waking",
-          reason: "wake_fault",
+          reason: faultReason,
         };
       }
     } finally {
       this.db.releaseAgentLifecycleLease(agentId, lease.leaseId, lease.fenceToken);
+    }
+  }
+
+  /**
+   * Best-effort proof that a launched wake ATTEMPT's runtime is gone, addressed
+   * by its attempt-bound handle (never the durable spec). Fail-closed: a missing
+   * handle, an unconfirmed stop, a still-alive probe, OR any adapter throw all
+   * count as "not proven gone", so the caller quarantines (`wake_ambiguous_launch`)
+   * rather than relaunch on / strand a possibly-live runtime.
+   */
+  private async proveAttemptStopped(handle: RuntimeAttemptHandle | null): Promise<boolean> {
+    if (!handle) return false;
+    try {
+      const stop = await this.process.stopLaunchedAttempt(handle);
+      if (!stop.stopped) return false;
+      return !(await this.process.isLaunchedAttemptAlive(handle));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Confirm — best-effort, throw-swallowing — whether the durable row already
+   * reflects our accepted generation. Used when the acceptance READ faults after
+   * the socket may have atomically accepted the generation, so an accepted
+   * runtime is not misread as a failed attempt. A read fault ⇒ unconfirmable ⇒ false.
+   */
+  private isGenerationAccepted(agentId: string, reservedGeneration: number): boolean {
+    try {
+      return this.db.getAgentById(agentId)?.runtimeGeneration === reservedGeneration;
+    } catch {
+      return false;
     }
   }
 
