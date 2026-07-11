@@ -1889,12 +1889,17 @@ describe("buildWorkerPromptGuidelines", () => {
     expect(joined).toContain(
       "Do not start or delegate changes to this repository's (gugu91/extensions) Pinet or Pi Slack Bridge surfaces",
     );
-    // States it does not govern unrelated repositories or general user-authorised work.
+    // Exemption is scoped OUTSIDE the protected surfaces so it cannot weaken the in-repo gate
+    // and does not govern unrelated repositories or general work elsewhere.
     expect(joined).toContain(
-      "it does not impose an issue/PR prerequisite on unrelated repositories, other extensions, or general user-authorised work",
+      "Outside those surfaces \u2014 for example unrelated repositories, other extensions, or general user-authorised work elsewhere \u2014 it imposes no issue/PR prerequisite",
     );
     expect(joined).toContain(
-      "which follow their own repository instructions and the requester's explicit authority",
+      "that work follows its own repository instructions and the requester's explicit authority",
+    );
+    // Delegation checklist ties maintainer approval to gate-covered work only.
+    expect(joined).toContain(
+      "maintainer approval (for gate-covered gugu91/extensions Pinet/Slack Bridge work)",
     );
     // The old global wording is gone.
     expect(joined).not.toContain(

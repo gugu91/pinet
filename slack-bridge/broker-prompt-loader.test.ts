@@ -252,12 +252,21 @@ describe("packaged default broker prompt", () => {
       expect(prompt).toContain(
         "Do not self-start unprioritised Pinet/Slack Bridge changes from open issue lists",
       );
-      // States it does not govern unrelated repositories or general extension work.
+      // Exemption is scoped OUTSIDE the protected surfaces so it cannot weaken the in-repo gate
+      // and does not govern unrelated repositories or general work elsewhere.
       expect(prompt).toContain(
-        "it does NOT impose an issue/PR prerequisite on unrelated repositories, other extensions, or general user-authorised work",
+        "Outside those surfaces \u2014 for example unrelated repositories, other extensions, or general user-authorised work elsewhere \u2014 it imposes NO issue/PR prerequisite",
       );
       expect(prompt).toContain(
-        "those follow their own repository instructions and the requester's explicit authority",
+        "that work follows its own repository instructions and the requester's explicit authority",
+      );
+      // Adjacent routing/delegation guidance ties issue/PR + maintainer approval to gate-covered
+      // work only, so it cannot be read as a global prerequisite.
+      expect(prompt).toContain(
+        "maintainer approval (required only for gate-covered gugu91/extensions Pinet/Slack Bridge work)",
+      );
+      expect(prompt).toContain(
+        "maintainer priority/approval (for gate-covered gugu91/extensions Pinet/Slack Bridge work)",
       );
       // The old global wording is gone.
       expect(prompt).not.toContain(
