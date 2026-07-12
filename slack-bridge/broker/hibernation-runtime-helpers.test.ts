@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildResumeLauncherScript,
+  buildRuntimeSpecInput,
   buildWakeFenceEnv,
   deriveVcsIdentity,
   parseRssBytesFromPs,
@@ -8,6 +9,7 @@ import {
   resumePathFromSessionRef,
   sessionResumeRefFromStableId,
   shellQuote,
+  type SpawnAuthoredRuntimeFacts,
 } from "./hibernation-runtime-helpers.js";
 
 describe("deriveVcsIdentity", () => {
@@ -169,5 +171,79 @@ describe("buildResumeLauncherScript", () => {
   it("starts with a strict bash shebang preamble", () => {
     const script = buildResumeLauncherScript(base);
     expect(script.startsWith("#!/bin/bash\nset -euo pipefail\n")).toBe(true);
+  });
+});
+
+describe("buildRuntimeSpecInput", () => {
+  const facts: SpawnAuthoredRuntimeFacts = {
+    agentId: "agent-1",
+    stableId: "host.local:session:/sessions/worker.jsonl",
+    brokerOwnerId: "broker-instance-9",
+    cwd: "/repos/extensions/.worktrees/wt",
+    repoRoot: "/repos/extensions/.worktrees/wt",
+    worktreePath: "/repos/extensions/.worktrees/wt",
+    tmuxSocket: "/tmp/pinet.sock",
+    tmuxSession: "pinet-worker-1",
+    tmuxTarget: "pinet-worker-1:0.0",
+    extensionEntryPath: "/pkg/slack-bridge/index.ts",
+    envAllowlist: ["PINET_SOCKET_PATH", "PI_SETTINGS_PATH", "PINET_SOCKET_PATH", ""],
+    configFingerprint: "cfg#abc",
+    expectedUser: "tmnexcade",
+    launchSource: "subtree-broker-tmux",
+    vcsIdentity: "gugu91/extensions",
+  };
+
+  it("composes a complete spec from broker-known facts", () => {
+    const spec = buildRuntimeSpecInput(facts);
+    expect(spec).not.toBeNull();
+    expect(spec).toMatchObject({
+      agentId: "agent-1",
+      brokerOwnerId: "broker-instance-9",
+      tmuxTarget: "pinet-worker-1:0.0",
+      executable: "pi",
+      sessionResumeRef: "session:/sessions/worker.jsonl",
+      vcsIdentity: "gugu91/extensions",
+      expectedHost: "host.local",
+    });
+    // argv mirrors the resume launch, with the path recovered from the ref only.
+    expect(spec?.argv).toEqual([
+      "-e",
+      "/pkg/slack-bridge/index.ts",
+      "--session",
+      "/sessions/worker.jsonl",
+    ]);
+    // envAllowlist is de-duplicated and drops empties (names only).
+    expect(spec?.envAllowlist).toEqual(["PINET_SOCKET_PATH", "PI_SETTINGS_PATH"]);
+  });
+
+  it("preserves the broker-derived vcsIdentity, including null (fail-closed authz)", () => {
+    expect(buildRuntimeSpecInput({ ...facts, vcsIdentity: null })?.vcsIdentity).toBeNull();
+  });
+
+  it("returns null for a non-resumable identity (no session path)", () => {
+    expect(buildRuntimeSpecInput({ ...facts, stableId: "host:cwd:/repos/x" })).toBeNull();
+    expect(buildRuntimeSpecInput({ ...facts, stableId: "host:broker:/x" })).toBeNull();
+    expect(buildRuntimeSpecInput({ ...facts, stableId: "not-a-stable-id" })).toBeNull();
+  });
+
+  it("fails closed when a required operational locator is missing", () => {
+    expect(buildRuntimeSpecInput({ ...facts, tmuxTarget: "" })).toBeNull();
+    expect(buildRuntimeSpecInput({ ...facts, tmuxSocket: "" })).toBeNull();
+    expect(buildRuntimeSpecInput({ ...facts, tmuxSession: "" })).toBeNull();
+    expect(buildRuntimeSpecInput({ ...facts, repoRoot: "" })).toBeNull();
+  });
+
+  it("defaults cwd/worktree to repoRoot and fills soft defaults", () => {
+    const spec = buildRuntimeSpecInput({
+      ...facts,
+      cwd: "",
+      worktreePath: "",
+      configFingerprint: "",
+      launchSource: "",
+    });
+    expect(spec?.cwd).toBe(facts.repoRoot);
+    expect(spec?.worktreePath).toBe(facts.repoRoot);
+    expect(spec?.configFingerprint).toBe("unknown");
+    expect(spec?.launchSource).toBe("subtree-broker-tmux");
   });
 });

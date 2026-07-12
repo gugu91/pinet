@@ -6,6 +6,8 @@
 // correctness-critical pieces (VCS identity derivation, wake-fence env parsing,
 // resume-launcher construction) unit-testable without spawning processes.
 
+import type { AgentRuntimeSpecInput } from "@pinet/broker-core/types";
+
 import { parsePinetStableId } from "../pinet-session-formatting.js";
 
 /** Single-quote a value for safe embedding in a POSIX shell launcher script. */
@@ -136,6 +138,83 @@ export function parseWakeFenceEnv(env: Record<string, string | undefined>): Wake
   if (!wakeLeaseId || !reservationNonce) return null;
   if (!Number.isInteger(fenceToken) || !Number.isInteger(reservedGeneration)) return null;
   return { wakeLeaseId, fenceToken, reservedGeneration, reservationNonce };
+}
+
+/**
+ * The broker-KNOWN, spawn-authored facts that compose a durable runtime spec.
+ *
+ * Every operational field here (the tmux socket/session/target the broker will
+ * later kill and respawn into, the repo/cwd it runs `ps`/`kill`/`git` against)
+ * MUST come from the broker's own spawn record — NEVER from worker-reported
+ * registration metadata. A worker that could name another worker's tmux pane
+ * would otherwise get the broker to checkpoint/kill/respawn THAT pane on its
+ * behalf. The only field the worker's identity contributes is its stable id
+ * (which embeds its own session path); authorization uses solely the
+ * broker-derived {@link vcsIdentity}.
+ */
+export interface SpawnAuthoredRuntimeFacts {
+  agentId: string;
+  stableId: string;
+  brokerOwnerId: string;
+  cwd: string;
+  repoRoot: string;
+  worktreePath: string;
+  tmuxSocket: string;
+  tmuxSession: string;
+  tmuxTarget: string;
+  extensionEntryPath: string;
+  /** Environment variable NAMES (never values) the launcher exports. */
+  envAllowlist: string[];
+  configFingerprint: string;
+  expectedUser: string;
+  launchSource: string;
+  /** Broker-derived from the runtime's git remote — the ONLY authz identity. */
+  vcsIdentity: string | null;
+}
+
+/**
+ * Compose a durable {@link AgentRuntimeSpecInput} from broker-known spawn facts.
+ *
+ * Fails closed (returns null) when the identity is not a resumable Pi session
+ * (`sessionResumeRef` cannot be derived) or any operational locator the broker
+ * must act on (tmux socket/session/target, repo root) is missing — a spec that
+ * could not be safely hibernated/woken is never recorded. `expectedHost` is
+ * taken from the stable id's host prefix; `argv` mirrors the resume launch
+ * (`pi -e <entry> --session <path>`) for provenance; the resume path itself is
+ * only ever recovered from the redaction-safe `sessionResumeRef`.
+ */
+export function buildRuntimeSpecInput(
+  facts: SpawnAuthoredRuntimeFacts,
+): AgentRuntimeSpecInput | null {
+  const sessionResumeRef = sessionResumeRefFromStableId(facts.stableId);
+  if (!sessionResumeRef) return null;
+  const resumePath = resumePathFromSessionRef(sessionResumeRef);
+  if (!resumePath) return null;
+  if (!facts.tmuxSocket || !facts.tmuxSession || !facts.tmuxTarget || !facts.repoRoot) return null;
+
+  const expectedHost = parsePinetStableId(facts.stableId)?.host ?? "";
+  const envAllowlist = Array.from(new Set(facts.envAllowlist.filter((name) => name.length > 0)));
+
+  return {
+    agentId: facts.agentId,
+    stableId: facts.stableId,
+    brokerOwnerId: facts.brokerOwnerId,
+    cwd: facts.cwd || facts.repoRoot,
+    repoRoot: facts.repoRoot,
+    worktreePath: facts.worktreePath || facts.repoRoot,
+    tmuxSocket: facts.tmuxSocket,
+    tmuxSession: facts.tmuxSession,
+    tmuxTarget: facts.tmuxTarget,
+    executable: "pi",
+    argv: ["-e", facts.extensionEntryPath, "--session", resumePath],
+    envAllowlist,
+    sessionResumeRef,
+    configFingerprint: facts.configFingerprint || "unknown",
+    expectedHost,
+    expectedUser: facts.expectedUser,
+    launchSource: facts.launchSource || "subtree-broker-tmux",
+    vcsIdentity: facts.vcsIdentity,
+  };
 }
 
 export interface ResumeLauncherInput {
