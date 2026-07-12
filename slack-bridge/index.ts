@@ -21,16 +21,9 @@ import { resolveReactionCommands } from "./reaction-triggers.js";
 import { DEFAULT_SOCKET_PATH } from "./broker/client.js";
 import {
   collectAgentLifecycleStatuses,
-  executeHibernateCommand,
-  executeWakeCommand,
-  unknownHibernationTarget,
   type AgentLifecycleStatus,
-  type HibernateCommandExecutor,
-  type HibernationCommandPolicy,
   type HibernationCommandResult,
-  type WakeCommandExecutor,
 } from "@pinet/broker-core";
-import type { AgentInfo, AgentLifecycleState } from "@pinet/broker-core/types";
 import { resolveHibernationSettings } from "./hibernation-config.js";
 import type {
   PortLeaseAcquireInput,
@@ -99,7 +92,12 @@ import {
 import { createPinetRegistrationGate } from "./pinet-registration-gate.js";
 import { createBrokerRuntimeAccess } from "./broker-runtime-access.js";
 import { createInboxDrainRuntime } from "./inbox-drain-runtime.js";
-import { createSubtreeBrokerRuntime } from "./subtree-broker-runtime.js";
+import {
+  createSubtreeBrokerRuntime,
+  getExtensionEntryPath,
+  SUBTREE_INHERITED_ENV_KEYS,
+} from "./subtree-broker-runtime.js";
+import { routeHibernationCommand } from "./broker/hibernation-command-router.js";
 import { createAgentCompletionRuntime } from "./agent-completion-runtime.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 import { SlackThreadStatusManager } from "./slack-thread-status.js";
@@ -950,75 +948,22 @@ export default function (pi: ExtensionAPI) {
     target: string,
     reason?: string,
   ): Promise<HibernationCommandResult> {
-    if (brokerRole !== "broker") {
-      throw new Error(
-        `pinet ${command} is broker-managed. Connect this session as the broker (/pinet start) to hibernate or wake workers.`,
-      );
-    }
-    const db = getActiveBrokerDb();
-    if (!db) throw new Error("Broker database is unavailable.");
-
-    const wanted = target.trim().replace(/^@/, "");
-    const agents = db.getAllAgents();
-    const lowerWanted = wanted.toLowerCase();
-    const nameMatches = agents.filter((a: AgentInfo) => a.name?.toLowerCase() === lowerWanted);
-    const agent =
-      agents.find((a: AgentInfo) => a.id === wanted) ??
-      agents.find((a: AgentInfo) => a.stableId === wanted) ??
-      (nameMatches.length === 1 ? nameMatches[0] : undefined);
-    if (!agent) return unknownHibernationTarget(command, target);
-
-    const hib = resolveHibernationSettings(settings);
-    const policy: HibernationCommandPolicy = {
-      enabled: hib.enabled,
-      mode: hib.mode,
-      allowedRepos: hib.allowedRepos,
-    };
-    const state = (agent.lifecycleState ?? "live") as AgentLifecycleState;
-    // Provenance: the repo allowlist is a security boundary, so authorization
-    // trusts ONLY the broker-authored durable runtime spec's CANONICAL VCS
-    // IDENTITY (`owner/repo`), captured at spawn from the runtime's git remote.
-    // Ownership is NEVER inferred from filesystem directory names: a path-segment
-    // slug would collapse distinct roots that share their final segments (e.g.
-    // `/trusted/gugu91/extensions` and `/tmp/impostor/gugu91/extensions` both →
-    // `gugu91/extensions`), mis-derive ordinary layouts (`/Users/alice/projects/
-    // extensions` → `projects/extensions`), and turn worktree roots into
-    // `.worktrees/<branch>`. Matching the remote-derived identity instead means a
-    // repo shares one identity with all its worktrees and impostor roots never
-    // authorize. Mutable, worker-declared metadata is NEVER used as a fallback.
-    // When no trusted spec / resolvable remote exists the identifier stays null
-    // and the fail-closed gate refuses.
-    const repoIdentifier = db.getAgentRuntimeSpec(agent.id)?.vcsIdentity ?? null;
-
-    // Live process/tmux checkpoint/respawn adapters are a separate, explicitly
-    // gated activation step (default-off, unactivated). In the default disabled
-    // configuration the policy gate refuses before this executor is consulted;
-    // if hibernation is enabled without adapters wired, callers get a clear
-    // activation_pending refusal rather than a silent no-op.
-    const executor: HibernateCommandExecutor & WakeCommandExecutor = {
-      prepareHibernation: () => ({ ready: false, state, reason: "activation_pending" }),
-      hibernate: async () => ({ ok: false, state, reason: "activation_pending" }),
-      wake: async () => ({ ok: false, state, reason: "activation_pending" }),
-    };
-
-    if (command === "hibernate") {
-      return executeHibernateCommand({
-        executor,
-        agentId: agent.id,
-        state,
-        repoIdentifier,
-        policy,
-        actor: "operator",
-        reason,
-      });
-    }
-    return executeWakeCommand({
-      executor,
-      agentId: agent.id,
-      state,
-      policy,
-      actor: "operator",
-      reason,
+    // Thin wrapper: DB-topology resolution + executor composition live in the
+    // extracted, independently-tested production router, so the live extension and
+    // the production-route E2E drive the exact same integration code. `brokerRole`,
+    // the runtime-activation authority (via the router's internal
+    // `hibernationRuntimeActive()` gate), the real subtree control accessor, and the
+    // central-DB fallback are all threaded through unchanged.
+    return routeHibernationCommand({
+      command,
+      target,
+      ...(reason !== undefined ? { reason } : {}),
+      brokerRole,
+      hib: resolveHibernationSettings(settings),
+      getRuntimeControl: () => subtreeBrokerRuntime.getHibernationRuntimeControl(),
+      getFallbackDb: () => getActiveBrokerDb(),
+      extensionEntryPath: getExtensionEntryPath(),
+      inheritedEnvKeys: SUBTREE_INHERITED_ENV_KEYS,
     });
   }
 

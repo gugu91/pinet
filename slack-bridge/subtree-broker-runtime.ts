@@ -27,6 +27,15 @@ import {
   type PinetRemoteControlRequestResult,
   type SlackBridgeSettings,
 } from "./helpers.js";
+import { resolveHibernationSettings } from "./hibernation-config.js";
+import {
+  hibernationRuntimeActive,
+  createHibernationOrchestrator,
+  persistSpawnedRuntimeSpec,
+  recoverStrandedWakesBeforeRegistrations,
+} from "./broker/hibernation-activation.js";
+import { freezeHibernationActivationAuthority } from "./broker/hibernation-activation-authority.js";
+import type { BrokerDB } from "./broker/schema.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_SPAWN_REGISTRATION_TIMEOUT_MS = 45_000;
@@ -132,8 +141,27 @@ export interface SubtreeBrokerRuntimeDeps {
   formatError: (error: unknown) => string;
 }
 
+/**
+ * The authoritative hibernation runtime surface for this process's subtree
+ * broker. The subtree broker is the authority that spawns and OWNS its workers
+ * and authors their durable runtime specs, so hibernate/wake must resolve the
+ * target, read its authz spec, and drive the orchestrator against THIS same
+ * authoritative DB end to end. The explicit trust boundary: the operator command
+ * may only address workers this subtree broker owns. Null when no subtree broker
+ * is running (nothing is command-addressable).
+ */
+export interface SubtreeHibernationRuntimeControl {
+  /** The single authoritative DB that owns the spawned workers + their specs. */
+  db: BrokerDB;
+  /** Broker instance id recorded on lifecycle leases; matches startup recovery. */
+  brokerInstanceId: string;
+  /** Base PINET_* env re-establishing the mesh connection for a woken worker. */
+  baseLaunchEnv: Record<string, string>;
+}
+
 export interface SubtreeBrokerRuntime {
   start: (ctx: ExtensionContext) => Promise<SubtreeBrokerStatus>;
+  getHibernationRuntimeControl: () => SubtreeHibernationRuntimeControl | null;
   stop: (options?: { releaseIdentity?: boolean; stopChildren?: boolean }) => Promise<void>;
   getStatus: () => SubtreeBrokerStatus;
   readInbox: (options?: PinetReadOptions) => PinetReadResult | null;
@@ -280,11 +308,27 @@ function buildTmuxMonitorCommand(sessionName: string, socketPath: string | null)
   return `tmux ${socketArgs}attach -t ${quoteShellValue(sessionName)}`;
 }
 
-function getExtensionEntryPath(): string {
+export function getExtensionEntryPath(): string {
   const currentPath = fileURLToPath(import.meta.url);
   const extension = path.extname(currentPath) || ".js";
   return path.join(path.dirname(currentPath), `index${extension}`);
 }
+
+/**
+ * Broker env var NAMES (never values) a spawned — or later WOKEN — worker
+ * re-exports to re-establish itself. Single source of truth shared by the
+ * ordinary spawn launcher and the Phase B wake path so both stay in lockstep.
+ */
+export const SUBTREE_INHERITED_ENV_KEYS = [
+  "PI_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
+  "PI_OFFLINE",
+  "PI_SETTINGS_PATH",
+  "PINET_MESH_SECRET",
+  "PINET_MESH_SECRET_PATH",
+  "SLACK_APP_TOKEN",
+  "SLACK_BOT_TOKEN",
+];
 
 function childStartupPrompt(parentAgentId: string): string {
   return [
@@ -634,15 +678,52 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     const paths = buildSubtreeBrokerPaths(stableId);
     fs.mkdirSync(paths.rootDir, { recursive: true });
     const meshAuth = resolvePinetMeshAuth(deps.getSettings());
+
+    // Capture the durable, process-lifetime activation authority at broker start
+    // (frozen; never re-read from reloadable settings) and resolve the self id up
+    // front so Phase B, Seam 3 startup stranded-wake recovery can run inside
+    // `beforeListen` — strictly BEFORE the socket accepts any registration.
+    freezeHibernationActivationAuthority();
+    const selfId = buildSelfAgentId(stableId);
+    const runtimeActive = hibernationRuntimeActive();
+    const startupHib = resolveHibernationSettings(deps.getSettings());
+
     const broker = await startBroker({
       dbPath: paths.dbPath,
       socketPath: paths.socketPath,
       lockPath: paths.lockPath,
       ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
       ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+      ...(runtimeActive
+        ? {
+            beforeListen: ({ db }) => {
+              // Phase B, Seam 3 (default-off): reconcile crash-stranded wake rows
+              // on THIS broker's authoritative DB BEFORE it begins listening, so
+              // a stranded waking/hibernating row is completed/quarantined/
+              // requeued deterministically instead of racing an incoming
+              // (possibly duplicate) wake registration. Pure DB reconciliation;
+              // launches nothing. `selfId` equals the self-agent id registered
+              // below, so recovery's lease ownership matches the live wake path.
+              recoverStrandedWakesBeforeRegistrations(
+                createHibernationOrchestrator({
+                  db,
+                  brokerInstanceId: selfId,
+                  extensionEntryPath: getExtensionEntryPath(),
+                  baseLaunchEnv: buildChildLaunchEnv(paths, selfId),
+                  inheritedEnvKeys: SUBTREE_INHERITED_ENV_KEYS,
+                  config: {
+                    handshakeTimeoutMs: startupHib.handshakeTimeoutMs,
+                    wakeLeaseMs: startupHib.wakeLeaseMs,
+                    maxConcurrentWakes: startupHib.maxConcurrentWakes,
+                    maxConcurrentWakesPerRepo: startupHib.maxConcurrentWakesPerRepo,
+                  },
+                }),
+              );
+            },
+          }
+        : {}),
     });
 
-    const selfId = buildSelfAgentId(stableId);
     const { name, emoji } = deps.getAgentIdentity();
     const metadata = {
       ...(await deps.getAgentMetadata("broker")),
@@ -759,6 +840,33 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     const updatedRecord: SubtreeWorkerRecord = { ...workerRecord, agentId: agent.id };
     spawnedWorkers.set(launchId, updatedRecord);
 
+    // Phase B, Seam 2 (default-off): record a durable, broker-authored runtime
+    // spec so this freshly-registered worker is hibernatable/wakeable later. The
+    // authz VCS identity is derived from the repo's REAL git remote (never the
+    // directory name); an unresolvable remote or non-durable locator set fails
+    // closed (no spec persisted). No-op unless the durable, non-reloadable
+    // runtime-activation authority is set. Persisted into `activeBroker.db` — the
+    // SAME authoritative DB the hibernate/wake command path resolves against via
+    // `getHibernationRuntimeControl`.
+    if (hibernationRuntimeActive()) {
+      await persistSpawnedRuntimeSpec(activeBroker.db, {
+        agentId: agent.id,
+        stableId: agent.stableId ?? "",
+        brokerOwnerId: selfAgentId,
+        cwd: repoPath,
+        repoRoot: repoPath,
+        worktreePath: repoPath,
+        tmuxSocket: tmuxSocketPath ?? "",
+        tmuxSession: sessionName,
+        tmuxTarget: sessionName,
+        extensionEntryPath: getExtensionEntryPath(),
+        envAllowlist: Object.keys(childLaunchEnv),
+        configFingerprint: "subtree-broker-tmux",
+        expectedUser: os.userInfo().username,
+        launchSource: "subtree-broker-tmux",
+      });
+    }
+
     const messageResult = await sendMessage(agent.id, input.task, {
       subtreeTask: true,
       launchId,
@@ -787,8 +895,18 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     };
   }
 
+  function getHibernationRuntimeControl(): SubtreeHibernationRuntimeControl | null {
+    if (!activeBroker || !selfAgentId || !activePaths) return null;
+    return {
+      db: activeBroker.db,
+      brokerInstanceId: selfAgentId,
+      baseLaunchEnv: buildChildLaunchEnv(activePaths, selfAgentId),
+    };
+  }
+
   return {
     start,
+    getHibernationRuntimeControl,
     stop,
     getStatus,
     readInbox,

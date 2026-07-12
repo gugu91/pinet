@@ -62,6 +62,11 @@ export interface SlackBridgeSettings {
   hibernation?: {
     /** Master kill switch. Defaults false; waking/draining existing rows remains permitted. */
     enabled?: boolean;
+    // NOTE: live-runtime activation (Phase B) is deliberately NOT a settings
+    // field. It is gated by a durable, non-reloadable process-launch authority
+    // (PINET_HIBERNATION_RUNTIME_ACTIVATION, frozen at broker start) so no
+    // settings edit or config reload can elevate a running broker into live
+    // process/tmux composition. See broker/hibernation-activation-authority.ts.
     mode?: "observe" | "manual" | "auto";
     allowedRepos?: string[];
     graceMs?: number;
