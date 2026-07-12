@@ -158,7 +158,10 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
       /* seed pane already exited */
     }
 
-    // Launch the resident runtime in a throwaway tmux session (remain-on-exit).
+    // Launch the resident runtime in a throwaway tmux session. NOTE: we do NOT
+    // pre-set remain-on-exit here on purpose — stopRuntime is responsible for
+    // ensuring the pane survives the Pi exit, so hibernation needs no spawn-path
+    // change. The survival assertion after stopRuntime proves that behaviour.
     const launchScript = path.join(tmpRoot, "launch.sh");
     fs.writeFileSync(
       launchScript,
@@ -172,7 +175,6 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
       { mode: 0o700 },
     );
     tmuxNewSessionClean(tmuxSession, launchScript, minimalEnv);
-    tmux(["set-option", "-t", tmuxSession, "remain-on-exit", "on"]);
 
     // ── Wait for the runtime to boot ──────────────────────────────────
     let alive = false;
@@ -193,6 +195,8 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
     expect(checkpoint.rssBytes ?? 0).toBeGreaterThan(0);
 
     // ── Hibernate: stop the runtime; tmux session must SURVIVE ────────
+    // stopRuntime itself sets remain-on-exit before killing Pi, so the session
+    // stays attachable even though we never pre-set it at launch.
     const stop = await proc.stopRuntime(spec);
     expect(stop.stopped).toBe(true);
     expect(await proc.isRuntimeAlive(spec)).toBe(false);

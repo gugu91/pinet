@@ -237,9 +237,20 @@ export function createHibernationProcessController(
       const pid = await panePid(d.runner, spec);
       if (pid == null) return { stopped: true, rssBytes: null };
       const rssBytes = await rssBytesOf(d.runner, pid);
+      // Ensure the pane survives the Pi exit BEFORE stopping it, so hibernation
+      // requires no change to the worker spawn path. With remain-on-exit on,
+      // killing the pane's foreground Pi leaves the tmux session intact and
+      // operator-attachable, and a wake can respawn into it. Best-effort: the
+      // orchestrator independently verifies survival via isSessionAttachable.
+      await d.runner.run("tmux", [
+        ...tmuxSocketArgs(spec),
+        "set-option",
+        "-t",
+        spec.tmuxSession,
+        "remain-on-exit",
+        "on",
+      ]);
       const stopped = await terminatePid(pid, d);
-      // The tmux pane/session is deliberately left intact (remain-on-exit) so it
-      // stays operator-attachable and a wake can respawn into it.
       return { stopped, rssBytes };
     },
 

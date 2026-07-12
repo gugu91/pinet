@@ -162,6 +162,22 @@ describe("HibernationProcessController.stopRuntime", () => {
     expect(tmuxVerbs).not.toContain("kill-pane");
   });
 
+  it("ensures remain-on-exit on the session before killing Pi (no spawn-path change needed)", async () => {
+    const { runner, calls } = makeRunner({ panePid: 4242, paneDead: "0", rssKb: 100 });
+    const world = makeProcessWorld(new Set([4242]), { dieOnTerm: true });
+    const ctrl = createHibernationProcessController({ runner, ...world });
+    await ctrl.stopRuntime(makeSpec());
+    const setOption = calls.find(
+      (c) =>
+        c.file === "tmux" && c.args.includes("set-option") && c.args.includes("remain-on-exit"),
+    );
+    expect(setOption).toBeDefined();
+    expect(setOption?.args).toContain("on");
+    // It targets the recorded tmux session, never a destructive verb.
+    expect(setOption?.args).toContain(makeSpec().tmuxSession);
+    expect(setOption?.args).not.toContain("kill-session");
+  });
+
   it("escalates to SIGKILL when the runtime ignores SIGTERM", async () => {
     const { runner } = makeRunner({ panePid: 4242, paneDead: "0", rssKb: 100 });
     const world = makeProcessWorld(new Set([4242]), { dieOnTerm: false });
