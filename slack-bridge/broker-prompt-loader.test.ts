@@ -225,16 +225,25 @@ describe("renderBrokerPromptContent", () => {
 });
 
 describe("packaged default broker prompt", () => {
-  it("keeps replaceable default policy in tmux.md rather than hard-coded broker prompt helpers", async () => {
-    const defaultPromptPath = path.join(process.cwd(), "prompts", "broker", "tmux.md");
-    const defaultPrompt = await fs.readFile(defaultPromptPath, "utf8");
+  it.each(["default.md", "tmux.md"])(
+    "keeps repo-scoped replaceable policy in packaged broker prompt %s",
+    async (promptFile) => {
+      const defaultPromptPath = path.join(process.cwd(), "prompts", "broker", promptFile);
+      const defaultPrompt = await fs.readFile(defaultPromptPath, "utf8");
 
-    expect(defaultPrompt).toContain("NEVER WRITE CODE");
-    expect(defaultPrompt).toContain("PRIORITIZED ISSUE GATE");
-    expect(defaultPrompt).toContain("REPO-SCOPED DELEGATION");
-    expect(defaultPrompt).toContain("RALPH LOOP");
-    expect(defaultPrompt).toContain("{{agentEmoji}} {{agentName}}");
-  });
+      expect(defaultPrompt).toContain("NEVER WRITE CODE");
+      expect(defaultPrompt).toContain("GUGU91/EXTENSIONS PRIORITIZED ISSUE GATE");
+      expect(defaultPrompt).toContain("For work in `gugu91/extensions`");
+      expect(defaultPrompt).toContain("including `tmustier/pi-extensions`");
+      expect(defaultPrompt).toContain(
+        "follow their own instructions and normal requester authority",
+      );
+      expect(defaultPrompt).toContain("required by the target repository's instructions");
+      expect(defaultPrompt).toContain("REPO-SCOPED DELEGATION");
+      expect(defaultPrompt).toContain("RALPH LOOP");
+      expect(defaultPrompt).toContain("{{agentEmoji}} {{agentName}}");
+    },
+  );
 
   it("documents consent-gated PM mode and durable lane metadata", async () => {
     const defaultPromptPath = path.join(process.cwd(), "prompts", "broker", "tmux.md");
@@ -319,7 +328,10 @@ describe("packaged default broker prompt", () => {
       });
 
       expect(result.source).toBe("packaged");
-      expect(result.content).toContain("PRIORITIZED ISSUE GATE");
+      expect(result.content).toContain("GUGU91/EXTENSIONS PRIORITIZED ISSUE GATE");
+      expect(result.content).toContain(
+        "follow their own instructions and normal requester authority",
+      );
     },
     60_000,
   );

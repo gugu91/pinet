@@ -2009,8 +2009,8 @@ export function buildWorkerPromptGuidelines(): string[] {
     "- In PM mode, remain accountable: nominate an implementation lead, delegate implementation, coordinate blockers/status, act as second-pass reviewer, and coordinate merge readiness.",
     "- Before delegating through Pinet, call `pinet action=agents` with the target repo to find a suitable connected worker in the same repo/worktree, then delegate via `pinet action=send`.",
     "- Keep delegation inside the Pinet or Slack thread so ACKs, blockers, status updates, and final results flow back to the original sender.",
-    "- Do not start or delegate extension changes unless the request names a GitHub issue/PR with clear maintainer priority/approval; if missing or unclear, ask first.",
-    "- When delegating, include the workflow (`ack/work/ask/report`), the task, issue/PR numbers, maintainer approval, repo/branch/worktree setup, important files, acceptance criteria, and where to reply.",
+    "- For work in `gugu91/extensions`, do not start or delegate changes unless the request names a GitHub issue/PR with clear maintainer priority/approval; if missing or unclear, ask first. This gate is specific to `gugu91/extensions`; unrelated repositories, including `tmustier/pi-extensions`, follow their own instructions and normal requester authority.",
+    "- When delegating, include the workflow (`ack/work/ask/report`), the task, repo/branch/worktree setup, important files, acceptance criteria, where to reply, and any issue/PR numbers or maintainer approval required by the target repository's instructions.",
     "- Use `pinet action=lanes` to keep PM-mode or complex coordination lane metadata durable when the broker asks you to track lane state/roles.",
   ];
 }
