@@ -79,8 +79,8 @@ socket wiring — the default DB-polls `runtimeGeneration === reservedGeneration
 which the socket-server's fenced register already advances.
 
 The two controllers are constructed **independently** and share NO mutable state.
-The wake attempt's immutable process generation (pane pid + start-time/command
-token + pane address) is carried INSIDE the `RuntimeAttemptHandle` that
+The wake attempt's immutable process generation (pane pid + start-time token +
+pane address) is carried INSIDE the `RuntimeAttemptHandle` that
 `respawnRuntime` returns; the orchestrator round-trips that handle opaquely to the
 attempt-scoped stop/liveness probes, so a failed/timed-out wake is always
 cleanable by the exact process it launched. There is deliberately no shared

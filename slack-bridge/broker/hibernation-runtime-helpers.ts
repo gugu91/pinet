@@ -255,14 +255,21 @@ export interface ResumeLauncherInput {
  * fence for atomic generation acceptance.
  *
  * The script is secret-bearing (it exports mesh/Slack credential VALUES), so it
- * removes its own file (`rm -f -- "$0"`) immediately before `exec`. The launcher
- * fd stays open across the unlink (POSIX keeps the inode until the fd closes),
- * so `exec pi` still runs, but no secret-bearing file lingers on the happy path.
- * The broker separately unlinks on the failure path (where the script never
- * ran) and materializes launchers only in a private, owner-only directory.
+ * removes its own file (`rm -f -- "$0"`) as its FIRST executable action — before
+ * `cd` and before exporting ANY secret. Under `set -euo pipefail` a later failure
+ * (e.g. a missing/unmounted repo making `cd` exit) therefore cannot leave a
+ * secret-bearing file behind, closing the “tmux accepted launch, launcher began,
+ * pre-delete setup failed” retention window. The launcher fd stays open across the
+ * unlink (POSIX keeps the inode until the fd closes), so `exec pi` still runs from
+ * the now-unnamed inode even though the secrets are exported after the unlink. The
+ * broker separately unlinks on the failure path (where the script never ran) and
+ * materializes launchers only in a private, owner-only directory.
  */
 export function buildResumeLauncherScript(input: ResumeLauncherInput): string {
-  const lines: string[] = ["#!/bin/bash", "set -euo pipefail", `cd ${shellQuote(input.repoPath)}`];
+  // Self-delete FIRST (before cd and before any secret export) so no failure in
+  // the remaining setup can leave the secret-bearing launcher on disk.
+  const lines: string[] = ["#!/bin/bash", "set -euo pipefail", `rm -f -- "$0"`];
+  lines.push(`cd ${shellQuote(input.repoPath)}`);
   for (const [key, value] of Object.entries(input.inheritedEnv)) {
     if (value !== undefined && value !== "") lines.push(`export ${key}=${shellQuote(value)}`);
   }
@@ -270,9 +277,6 @@ export function buildResumeLauncherScript(input: ResumeLauncherInput): string {
     lines.push(`export ${key}=${shellQuote(value)}`);
   }
   lines.push(`export PI_NICKNAME=${shellQuote(input.nickname)}`);
-  // Self-delete the secret-bearing launcher before exec; the open fd survives the
-  // unlink so `exec pi` still runs from the now-unnamed inode.
-  lines.push(`rm -f -- "$0"`);
   lines.push(
     `exec pi -e ${shellQuote(input.extensionEntryPath)} --session ${shellQuote(input.sessionPath)}`,
   );

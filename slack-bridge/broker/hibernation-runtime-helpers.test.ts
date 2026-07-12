@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildResumeLauncherScript,
   buildRuntimeSpecInput,
@@ -197,14 +201,52 @@ describe("buildResumeLauncherScript", () => {
     expect(script.startsWith("#!/bin/bash\nset -euo pipefail\n")).toBe(true);
   });
 
-  it("self-deletes the secret-bearing launcher immediately before exec", () => {
+  it("self-deletes as the FIRST executable statement, before cd and before any secret export", () => {
     const script = buildResumeLauncherScript(base);
     const rmIndex = script.indexOf('rm -f -- "$0"');
-    const execIndex = script.indexOf("exec pi -e");
+    const cdIndex = script.indexOf("cd '/repo/root'");
+    const firstExportIndex = script.indexOf("export ");
     expect(rmIndex).toBeGreaterThan(0);
-    // The self-delete must be the last statement before exec so the open fd
-    // survives the unlink while no secret file lingers.
-    expect(rmIndex).toBeLessThan(execIndex);
+    // The self-delete must precede cd AND every secret export, so no later
+    // failure (e.g. a failing cd under set -e) can leave the secret file behind.
+    expect(rmIndex).toBeLessThan(cdIndex);
+    expect(rmIndex).toBeLessThan(firstExportIndex);
+    // It is the first executable line after the strict preamble.
+    expect(script.startsWith('#!/bin/bash\nset -euo pipefail\nrm -f -- "$0"\n')).toBe(true);
+  });
+});
+
+describe("buildResumeLauncherScript early-failure secret retention (real bash)", () => {
+  let dir: string | null = null;
+  afterEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  it("leaves no launcher file when cd fails before exec (secrets never persist)", () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "pinet-wake-test-"));
+    const launcherPath = path.join(dir, "pinet-wake-regression.sh");
+    // A repo path that does not exist forces `cd` to fail under set -e, exiting
+    // before `exec pi` — the exact "launcher began, pre-delete setup failed" mode.
+    const script = buildResumeLauncherScript({
+      repoPath: path.join(dir, "does-not-exist"),
+      sessionPath: "/tmp/sessions/agent-abc.jsonl",
+      extensionEntryPath: "/ext/index.js",
+      inheritedEnv: {},
+      pinetEnv: { PINET_MESH_SECRET: "super-secret-value" },
+      nickname: "Woken Worker",
+    });
+    fs.writeFileSync(launcherPath, script, { mode: 0o700 });
+    let exitCode = 0;
+    try {
+      execFileSync("bash", [launcherPath], { stdio: "ignore" });
+    } catch (error) {
+      exitCode = (error as { status?: number }).status ?? 1;
+    }
+    // cd failed, so the launcher exited non-zero WITHOUT reaching exec pi ...
+    expect(exitCode).not.toBe(0);
+    // ... yet the secret-bearing launcher already removed itself first.
+    expect(fs.existsSync(launcherPath)).toBe(false);
   });
 });
 
