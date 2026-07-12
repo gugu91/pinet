@@ -20,6 +20,11 @@ import {
   recoverStrandedWakesBeforeRegistrations,
   type SpawnRuntimeSpecFacts,
 } from "./hibernation-activation.js";
+import {
+  freezeHibernationActivationAuthority,
+  hibernationActivationAuthorized,
+  __resetHibernationActivationAuthorityForTest,
+} from "./hibernation-activation-authority.js";
 
 const tempDirs: string[] = [];
 function freshDb(): BrokerDB {
@@ -76,14 +81,51 @@ function specFacts(
   };
 }
 
-describe("hibernationRuntimeActive — default-off gate", () => {
-  it("is false unless BOTH enabled and activateRuntimeAdapters are set", () => {
-    expect(hibernationRuntimeActive({ enabled: false, activateRuntimeAdapters: false })).toBe(
-      false,
-    );
-    expect(hibernationRuntimeActive({ enabled: true, activateRuntimeAdapters: false })).toBe(false);
-    expect(hibernationRuntimeActive({ enabled: false, activateRuntimeAdapters: true })).toBe(false);
-    expect(hibernationRuntimeActive({ enabled: true, activateRuntimeAdapters: true })).toBe(true);
+describe("hibernationRuntimeActive — durable, non-reloadable, default-off authority", () => {
+  afterEach(() => __resetHibernationActivationAuthorityForTest());
+
+  it("is false by default (no external authority set)", () => {
+    __resetHibernationActivationAuthorityForTest();
+    freezeHibernationActivationAuthority({});
+    expect(hibernationRuntimeActive()).toBe(false);
+  });
+
+  it("activates ONLY from the external launch-env authority, not from settings", () => {
+    __resetHibernationActivationAuthorityForTest();
+    // A fully-"enabled" settings-shaped object is irrelevant: the gate never reads
+    // settings, so no settings edit / reload can elevate a running broker.
+    freezeHibernationActivationAuthority({ PINET_HIBERNATION_RUNTIME_ACTIVATION: "1" });
+    expect(hibernationRuntimeActive()).toBe(true);
+    expect(hibernationActivationAuthorized()).toBe(true);
+  });
+
+  it("accepts 1/true/yes/on (case-insensitive) and rejects everything else", () => {
+    for (const v of ["1", "true", "TRUE", " yes ", "On"]) {
+      __resetHibernationActivationAuthorityForTest();
+      freezeHibernationActivationAuthority({ PINET_HIBERNATION_RUNTIME_ACTIVATION: v });
+      expect(hibernationRuntimeActive()).toBe(true);
+    }
+    for (const v of ["", "0", "false", "off", "enabled", "2"]) {
+      __resetHibernationActivationAuthorityForTest();
+      freezeHibernationActivationAuthority({ PINET_HIBERNATION_RUNTIME_ACTIVATION: v });
+      expect(hibernationRuntimeActive()).toBe(false);
+    }
+  });
+
+  it("is FROZEN for the process lifetime — reloads cannot flip it either way", () => {
+    // Captured ON at start; a later "reload" with the var removed cannot turn it off.
+    __resetHibernationActivationAuthorityForTest();
+    freezeHibernationActivationAuthority({ PINET_HIBERNATION_RUNTIME_ACTIVATION: "1" });
+    expect(freezeHibernationActivationAuthority({})).toBe(true);
+    expect(hibernationRuntimeActive()).toBe(true);
+
+    // Captured OFF at start; a later "reload" that sets the var cannot turn it on.
+    __resetHibernationActivationAuthorityForTest();
+    freezeHibernationActivationAuthority({});
+    expect(
+      freezeHibernationActivationAuthority({ PINET_HIBERNATION_RUNTIME_ACTIVATION: "1" }),
+    ).toBe(false);
+    expect(hibernationRuntimeActive()).toBe(false);
   });
 });
 

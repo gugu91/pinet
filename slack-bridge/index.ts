@@ -963,7 +963,21 @@ export default function (pi: ExtensionAPI) {
         `pinet ${command} is broker-managed. Connect this session as the broker (/pinet start) to hibernate or wake workers.`,
       );
     }
-    const db = getActiveBrokerDb();
+    const hib = resolveHibernationSettings(settings);
+
+    // Authoritative DB unification + explicit trust boundary. When the durable,
+    // non-reloadable runtime-activation authority is set, the SUBTREE broker is
+    // the authority that spawned and OWNS these workers AND authored their
+    // durable runtime specs, so hibernate/wake must resolve the target, read its
+    // authz spec, AND drive the orchestrator against that SAME subtree DB end to
+    // end. The operator may therefore only address workers this process's subtree
+    // broker owns. In the default-off configuration there is no runtime control,
+    // so resolution falls back to the central broker DB and the executor stays
+    // the `activation_pending` stub (a clear refusal, never a silent no-op).
+    const runtimeControl = hibernationRuntimeActive()
+      ? subtreeBrokerRuntime.getHibernationRuntimeControl()
+      : null;
+    const db = runtimeControl?.db ?? getActiveBrokerDb();
     if (!db) throw new Error("Broker database is unavailable.");
 
     const wanted = target.trim().replace(/^@/, "");
@@ -976,7 +990,6 @@ export default function (pi: ExtensionAPI) {
       (nameMatches.length === 1 ? nameMatches[0] : undefined);
     if (!agent) return unknownHibernationTarget(command, target);
 
-    const hib = resolveHibernationSettings(settings);
     const policy: HibernationCommandPolicy = {
       enabled: hib.enabled,
       mode: hib.mode,
@@ -999,22 +1012,23 @@ export default function (pi: ExtensionAPI) {
     const repoIdentifier = db.getAgentRuntimeSpec(agent.id)?.vcsIdentity ?? null;
 
     // Live process/tmux checkpoint/respawn adapters are a separate, explicitly
-    // gated activation step (default-off). In the default disabled configuration
-    // the policy gate refuses before this executor is consulted; if hibernation
-    // is enabled but runtime activation is NOT, callers get a clear
-    // activation_pending refusal rather than a silent no-op. Only when BOTH
-    // `enabled` and `activateRuntimeAdapters` are set (Phase B) is the real
-    // process/tmux HibernationOrchestrator composed in this executor slot. The
-    // woken worker's respawn env is the subtree broker's child-launch env (the
-    // socket/mesh it must reconnect to); inherited secret var NAMES come from the
-    // shared spawn/wake allowlist.
-    const subtreeStatus = subtreeBrokerRuntime.getStatus();
-    const executor: HibernateCommandExecutor & WakeCommandExecutor = hibernationRuntimeActive(hib)
+    // gated activation step (default-off). Activation is authorized ONLY by the
+    // durable, non-reloadable process-launch authority captured at broker start
+    // (never agent-editable settings / config reload). When it is unset (the
+    // production default) `runtimeControl` is null and callers get a clear
+    // `activation_pending` refusal rather than a silent no-op. When set, the real
+    // process/tmux HibernationOrchestrator is composed over the SAME subtree DB
+    // that owns the worker and its spec, with `brokerInstanceId` matching the
+    // spawn/startup-recovery owner so lease fencing lines up. The woken worker's
+    // respawn env is the subtree broker's child-launch env (the socket/mesh it
+    // must reconnect to); inherited secret var NAMES come from the shared
+    // spawn/wake allowlist.
+    const executor: HibernateCommandExecutor & WakeCommandExecutor = runtimeControl
       ? createHibernationOrchestrator({
-          db,
-          brokerInstanceId: getActiveBrokerSelfId() ?? subtreeStatus.selfAgentId ?? "broker",
+          db: runtimeControl.db,
+          brokerInstanceId: runtimeControl.brokerInstanceId,
           extensionEntryPath: getExtensionEntryPath(),
-          baseLaunchEnv: subtreeStatus.childLaunchEnv,
+          baseLaunchEnv: runtimeControl.baseLaunchEnv,
           inheritedEnvKeys: SUBTREE_INHERITED_ENV_KEYS,
           config: {
             handshakeTimeoutMs: hib.handshakeTimeoutMs,

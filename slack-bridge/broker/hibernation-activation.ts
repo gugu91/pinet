@@ -2,8 +2,9 @@
 //
 // Wires the reviewed, approved hibernation RUNTIME ADAPTERS (real process/tmux
 // controllers + spawn-authored runtime-spec builder + git-remote VCS identity)
-// into the broker's three live seams, all behind the DEFAULT-OFF
-// `hibernation.activateRuntimeAdapters` gate:
+// into the broker's three live seams, all behind the DEFAULT-OFF durable,
+// non-reloadable activation authority (see hibernation-activation-authority.ts;
+// `hibernationRuntimeActive()`):
 //
 //   1. createHibernationOrchestrator  — the real orchestrator-backed executor
 //      that replaces the `activation_pending` stub ONLY under the gate.
@@ -33,21 +34,23 @@ import {
   buildRuntimeSpecInput,
   type SpawnAuthoredRuntimeFacts,
 } from "./hibernation-runtime-helpers.js";
-import type { ResolvedHibernationSettings } from "../hibernation-config.js";
+import { hibernationActivationAuthorized } from "./hibernation-activation-authority.js";
 
 /** Optional command runner override (git remote resolution); defaults to real `execFile`. */
 type VcsRunner = Parameters<typeof resolveVcsIdentity>[1];
 
 /**
  * The DEFAULT-OFF live-runtime gate. Live process/tmux composition happens ONLY
- * when hibernation is BOTH enabled and explicitly runtime-activated. Either flag
- * unset (the production default) keeps the broker on the `activation_pending`
- * stub with zero live-runtime side effects.
+ * when the durable, process-lifetime activation authority — captured at broker
+ * start from the external launch environment, never agent-editable settings — is
+ * set. Config reloads and settings edits can NEVER flip it, so the production
+ * default (authority unset) keeps the broker on the `activation_pending` stub
+ * with zero live-runtime side effects. Operational permission (enabled / mode /
+ * repo allowlist) is a SEPARATE settings policy enforced by the command layer;
+ * this gate only decides whether the real machinery is wired in at all.
  */
-export function hibernationRuntimeActive(
-  hib: Pick<ResolvedHibernationSettings, "enabled" | "activateRuntimeAdapters">,
-): boolean {
-  return hib.enabled === true && hib.activateRuntimeAdapters === true;
+export function hibernationRuntimeActive(): boolean {
+  return hibernationActivationAuthorized();
 }
 
 export interface HibernationRuntimeDeps {

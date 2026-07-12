@@ -42,6 +42,15 @@ export interface BrokerOptions {
   lockPath?: string;
   meshSecret?: string;
   meshSecretPath?: string;
+  /**
+   * Runs after DB initialization but BEFORE the socket server begins listening
+   * (i.e. before any client can connect or register). Use for startup
+   * reconciliation — e.g. stranded-wake recovery — that must deterministically
+   * complete before an incoming registration can race it. If it throws, the
+   * broker is torn down (DB closed, lock released) and the error propagates so a
+   * failed reconciliation never leaves a half-open, already-listening broker.
+   */
+  beforeListen?: (ctx: { db: BrokerDB }) => void | Promise<void>;
 }
 
 export interface Broker {
@@ -103,6 +112,20 @@ export async function startBroker(options: BrokerOptions = {}): Promise<Broker> 
   const server = new BrokerSocketServer(db, target, {
     ...(resolvedMeshSecret ? { meshSecret: resolvedMeshSecret } : {}),
   });
+
+  // Run startup reconciliation strictly BEFORE the socket opens, so nothing can
+  // connect/register until it completes. A failure here must not leave a
+  // half-open broker: tear down before rethrowing (the server has not started).
+  if (options.beforeListen) {
+    try {
+      await options.beforeListen({ db });
+    } catch (err) {
+      db.close();
+      lock.release();
+      throw err;
+    }
+  }
+
   try {
     await server.start();
   } catch (err) {
