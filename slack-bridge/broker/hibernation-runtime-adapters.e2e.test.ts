@@ -15,7 +15,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { AgentRuntimeSpec } from "@pinet/broker-core/types";
 import type { RuntimeLaunchContext } from "@pinet/broker-core";
 import {
-  createAttemptGenerationRegistry,
   createHibernationProcessController,
   createHibernationTmuxController,
   resolveVcsIdentity,
@@ -103,14 +102,11 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
     updatedAt: new Date().toISOString(),
   };
 
-  // A shared attempt-generation registry binds the woken attempt's exact process
-  // generation across the two controllers (the tmux controller records it at
-  // respawn; the process controller reads it for attempt-scoped stop/liveness).
-  const attemptRegistry = createAttemptGenerationRegistry();
-  const proc = createHibernationProcessController({
-    pendingInboxCount: () => 0,
-    attemptRegistry,
-  });
+  // The two controllers are constructed INDEPENDENTLY (as the live wiring does):
+  // the woken attempt's exact process generation travels inside the handle that
+  // respawnRuntime returns, so no shared registry is needed to make attempt-scoped
+  // stop/liveness bind to the right process.
+  const proc = createHibernationProcessController({ pendingInboxCount: () => 0 });
   // The tmux server is started with minimalEnv, so every pane (resident + woken)
   // inherits clean PI_SETTINGS_PATH/session-dir; no per-launcher env export needed.
   const tmuxCtrl = createHibernationTmuxController({
@@ -118,7 +114,6 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
     baseLaunchEnv: {},
     inheritedEnvKeys: [],
     launcherDir: tmpRoot,
-    attemptRegistry,
   });
 
   it("checkpoints, stops (session survives), and wakes a real pi runtime", async () => {

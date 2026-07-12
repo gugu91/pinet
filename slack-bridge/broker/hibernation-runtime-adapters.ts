@@ -17,14 +17,33 @@
 //
 // PID-reuse / signal safety (independent-review P1): a numeric pid is NEVER
 // signalled on its own. Every TERM/KILL/liveness action is bound to a process
-// GENERATION — the tuple (pane-authoritative `pane_pid`, `pane_dead=0`, and the
-// OS process START TOKEN from `ps -o lstart=`) — and is re-verified immediately
-// before each signal. If the pane no longer hosts that exact live generation
-// (the process exited, the pane died, or the pid was reused by an unrelated
-// same-user process with a different start token) the action is abandoned as
-// "already gone" rather than risking a kill of an unrelated process. Wake-attempt
-// generations are carried in an injected {@link AttemptGenerationRegistry} so the
-// attempt-scoped stop/liveness probes bind to the EXACT process a wake launched.
+// GENERATION and re-verified immediately before each signal. A generation is the
+// tuple (pane-authoritative `pane_pid`, `pane_dead=0`, and the OS process START
+// TIME from `ps -o lstart=`). If the pane no longer hosts that exact live
+// generation — the process exited, the pane died, or the pid was reused by a
+// process with a different start time — the action is abandoned as "already gone"
+// rather than risking a signal to an unrelated process. Start time is used (not
+// the command line) because the wake launcher `exec`s Pi over its own shell: that
+// preserves the pid AND the start time but REWRITES the command line, so a
+// command-line token would spuriously drift across the exec while start time stays
+// stable and correctly pins the process instance.
+//
+// Honest limits (independent-review P2 hardening): `ps -o lstart=` is only
+// second-resolution and the verify→signal step is not atomic, so a residual TOCTOU
+// window remains — a same-user process that reused the pid WITHIN the same wall
+// second could compare equal. No higher-resolution start token is portably
+// available via `ps` across macOS/Linux, so this is strong defense-in-depth that
+// makes cross-second reuse safe, NOT an absolute guarantee; the same-second window
+// is an accepted, documented residual rather than a claimed "never".
+//
+// The wake attempt's generation travels INSIDE the `RuntimeAttemptHandle` the
+// controller returns (see {@link LaunchedAttemptHandle}); the orchestrator
+// round-trips that handle opaquely and hands it back to the attempt-scoped
+// stop/liveness probes. There is therefore NO shared mutable registry between the
+// two controllers to mis-compose — the generation binding is carried by the
+// handle itself, so independent construction of the two controllers (as the live
+// wiring does) is inherently correct and a failed/timed-out wake is always
+// cleanable by the exact process it launched.
 //
 // All process/tmux/ps/git interaction is funnelled through an injectable
 // `CommandRunner` + signal/liveness hooks so the security- and correctness-
@@ -89,44 +108,47 @@ interface PaneAddress {
 }
 
 /**
- * A verified OS process generation: the pane's foreground pid PLUS its process
- * start token. The start token pins the exact process instance so a reused pid
- * (same number, different process) is never mistaken for — or signalled as — the
- * original runtime.
+ * A verified OS process generation: the pane's foreground pid PLUS an OS
+ * generation token (the process START TIME). The token pins the exact process
+ * instance so a cross-second reused pid (same number, different process, later
+ * start) is not mistaken for — or signalled as — the original runtime. Start time
+ * survives the launcher's `exec` of Pi (unlike the command line), so it stays
+ * stable for the life of the runtime. See the header note on the residual
+ * same-second window.
  */
 interface ProcessGeneration {
   pid: number;
-  startToken: string;
+  generationToken: string;
 }
 
 /**
- * The attempt-bound generation a single wake launched. Carries the pane address
+ * The attempt-bound generation a single wake launched, carrying the pane address
  * so the attempt-scoped stop/liveness probes read the exact pane the attempt
- * respawned into (the `RuntimeAttemptHandle` public shape intentionally exposes
- * only the nonce/target/pid; the generation binding lives here).
+ * respawned into. Embedded in {@link LaunchedAttemptHandle}.
  */
 export interface AttemptGeneration extends ProcessGeneration, PaneAddress {}
 
 /**
- * Records the generation each wake attempt launched, keyed by reservation nonce,
- * so `stopLaunchedAttempt` / `isLaunchedAttemptAlive` prove the EXACT process
- * that attempt spawned is gone/alive. Shared (injected) between the tmux
- * controller (which records at respawn) and the process controller (which reads
- * at cleanup). A miss fails closed (unprovable ⇒ not-stopped / still-alive).
+ * The `RuntimeAttemptHandle` the tmux controller actually returns: the public
+ * broker-core shape PLUS the immutable {@link AttemptGeneration} that launch
+ * captured. The orchestrator only ever reads the public fields and round-trips
+ * the object opaquely, so the generation rides along back to the process
+ * controller's attempt-scoped probes — no shared registry required. A handle
+ * WITHOUT a generation (e.g. one reconstructed elsewhere) is unprovable and the
+ * probes fail closed.
  */
-export interface AttemptGenerationRegistry {
-  record(reservationNonce: string, generation: AttemptGeneration): void;
-  get(reservationNonce: string): AttemptGeneration | undefined;
-  clear(reservationNonce: string): void;
+interface LaunchedAttemptHandle extends RuntimeAttemptHandle {
+  readonly generation: AttemptGeneration;
 }
 
-export function createAttemptGenerationRegistry(): AttemptGenerationRegistry {
-  const map = new Map<string, AttemptGeneration>();
-  return {
-    record: (nonce, generation) => void map.set(nonce, generation),
-    get: (nonce) => map.get(nonce),
-    clear: (nonce) => void map.delete(nonce),
-  };
+/**
+ * Boundary read of the launch generation carried by a handle. The handle arrives
+ * typed as the public broker-core shape; if it was minted by our
+ * `respawnRuntime` it carries a well-formed {@link AttemptGeneration}, otherwise
+ * the field is absent and we return null (probes then fail closed).
+ */
+function launchedGenerationOf(handle: RuntimeAttemptHandle): AttemptGeneration | null {
+  return (handle as Partial<LaunchedAttemptHandle>).generation ?? null;
 }
 
 function tmuxSocketArgs(socket: string): string[] {
@@ -147,8 +169,6 @@ export interface RuntimeAdapterDeps {
   stopGraceMs?: number;
   /** Poll interval while awaiting process exit. */
   pollMs?: number;
-  /** Shared attempt-generation registry (created if omitted). */
-  attemptRegistry?: AttemptGenerationRegistry;
 }
 
 interface ResolvedProcessDeps {
@@ -161,7 +181,6 @@ interface ResolvedProcessDeps {
   pendingInboxCount: (agentId: string) => number;
   stopGraceMs: number;
   pollMs: number;
-  attemptRegistry: AttemptGenerationRegistry;
 }
 
 // agent-standards-ignore prefer-inline-single-use-helper: centralizes default
@@ -196,7 +215,6 @@ function resolveProcessDeps(deps: RuntimeAdapterDeps): ResolvedProcessDeps {
     pendingInboxCount: deps.pendingInboxCount ?? (() => 0),
     stopGraceMs: deps.stopGraceMs ?? 5_000,
     pollMs: deps.pollMs ?? 100,
-    attemptRegistry: deps.attemptRegistry ?? createAttemptGenerationRegistry(),
   };
 }
 
@@ -231,40 +249,45 @@ async function rssBytesOf(runner: CommandRunner, pid: number): Promise<number | 
 }
 
 /**
- * The OS process start token (`ps -o lstart=`), normalized to a single-spaced
- * opaque string. Two processes sharing a pid but not a start token are DIFFERENT
- * process instances, so this pins the generation against pid reuse. Returns null
- * when the pid is gone (no ps row).
+ * The OS generation token for a pid: its process START TIME (`ps -o lstart=`),
+ * normalized. Two processes sharing a pid but not this start time are DIFFERENT
+ * process instances (cross-second reuse), so this pins the generation against the
+ * common pid-reuse case. The command line is deliberately NOT included: the wake
+ * launcher `exec`s Pi over its shell, rewriting the command line while preserving
+ * the pid and start time, so a command token would drift spuriously across that
+ * exec. Returns null when the pid is gone (no ps row). See the "Honest limits"
+ * header note re: the residual same-second window.
  */
-async function processStartToken(runner: CommandRunner, pid: number): Promise<string | null> {
-  const result = await runner.run("ps", ["-o", "lstart=", "-p", String(pid)]);
-  if (result.code !== 0) return null;
-  const token = result.stdout.trim().replace(/\s+/g, " ");
-  return token.length > 0 ? token : null;
+async function readGenerationToken(runner: CommandRunner, pid: number): Promise<string | null> {
+  const started = await runner.run("ps", ["-o", "lstart=", "-p", String(pid)]);
+  if (started.code !== 0) return null;
+  const startedAt = started.stdout.trim().replace(/\s+/g, " ");
+  return startedAt.length > 0 ? startedAt : null;
 }
 
 /**
  * Read the pane's current process generation: its foreground pid, whether the
  * pane is dead (only an explicit `pane_dead=0` is live; null/"1" ⇒ dead/gone),
- * and the pid's start token. `startToken` is null when the pane has no live pid.
+ * and the pid's generation token. `generationToken` is null when the pane has no
+ * live pid.
  */
 async function readPaneGeneration(
   runner: CommandRunner,
   addr: PaneAddress,
-): Promise<{ pid: number | null; dead: boolean; startToken: string | null }> {
+): Promise<{ pid: number | null; dead: boolean; generationToken: string | null }> {
   const pid = await panePid(runner, addr);
   const deadRaw = await paneField(runner, addr, "pane_dead");
   const dead = deadRaw !== "0";
-  const startToken = pid != null ? await processStartToken(runner, pid) : null;
-  return { pid, dead, startToken };
+  const generationToken = pid != null ? await readGenerationToken(runner, pid) : null;
+  return { pid, dead, generationToken };
 }
 
 /**
  * True only if the pane provably still hosts the EXACT expected live generation:
  * the pane's foreground pid equals the expected pid, the pane is not dead, the
- * pid is a live process, and its current start token matches the expected one
- * (defeating pid reuse). Any drift ⇒ false (the expected process is gone / not
- * ours), so a signal is never sent to a reused or replaced pid.
+ * pid is a live process, and its current generation token matches the expected
+ * one (defeating pid reuse). Any drift ⇒ false (the expected process is gone /
+ * not ours), so a signal is never sent to a reused or replaced pid.
  */
 async function paneHostsGeneration(
   runner: CommandRunner,
@@ -276,8 +299,8 @@ async function paneHostsGeneration(
   return (
     current.pid === expected.pid &&
     !current.dead &&
-    current.startToken != null &&
-    current.startToken === expected.startToken &&
+    current.generationToken != null &&
+    current.generationToken === expected.generationToken &&
     processAlive(expected.pid)
   );
 }
@@ -286,9 +309,9 @@ async function paneHostsGeneration(
  * TERM then bounded KILL a process addressed by its pane + generation. The pane
  * is re-verified to still host the exact expected live generation immediately
  * before EVERY signal; the moment it no longer does (exit, pane death, or pid
- * reuse with a different start token) the process is treated as confirmed gone
- * and no further signal is sent. Shared by pre-hibernation stop and failed-wake
- * attempt cleanup. Resolves whether the generation is confirmed gone.
+ * reuse with a different generation token) the process is treated as confirmed
+ * gone and no further signal is sent. Shared by pre-hibernation stop and
+ * failed-wake attempt cleanup. Resolves whether the generation is confirmed gone.
  */
 async function terminateGeneration(
   addr: PaneAddress,
@@ -331,13 +354,13 @@ export function createHibernationProcessController(
     const alive =
       current.pid != null &&
       !current.dead &&
-      current.startToken != null &&
+      current.generationToken != null &&
       d.processAlive(current.pid);
     return {
       alive,
       generation:
-        alive && current.pid != null && current.startToken != null
-          ? { pid: current.pid, startToken: current.startToken }
+        alive && current.pid != null && current.generationToken != null
+          ? { pid: current.pid, generationToken: current.generationToken }
           : null,
     };
   }
@@ -347,11 +370,11 @@ export function createHibernationProcessController(
       // Contract (narrowed, evidence-backed): a `hibernateSafe` result asserts
       // the RESUMABILITY PRECONDITION — the recorded pane still hosts a live
       // process generation (pane-authoritative pid, `pane_dead=0`, live pid with
-      // a readable start token) AND the session `.jsonl` exists and is NON-EMPTY
-      // on disk. It does NOT perform a cooperative in-flight flush/ack handshake
-      // with Pi (which would require Pi-side support and is future work); the
-      // orchestrator additionally refuses to hibernate while any inbox work is
-      // pending/arriving, so a mid-turn runtime is not silently discarded.
+      // a readable generation token) AND the session `.jsonl` exists and is
+      // NON-EMPTY on disk. It does NOT perform a cooperative in-flight flush/ack
+      // handshake with Pi (which would require Pi-side support and is future
+      // work); the orchestrator additionally refuses to hibernate while any inbox
+      // work is pending/arriving, so a mid-turn runtime is not silently discarded.
       const { alive, generation } = await runtimeAlive(spec);
       const rssBytes = generation != null ? await rssBytesOf(d.runner, generation.pid) : null;
       const pendingInboxCount = d.pendingInboxCount(spec.agentId);
@@ -377,11 +400,14 @@ export function createHibernationProcessController(
       // Capture the live generation to stop BEFORE any mutation; if the pane is
       // already dead / has no live generation there is nothing to stop.
       const current = await readPaneGeneration(d.runner, addr);
-      if (current.pid == null || current.dead || current.startToken == null) {
+      if (current.pid == null || current.dead || current.generationToken == null) {
         return { stopped: true, rssBytes: null };
       }
       if (!d.processAlive(current.pid)) return { stopped: true, rssBytes: null };
-      const generation: ProcessGeneration = { pid: current.pid, startToken: current.startToken };
+      const generation: ProcessGeneration = {
+        pid: current.pid,
+        generationToken: current.generationToken,
+      };
       const rssBytes = await rssBytesOf(d.runner, generation.pid);
       // Ensure the pane survives the Pi exit BEFORE stopping it, so hibernation
       // requires no change to the worker spawn path. With remain-on-exit on,
@@ -404,24 +430,22 @@ export function createHibernationProcessController(
     },
 
     async stopLaunchedAttempt(handle: RuntimeAttemptHandle): Promise<{ stopped: boolean }> {
-      // Bind to the generation THIS attempt recorded at respawn. A miss (no
-      // recorded generation ⇒ pid/start token were never captured) is unprovable,
-      // so fail closed rather than risk relaunching over a live runtime.
-      const generation = d.attemptRegistry.get(handle.reservationNonce);
+      // Bind to the generation THIS attempt carried in its handle. A handle with
+      // no generation is unprovable, so fail closed rather than risk relaunching
+      // over a live runtime.
+      const generation = launchedGenerationOf(handle);
       if (!generation) return { stopped: false };
       const addr: PaneAddress = {
         tmuxSocket: generation.tmuxSocket,
         tmuxTarget: generation.tmuxTarget,
       };
-      const stopped = await terminateGeneration(addr, generation, d);
-      if (stopped) d.attemptRegistry.clear(handle.reservationNonce);
-      return { stopped };
+      return { stopped: await terminateGeneration(addr, generation, d) };
     },
 
     async isLaunchedAttemptAlive(handle: RuntimeAttemptHandle): Promise<boolean> {
-      // Unprovable (no recorded generation) ⇒ treat as still alive so cleanup
+      // Unprovable (no carried generation) ⇒ treat as still alive so cleanup
       // never assumes a phantom exit.
-      const generation = d.attemptRegistry.get(handle.reservationNonce);
+      const generation = launchedGenerationOf(handle);
       if (!generation) return true;
       const addr: PaneAddress = {
         tmuxSocket: generation.tmuxSocket,
@@ -446,10 +470,6 @@ export interface RuntimeRespawnDeps {
   writeFile?: (filePath: string, content: string, mode: number) => void;
   unlink?: (filePath: string) => void;
   readEnv?: (key: string) => string | undefined;
-  /** Shared attempt-generation registry (created if omitted). */
-  attemptRegistry?: AttemptGenerationRegistry;
-  /** Injectable liveness for the captured pid's start token verification. */
-  processAlive?: (pid: number) => boolean;
 }
 
 export function createHibernationTmuxController(
@@ -468,7 +488,6 @@ export function createHibernationTmuxController(
       }
     });
   const readEnv = deps.readEnv ?? ((key) => process.env[key]);
-  const attemptRegistry = deps.attemptRegistry ?? createAttemptGenerationRegistry();
   const buildNickname =
     deps.buildNickname ??
     ((ctx) => `Woken ${ctx.spec.launchSource || "worker"} ${ctx.reservationNonce.slice(0, 8)}`);
@@ -560,22 +579,31 @@ export function createHibernationTmuxController(
         if (result.code !== 0) return { launched: false, handle: null };
         launched = true;
 
-        // Bind the launched attempt to its exact process generation so retry
-        // cleanup can prove THIS process (not a reused pid) is gone.
+        // Bind the launched attempt to its exact process generation and carry it
+        // INSIDE the handle, so retry cleanup can prove THIS process (not a reused
+        // pid) is gone with no shared registry. If the pid/token cannot be
+        // captured, the handle carries no generation and the attempt-scoped probes
+        // fail closed (orchestrator quarantines as ambiguous).
         const pid = await panePid(runner, addr);
-        const startToken = pid != null ? await processStartToken(runner, pid) : null;
-        if (pid != null && startToken != null) {
-          attemptRegistry.record(ctx.reservationNonce, {
-            pid,
-            startToken,
-            tmuxSocket: spec.tmuxSocket,
-            tmuxTarget: spec.tmuxTarget,
-          });
-        }
-        return {
-          launched: true,
-          handle: { reservationNonce: ctx.reservationNonce, tmuxTarget: spec.tmuxTarget, pid },
+        const generationToken = pid != null ? await readGenerationToken(runner, pid) : null;
+        const base: RuntimeAttemptHandle = {
+          reservationNonce: ctx.reservationNonce,
+          tmuxTarget: spec.tmuxTarget,
+          pid,
         };
+        if (pid != null && generationToken != null) {
+          const handle: LaunchedAttemptHandle = {
+            ...base,
+            generation: {
+              pid,
+              generationToken,
+              tmuxSocket: spec.tmuxSocket,
+              tmuxTarget: spec.tmuxTarget,
+            },
+          };
+          return { launched: true, handle };
+        }
+        return { launched: true, handle: base };
       } finally {
         // Guaranteed cleanup of the secret-bearing launcher: on the happy path
         // the script self-deletes (`rm -f "$0"` before exec), so unlinking here

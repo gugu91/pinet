@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeSpec } from "@pinet/broker-core/types";
-import type { RuntimeLaunchContext } from "@pinet/broker-core";
+import type { RuntimeAttemptHandle, RuntimeLaunchContext } from "@pinet/broker-core";
 import {
-  createAttemptGenerationRegistry,
   createHibernationProcessController,
   createHibernationTmuxController,
   resolveVcsIdentity,
@@ -40,7 +39,7 @@ interface RunnerState {
   panePid?: number | null;
   paneDead?: "0" | "1";
   rssKb?: number;
-  /** Process start token from `ps -o lstart=`; null ⇒ pid gone. Read live. */
+  /** Process start time from `ps -o lstart=`; null ⇒ pid gone. Read live. */
   startToken?: string | null;
   hasSessionCode?: number;
   respawnCode?: number;
@@ -114,6 +113,28 @@ function makeProcessWorld(alive: Set<number>, opts: { dieOnTerm?: boolean } = {}
   };
 }
 
+const respawnDeps = {
+  extensionEntryPath: "/ext/index.js",
+  baseLaunchEnv: { PINET_SOCKET_PATH: "/sock", PINET_BROKER_MANAGED: "1" },
+  inheritedEnvKeys: ["PI_SETTINGS_PATH"],
+  launcherDir: "/tmp/fake-wake",
+  readEnv: (k: string) => (k === "PI_SETTINGS_PATH" ? "/cfg.json" : undefined),
+};
+
+function makeLaunchCtx(overrides: Partial<RuntimeLaunchContext> = {}): RuntimeLaunchContext {
+  return {
+    agentId: "agent-1",
+    stableId: "host:session:/tmp/s/agent-1.jsonl",
+    wakeLeaseId: "lease-1",
+    fenceToken: 5,
+    reservedGeneration: 9,
+    reservationNonce: "nonce-abcdef123456",
+    correlationId: "corr-1",
+    spec: makeSpec(),
+    ...overrides,
+  };
+}
+
 describe("HibernationProcessController.requestCheckpoint", () => {
   it("is hibernateSafe when a live generation exists and the session is non-empty", async () => {
     const { runner } = makeRunner({ panePid: 4242, paneDead: "0", rssKb: 100 });
@@ -169,7 +190,7 @@ describe("HibernationProcessController.requestCheckpoint", () => {
     expect(outcome.reason).toBe("session_empty");
   });
 
-  it("refuses when the live pid has no readable start token (unverifiable generation)", async () => {
+  it("refuses when the live pid has no readable generation token", async () => {
     const { runner } = makeRunner({ panePid: 4242, paneDead: "0", rssKb: 100, startToken: null });
     const ctrl = createHibernationProcessController({
       runner,
@@ -259,81 +280,59 @@ describe("HibernationProcessController generation-bound liveness + cleanup", () 
     ).toBe(false);
   });
 
-  it("fails closed when a launched attempt has no recorded generation", async () => {
+  it("fails closed when the handle carries no generation (foreign/degraded handle)", async () => {
     const { runner } = makeRunner({});
     const ctrl = createHibernationProcessController({ runner });
-    expect(
-      await ctrl.stopLaunchedAttempt({ reservationNonce: "n", tmuxTarget: "t", pid: null }),
-    ).toEqual({ stopped: false });
-    expect(
-      await ctrl.isLaunchedAttemptAlive({ reservationNonce: "n", tmuxTarget: "t", pid: 999 }),
-    ).toBe(true);
+    const bare: RuntimeAttemptHandle = { reservationNonce: "n", tmuxTarget: "t", pid: 999 };
+    expect(await ctrl.stopLaunchedAttempt(bare)).toEqual({ stopped: false });
+    expect(await ctrl.isLaunchedAttemptAlive(bare)).toBe(true);
   });
 
-  it("stops a launched attempt bound to the exact generation it recorded", async () => {
-    const registry = createAttemptGenerationRegistry();
+  it("default/public composition: an independently-built process controller can clean a tmux-launched attempt (no shared registry)", async () => {
+    // The regression for the composition trap: the two controllers are built
+    // INDEPENDENTLY exactly as the live wiring composes them — there is no shared
+    // registry to omit, because the launch generation travels inside the handle.
     const { runner } = makeRunner({
       panePid: 111,
       panePidAfterRespawn: 222,
       paneDead: "1",
       paneDeadAfterRespawn: "0",
-      startToken: "TOK-A",
       respawnCode: 0,
     });
     const world = makeProcessWorld(new Set([222]), { dieOnTerm: true });
-    const tmux = createHibernationTmuxController({
-      extensionEntryPath: "/ext/index.js",
-      baseLaunchEnv: { PINET_SOCKET_PATH: "/sock" },
-      inheritedEnvKeys: [],
-      launcherDir: "/tmp/fake-wake",
-      writeFile: vi.fn(),
-      runner,
-      attemptRegistry: registry,
-    });
-    const proc = createHibernationProcessController({
-      runner,
-      ...world,
-      attemptRegistry: registry,
-    });
-    const ctx = makeLaunchCtx();
-    const launch = await tmux.respawnRuntime(ctx);
+    const tmux = createHibernationTmuxController({ ...respawnDeps, runner, writeFile: vi.fn() });
+    const proc = createHibernationProcessController({ runner, ...world });
+    const launch = await tmux.respawnRuntime(makeLaunchCtx());
     expect(launch.launched).toBe(true);
     expect(launch.handle?.pid).toBe(222);
-    // The launched process is alive before cleanup, then provably stopped.
+    // The launched process is alive before cleanup, then provably stopped — even
+    // though `proc` and `tmux` never shared any registry object.
     expect(await proc.isLaunchedAttemptAlive(launch.handle!)).toBe(true);
     expect(await proc.stopLaunchedAttempt(launch.handle!)).toEqual({ stopped: true });
     expect(world.signals.map((s) => s.signal)).toEqual(["SIGTERM"]);
   });
 
-  it("never signals a reused pid: refuses cleanup when the start token drifted", async () => {
-    const registry = createAttemptGenerationRegistry();
+  it("never signals a cross-second reused pid: refuses cleanup when the start-time token drifted", async () => {
     const runnerBox = makeRunner({
       panePid: 111,
       panePidAfterRespawn: 222,
       paneDead: "1",
       paneDeadAfterRespawn: "0",
-      startToken: "TOK-A",
+      startToken: "Sun Jul 12 13:30:21 2026",
       respawnCode: 0,
     });
     const world = makeProcessWorld(new Set([222]), { dieOnTerm: true });
     const tmux = createHibernationTmuxController({
-      extensionEntryPath: "/ext/index.js",
-      baseLaunchEnv: { PINET_SOCKET_PATH: "/sock" },
-      inheritedEnvKeys: [],
-      launcherDir: "/tmp/fake-wake",
+      ...respawnDeps,
+      runner: runnerBox.runner,
       writeFile: vi.fn(),
-      runner: runnerBox.runner,
-      attemptRegistry: registry,
     });
-    const proc = createHibernationProcessController({
-      runner: runnerBox.runner,
-      ...world,
-      attemptRegistry: registry,
-    });
+    const proc = createHibernationProcessController({ runner: runnerBox.runner, ...world });
     const launch = await tmux.respawnRuntime(makeLaunchCtx());
     expect(launch.handle?.pid).toBe(222);
-    // Pid 222 exits and is REUSED by an unrelated same-user process (new start token).
-    runnerBox.state.startToken = "TOK-REUSED";
+    // Pid 222 exits and is REUSED by an unrelated same-user process that started
+    // at a different (later) time, so the start-time generation token drifts.
+    runnerBox.state.startToken = "Sun Jul 12 13:41:07 2026";
     const stop = await proc.stopLaunchedAttempt(launch.handle!);
     expect(stop).toEqual({ stopped: true });
     // Crucially, NO signal was ever delivered to the reused pid.
@@ -341,29 +340,7 @@ describe("HibernationProcessController generation-bound liveness + cleanup", () 
   });
 });
 
-function makeLaunchCtx(overrides: Partial<RuntimeLaunchContext> = {}): RuntimeLaunchContext {
-  return {
-    agentId: "agent-1",
-    stableId: "host:session:/tmp/s/agent-1.jsonl",
-    wakeLeaseId: "lease-1",
-    fenceToken: 5,
-    reservedGeneration: 9,
-    reservationNonce: "nonce-abcdef123456",
-    correlationId: "corr-1",
-    spec: makeSpec(),
-    ...overrides,
-  };
-}
-
 describe("HibernationTmuxController", () => {
-  const respawnDeps = {
-    extensionEntryPath: "/ext/index.js",
-    baseLaunchEnv: { PINET_SOCKET_PATH: "/sock", PINET_BROKER_MANAGED: "1" },
-    inheritedEnvKeys: ["PI_SETTINGS_PATH"],
-    launcherDir: "/tmp/fake-wake",
-    readEnv: (k: string) => (k === "PI_SETTINGS_PATH" ? "/cfg.json" : undefined),
-  };
-
   it("isSessionAttachable maps has-session exit code", async () => {
     const attach = makeRunner({ hasSessionCode: 0 });
     const gone = makeRunner({ hasSessionCode: 1 });
@@ -394,7 +371,7 @@ describe("HibernationTmuxController", () => {
     const ctrl = createHibernationTmuxController({ ...respawnDeps, runner, writeFile, unlink });
     const result = await ctrl.respawnRuntime(makeLaunchCtx());
     expect(result.launched).toBe(true);
-    expect(result.handle).toEqual({
+    expect(result.handle).toMatchObject({
       reservationNonce: "nonce-abcdef123456",
       tmuxTarget: "pinet-repo-worker-abcd:0.0",
       pid: 222,

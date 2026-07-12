@@ -78,6 +78,15 @@ inheritedEnvKeys }), brokerInstanceId })`. `awaitRuntimeRegistration` needs NO
 socket wiring — the default DB-polls `runtimeGeneration === reservedGeneration`,
 which the socket-server's fenced register already advances.
 
+The two controllers are constructed **independently** and share NO mutable state.
+The wake attempt's immutable process generation (pane pid + start-time/command
+token + pane address) is carried INSIDE the `RuntimeAttemptHandle` that
+`respawnRuntime` returns; the orchestrator round-trips that handle opaquely to the
+attempt-scoped stop/liveness probes, so a failed/timed-out wake is always
+cleanable by the exact process it launched. There is deliberately no shared
+attempt registry to mis-compose (an earlier registry-based cut created a
+silent-default composition trap where record and cleanup used different maps).
+
 `baseLaunchEnv` = the broker-level reconnect env used at spawn (PINET_SOCKET_PATH,
 PINET_BROKER_MANAGED=1, PINET_PARENT/ROOT/SPAWNED_BY_AGENT_ID = broker self id,
 PINET_LAUNCH_SOURCE) so the woken worker reconnects to the same broker.
