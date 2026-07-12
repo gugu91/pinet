@@ -27,6 +27,15 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
+  formatAgentLifecycleStatus,
+  formatAgentLifecycleTag,
+  formatHibernationCommandResult,
+  sanitizeOperatorReason,
+  sanitizeOperatorTarget,
+  type AgentLifecycleStatus,
+  type HibernationCommandResult,
+} from "@pinet/broker-core";
+import {
   buildAgentDisplayInfo,
   filterAgentsForMeshVisibility,
   formatAgentList,
@@ -164,6 +173,25 @@ export interface RegisterPinetToolsDeps {
   ralphSnoozeStatus?: () => RalphSnoozeStatus | null;
   snoozeRalphLoop?: (input: { durationMs: number; reason?: string | null }) => RalphSnoozeStatus;
   clearRalphSnooze?: () => RalphSnoozeStatus;
+  // Broker-managed hibernation commands. Present only when this session is the
+  // broker; followers get an actionable "run on the broker" refusal. Return a
+  // sanitized command result (never argv/env/paths/bodies).
+  runHibernateCommand?: (input: {
+    target: string;
+    reason?: string;
+  }) => Promise<HibernationCommandResult>;
+  runWakeCommand?: (input: {
+    target: string;
+    reason?: string;
+  }) => Promise<HibernationCommandResult>;
+  // Read-only lifecycle projection for the `agents`/`sessions` operator read
+  // paths. Present only on the broker (it reads the durable broker DB). Returns
+  // sanitized per-agent lifecycle status for hibernation-relevant agents; never
+  // argv/env/paths/bodies. With no `agentIds` it returns ALL durable
+  // hibernation-relevant agents (hibernated/quarantined runtimes are
+  // disconnected and would otherwise be invisible to `agents`); with `agentIds`
+  // it scopes to that set (used to annotate `sessions` results).
+  getAgentLifecycleProjection?: (agentIds?: string[]) => AgentLifecycleStatus[];
 }
 
 interface PinetAgentsRoutingHint {
@@ -188,6 +216,8 @@ type PinetDispatcherAction =
   | "spawn"
   | "reload"
   | "exit"
+  | "hibernate"
+  | "wake"
   | "help";
 type PinetDispatcherErrorClass = "input" | "state" | "runtime" | "network";
 
@@ -298,6 +328,8 @@ const PINET_DISPATCHER_EXAMPLES: Record<string, Array<Record<string, unknown>>> 
   ],
   reload: [{ action: "reload", args: { target: "@worker" } }],
   exit: [{ action: "exit", args: { target: "@worker" } }],
+  hibernate: [{ action: "hibernate", args: { target: "@worker", reason: "idle overnight" } }],
+  wake: [{ action: "wake", args: { target: "@worker" } }],
 };
 
 const PINET_OUTPUT_OPTION_PARAMETERS = {
@@ -369,6 +401,8 @@ function normalizeDispatcherAction(value: unknown): PinetDispatcherAction {
     "spawn",
     "reload",
     "exit",
+    "hibernate",
+    "wake",
   ];
   if (!allowed.includes(normalized)) {
     throw new Error(`Unknown Pinet action: ${normalized}`);
@@ -545,7 +579,8 @@ function wrapDispatcherEnvelope(
   displayText?: string;
 } {
   const structuredEnvelopeText = JSON.stringify(envelope, null, output.full ? 2 : 0);
-  const renderedText = shouldRenderStructuredPinetEnvelope(envelope, output)
+  const renderStructured = shouldRenderStructuredPinetEnvelope(envelope, output);
+  const renderedText = renderStructured
     ? structuredEnvelopeText
     : getPinetEnvelopeCliText(envelope);
   const data =
@@ -665,7 +700,7 @@ function wrapDispatcherEnvelope(
       envelope.errors,
       [...envelope.warnings, warning],
     );
-    returnedText = shouldRenderStructuredPinetEnvelope(returnedEnvelope, output)
+    returnedText = renderStructured
       ? JSON.stringify(returnedEnvelope, null, output.full ? 2 : 0)
       : getPinetEnvelopeCliText(returnedEnvelope);
     returnedDisplayText = getPinetEnvelopeCliText(returnedEnvelope);
@@ -1272,6 +1307,66 @@ function runPinetRemoteControlAction(
         },
       ],
       details: { messageId: result.messageId, target: result.target, command },
+    };
+  })();
+}
+
+function runPinetHibernationCommandAction(
+  target: string,
+  reason: string | undefined,
+  deps: RegisterPinetToolsDeps,
+  toolName: string,
+  command: "hibernate" | "wake",
+): Promise<PinetToolResult> {
+  return (async () => {
+    if (!target) {
+      throw new Error("target is required");
+    }
+
+    // Sanitize the operator-authored target/reason before they enter the policy
+    // context, which can surface verbatim in confirmation prompts and error
+    // text. `sanitizeOperatorTarget` fingerprints anything that is not a plain
+    // broker-safe identifier slug — a stable-id/session/cwd target such as
+    // `host:session:<ref>` (which embeds the session-resume identity), a private
+    // worktree path, or a `KEY=secret` shape — to an opaque `target:#<hash>`
+    // rather than echoing it. The reason is path/secret-redacted. The raw
+    // `target` still flows to the broker runner, which resolves it server-side
+    // and redacts any unknown-target echo.
+    const safeTarget = sanitizeOperatorTarget(target);
+    const safeReason = sanitizeOperatorReason(reason) ?? "";
+    deps.requireToolPolicy(
+      toolName,
+      undefined,
+      `command=${command} | target=${safeTarget} | reason=${safeReason}`,
+    );
+
+    if (!deps.pinetEnabled()) {
+      throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
+    }
+
+    const runner = command === "hibernate" ? deps.runHibernateCommand : deps.runWakeCommand;
+    if (!runner) {
+      throw new Error(
+        `pinet ${command} is broker-managed. Connect this session as the broker (/pinet start) to hibernate or wake workers.`,
+      );
+    }
+
+    const result = await runner({ target, reason });
+    const text = formatHibernationCommandResult(result);
+    return {
+      content: [{ type: "text", text }],
+      details: result,
+      compactDetails: {
+        command: result.command,
+        agentId: result.agentId,
+        outcome: result.outcome,
+        reason: result.reason,
+        state: result.state,
+        ...(result.runtimeGeneration != null
+          ? { runtimeGeneration: result.runtimeGeneration }
+          : {}),
+      },
+      fullDetails: result,
     };
   })();
 }
@@ -1924,6 +2019,52 @@ function runPinetLanesAction(
   })();
 }
 
+/**
+ * Render the operator-safe hibernation lifecycle section appended to the
+ * existing `agents`/`sessions` read output. Compact output uses a scannable
+ * per-agent tag (state · gen · queue · checkpoint · refusal/quarantine); full
+ * output uses the complete redacted status block. Returns "" when there is
+ * nothing hibernation-relevant to show, so ordinary output is unchanged.
+ */
+function formatHibernationLifecycleSection(
+  statuses: AgentLifecycleStatus[],
+  full: boolean,
+): string {
+  if (statuses.length === 0) return "";
+  const body = full
+    ? statuses.map(formatAgentLifecycleStatus).join("\n\n")
+    : statuses
+        .map((status) => `  ${status.agentId}: ${formatAgentLifecycleTag(status)}`)
+        .join("\n");
+  return `\n\nHibernation lifecycle:\n${body}`;
+}
+
+/**
+ * Minimal, already-redacted lifecycle summary for compact structured (`json`)
+ * output. Durable hibernated/quarantined identities are disconnected and absent
+ * from the visible roster, so without this an operator asking for compact JSON
+ * would see them only in the text blob and never in `data`. Keep it small: the
+ * scannable state plus the few fields an operator triages on (queue position,
+ * quarantine, checkpoint presence). Full structure stays in `fullDetails`.
+ */
+interface CompactLifecycleSummary {
+  agentId: string;
+  state: AgentLifecycleStatus["state"];
+  quarantined: boolean;
+  tag: string;
+  wakeQueuePosition?: AgentLifecycleStatus["wake"]["position"];
+}
+
+function buildCompactLifecycleDetails(statuses: AgentLifecycleStatus[]): CompactLifecycleSummary[] {
+  return statuses.map((status) => ({
+    agentId: status.agentId,
+    state: status.state,
+    quarantined: status.quarantined,
+    tag: formatAgentLifecycleTag(status),
+    ...(status.wake.queued ? { wakeQueuePosition: status.wake.position } : {}),
+  }));
+}
+
 function runPinetAgentsAction(
   params: Record<string, unknown>,
   deps: RegisterPinetToolsDeps,
@@ -2005,17 +2146,32 @@ function runPinetAgentsAction(
       recentDisconnectWindowMs: recentGhostWindowMs,
     }).map(toDisplay);
     const agents = rankAgentsForRouting(visibleAgents, hint);
+
+    // Read-only hibernation lifecycle projection wired into the existing agents
+    // read path. Compact output shows a scannable per-agent tag; full/JSON
+    // exposes the complete redacted lifecycle structure. Broker-only (the dep
+    // is undefined on followers) and sanitized by construction. Called with NO
+    // id filter so durable hibernated/quarantined runtimes — which are
+    // disconnected and therefore absent from the visible roster — are still
+    // surfaced (this is exactly when operators need lifecycle visibility).
+    const lifecycle = deps.getAgentLifecycleProjection ? deps.getAgentLifecycleProjection() : [];
+
     const header = hasHint && output.full ? `${buildPinetAgentsHintText(hint)}\n\n` : "";
     const text = `${header}${
       output.full ? formatAgentList(agents, os.homedir()) : formatCompactAgentList(agents, hint)
-    }`;
+    }${formatHibernationLifecycleSection(lifecycle, output.full)}`;
+
+    const expandedText = `${formatPinetAgentsExpanded(agents)}${formatHibernationLifecycleSection(lifecycle, true)}`;
 
     return {
       content: [{ type: "text", text }],
-      details: { agents, hint },
-      compactDetails: buildCompactAgentDetails(agents, hint),
-      fullDetails: { agents, hint },
-      expandedText: formatPinetAgentsExpanded(agents),
+      details: { agents, hint, ...(lifecycle.length > 0 ? { lifecycle } : {}) },
+      compactDetails: {
+        ...buildCompactAgentDetails(agents, hint),
+        ...(lifecycle.length > 0 ? { lifecycle: buildCompactLifecycleDetails(lifecycle) } : {}),
+      },
+      fullDetails: { agents, hint, ...(lifecycle.length > 0 ? { lifecycle } : {}) },
+      expandedText,
     };
   })();
 }
@@ -2140,19 +2296,35 @@ function runPinetSessionsAction(
     }
 
     const sessions = await deps.searchPinetSessions(options);
-    const text = formatPinetSessionSearch(sessions, options, output.full);
+
+    // Read-only lifecycle projection for the session's live agents, wired into
+    // the existing sessions read path. Broker-only and sanitized by
+    // construction; empty for historical/disconnected agents.
+    const lifecycle =
+      deps.getAgentLifecycleProjection && sessions.length > 0
+        ? deps.getAgentLifecycleProjection(sessions.map((session) => session.agentId))
+        : [];
+
+    const text = `${formatPinetSessionSearch(sessions, options, output.full)}${formatHibernationLifecycleSection(lifecycle, output.full)}`;
     return {
       content: [{ type: "text", text }],
-      details: { count: sessions.length, sessions, options },
+      details: {
+        count: sessions.length,
+        sessions,
+        options,
+        ...(lifecycle.length > 0 ? { lifecycle } : {}),
+      },
       compactDetails: {
         count: sessions.length,
         options,
         sessions: sessions.map(buildPinetSessionCompactDetails),
+        ...(lifecycle.length > 0 ? { lifecycle: buildCompactLifecycleDetails(lifecycle) } : {}),
       },
       fullDetails: {
         count: sessions.length,
         options,
         sessions: sessions.map(buildPinetSessionFullDetails),
+        ...(lifecycle.length > 0 ? { lifecycle } : {}),
       },
       expandedText: text,
     };
@@ -2276,6 +2448,52 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     }),
     execute: (_id, params, _output) =>
       runPinetRemoteControlAction(params, deps, "pinet:exit", "/exit"),
+  });
+
+  registerAction({
+    name: "hibernate",
+    description:
+      "Broker-managed: checkpoint and hibernate an idle broker-managed worker. Default-off; returns a safe refusal when hibernation is disabled or observe-only.",
+    parameters: Type.Object({
+      target: Type.String({
+        description: "Target worker: display name, agent id, or stable id",
+      }),
+      reason: Type.Optional(
+        Type.String({ description: "Optional operator reason recorded in lifecycle telemetry" }),
+      ),
+      ...PINET_OUTPUT_OPTION_PARAMETERS,
+    }),
+    execute: (_id, params, _output) => {
+      const target = typeof params.target === "string" ? params.target.trim() : "";
+      const reason =
+        typeof params.reason === "string" && params.reason.trim().length > 0
+          ? params.reason.trim()
+          : undefined;
+      return runPinetHibernationCommandAction(target, reason, deps, "pinet:hibernate", "hibernate");
+    },
+  });
+
+  registerAction({
+    name: "wake",
+    description:
+      "Broker-managed: wake a hibernated worker under a fresh fenced runtime and drain its queued messages in order.",
+    parameters: Type.Object({
+      target: Type.String({
+        description: "Target worker: display name, agent id, or stable id",
+      }),
+      reason: Type.Optional(
+        Type.String({ description: "Optional operator reason recorded in lifecycle telemetry" }),
+      ),
+      ...PINET_OUTPUT_OPTION_PARAMETERS,
+    }),
+    execute: (_id, params, _output) => {
+      const target = typeof params.target === "string" ? params.target.trim() : "";
+      const reason =
+        typeof params.reason === "string" && params.reason.trim().length > 0
+          ? params.reason.trim()
+          : undefined;
+      return runPinetHibernationCommandAction(target, reason, deps, "pinet:wake", "wake");
+    },
   });
 
   registerAction({
@@ -2474,11 +2692,11 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     label: "Pinet Dispatcher",
     description: "Dispatch Pinet operations by action with compact help and schema discovery.",
     promptSnippet:
-      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, exit, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" for the compact envelope or args.full=true for verbose/debug detail.',
+      'Use this compact dispatcher for Pinet actions: send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, exit, hibernate, wake, spawn, and help. Use /pinet start, /pinet follow, /pinet unfollow, and /pinet subtree start for TUI lifecycle changes. Defaults to terse CLI text; pass args.format="json" for the compact envelope or args.full=true for verbose/debug detail.',
     parameters: Type.Object({
       action: Type.String({
         description:
-          "Action name: help, send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, or exit. Also supports spawn for launching worker-owned subtree children.",
+          "Action name: help, send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, exit, hibernate (broker-managed checkpoint+hibernate), or wake (broker-managed fenced wake). Also supports spawn for launching worker-owned subtree children.",
       }),
       args: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {

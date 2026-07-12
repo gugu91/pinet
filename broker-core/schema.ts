@@ -3,6 +3,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { classifyPinetMail } from "./mail-classification.js";
+import { assertLegalLifecycleTransition } from "./lifecycle.js";
 import { getDefaultDbPath } from "./paths.js";
 import { DEFAULT_EXTERNAL_THREAD_SOURCE } from "./types.js";
 import type { PinetMailClass } from "./mail-classification.js";
@@ -40,6 +41,25 @@ import type {
   PinetLaneRole,
   PinetLaneState,
   PinetLaneUpsertInput,
+  AgentLifecycleState,
+  AgentHibernatePolicy,
+  AgentLifecycleLease,
+  AgentLifecycleOperation,
+  AgentLifecycleTransitionInput,
+  AgentLifecycleRetentionInfo,
+  AgentRuntimeSpec,
+  AgentRuntimeSpecInput,
+  AgentCheckpointReceipt,
+  AgentCheckpointReceiptInput,
+  AgentWakeReservation,
+  AgentWakeAcceptanceReceipt,
+  AcceptRuntimeGenerationInput,
+  RuntimeGenerationAcceptance,
+  AgentWakeQueueEntry,
+  WakeTriggerKind,
+  EnqueueWakeInput,
+  AgentLifecycleEvent,
+  AgentLifecycleEventInput,
 } from "./types.js";
 interface SqliteJournalModeResult {
   journal_mode?: string | null;
@@ -86,6 +106,16 @@ interface AgentRow {
   resumable_until: string | null;
   idle_since: string | null;
   last_activity: string | null;
+  lifecycle_state: string;
+  lifecycle_version: number;
+  grace_until: string | null;
+  idle_eligible_at: string | null;
+  hibernated_at: string | null;
+  terminated_at: string | null;
+  hibernate_policy: string;
+  hibernate_reason: string | null;
+  last_wake_reason: string | null;
+  runtime_generation: number;
 }
 
 interface ThreadRow {
@@ -222,6 +252,16 @@ function rowToAgent(row: AgentRow): AgentInfo {
     resumableUntil: row.resumable_until,
     idleSince: row.idle_since,
     lastActivity: row.last_activity,
+    lifecycleState: row.lifecycle_state as AgentLifecycleState,
+    lifecycleVersion: row.lifecycle_version,
+    graceUntil: row.grace_until,
+    idleEligibleAt: row.idle_eligible_at,
+    hibernatedAt: row.hibernated_at,
+    terminatedAt: row.terminated_at,
+    hibernatePolicy: row.hibernate_policy as AgentHibernatePolicy,
+    hibernateReason: row.hibernate_reason,
+    lastWakeReason: row.last_wake_reason,
+    runtimeGeneration: row.runtime_generation,
   };
 }
 
@@ -260,6 +300,54 @@ function normalizePortLeaseStatus(value: string): PortLeaseStatus {
     return value;
   }
   return "active";
+}
+
+interface WakeQueueRow {
+  id: number;
+  agent_id: string;
+  repo_root: string | null;
+  trigger_kind: string;
+  trigger_message_id: number | null;
+  priority: number;
+  reason: string;
+  correlation_id: string;
+  status: string;
+  attempt: number;
+  enqueued_at: string;
+  updated_at: string;
+}
+
+function rowToWakeQueueEntry(row: WakeQueueRow): AgentWakeQueueEntry {
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    repoRoot: row.repo_root,
+    triggerKind: row.trigger_kind as WakeTriggerKind,
+    triggerMessageId: row.trigger_message_id,
+    priority: row.priority,
+    reason: row.reason,
+    correlationId: row.correlation_id,
+    status: row.status as AgentWakeQueueEntry["status"],
+    attempt: row.attempt,
+    enqueuedAt: row.enqueued_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Parse a JSON array-of-strings column, tolerating malformed/legacy values. */
+function parseStringArray(value: string): string[] {
+  try {
+    const parsed: string[] = [];
+    const raw = JSON.parse(value);
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (typeof item === "string") parsed.push(item);
+      }
+    }
+    return parsed;
+  } catch {
+    return [];
+  }
 }
 
 function getStringMetadataValue(
@@ -860,7 +948,20 @@ export function defaultDbPath(): string {
 
 export const DEFAULT_RESUMABLE_WINDOW_MS = 15_000;
 export const DEFAULT_DISCONNECTED_PURGE_GRACE_MS = 60 * 60_000;
-export const CURRENT_BROKER_SCHEMA_VERSION = 18;
+export const CURRENT_BROKER_SCHEMA_VERSION = 22;
+
+/**
+ * Lifecycle states whose durable identity, inbox, thread ownership, and runtime
+ * mapping MUST survive routine maintenance. A hibernation identity is
+ * intentionally "disconnected" (no live socket) yet must be revivable by a later
+ * wake, so ordinary disconnect-driven prune/purge/ownership-repair would destroy
+ * exactly the state hibernation preserves. `reap-candidate` is quarantined
+ * pending manual review and must likewise not be auto-released or deleted (that
+ * would discard evidence). `terminated` is a closed identity and remains
+ * ordinarily purgeable. This is a fixed constant list — never interpolated with
+ * external input — so it is safe to embed directly in SQL predicates.
+ */
+const PRESERVED_LIFECYCLE_STATES_SQL = "'hibernating','hibernated','waking','reap-candidate'";
 
 const REQUIRED_AGENT_LIFECYCLE_COLUMNS = [
   "stable_id",
@@ -1596,6 +1697,166 @@ function createPinetLaneTables(db: DatabaseSync): void {
   `);
 }
 
+// agent-standards-ignore prefer-inline-single-use-helper: schema migrations stay isolated and auditable by version.
+function createAgentHibernationTables(db: DatabaseSync): void {
+  for (const [name, sql] of [
+    [
+      "lifecycle_state",
+      "ALTER TABLE agents ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'live'",
+    ],
+    [
+      "lifecycle_version",
+      "ALTER TABLE agents ADD COLUMN lifecycle_version INTEGER NOT NULL DEFAULT 0",
+    ],
+    ["grace_until", "ALTER TABLE agents ADD COLUMN grace_until TEXT"],
+    ["idle_eligible_at", "ALTER TABLE agents ADD COLUMN idle_eligible_at TEXT"],
+    ["hibernated_at", "ALTER TABLE agents ADD COLUMN hibernated_at TEXT"],
+    ["terminated_at", "ALTER TABLE agents ADD COLUMN terminated_at TEXT"],
+    [
+      "hibernate_policy",
+      "ALTER TABLE agents ADD COLUMN hibernate_policy TEXT NOT NULL DEFAULT 'never'",
+    ],
+    ["hibernate_reason", "ALTER TABLE agents ADD COLUMN hibernate_reason TEXT"],
+    ["last_wake_reason", "ALTER TABLE agents ADD COLUMN last_wake_reason TEXT"],
+    [
+      "runtime_generation",
+      "ALTER TABLE agents ADD COLUMN runtime_generation INTEGER NOT NULL DEFAULT 0",
+    ],
+  ] as const)
+    ensureColumn(db, "agents", name, sql);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_runtime_specs (
+      agent_id TEXT PRIMARY KEY NOT NULL, stable_id TEXT NOT NULL, broker_owner_id TEXT NOT NULL,
+      cwd TEXT NOT NULL, repo_root TEXT NOT NULL, worktree_path TEXT NOT NULL,
+      tmux_socket TEXT NOT NULL, tmux_session TEXT NOT NULL, tmux_target TEXT NOT NULL,
+      executable TEXT NOT NULL, argv_json TEXT NOT NULL, env_allowlist_json TEXT NOT NULL,
+      session_resume_ref TEXT NOT NULL, config_fingerprint TEXT NOT NULL,
+      expected_host TEXT NOT NULL, expected_user TEXT NOT NULL, launch_source TEXT NOT NULL,
+      vcs_identity TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_leases (
+      agent_id TEXT PRIMARY KEY NOT NULL, operation TEXT NOT NULL CHECK(operation IN ('hibernate','wake')),
+      fence_token INTEGER NOT NULL, owner_broker_instance_id TEXT NOT NULL, lease_id TEXT NOT NULL UNIQUE,
+      acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, attempt INTEGER NOT NULL,
+      trigger_message_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, correlation_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+      from_state TEXT NOT NULL, to_state TEXT NOT NULL, lifecycle_version INTEGER NOT NULL,
+      fence_token INTEGER, reason TEXT NOT NULL, trigger_source TEXT, actor TEXT NOT NULL,
+      outcome TEXT NOT NULL, error_code TEXT, queue_depth INTEGER, oldest_queue_age_ms INTEGER,
+      duration_ms INTEGER, rss_bytes_before INTEGER, rss_bytes_after INTEGER, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_lifecycle_events_agent_created
+      ON agent_lifecycle_events(agent_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_lifecycle_events_created
+      ON agent_lifecycle_events(created_at DESC);
+    CREATE TABLE IF NOT EXISTS agent_lifecycle_retention (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+      pruned_count INTEGER NOT NULL DEFAULT 0,
+      last_pruned_at TEXT
+    );
+    INSERT OR IGNORE INTO agent_lifecycle_retention (singleton, pruned_count) VALUES (1, 0);
+    CREATE TABLE IF NOT EXISTS agent_checkpoint_receipts (
+      agent_id TEXT NOT NULL, runtime_generation INTEGER NOT NULL, correlation_id TEXT NOT NULL,
+      hibernate_safe INTEGER NOT NULL, reason TEXT, session_resume_ref TEXT,
+      pending_inbox_count INTEGER NOT NULL DEFAULT 0, rss_bytes INTEGER, created_at TEXT NOT NULL,
+      PRIMARY KEY (agent_id, runtime_generation)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_checkpoint_receipts_agent
+      ON agent_checkpoint_receipts(agent_id, runtime_generation DESC);
+    CREATE TABLE IF NOT EXISTS agent_wake_reservations (
+      agent_id TEXT PRIMARY KEY NOT NULL, wake_lease_id TEXT NOT NULL, fence_token INTEGER NOT NULL,
+      reserved_generation INTEGER NOT NULL, reservation_nonce TEXT NOT NULL DEFAULT '',
+      correlation_id TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_wake_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, repo_root TEXT,
+      trigger_kind TEXT NOT NULL, trigger_message_id INTEGER, priority INTEGER NOT NULL DEFAULT 100,
+      reason TEXT NOT NULL, correlation_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued'
+        CHECK(status IN ('queued','dispatching','done','cancelled')),
+      attempt INTEGER NOT NULL DEFAULT 0, enqueued_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_wake_queue_active_agent
+      ON agent_wake_queue(agent_id) WHERE status IN ('queued','dispatching');
+    CREATE INDEX IF NOT EXISTS idx_agent_wake_queue_dispatch
+      ON agent_wake_queue(status, priority, id);
+  `);
+}
+
+/**
+ * Per-attempt wake nonce: a fresh, opaque token minted on every wake reservation
+ * so that two wake attempts for the same identity (which necessarily reuse the
+ * same lease id, fence token, and `runtime_generation + 1`) are distinguishable.
+ * Without it a slow runtime from an earlier, timed-out attempt could satisfy a
+ * later attempt's otherwise-identical reservation. Added for dogfood DBs already
+ * at v19 (fresh DBs get the column from the CREATE TABLE above).
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: one-function-per-
+// migration-case is the established schema-migration seam (mirrors case 19's
+// createAgentHibernationTables); keeps the version switch a readable index.
+function addWakeReservationNonceColumn(db: DatabaseSync): void {
+  ensureColumn(
+    db,
+    "agent_wake_reservations",
+    "reservation_nonce",
+    "ALTER TABLE agent_wake_reservations ADD COLUMN reservation_nonce TEXT NOT NULL DEFAULT ''",
+  );
+}
+
+/**
+ * Acceptance receipt: a single-row-per-agent record of the EXACT wake fence that
+ * accepted a generation. It lets a runtime whose registration was accepted but
+ * whose register RPC response was lost to a broker crash (committed acceptance
+ * but never bound the socket / returned) replay its single-use wake fence and be
+ * re-bound idempotently instead of being rejected and stranded. Superseded by
+ * the next wake reservation (cleared in `reserveWakeGeneration`) so a stale fence
+ * can never rebind during a fresh wake window. Added for dogfood DBs already at
+ * v20 (fresh DBs also create it via this migration).
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: one-function-per-
+// migration-case is the established schema-migration seam; keeps the version
+// switch a readable index.
+function createWakeAcceptanceReceiptTable(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_wake_acceptance_receipts (
+      agent_id TEXT PRIMARY KEY NOT NULL,
+      stable_id TEXT NOT NULL,
+      wake_lease_id TEXT NOT NULL,
+      fence_token INTEGER NOT NULL,
+      reserved_generation INTEGER NOT NULL,
+      reservation_nonce TEXT NOT NULL,
+      accepted_at TEXT NOT NULL
+    );
+  `);
+}
+
+/**
+ * Canonical VCS identity column: a broker-derived `owner/repo` captured at spawn
+ * from the runtime's git remote (never inferred from directory names). The repo
+ * allowlist authorization matches this identity EXACTLY, so distinct filesystem
+ * roots that happen to share their final path segments (e.g.
+ * `/trusted/gugu91/extensions` vs `/tmp/impostor/gugu91/extensions`) do not
+ * collapse onto one authorization identity, and a repo shares one identity with
+ * all of its git worktrees. Nullable — a spec captured without a resolvable
+ * remote leaves it null and the fail-closed gate refuses. Added for dogfood DBs
+ * already at v21 (fresh DBs get the column from the CREATE TABLE above).
+ */
+// agent-standards-ignore prefer-inline-single-use-helper: one-function-per-
+// migration-case is the established schema-migration seam; keeps the version
+// switch a readable index.
+function addRuntimeSpecVcsIdentityColumn(db: DatabaseSync): void {
+  ensureColumn(
+    db,
+    "agent_runtime_specs",
+    "vcs_identity",
+    "ALTER TABLE agent_runtime_specs ADD COLUMN vcs_identity TEXT",
+  );
+}
+
 function runSchemaMigrations(db: DatabaseSync): void {
   const currentVersion = getUserVersion(db);
   if (currentVersion >= CURRENT_BROKER_SCHEMA_VERSION) {
@@ -1664,6 +1925,18 @@ function runSchemaMigrations(db: DatabaseSync): void {
         case 18:
           addAgentHierarchyColumns(db);
           break;
+        case 19:
+          createAgentHibernationTables(db);
+          break;
+        case 20:
+          addWakeReservationNonceColumn(db);
+          break;
+        case 21:
+          createWakeAcceptanceReceiptTable(db);
+          break;
+        case 22:
+          addRuntimeSpecVcsIdentityColumn(db);
+          break;
         default:
           throw new Error(`Unsupported broker schema migration target: ${nextVersion}`);
       }
@@ -1681,6 +1954,19 @@ function runSchemaMigrations(db: DatabaseSync): void {
 }
 
 // ─── BrokerDB ────────────────────────────────────────────
+
+/**
+ * Internal sentinel used to roll back a combined register+accept transaction:
+ * thrown when generation acceptance is rejected so `withTransaction` rolls back
+ * the registration mutation, then caught at the method boundary and converted
+ * back into a normal rejection result (never propagated to callers).
+ */
+class GenerationAcceptanceRollback extends Error {
+  constructor(readonly rejection: Extract<RuntimeGenerationAcceptance, { accepted: false }>) {
+    super("generation_acceptance_rollback");
+    this.name = "GenerationAcceptanceRollback";
+  }
+}
 
 export class BrokerDB implements BrokerDBInterface {
   private db: DatabaseSync | null = null;
@@ -1930,12 +2216,1178 @@ export class BrokerDB implements BrokerDBInterface {
     };
   }
 
+  transitionAgentLifecycle(input: AgentLifecycleTransitionInput): AgentInfo {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const current = this.getAgentById(input.agentId);
+      if (!current?.lifecycleState || current.lifecycleVersion === undefined) {
+        throw new Error(`Unknown lifecycle agent: ${input.agentId}`);
+      }
+      if (current.lifecycleVersion !== input.expectedVersion) {
+        throw new Error(
+          `Lifecycle CAS conflict for ${input.agentId}: expected ${input.expectedVersion}, got ${current.lifecycleVersion}`,
+        );
+      }
+      // Fence-identity validation: a transition that presents a fence token must
+      // prove it holds the live, matching lease. Lease fences are monotonic per
+      // agent (a re-acquisition after expiry bumps the fence), so matching the
+      // fence rejects a superseded holder that would otherwise drive a fenced
+      // transition purely on a matching version CAS. When the caller also binds
+      // the lease identity (`leaseId`/`expectedOperation`/`now`) we additionally
+      // reject an expired-but-unsuperseded lease and a wrong-operation lease —
+      // the fence token alone is not sufficient authority. Unfenced
+      // administrative/recovery transitions (no fenceToken) are unaffected.
+      if (input.fenceToken != null) {
+        const lease = this.getAgentLifecycleLease(input.agentId);
+        if (!lease || lease.fenceToken !== input.fenceToken) {
+          throw new Error(
+            `Lifecycle fence rejected for ${input.agentId}: presented fence ${input.fenceToken} is not the currently held lease`,
+          );
+        }
+        if (input.leaseId != null && lease.leaseId !== input.leaseId) {
+          throw new Error(
+            `Lifecycle fence rejected for ${input.agentId}: presented lease is not the currently held lease`,
+          );
+        }
+        if (input.expectedOperation != null && lease.operation !== input.expectedOperation) {
+          throw new Error(
+            `Lifecycle fence rejected for ${input.agentId}: held lease operation ${lease.operation} does not authorize a ${input.expectedOperation} transition`,
+          );
+        }
+        if (input.now != null && Date.parse(lease.expiresAt) <= input.now) {
+          throw new Error(`Lifecycle fence rejected for ${input.agentId}: held lease is expired`);
+        }
+      }
+      assertLegalLifecycleTransition(current.lifecycleState, input.toState);
+      const now = new Date().toISOString();
+      const result = db
+        .prepare(
+          `UPDATE agents SET lifecycle_state = ?, lifecycle_version = lifecycle_version + 1,
+           hibernated_at = CASE WHEN ? = 'hibernated' THEN ? ELSE hibernated_at END,
+           terminated_at = CASE WHEN ? = 'terminated' THEN ? ELSE terminated_at END,
+           hibernate_reason = CASE WHEN ? IN ('hibernating','hibernated','reap-candidate') THEN ? ELSE hibernate_reason END,
+           last_wake_reason = CASE WHEN ? = 'waking' THEN ? ELSE last_wake_reason END
+         WHERE id = ? AND lifecycle_version = ?`,
+        )
+        .run(
+          input.toState,
+          input.toState,
+          now,
+          input.toState,
+          now,
+          input.toState,
+          input.reason,
+          input.toState,
+          input.reason,
+          input.agentId,
+          input.expectedVersion,
+        );
+      if (Number(result.changes) !== 1)
+        throw new Error(`Lifecycle CAS conflict for ${input.agentId}`);
+      const nextVersion = input.expectedVersion + 1;
+      this.insertLifecycleEventRow({
+        correlationId: input.correlationId,
+        agentId: input.agentId,
+        fromState: current.lifecycleState,
+        toState: input.toState,
+        lifecycleVersion: nextVersion,
+        reason: input.reason,
+        triggerSource: input.triggerSource,
+        actor: input.actor,
+        outcome: "accepted",
+        fenceToken: input.fenceToken ?? null,
+        queueDepth: input.queueDepth ?? null,
+        oldestQueueAgeMs: input.oldestQueueAgeMs ?? null,
+        durationMs: input.durationMs ?? null,
+        rssBytesBefore: input.rssBytesBefore ?? null,
+        rssBytesAfter: input.rssBytesAfter ?? null,
+        createdAt: now,
+      });
+      const updated = this.getAgentById(input.agentId);
+      if (!updated) throw new Error(`Lifecycle agent disappeared: ${input.agentId}`);
+      return updated;
+    });
+  }
+
+  /**
+   * Append an audit-only lifecycle event (a refusal, fenced stale attempt, or
+   * duplicate-launch prevention) without changing the agent's lifecycle state.
+   */
+  recordAgentLifecycleEvent(input: AgentLifecycleEventInput): void {
+    this.withTransaction(() => {
+      this.insertLifecycleEventRow({
+        correlationId: input.correlationId,
+        agentId: input.agentId,
+        fromState: input.fromState,
+        toState: input.toState,
+        lifecycleVersion: input.lifecycleVersion,
+        reason: input.reason,
+        triggerSource: input.triggerSource,
+        actor: input.actor,
+        outcome: input.outcome,
+        errorCode: input.errorCode ?? null,
+        fenceToken: input.fenceToken ?? null,
+        queueDepth: input.queueDepth ?? null,
+        oldestQueueAgeMs: input.oldestQueueAgeMs ?? null,
+        durationMs: input.durationMs ?? null,
+        rssBytesBefore: input.rssBytesBefore ?? null,
+        rssBytesAfter: input.rssBytesAfter ?? null,
+        createdAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  private insertLifecycleEventRow(row: {
+    correlationId: string;
+    agentId: string;
+    fromState: AgentLifecycleState;
+    toState: AgentLifecycleState;
+    lifecycleVersion: number;
+    reason: string;
+    triggerSource?: string | null;
+    actor: string;
+    outcome: string;
+    errorCode?: string | null;
+    fenceToken: number | null;
+    queueDepth: number | null;
+    oldestQueueAgeMs: number | null;
+    durationMs: number | null;
+    rssBytesBefore: number | null;
+    rssBytesAfter: number | null;
+    createdAt: string;
+  }): void {
+    const db = this.getDb();
+    db.prepare(
+      `INSERT INTO agent_lifecycle_events
+       (correlation_id, agent_id, from_state, to_state, lifecycle_version, fence_token, reason,
+        trigger_source, actor, outcome, error_code, queue_depth, oldest_queue_age_ms, duration_ms,
+        rss_bytes_before, rss_bytes_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.correlationId,
+      row.agentId,
+      row.fromState,
+      row.toState,
+      row.lifecycleVersion,
+      row.fenceToken,
+      row.reason,
+      row.triggerSource ?? null,
+      row.actor,
+      row.outcome,
+      row.errorCode ?? null,
+      row.queueDepth,
+      row.oldestQueueAgeMs,
+      row.durationMs,
+      row.rssBytesBefore,
+      row.rssBytesAfter,
+      row.createdAt,
+    );
+    const pruned = db
+      .prepare(
+        `DELETE FROM agent_lifecycle_events WHERE id IN (
+        SELECT id FROM agent_lifecycle_events ORDER BY id DESC LIMIT -1 OFFSET 10000
+      )`,
+      )
+      .run();
+    if (Number(pruned.changes) > 0) {
+      db.prepare(
+        `UPDATE agent_lifecycle_retention
+         SET pruned_count = pruned_count + ?, last_pruned_at = ? WHERE singleton = 1`,
+      ).run(Number(pruned.changes), row.createdAt);
+    }
+  }
+
+  getRecentAgentLifecycleEvents(agentId?: string, limit = 50): AgentLifecycleEvent[] {
+    const db = this.getDb();
+    const cappedLimit = Math.min(Math.max(Math.trunc(limit), 1), 1000);
+    const rows = agentId
+      ? db
+          .prepare(
+            `SELECT * FROM agent_lifecycle_events WHERE agent_id = ? ORDER BY id DESC LIMIT ?`,
+          )
+          .all(agentId, cappedLimit)
+      : db
+          .prepare(`SELECT * FROM agent_lifecycle_events ORDER BY id DESC LIMIT ?`)
+          .all(cappedLimit);
+    return rows.map((row) => ({
+      id: Number(row.id),
+      correlationId: String(row.correlation_id),
+      agentId: String(row.agent_id),
+      fromState: String(row.from_state) as AgentLifecycleState,
+      toState: String(row.to_state) as AgentLifecycleState,
+      lifecycleVersion: Number(row.lifecycle_version),
+      fenceToken: row.fence_token == null ? null : Number(row.fence_token),
+      reason: String(row.reason),
+      triggerSource: row.trigger_source == null ? null : String(row.trigger_source),
+      actor: String(row.actor),
+      outcome: String(row.outcome),
+      errorCode: row.error_code == null ? null : String(row.error_code),
+      queueDepth: row.queue_depth == null ? null : Number(row.queue_depth),
+      oldestQueueAgeMs: row.oldest_queue_age_ms == null ? null : Number(row.oldest_queue_age_ms),
+      durationMs: row.duration_ms == null ? null : Number(row.duration_ms),
+      rssBytesBefore: row.rss_bytes_before == null ? null : Number(row.rss_bytes_before),
+      rssBytesAfter: row.rss_bytes_after == null ? null : Number(row.rss_bytes_after),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  getAgentLifecycleRetentionInfo(): AgentLifecycleRetentionInfo {
+    const db = this.getDb();
+    const retained = db.prepare("SELECT COUNT(*) AS count FROM agent_lifecycle_events").get() as
+      | { count: number }
+      | undefined;
+    const retention = db
+      .prepare(
+        "SELECT pruned_count, last_pruned_at FROM agent_lifecycle_retention WHERE singleton = 1",
+      )
+      .get() as { pruned_count: number; last_pruned_at: string | null } | undefined;
+    return {
+      retainedCount: Number(retained?.count ?? 0),
+      prunedCount: Number(retention?.pruned_count ?? 0),
+      lastPrunedAt: retention?.last_pruned_at ?? null,
+    };
+  }
+
+  acquireAgentLifecycleLease(input: {
+    agentId: string;
+    operation: AgentLifecycleOperation;
+    ownerBrokerInstanceId: string;
+    leaseId: string;
+    ttlMs: number;
+    triggerMessageId?: number | null;
+    now?: number;
+  }): AgentLifecycleLease | null {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowMs = input.now ?? Date.now();
+      const now = new Date(nowMs).toISOString();
+      const expiresAt = new Date(nowMs + input.ttlMs).toISOString();
+      const existing = db
+        .prepare(
+          "SELECT fence_token, expires_at, attempt FROM agent_lifecycle_leases WHERE agent_id = ?",
+        )
+        .get(input.agentId) as
+        | { fence_token: number; expires_at: string; attempt: number }
+        | undefined;
+      if (existing && existing.expires_at > now) return null;
+      const fence = (existing?.fence_token ?? 0) + 1;
+      const attempt = (existing?.attempt ?? 0) + 1;
+      db.prepare(
+        `INSERT INTO agent_lifecycle_leases
+        (agent_id, operation, fence_token, owner_broker_instance_id, lease_id, acquired_at, expires_at, attempt, trigger_message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET operation=excluded.operation, fence_token=excluded.fence_token,
+          owner_broker_instance_id=excluded.owner_broker_instance_id, lease_id=excluded.lease_id,
+          acquired_at=excluded.acquired_at, expires_at=excluded.expires_at, attempt=excluded.attempt,
+          trigger_message_id=excluded.trigger_message_id`,
+      ).run(
+        input.agentId,
+        input.operation,
+        fence,
+        input.ownerBrokerInstanceId,
+        input.leaseId,
+        now,
+        expiresAt,
+        attempt,
+        input.triggerMessageId ?? null,
+      );
+      return {
+        agentId: input.agentId,
+        operation: input.operation,
+        fenceToken: fence,
+        ownerBrokerInstanceId: input.ownerBrokerInstanceId,
+        leaseId: input.leaseId,
+        acquiredAt: now,
+        expiresAt,
+        attempt,
+        triggerMessageId: input.triggerMessageId ?? null,
+      };
+    });
+  }
+
+  releaseAgentLifecycleLease(agentId: string, leaseId: string, fenceToken: number): boolean {
+    const result = this.getDb()
+      .prepare(
+        "DELETE FROM agent_lifecycle_leases WHERE agent_id = ? AND lease_id = ? AND fence_token = ?",
+      )
+      .run(agentId, leaseId, fenceToken);
+    return Number(result.changes) === 1;
+  }
+
+  /**
+   * Extend an already-held, still-valid lease's expiry WITHOUT bumping the
+   * fence, so a legitimately long-running operation (e.g. a wake that waits on
+   * process launch + runtime registration across several attempts) keeps a valid
+   * lease across adapter waits and can still complete its fenced forward
+   * transition. The fence is preserved so revival fencing is unaffected.
+   *
+   * Renewal only succeeds while the lease is still unexpired and held by this
+   * exact owner (matching `leaseId` + `fenceToken`); this preserves the takeover
+   * guarantee (a stalled owner past expiry cannot reclaim a lease another broker
+   * may take over). Returns the refreshed lease, or null when ownership was lost
+   * (expired, released, or the fence moved) — a null result means the caller
+   * must fail closed rather than continue driving forward transitions.
+   */
+  renewAgentLifecycleLease(input: {
+    agentId: string;
+    leaseId: string;
+    fenceToken: number;
+    ttlMs: number;
+    now?: number;
+  }): AgentLifecycleLease | null {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowMs = input.now ?? Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const expiresAt = new Date(nowMs + input.ttlMs).toISOString();
+      const result = db
+        .prepare(
+          `UPDATE agent_lifecycle_leases SET expires_at = ?
+           WHERE agent_id = ? AND lease_id = ? AND fence_token = ? AND expires_at > ?`,
+        )
+        .run(expiresAt, input.agentId, input.leaseId, input.fenceToken, nowIso);
+      if (Number(result.changes) !== 1) return null;
+      return this.getAgentLifecycleLease(input.agentId);
+    });
+  }
+
+  /** Set the opt-in hibernation policy for an agent (auto | manual | never). */
+  setAgentHibernatePolicy(agentId: string, policy: AgentHibernatePolicy): void {
+    this.getDb()
+      .prepare("UPDATE agents SET hibernate_policy = ? WHERE id = ?")
+      .run(policy, agentId);
+  }
+
+  /** Record grace/idle eligibility timestamps used by the auto-hibernation scheduler. */
+  setAgentHibernationSchedule(
+    agentId: string,
+    schedule: { graceUntil?: string | null; idleEligibleAt?: string | null },
+  ): void {
+    const db = this.getDb();
+    if (schedule.graceUntil !== undefined) {
+      db.prepare("UPDATE agents SET grace_until = ? WHERE id = ?").run(
+        schedule.graceUntil,
+        agentId,
+      );
+    }
+    if (schedule.idleEligibleAt !== undefined) {
+      db.prepare("UPDATE agents SET idle_eligible_at = ? WHERE id = ?").run(
+        schedule.idleEligibleAt,
+        agentId,
+      );
+    }
+  }
+
+  getAgentLifecycleLease(agentId: string): AgentLifecycleLease | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, operation, fence_token, owner_broker_instance_id, lease_id,
+                acquired_at, expires_at, attempt, trigger_message_id
+         FROM agent_lifecycle_leases WHERE agent_id = ?`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          operation: string;
+          fence_token: number;
+          owner_broker_instance_id: string;
+          lease_id: string;
+          acquired_at: string;
+          expires_at: string;
+          attempt: number;
+          trigger_message_id: number | null;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      operation: row.operation as AgentLifecycleOperation,
+      fenceToken: row.fence_token,
+      ownerBrokerInstanceId: row.owner_broker_instance_id,
+      leaseId: row.lease_id,
+      acquiredAt: row.acquired_at,
+      expiresAt: row.expires_at,
+      attempt: row.attempt,
+      triggerMessageId: row.trigger_message_id,
+    };
+  }
+
+  // ─── Durable runtime specs (sanitized launch/resume manifest) ──────
+
+  upsertAgentRuntimeSpec(input: AgentRuntimeSpecInput): AgentRuntimeSpec {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const now = new Date().toISOString();
+      const existing = db
+        .prepare("SELECT created_at FROM agent_runtime_specs WHERE agent_id = ?")
+        .get(input.agentId) as { created_at: string } | undefined;
+      const createdAt = existing?.created_at ?? now;
+      db.prepare(
+        `INSERT INTO agent_runtime_specs
+         (agent_id, stable_id, broker_owner_id, cwd, repo_root, worktree_path, tmux_socket,
+          tmux_session, tmux_target, executable, argv_json, env_allowlist_json,
+          session_resume_ref, config_fingerprint, expected_host, expected_user, launch_source,
+          vcs_identity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET stable_id=excluded.stable_id,
+           broker_owner_id=excluded.broker_owner_id, cwd=excluded.cwd, repo_root=excluded.repo_root,
+           worktree_path=excluded.worktree_path, tmux_socket=excluded.tmux_socket,
+           tmux_session=excluded.tmux_session, tmux_target=excluded.tmux_target,
+           executable=excluded.executable, argv_json=excluded.argv_json,
+           env_allowlist_json=excluded.env_allowlist_json,
+           session_resume_ref=excluded.session_resume_ref,
+           config_fingerprint=excluded.config_fingerprint, expected_host=excluded.expected_host,
+           expected_user=excluded.expected_user, launch_source=excluded.launch_source,
+           vcs_identity=excluded.vcs_identity,
+           updated_at=excluded.updated_at`,
+      ).run(
+        input.agentId,
+        input.stableId,
+        input.brokerOwnerId,
+        input.cwd,
+        input.repoRoot,
+        input.worktreePath,
+        input.tmuxSocket,
+        input.tmuxSession,
+        input.tmuxTarget,
+        input.executable,
+        JSON.stringify(input.argv),
+        JSON.stringify(input.envAllowlist),
+        input.sessionResumeRef,
+        input.configFingerprint,
+        input.expectedHost,
+        input.expectedUser,
+        input.launchSource,
+        input.vcsIdentity ?? null,
+        createdAt,
+        now,
+      );
+      const spec = this.getAgentRuntimeSpec(input.agentId);
+      if (!spec) throw new Error(`Failed to persist runtime spec for ${input.agentId}`);
+      return spec;
+    });
+  }
+
+  getAgentRuntimeSpec(agentId: string): AgentRuntimeSpec | null {
+    const row = this.getDb()
+      .prepare("SELECT * FROM agent_runtime_specs WHERE agent_id = ?")
+      .get(agentId) as
+      | {
+          agent_id: string;
+          stable_id: string;
+          broker_owner_id: string;
+          cwd: string;
+          repo_root: string;
+          worktree_path: string;
+          tmux_socket: string;
+          tmux_session: string;
+          tmux_target: string;
+          executable: string;
+          argv_json: string;
+          env_allowlist_json: string;
+          session_resume_ref: string;
+          config_fingerprint: string;
+          expected_host: string;
+          expected_user: string;
+          launch_source: string;
+          vcs_identity: string | null;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      stableId: row.stable_id,
+      brokerOwnerId: row.broker_owner_id,
+      cwd: row.cwd,
+      repoRoot: row.repo_root,
+      worktreePath: row.worktree_path,
+      tmuxSocket: row.tmux_socket,
+      tmuxSession: row.tmux_session,
+      tmuxTarget: row.tmux_target,
+      executable: row.executable,
+      argv: parseStringArray(row.argv_json),
+      envAllowlist: parseStringArray(row.env_allowlist_json),
+      sessionResumeRef: row.session_resume_ref,
+      configFingerprint: row.config_fingerprint,
+      expectedHost: row.expected_host,
+      expectedUser: row.expected_user,
+      launchSource: row.launch_source,
+      vcsIdentity: row.vcs_identity ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  deleteAgentRuntimeSpec(agentId: string): void {
+    this.getDb().prepare("DELETE FROM agent_runtime_specs WHERE agent_id = ?").run(agentId);
+  }
+
+  // ─── Cooperative checkpoint receipts ───────────────────────────────
+
+  recordAgentCheckpointReceipt(input: AgentCheckpointReceiptInput): AgentCheckpointReceipt {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare(
+        `INSERT INTO agent_checkpoint_receipts
+         (agent_id, runtime_generation, correlation_id, hibernate_safe, reason,
+          session_resume_ref, pending_inbox_count, rss_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id, runtime_generation) DO UPDATE SET correlation_id=excluded.correlation_id,
+           hibernate_safe=excluded.hibernate_safe, reason=excluded.reason,
+           session_resume_ref=excluded.session_resume_ref,
+           pending_inbox_count=excluded.pending_inbox_count, rss_bytes=excluded.rss_bytes,
+           created_at=excluded.created_at`,
+      )
+      .run(
+        input.agentId,
+        input.runtimeGeneration,
+        input.correlationId,
+        input.hibernateSafe ? 1 : 0,
+        input.reason ?? null,
+        input.sessionResumeRef ?? null,
+        input.pendingInboxCount,
+        input.rssBytes ?? null,
+        now,
+      );
+    return { ...input, createdAt: now };
+  }
+
+  getLatestAgentCheckpointReceipt(agentId: string): AgentCheckpointReceipt | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, runtime_generation, correlation_id, hibernate_safe, reason,
+                session_resume_ref, pending_inbox_count, rss_bytes, created_at
+         FROM agent_checkpoint_receipts WHERE agent_id = ?
+         ORDER BY runtime_generation DESC LIMIT 1`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          runtime_generation: number;
+          correlation_id: string;
+          hibernate_safe: number;
+          reason: string | null;
+          session_resume_ref: string | null;
+          pending_inbox_count: number;
+          rss_bytes: number | null;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      runtimeGeneration: row.runtime_generation,
+      correlationId: row.correlation_id,
+      hibernateSafe: row.hibernate_safe === 1,
+      reason: row.reason,
+      sessionResumeRef: row.session_resume_ref,
+      pendingInboxCount: row.pending_inbox_count,
+      rssBytes: row.rss_bytes,
+      createdAt: row.created_at,
+    };
+  }
+
+  // ─── Accepted-generation fencing (single-winner cold wake) ─────────
+
+  /**
+   * Reserve the exact runtime generation the broker will accept for a wake.
+   * Requires an unexpired wake lease held with the given fence token. Exactly
+   * one reservation may exist per agent (PK). The reserved generation is the
+   * agent's current runtime_generation + 1, so any older runtime is fenced out.
+   */
+  reserveWakeGeneration(input: {
+    agentId: string;
+    wakeLeaseId: string;
+    fenceToken: number;
+    correlationId: string;
+    /** Optional injected nonce (tests); production mints a fresh UUID. */
+    reservationNonce?: string;
+    now?: number;
+  }): AgentWakeReservation {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowIso = new Date(input.now ?? Date.now()).toISOString();
+      const lease = this.getAgentLifecycleLease(input.agentId);
+      if (
+        !lease ||
+        lease.operation !== "wake" ||
+        lease.leaseId !== input.wakeLeaseId ||
+        lease.fenceToken !== input.fenceToken
+      ) {
+        throw new Error(
+          `Wake reservation requires a matching held wake lease for ${input.agentId}`,
+        );
+      }
+      if (lease.expiresAt <= nowIso) {
+        throw new Error(`Wake lease for ${input.agentId} has expired`);
+      }
+      const agent = this.getAgentById(input.agentId);
+      if (!agent) throw new Error(`Unknown agent for wake reservation: ${input.agentId}`);
+      const reservedGeneration = (agent.runtimeGeneration ?? 0) + 1;
+      // Mint a fresh per-attempt nonce. Successive wake attempts for the same
+      // identity necessarily reuse the same lease id, fence token, and
+      // `reserved_generation` (= runtime_generation + 1, which does not advance
+      // until a runtime is accepted), so those three fields alone cannot tell a
+      // slow, timed-out earlier attempt's runtime apart from the current
+      // attempt's runtime. The nonce, minted here and threaded through the launch
+      // context into the runtime's registration, fences the earlier runtime out.
+      const reservationNonce = input.reservationNonce ?? crypto.randomUUID();
+      // A NEW wake attempt supersedes any prior acceptance receipt: clear it so a
+      // stale fence from a previously-accepted (crash-stranded) runtime can never
+      // be replayed to rebind during this fresh wake window.
+      db.prepare("DELETE FROM agent_wake_acceptance_receipts WHERE agent_id = ?").run(
+        input.agentId,
+      );
+      db.prepare(
+        `INSERT INTO agent_wake_reservations
+         (agent_id, wake_lease_id, fence_token, reserved_generation, reservation_nonce,
+          correlation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET wake_lease_id=excluded.wake_lease_id,
+           fence_token=excluded.fence_token, reserved_generation=excluded.reserved_generation,
+           reservation_nonce=excluded.reservation_nonce,
+           correlation_id=excluded.correlation_id, created_at=excluded.created_at`,
+      ).run(
+        input.agentId,
+        input.wakeLeaseId,
+        input.fenceToken,
+        reservedGeneration,
+        reservationNonce,
+        input.correlationId,
+        nowIso,
+      );
+      return {
+        agentId: input.agentId,
+        wakeLeaseId: input.wakeLeaseId,
+        fenceToken: input.fenceToken,
+        reservedGeneration,
+        reservationNonce,
+        correlationId: input.correlationId,
+        createdAt: nowIso,
+      };
+    });
+  }
+
+  getAgentWakeReservation(agentId: string): AgentWakeReservation | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, wake_lease_id, fence_token, reserved_generation, reservation_nonce,
+                correlation_id, created_at
+         FROM agent_wake_reservations WHERE agent_id = ?`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          wake_lease_id: string;
+          fence_token: number;
+          reserved_generation: number;
+          reservation_nonce: string;
+          correlation_id: string;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      wakeLeaseId: row.wake_lease_id,
+      fenceToken: row.fence_token,
+      reservedGeneration: row.reserved_generation,
+      reservationNonce: row.reservation_nonce,
+      correlationId: row.correlation_id,
+      createdAt: row.created_at,
+    };
+  }
+
+  clearAgentWakeReservation(agentId: string): void {
+    this.getDb().prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(agentId);
+  }
+
+  /**
+   * Record the EXACT wake fence that just accepted a generation, so a runtime
+   * whose register RPC response was lost to a crash can replay its single-use
+   * fence and be re-bound idempotently. Called INSIDE the acceptance transaction
+   * (via {@link acceptRuntimeGeneration} / {@link registerAgentWithGenerationAcceptance})
+   * so the receipt is atomic with the generation advance. The stable id is read
+   * from the just-registered row so the receipt binds to the durable identity.
+   */
+  private writeWakeAcceptanceReceipt(input: AcceptRuntimeGenerationInput, nowMs: number): void {
+    const db = this.getDb();
+    const row = db.prepare("SELECT stable_id FROM agents WHERE id = ?").get(input.agentId) as
+      | { stable_id: string | null }
+      | undefined;
+    const stableId = row?.stable_id;
+    // Only a durable stable identity can be revived by a fenced replay; a row
+    // without a stable id cannot be a hibernation identity, so no receipt.
+    if (!stableId) return;
+    db.prepare(
+      `INSERT INTO agent_wake_acceptance_receipts
+         (agent_id, stable_id, wake_lease_id, fence_token, reserved_generation,
+          reservation_nonce, accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET stable_id=excluded.stable_id,
+         wake_lease_id=excluded.wake_lease_id, fence_token=excluded.fence_token,
+         reserved_generation=excluded.reserved_generation,
+         reservation_nonce=excluded.reservation_nonce, accepted_at=excluded.accepted_at`,
+    ).run(
+      input.agentId,
+      stableId,
+      input.wakeLeaseId,
+      input.fenceToken,
+      input.reservedGeneration,
+      input.reservationNonce,
+      new Date(nowMs).toISOString(),
+    );
+  }
+
+  getAgentWakeAcceptanceReceipt(agentId: string): AgentWakeAcceptanceReceipt | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT agent_id, stable_id, wake_lease_id, fence_token, reserved_generation,
+                reservation_nonce, accepted_at
+         FROM agent_wake_acceptance_receipts WHERE agent_id = ?`,
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          stable_id: string;
+          wake_lease_id: string;
+          fence_token: number;
+          reserved_generation: number;
+          reservation_nonce: string;
+          accepted_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      stableId: row.stable_id,
+      wakeLeaseId: row.wake_lease_id,
+      fenceToken: row.fence_token,
+      reservedGeneration: row.reserved_generation,
+      reservationNonce: row.reservation_nonce,
+      acceptedAt: row.accepted_at,
+    };
+  }
+
+  /**
+   * Accept exactly one runtime generation for a waking agent. The registration
+   * must present the same wake lease id, fence token, and reserved generation,
+   * AND the bound lease must still be an unexpired `wake` lease while the agent
+   * is still in the `waking` lifecycle state. A stale, expired, wrong-operation,
+   * wrong-state, or duplicate registration returns `{ accepted: false }` without
+   * mutating state. On success the agent's runtime_generation is advanced and
+   * the reservation is consumed. `now` (epoch ms) is injectable for tests.
+   */
+  /**
+   * Non-mutating validation shared by {@link acceptRuntimeGeneration} and
+   * {@link checkRuntimeGenerationAcceptable}. Returns a `{ accepted: false }`
+   * rejection when the fence does not bind, or `null` when acceptance is legal.
+   * Never advances the generation or consumes the reservation.
+   */
+  private validateRuntimeGenerationAcceptance(
+    input: AcceptRuntimeGenerationInput,
+    nowMs: number,
+  ): Extract<RuntimeGenerationAcceptance, { accepted: false }> | null {
+    const db = this.getDb();
+    const reservation = this.getAgentWakeReservation(input.agentId);
+    if (!reservation) return { accepted: false, reason: "no_reservation" };
+    if (reservation.wakeLeaseId !== input.wakeLeaseId) {
+      return { accepted: false, reason: "lease_mismatch" };
+    }
+    if (reservation.fenceToken !== input.fenceToken) {
+      return { accepted: false, reason: "fence_mismatch" };
+    }
+    if (reservation.reservedGeneration !== input.reservedGeneration) {
+      return { accepted: false, reason: "generation_mismatch" };
+    }
+    // Per-attempt nonce: a matching lease/fence/generation is NOT sufficient,
+    // because retries reuse all three. Only the runtime launched by THIS
+    // attempt carries the current reservation's nonce; a slow runtime from a
+    // superseded earlier attempt presents a stale nonce and is fenced out.
+    if (reservation.reservationNonce !== input.reservationNonce) {
+      return { accepted: false, reason: "nonce_mismatch" };
+    }
+    const lease = this.getAgentLifecycleLease(input.agentId);
+    if (!lease || lease.leaseId !== input.wakeLeaseId || lease.fenceToken !== input.fenceToken) {
+      return { accepted: false, reason: "lease_lost" };
+    }
+    // Strict lease binding: only an unexpired wake lease may accept a
+    // generation, and only while the agent is still waking. This closes the
+    // window where a delayed runtime presents an otherwise matching
+    // reservation under an expired/wrong-operation lease or after the wake
+    // was already resolved/aborted.
+    if (lease.operation !== "wake") {
+      return { accepted: false, reason: "lease_not_wake" };
+    }
+    const leaseExpiryMs = Date.parse(lease.expiresAt);
+    if (!Number.isFinite(leaseExpiryMs) || leaseExpiryMs <= nowMs) {
+      return { accepted: false, reason: "lease_expired" };
+    }
+    const stateRow = db
+      .prepare("SELECT lifecycle_state, runtime_generation FROM agents WHERE id = ?")
+      .get(input.agentId) as { lifecycle_state: string; runtime_generation: number } | undefined;
+    if (!stateRow || stateRow.lifecycle_state !== "waking") {
+      return { accepted: false, reason: "not_waking" };
+    }
+    if (Number(stateRow.runtime_generation) !== input.reservedGeneration - 1) {
+      return { accepted: false, reason: "generation_race" };
+    }
+    return null;
+  }
+
+  acceptRuntimeGeneration(input: AcceptRuntimeGenerationInput): RuntimeGenerationAcceptance {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const nowMs = input.now ?? Date.now();
+      const rejection = this.validateRuntimeGenerationAcceptance(input, nowMs);
+      if (rejection) return rejection;
+      const result = db
+        .prepare("UPDATE agents SET runtime_generation = ? WHERE id = ? AND runtime_generation = ?")
+        .run(input.reservedGeneration, input.agentId, input.reservedGeneration - 1);
+      if (Number(result.changes) !== 1) {
+        return { accepted: false as const, reason: "generation_race" };
+      }
+      db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(input.agentId);
+      // Persist the accepting fence so a crash between this commit and the socket
+      // bind/response can be recovered by an idempotent fenced replay.
+      this.writeWakeAcceptanceReceipt(input, nowMs);
+      return { accepted: true as const, runtimeGeneration: input.reservedGeneration };
+    });
+  }
+
+  /**
+   * Atomically settle a wake attempt against the acceptance boundary BEFORE the
+   * orchestrator stops or quarantines a launched-but-unaccepted runtime. This
+   * closes the timeout-boundary race: the socket layer accepts a generation
+   * atomically, so an acceptance can land in the window between the
+   * orchestrator's last waiter read and its decision to stop the attempt. In one
+   * transaction:
+   *
+   *  - If the reserved generation was ALREADY accepted (the agent's
+   *    `runtime_generation` reached `reservedGeneration` — the socket won the
+   *    race), report `{ accepted: true }` and leave the accepted runtime and its
+   *    (already consumed) reservation untouched. The caller must then treat the
+   *    attempt as the live runtime and NEVER stop it.
+   *  - Otherwise, consume ONLY this attempt's exact-nonce reservation, so any
+   *    later registration by the launched runtime can no longer be accepted
+   *    (`no_reservation`). This makes the caller's subsequent prove-stop safe:
+   *    once this returns `{ accepted: false }` the launched runtime can never
+   *    become live. A reservation minted by a superseded/newer attempt (a
+   *    different nonce) is left intact.
+   *
+   * `runtime_generation === reservedGeneration` uniquely identifies acceptance of
+   * THIS attempt because reserved generations are `current_generation + 1` at
+   * reserve time and only advance on acceptance.
+   */
+  finalizeWakeAttempt(input: {
+    agentId: string;
+    reservedGeneration: number;
+    reservationNonce: string;
+  }): { accepted: boolean } {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const row = db
+        .prepare("SELECT runtime_generation FROM agents WHERE id = ?")
+        .get(input.agentId) as { runtime_generation: number } | undefined;
+      if (row && Number(row.runtime_generation) === input.reservedGeneration) {
+        return { accepted: true };
+      }
+      db.prepare(
+        "DELETE FROM agent_wake_reservations WHERE agent_id = ? AND reservation_nonce = ?",
+      ).run(input.agentId, input.reservationNonce);
+      return { accepted: false };
+    });
+  }
+
+  /**
+   * Atomically revive a hibernated identity: perform the agent registration
+   * mutation AND accept the reserved runtime generation in ONE transaction, so a
+   * rejected acceptance rolls the registration mutation back. This closes the
+   * window where a revival whose wake lease expires between the socket-layer
+   * preflight and acceptance would otherwise leave the durable row with a
+   * mutated pid/metadata/connectivity even though the socket is refused and
+   * unbound. On rejection the transaction is rolled back and `agent` is null.
+   */
+  registerAgentWithGenerationAcceptance(input: {
+    registration: {
+      id: string;
+      name: string;
+      emoji: string;
+      pid: number;
+      // Reuse the roster metadata shape rather than restating it, so this stays
+      // in lockstep with `registerAgent` / `AgentInfo`.
+      metadata?: NonNullable<AgentInfo["metadata"]>;
+      stableId?: string;
+    };
+    accept: AcceptRuntimeGenerationInput;
+  }): { agent: AgentInfo | null; acceptance: RuntimeGenerationAcceptance } {
+    try {
+      return this.withTransaction(() => {
+        const db = this.getDb();
+        const nowMs = input.accept.now ?? Date.now();
+        // Register first so the durable row exists/updates, then accept the
+        // generation against that just-registered row within the same tx.
+        const agent = this.registerAgent(
+          input.registration.id,
+          input.registration.name,
+          input.registration.emoji,
+          input.registration.pid,
+          input.registration.metadata,
+          input.registration.stableId,
+        );
+        const rejection = this.validateRuntimeGenerationAcceptance(input.accept, nowMs);
+        if (rejection) throw new GenerationAcceptanceRollback(rejection);
+        const result = db
+          .prepare(
+            "UPDATE agents SET runtime_generation = ? WHERE id = ? AND runtime_generation = ?",
+          )
+          .run(
+            input.accept.reservedGeneration,
+            input.accept.agentId,
+            input.accept.reservedGeneration - 1,
+          );
+        if (Number(result.changes) !== 1) {
+          throw new GenerationAcceptanceRollback({ accepted: false, reason: "generation_race" });
+        }
+        db.prepare("DELETE FROM agent_wake_reservations WHERE agent_id = ?").run(
+          input.accept.agentId,
+        );
+        // Persist the accepting fence (atomic with the registration + acceptance)
+        // so a crash before this connection is bound/acknowledged can be recovered
+        // by an idempotent fenced replay of the same single-use wake fence.
+        this.writeWakeAcceptanceReceipt(input.accept, nowMs);
+        return {
+          agent,
+          acceptance: {
+            accepted: true as const,
+            runtimeGeneration: input.accept.reservedGeneration,
+          },
+        };
+      });
+    } catch (err) {
+      if (err instanceof GenerationAcceptanceRollback) {
+        return { agent: null, acceptance: err.rejection };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Non-mutating preflight for {@link acceptRuntimeGeneration}: runs the exact
+   * same fence validation without advancing the generation or consuming the
+   * reservation. The socket layer uses this to validate a wake fence BEFORE
+   * committing the agent registration, and only accepts the generation once
+   * registration has succeeded. Because broker registration is synchronous, a
+   * passing preflight followed immediately by `acceptRuntimeGeneration` cannot
+   * be interleaved by another connection, so this closes the window where a
+   * generation was advanced for a runtime whose registration then failed.
+   */
+  checkRuntimeGenerationAcceptable(
+    input: AcceptRuntimeGenerationInput,
+  ): RuntimeGenerationAcceptance {
+    const nowMs = input.now ?? Date.now();
+    return (
+      this.validateRuntimeGenerationAcceptance(input, nowMs) ?? {
+        accepted: true as const,
+        runtimeGeneration: input.reservedGeneration,
+      }
+    );
+  }
+
+  // ─── Wake queue (ordered, capacity-bounded) ────────────────────────
+
+  /**
+   * Idempotently enqueue a wake trigger. If an active (queued/dispatching)
+   * entry already exists for the agent it is returned unchanged except that the
+   * effective priority is lowered to the strongest (smallest) trigger and the
+   * trigger message id is preserved when still unset. Never fans out.
+   */
+  enqueueWake(input: EnqueueWakeInput): AgentWakeQueueEntry {
+    return this.withTransaction(() => {
+      const db = this.getDb();
+      const now = new Date().toISOString();
+      const priority = input.priority ?? 100;
+      const existing = this.getActiveWakeQueueEntry(input.agentId);
+      if (existing) {
+        const nextPriority = Math.min(existing.priority, priority);
+        const nextTriggerMessageId = existing.triggerMessageId ?? input.triggerMessageId ?? null;
+        db.prepare(
+          `UPDATE agent_wake_queue
+           SET priority = ?, trigger_message_id = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(nextPriority, nextTriggerMessageId, now, existing.id);
+        const refreshed = this.getWakeQueueEntryById(existing.id);
+        if (!refreshed) throw new Error("Failed to refresh wake queue entry");
+        return refreshed;
+      }
+      const inserted = db
+        .prepare(
+          `INSERT INTO agent_wake_queue
+           (agent_id, repo_root, trigger_kind, trigger_message_id, priority, reason,
+            correlation_id, status, attempt, enqueued_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`,
+        )
+        .run(
+          input.agentId,
+          input.repoRoot ?? null,
+          input.triggerKind,
+          input.triggerMessageId ?? null,
+          priority,
+          input.reason,
+          input.correlationId,
+          now,
+          now,
+        );
+      const entry = this.getWakeQueueEntryById(Number(inserted.lastInsertRowid));
+      if (!entry) throw new Error("Failed to enqueue wake");
+      return entry;
+    });
+  }
+
+  private getActiveWakeQueueEntry(agentId: string): AgentWakeQueueEntry | null {
+    const row = this.getDb()
+      .prepare(
+        `SELECT * FROM agent_wake_queue
+         WHERE agent_id = ? AND status IN ('queued','dispatching') LIMIT 1`,
+      )
+      .get(agentId) as WakeQueueRow | undefined;
+    return row ? rowToWakeQueueEntry(row) : null;
+  }
+
+  private getWakeQueueEntryById(id: number): AgentWakeQueueEntry | null {
+    const row = this.getDb().prepare("SELECT * FROM agent_wake_queue WHERE id = ?").get(id) as
+      | WakeQueueRow
+      | undefined;
+    return row ? rowToWakeQueueEntry(row) : null;
+  }
+
+  listWakeQueue(status?: AgentWakeQueueEntry["status"]): AgentWakeQueueEntry[] {
+    const db = this.getDb();
+    const rows = status
+      ? db
+          .prepare("SELECT * FROM agent_wake_queue WHERE status = ? ORDER BY priority ASC, id ASC")
+          .all(status)
+      : db.prepare("SELECT * FROM agent_wake_queue ORDER BY priority ASC, id ASC").all();
+    return rows.map((row) =>
+      rowToWakeQueueEntry({
+        id: Number(row.id),
+        agent_id: String(row.agent_id),
+        repo_root: row.repo_root == null ? null : String(row.repo_root),
+        trigger_kind: String(row.trigger_kind),
+        trigger_message_id: row.trigger_message_id == null ? null : Number(row.trigger_message_id),
+        priority: Number(row.priority),
+        reason: String(row.reason),
+        correlation_id: String(row.correlation_id),
+        status: String(row.status),
+        attempt: Number(row.attempt),
+        enqueued_at: String(row.enqueued_at),
+        updated_at: String(row.updated_at),
+      }),
+    );
+  }
+
+  countInflightWakes(repoRoot?: string | null): number {
+    const db = this.getDb();
+    if (repoRoot === undefined) {
+      const row = db
+        .prepare("SELECT COUNT(*) AS count FROM agent_wake_queue WHERE status = 'dispatching'")
+        .get() as { count: number } | undefined;
+      return Number(row?.count ?? 0);
+    }
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM agent_wake_queue WHERE status = 'dispatching' AND repo_root IS ?",
+      )
+      .get(repoRoot) as { count: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  markWakeDispatching(id: number): AgentWakeQueueEntry | null {
+    return this.withTransaction(() => {
+      const now = new Date().toISOString();
+      const result = this.getDb()
+        .prepare(
+          `UPDATE agent_wake_queue SET status = 'dispatching', attempt = attempt + 1, updated_at = ?
+           WHERE id = ? AND status = 'queued'`,
+        )
+        .run(now, id);
+      if (Number(result.changes) !== 1) return null;
+      return this.getWakeQueueEntryById(id);
+    });
+  }
+
+  requeueWake(id: number): AgentWakeQueueEntry | null {
+    return this.withTransaction(() => {
+      const now = new Date().toISOString();
+      this.getDb()
+        .prepare(
+          `UPDATE agent_wake_queue SET status = 'queued', updated_at = ?
+           WHERE id = ? AND status = 'dispatching'`,
+        )
+        .run(now, id);
+      return this.getWakeQueueEntryById(id);
+    });
+  }
+
+  completeWakeQueueEntry(id: number, status: "done" | "cancelled" = "done"): void {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare("UPDATE agent_wake_queue SET status = ?, updated_at = ? WHERE id = ?")
+      .run(status, now, id);
+  }
+
+  cancelWake(agentId: string): void {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare(
+        `UPDATE agent_wake_queue SET status = 'cancelled', updated_at = ?
+         WHERE agent_id = ? AND status IN ('queued','dispatching')`,
+      )
+      .run(now, agentId);
+  }
+
+  /** Mark any active wake-queue entry for an agent as completed (idempotent). */
+  completeWakeForAgent(agentId: string): void {
+    const now = new Date().toISOString();
+    this.getDb()
+      .prepare(
+        `UPDATE agent_wake_queue SET status = 'done', updated_at = ?
+         WHERE agent_id = ? AND status IN ('queued','dispatching')`,
+      )
+      .run(now, agentId);
+  }
+
   unregisterAgent(id: string): void {
     const db = this.getDb();
     const now = new Date().toISOString();
 
     this.withTransaction(() => {
       const agent = this.getAgentById(id);
+      // Durable hibernation identities MUST survive a graceful worker disconnect.
+      // During hibernation teardown the broker stops the worker process, whose
+      // shutdown path may send an `unregister`. A full teardown here would
+      // delete the queued inbox and release owned threads — exactly the durable
+      // state a later wake is supposed to drain. For hibernation lifecycle
+      // states, treat unregister as a soft disconnect that preserves the inbox,
+      // thread ownership, and resumability instead of tearing them down.
+      //
+      // `reap-candidate` is included: a hibernate/wake fault may have quarantined
+      // the agent while its runtime was still asynchronously exiting; a late
+      // unregister from that runtime must not destroy the inbox, ownership, and
+      // runtime spec an operator needs to review the quarantine. This mirrors the
+      // routine-maintenance preservation set.
+      const state = agent?.lifecycleState;
+      if (
+        state === "hibernating" ||
+        state === "hibernated" ||
+        state === "waking" ||
+        state === "reap-candidate"
+      ) {
+        db.prepare("UPDATE agents SET disconnected_at = ? WHERE id = ?").run(now, id);
+        return;
+      }
       this.requeueUndeliveredMessagesInternal(id, "agent_disconnected");
       db.prepare("DELETE FROM inbox WHERE agent_id = ?").run(id);
       db.prepare("UPDATE agents SET disconnected_at = ?, resumable_until = NULL WHERE id = ?").run(
@@ -2535,8 +3987,9 @@ export class BrokerDB implements BrokerDBInterface {
       const staleRows = db
         .prepare(
           `SELECT * FROM agents
-           WHERE (disconnected_at IS NULL AND last_heartbeat <= ?)
-              OR (disconnected_at IS NOT NULL AND resumable_until IS NOT NULL AND resumable_until <= ?)`,
+           WHERE lifecycle_state NOT IN (${PRESERVED_LIFECYCLE_STATES_SQL})
+             AND ((disconnected_at IS NULL AND last_heartbeat <= ?)
+              OR (disconnected_at IS NOT NULL AND resumable_until IS NOT NULL AND resumable_until <= ?))`,
         )
         .all(cutoff, now) as unknown as AgentRow[];
 
@@ -2576,7 +4029,8 @@ export class BrokerDB implements BrokerDBInterface {
       const rows = db
         .prepare(
           `SELECT * FROM agents
-           WHERE disconnected_at IS NOT NULL
+           WHERE lifecycle_state NOT IN (${PRESERVED_LIFECYCLE_STATES_SQL})
+             AND disconnected_at IS NOT NULL
              AND disconnected_at <= ?
              AND (resumable_until IS NULL OR resumable_until <= ?)`,
         )
@@ -2607,7 +4061,8 @@ export class BrokerDB implements BrokerDBInterface {
 
       db.prepare(
         `DELETE FROM agents
-         WHERE disconnected_at IS NOT NULL
+         WHERE lifecycle_state NOT IN (${PRESERVED_LIFECYCLE_STATES_SQL})
+           AND disconnected_at IS NOT NULL
            AND disconnected_at <= ?
            AND (resumable_until IS NULL OR resumable_until <= ?)`,
       ).run(cutoff, nowIso);
@@ -3816,13 +5271,18 @@ export class BrokerDB implements BrokerDBInterface {
     const db = this.getDb();
 
     return this.withTransaction(() => {
+      // Preserve ownership for live agents AND for durable hibernation /
+      // quarantine identities: a hibernated owner is intentionally disconnected
+      // but must keep its owned threads so a later wake resumes them.
       const rows = db
         .prepare(
           `SELECT owner_agent, COUNT(*) AS claim_count
            FROM threads
            WHERE owner_agent IS NOT NULL
              AND owner_agent NOT IN (
-               SELECT id FROM agents WHERE disconnected_at IS NULL
+               SELECT id FROM agents
+               WHERE disconnected_at IS NULL
+                  OR lifecycle_state IN (${PRESERVED_LIFECYCLE_STATES_SQL})
              )
            GROUP BY owner_agent`,
         )
@@ -3837,7 +5297,9 @@ export class BrokerDB implements BrokerDBInterface {
          SET owner_agent = NULL
          WHERE owner_agent IS NOT NULL
            AND owner_agent NOT IN (
-             SELECT id FROM agents WHERE disconnected_at IS NULL
+             SELECT id FROM agents
+             WHERE disconnected_at IS NULL
+                OR lifecycle_state IN (${PRESERVED_LIFECYCLE_STATES_SQL})
            )`,
       ).run();
 

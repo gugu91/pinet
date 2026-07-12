@@ -59,6 +59,8 @@ export const WRITE_TOOLS = new Set([
   "pinet:ports",
   "pinet:reload",
   "pinet:exit",
+  "pinet:hibernate",
+  "pinet:wake",
 ]);
 
 /**

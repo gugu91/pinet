@@ -19,6 +19,19 @@ import { buildSecurityPrompt, type SecurityGuardrails } from "./guardrails.js";
 import { TtlCache, TtlSet } from "./ttl-cache.js";
 import { resolveReactionCommands } from "./reaction-triggers.js";
 import { DEFAULT_SOCKET_PATH } from "./broker/client.js";
+import {
+  collectAgentLifecycleStatuses,
+  executeHibernateCommand,
+  executeWakeCommand,
+  unknownHibernationTarget,
+  type AgentLifecycleStatus,
+  type HibernateCommandExecutor,
+  type HibernationCommandPolicy,
+  type HibernationCommandResult,
+  type WakeCommandExecutor,
+} from "@pinet/broker-core";
+import type { AgentInfo, AgentLifecycleState } from "@pinet/broker-core/types";
+import { resolveHibernationSettings } from "./hibernation-config.js";
 import type {
   PortLeaseAcquireInput,
   PortLeaseListOptions,
@@ -932,6 +945,83 @@ export default function (pi: ExtensionAPI) {
     searchPinetSessions,
   } = pinetMeshOps;
 
+  async function runHibernationCommand(
+    command: "hibernate" | "wake",
+    target: string,
+    reason?: string,
+  ): Promise<HibernationCommandResult> {
+    if (brokerRole !== "broker") {
+      throw new Error(
+        `pinet ${command} is broker-managed. Connect this session as the broker (/pinet start) to hibernate or wake workers.`,
+      );
+    }
+    const db = getActiveBrokerDb();
+    if (!db) throw new Error("Broker database is unavailable.");
+
+    const wanted = target.trim().replace(/^@/, "");
+    const agents = db.getAllAgents();
+    const lowerWanted = wanted.toLowerCase();
+    const nameMatches = agents.filter((a: AgentInfo) => a.name?.toLowerCase() === lowerWanted);
+    const agent =
+      agents.find((a: AgentInfo) => a.id === wanted) ??
+      agents.find((a: AgentInfo) => a.stableId === wanted) ??
+      (nameMatches.length === 1 ? nameMatches[0] : undefined);
+    if (!agent) return unknownHibernationTarget(command, target);
+
+    const hib = resolveHibernationSettings(settings);
+    const policy: HibernationCommandPolicy = {
+      enabled: hib.enabled,
+      mode: hib.mode,
+      allowedRepos: hib.allowedRepos,
+    };
+    const state = (agent.lifecycleState ?? "live") as AgentLifecycleState;
+    // Provenance: the repo allowlist is a security boundary, so authorization
+    // trusts ONLY the broker-authored durable runtime spec's CANONICAL VCS
+    // IDENTITY (`owner/repo`), captured at spawn from the runtime's git remote.
+    // Ownership is NEVER inferred from filesystem directory names: a path-segment
+    // slug would collapse distinct roots that share their final segments (e.g.
+    // `/trusted/gugu91/extensions` and `/tmp/impostor/gugu91/extensions` both →
+    // `gugu91/extensions`), mis-derive ordinary layouts (`/Users/alice/projects/
+    // extensions` → `projects/extensions`), and turn worktree roots into
+    // `.worktrees/<branch>`. Matching the remote-derived identity instead means a
+    // repo shares one identity with all its worktrees and impostor roots never
+    // authorize. Mutable, worker-declared metadata is NEVER used as a fallback.
+    // When no trusted spec / resolvable remote exists the identifier stays null
+    // and the fail-closed gate refuses.
+    const repoIdentifier = db.getAgentRuntimeSpec(agent.id)?.vcsIdentity ?? null;
+
+    // Live process/tmux checkpoint/respawn adapters are a separate, explicitly
+    // gated activation step (default-off, unactivated). In the default disabled
+    // configuration the policy gate refuses before this executor is consulted;
+    // if hibernation is enabled without adapters wired, callers get a clear
+    // activation_pending refusal rather than a silent no-op.
+    const executor: HibernateCommandExecutor & WakeCommandExecutor = {
+      prepareHibernation: () => ({ ready: false, state, reason: "activation_pending" }),
+      hibernate: async () => ({ ok: false, state, reason: "activation_pending" }),
+      wake: async () => ({ ok: false, state, reason: "activation_pending" }),
+    };
+
+    if (command === "hibernate") {
+      return executeHibernateCommand({
+        executor,
+        agentId: agent.id,
+        state,
+        repoIdentifier,
+        policy,
+        actor: "operator",
+        reason,
+      });
+    }
+    return executeWakeCommand({
+      executor,
+      agentId: agent.id,
+      state,
+      policy,
+      actor: "operator",
+      reason,
+    });
+  }
+
   async function listPinetLanes(options: PinetLaneListOptions) {
     if (brokerRole === "broker") {
       const db = getActiveBrokerDb();
@@ -1322,6 +1412,20 @@ export default function (pi: ExtensionAPI) {
         currentRuntimeMode === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
       snoozeRalphLoop: (input) => brokerRuntime.snoozeRalphLoop(input),
       clearRalphSnooze: () => brokerRuntime.clearRalphSnooze(),
+      runHibernateCommand: ({ target, reason }) =>
+        runHibernationCommand("hibernate", target, reason),
+      runWakeCommand: ({ target, reason }) => runHibernationCommand("wake", target, reason),
+      getAgentLifecycleProjection: (agentIds?: string[]): AgentLifecycleStatus[] => {
+        if (brokerRole !== "broker") return [];
+        const db = getActiveBrokerDb();
+        if (!db) return [];
+        const hib = resolveHibernationSettings(settings);
+        return collectAgentLifecycleStatuses(db, {
+          ...(agentIds ? { agentIds } : {}),
+          maxConcurrentWakes: hib.maxConcurrentWakes,
+          maxConcurrentWakesPerRepo: hib.maxConcurrentWakesPerRepo,
+        });
+      },
     },
     iMessageTools: {
       pinetEnabled: () => pinetEnabled,

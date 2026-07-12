@@ -181,12 +181,25 @@ function getMeshAuthCompatibilityError(): Error {
   );
 }
 
+/**
+ * A single-use, broker-issued wake fence presented by a runtime that the broker
+ * cold-launched to revive a hibernated identity. Consumed on the first
+ * successful register and never replayed on reconnect.
+ */
+interface WakeFence {
+  wakeLeaseId: string;
+  fenceToken: number;
+  runtimeGeneration: number;
+  reservationNonce: string;
+}
+
 interface RegistrationSnapshot {
   name: string;
   emoji: string;
   metadata?: Record<string, unknown>;
   stableId?: string;
   brokerAssignedIdentity?: boolean;
+  wakeFence?: WakeFence;
 }
 
 interface RegistrationResult {
@@ -379,6 +392,7 @@ export class BrokerClient {
     emoji: string,
     metadata?: Record<string, unknown>,
     stableId?: string,
+    wakeFence?: WakeFence,
   ): Promise<{
     agentId: string;
     name: string;
@@ -391,6 +405,7 @@ export class BrokerClient {
       ...(metadata ? { metadata } : {}),
       ...(stableId ? { stableId } : {}),
       ...(name.trim().length === 0 ? { brokerAssignedIdentity: true } : {}),
+      ...(wakeFence ? { wakeFence } : {}),
     };
     return this.performRegister(this.registrationSnapshot);
   }
@@ -858,14 +873,26 @@ export class BrokerClient {
       pid: process.pid,
       ...(snapshot.metadata ? { metadata: snapshot.metadata } : {}),
       ...(snapshot.stableId ? { stableId: snapshot.stableId } : {}),
+      ...(snapshot.wakeFence
+        ? {
+            wakeLeaseId: snapshot.wakeFence.wakeLeaseId,
+            fenceToken: snapshot.wakeFence.fenceToken,
+            runtimeGeneration: snapshot.wakeFence.runtimeGeneration,
+            reservationNonce: snapshot.wakeFence.reservationNonce,
+          }
+        : {}),
     })) as RegistrationResult;
+    // Retain a reconnect snapshot but drop the single-use wake fence so a
+    // reconnect never replays a consumed generation reservation.
     this.registrationSnapshot = snapshot.brokerAssignedIdentity
       ? {
           ...snapshot,
+          wakeFence: undefined,
           ...(result.metadata ? { metadata: result.metadata } : {}),
         }
       : {
           ...snapshot,
+          wakeFence: undefined,
           name: result.name,
           emoji: result.emoji,
           ...(result.metadata ? { metadata: result.metadata } : {}),

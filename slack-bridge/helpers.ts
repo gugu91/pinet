@@ -59,6 +59,18 @@ export interface SlackBridgeSettings {
   agentEmoji?: string;
   meshSecret?: string;
   meshSecretPath?: string;
+  hibernation?: {
+    /** Master kill switch. Defaults false; waking/draining existing rows remains permitted. */
+    enabled?: boolean;
+    mode?: "observe" | "manual" | "auto";
+    allowedRepos?: string[];
+    graceMs?: number;
+    idleDebounceMs?: number;
+    handshakeTimeoutMs?: number;
+    wakeLeaseMs?: number;
+    maxConcurrentWakes?: number;
+    maxConcurrentWakesPerRepo?: number;
+  };
   imessage?: {
     enabled?: boolean;
   };

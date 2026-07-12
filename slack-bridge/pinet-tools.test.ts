@@ -8,6 +8,7 @@ import {
   type PinetToolsAgentRecord,
   type RegisterPinetToolsDeps,
 } from "./pinet-tools.js";
+import type { AgentLifecycleStatus } from "@pinet/broker-core";
 
 interface MinimalRenderTheme {
   fg: (_color: string, text: string) => string;
@@ -21,6 +22,15 @@ function expectJsonStatus(text: string | undefined, status: "succeeded" | "faile
 interface MinimalComponent {
   render(width: number): string[];
 }
+
+type HibernationCommandDetails = {
+  command: string;
+  agentId: string;
+  outcome: string;
+  reason: string;
+  state: string;
+  runtimeGeneration?: number;
+};
 
 type ToolDefinition = {
   name: string;
@@ -246,6 +256,45 @@ function createDeps(overrides: Partial<RegisterPinetToolsDeps> = {}): RegisterPi
   return { ...defaults, ...overrides };
 }
 
+function makeLifecycleStatus(overrides: Partial<AgentLifecycleStatus> = {}): AgentLifecycleStatus {
+  return {
+    agentId: "agent-1",
+    state: "hibernated",
+    lifecycleVersion: 4,
+    runtimeGeneration: 3,
+    hibernatePolicy: "manual",
+    hibernatedAt: "2026-05-01T00:00:00.000Z",
+    hibernateReason: "manual",
+    lastWakeReason: null,
+    graceUntil: null,
+    idleEligibleAt: null,
+    quarantined: false,
+    checkpoint: {
+      present: true,
+      hibernateSafe: true,
+      ageMs: 5_000,
+      pendingInboxCount: 0,
+      runtimeGeneration: 3,
+    },
+    runtimeSpec: {
+      agentId: "agent-1",
+      session: { kind: "session", ref: "session:abc123", host: "host-1", hasPath: false },
+      repo: "extensions",
+      hasWorktree: true,
+      hasTmuxSession: true,
+      configFingerprint: "cfg-v1",
+      expectedHost: "host-1",
+      launchSource: "pinet-spawn",
+      envAllowlistCount: 2,
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    },
+    wake: { queued: false, position: null, triggerKind: null, reason: null, attempt: null },
+    capacity: null,
+    refusal: null,
+    ...overrides,
+  };
+}
+
 function registerWithDeps(deps: RegisterPinetToolsDeps): Map<string, ToolDefinition> {
   const tools = new Map<string, ToolDefinition>();
   const pi = {
@@ -280,7 +329,7 @@ describe("registerPinetTools", () => {
     expect(pinet?.promptSnippet).toContain('args.format="json"');
     expect(pinet?.promptSnippet).toContain("verbose/debug detail");
     expect(JSON.stringify(pinet?.parameters)).toContain(
-      "help, send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, or exit",
+      "help, send, read, free, snooze, schedule, agents, sessions, lanes, ports, reload, exit, hibernate",
     );
   });
 
@@ -311,6 +360,160 @@ describe("registerPinetTools", () => {
       command: "/exit",
       target: "Golden Chalk Rabbit",
     });
+  });
+
+  it("routes hibernate to the broker-managed command and renders a sanitized result", async () => {
+    const runHibernateCommand = vi.fn(async (input: { target: string; reason?: string }) => ({
+      command: "hibernate" as const,
+      agentId: "worker-7",
+      outcome: "executed" as const,
+      state: "hibernated",
+      reason: "hibernated",
+      detail: "Agent runtime checkpointed and hibernated.",
+      target: input.target,
+    }));
+    const tools = registerWithDeps(createDeps({ runHibernateCommand }));
+
+    const res = (await tools.get("pinet")?.execute("tc-hibernate", {
+      action: "hibernate",
+      args: { target: "@Worker Seven", reason: "idle overnight" },
+    })) as {
+      content: Array<{ text: string }>;
+      details: { data: { details: HibernationCommandDetails } };
+    };
+
+    expect(runHibernateCommand).toHaveBeenCalledWith({
+      target: "@Worker Seven",
+      reason: "idle overnight",
+    });
+    expect(res.details.data.details).toMatchObject({
+      command: "hibernate",
+      agentId: "worker-7",
+      outcome: "executed",
+      reason: "hibernated",
+      state: "hibernated",
+    });
+    // Operator text never leaks argv/env/paths.
+    expect(res.content[0]?.text).toContain("hibernate worker-7: executed");
+    expect(res.content[0]?.text).not.toMatch(/\/Users\//);
+  });
+
+  it("fingerprints a session-shaped/secret-shaped target before it enters the confirmation policy", async () => {
+    // The confirmation-policy context can surface verbatim in prompts/error text.
+    // A stable-id target embeds the session-resume identity; a `KEY=secret` target
+    // embeds a secret. Neither may reach the policy surface — both must be
+    // fingerprinted to an opaque `target:#<hash>` — while the RAW target still
+    // flows to the broker runner for server-side resolution.
+    const captured: string[] = [];
+    const runHibernateCommand = vi.fn(async (input: { target: string; reason?: string }) => ({
+      command: "hibernate" as const,
+      agentId: "worker-7",
+      outcome: "executed" as const,
+      state: "hibernated",
+      reason: "hibernated",
+      detail: "Agent runtime checkpointed and hibernated.",
+      target: input.target,
+    }));
+    const requireToolPolicy = (_tool: string, _threadTs: string | undefined, context: string) => {
+      captured.push(context);
+    };
+    const tools = registerWithDeps(createDeps({ runHibernateCommand, requireToolPolicy }));
+
+    const sessionTarget = "prod-host:session:abcdef123456";
+    await tools.get("pinet")?.execute("tc-hib-session", {
+      action: "hibernate",
+      args: { target: sessionTarget, reason: "TOKEN=deadbeef in /Users/tm/secret" },
+    });
+
+    expect(captured).toHaveLength(1);
+    const context = captured[0]!;
+    // The session-resume identity is fingerprinted, never echoed.
+    expect(context).toMatch(/target:#[0-9a-f]{8}/);
+    expect(context).not.toContain("abcdef123456");
+    expect(context).not.toContain("session:");
+    // The reason's secret/path material is redacted too.
+    expect(context).not.toContain("deadbeef");
+    expect(context).not.toMatch(/\/Users\//);
+    // The RAW target still reaches the broker runner (server-side resolution).
+    expect(runHibernateCommand).toHaveBeenCalledWith({
+      target: sessionTarget,
+      reason: "TOKEN=deadbeef in /Users/tm/secret",
+    });
+  });
+
+  it("routes wake to the broker-managed command and surfaces the fenced runtime generation", async () => {
+    const runWakeCommand = vi.fn(async () => ({
+      command: "wake" as const,
+      agentId: "worker-7",
+      outcome: "executed" as const,
+      state: "live",
+      reason: "woken",
+      detail: "Agent runtime woken; queued messages will drain in order.",
+      runtimeGeneration: 4,
+      attempts: 1,
+    }));
+    const tools = registerWithDeps(createDeps({ runWakeCommand }));
+
+    const res = (await tools.get("pinet")?.execute("tc-wake", {
+      action: "wake",
+      args: { target: "worker-7" },
+    })) as {
+      content: Array<{ text: string }>;
+      details: { data: { details: HibernationCommandDetails } };
+    };
+
+    expect(runWakeCommand).toHaveBeenCalledWith({ target: "worker-7", reason: undefined });
+    expect(res.details.data.details).toMatchObject({
+      command: "wake",
+      outcome: "executed",
+      runtimeGeneration: 4,
+    });
+    expect(res.content[0]?.text).toContain("runtime_generation=4");
+  });
+
+  it("passes through a sanitized default-off refusal", async () => {
+    const runHibernateCommand = vi.fn(async () => ({
+      command: "hibernate" as const,
+      agentId: "worker-7",
+      outcome: "refused" as const,
+      state: "live",
+      reason: "hibernation_disabled",
+      detail: "Hibernation is disabled (enabled=false).",
+      retryable: false,
+    }));
+    const tools = registerWithDeps(createDeps({ runHibernateCommand }));
+
+    const res = (await tools.get("pinet")?.execute("tc-off", {
+      action: "hibernate",
+      args: { target: "worker-7" },
+    })) as { details: { data: { details: HibernationCommandDetails } } };
+
+    expect(res.details.data.details).toMatchObject({
+      outcome: "refused",
+      reason: "hibernation_disabled",
+    });
+  });
+
+  it("requires a target for hibernate/wake", async () => {
+    const tools = registerWithDeps(createDeps({ runWakeCommand: vi.fn() }));
+    const res = (await tools.get("pinet")?.execute("tc-notarget", {
+      action: "wake",
+      args: {},
+    })) as { details: { status: string; errors: Array<{ message: string }> } };
+    expect(res.details.status).toBe("failed");
+    expect(res.details.errors[0]?.message).toBe("target is required");
+  });
+
+  it("refuses on a follower with an actionable broker-managed message", async () => {
+    const tools = registerWithDeps(
+      createDeps({ brokerRole: () => "follower", runHibernateCommand: undefined }),
+    );
+    const res = (await tools.get("pinet")?.execute("tc-follower", {
+      action: "hibernate",
+      args: { target: "worker-7" },
+    })) as { details: { status: string; errors: Array<{ message: string }> } };
+    expect(res.details.status).toBe("failed");
+    expect(res.details.errors[0]?.message).toContain("broker-managed");
   });
 
   it("sets and clears broker RALPH snooze through the dispatcher", async () => {
@@ -824,7 +1027,15 @@ describe("registerPinetTools", () => {
     })) as { content: Array<{ text: string }> };
 
     expectJsonStatus(result.content[0]?.text, "succeeded");
-    expect(result.content[0]?.text).toContain('"args_schema"');
+    const envelope = JSON.parse(result.content[0]?.text ?? "{}") as {
+      data?: { details?: { fullOutputPath?: string } };
+    };
+    const fullOutputPath = envelope.data?.details?.fullOutputPath;
+    if (fullOutputPath) {
+      expect(readFileSync(fullOutputPath, "utf8")).toContain('"args_schema"');
+    } else {
+      expect(result.content[0]?.text).toContain('"args_schema"');
+    }
   });
 
   it("preserves valid structured help output flags when a sibling output flag is invalid", async () => {
@@ -2140,5 +2351,171 @@ describe("registerPinetTools", () => {
         rmSync(path.dirname(fullOutputPath), { recursive: true, force: true });
       }
     }
+  });
+
+  describe("hibernation lifecycle projection in agents/sessions", () => {
+    it("surfaces a scannable lifecycle tag in compact agents output", async () => {
+      const getAgentLifecycleProjection = vi.fn(() => [makeLifecycleStatus()]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-compact", {
+        action: "agents",
+        args: {},
+      })) as { details: { data: { text: string } } };
+
+      expect(getAgentLifecycleProjection).toHaveBeenCalledWith();
+      const text = result.details.data.text;
+      expect(text).toContain("Hibernation lifecycle:");
+      expect(text).toContain("agent-1: hibernated");
+      expect(text).toContain("gen3");
+      expect(text).toContain("ckpt");
+      // Redaction-by-construction: no argv/env/paths leak into operator output.
+      expect(text).not.toContain("/Users/");
+      expect(text).not.toContain("--model");
+    });
+
+    it("surfaces durable hibernated identities that are absent from the visible roster", async () => {
+      // Regression: hibernated/quarantined runtimes are disconnected and never
+      // appear in the live `agents` roster. The projection must NOT be keyed to
+      // the visible roster, or lifecycle visibility vanishes exactly when it is
+      // needed most. The visible roster here is only [agent-1]; the durable
+      // hibernated identity `ghost-hibernated-9` must still render.
+      const getAgentLifecycleProjection = vi.fn(() => [
+        makeLifecycleStatus({ agentId: "ghost-hibernated-9" }),
+      ]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-ghost", {
+        action: "agents",
+        args: {},
+      })) as { details: { data: { text: string } } };
+
+      expect(getAgentLifecycleProjection).toHaveBeenCalledWith();
+      const text = result.details.data.text;
+      expect(text).toContain("Hibernation lifecycle:");
+      expect(text).toContain("ghost-hibernated-9: hibernated");
+    });
+
+    it("includes a compact redacted lifecycle summary in compact structured (json) details", async () => {
+      // Regression: durable hibernated identities are disconnected and absent
+      // from the visible roster, so an operator asking for compact JSON must
+      // still see them in `data.details`, not only in the text blob.
+      const getAgentLifecycleProjection = vi.fn(() => [
+        makeLifecycleStatus({ agentId: "ghost-hibernated-9" }),
+      ]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-compact-json", {
+        action: "agents",
+        args: {},
+      })) as {
+        details: {
+          data: {
+            details: {
+              lifecycle?: Array<{ agentId: string; state: string; quarantined: boolean }>;
+            };
+          };
+        };
+      };
+
+      const lifecycle = result.details.data.details.lifecycle;
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle?.[0]?.agentId).toBe("ghost-hibernated-9");
+      expect(lifecycle?.[0]?.state).toBe("hibernated");
+      // Redaction-by-construction preserved in compact structured output too.
+      const serialized = JSON.stringify(lifecycle);
+      expect(serialized).not.toContain("/Users/");
+      expect(serialized).not.toContain("--model");
+    });
+
+    it("exposes the complete redacted lifecycle structure in full agents output", async () => {
+      const getAgentLifecycleProjection = vi.fn(() => [makeLifecycleStatus()]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-full", {
+        action: "agents",
+        args: { full: true },
+      })) as {
+        details: {
+          data: {
+            text: string;
+            details: { lifecycle?: AgentLifecycleStatus[] };
+          };
+        };
+      };
+
+      const text = result.details.data.text;
+      expect(text).toContain("Hibernation lifecycle:");
+      expect(text).toContain("checkpoint: safe");
+      expect(text).toContain("runtime spec: present");
+
+      const lifecycle = result.details.data.details.lifecycle;
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle?.[0]?.agentId).toBe("agent-1");
+      expect(lifecycle?.[0]?.state).toBe("hibernated");
+      // Redacted runtime spec: repo basename only, no filesystem path.
+      expect(lifecycle?.[0]?.runtimeSpec?.repo).toBe("extensions");
+      expect(lifecycle?.[0]?.runtimeSpec?.session.hasPath).toBe(false);
+      const serialized = JSON.stringify(lifecycle);
+      expect(serialized).not.toContain("/Users/");
+      expect(serialized).not.toContain("--model");
+    });
+
+    it("surfaces quarantine/refusal essentials in the compact tag", async () => {
+      const getAgentLifecycleProjection = vi.fn(() => [
+        makeLifecycleStatus({
+          state: "reap-candidate",
+          quarantined: true,
+          refusal: { reason: "pid_survived", outcome: "quarantined", at: "2026-05-01T00:00:00Z" },
+        }),
+      ]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-lc-quarantine", {
+        action: "agents",
+        args: {},
+      })) as { details: { data: { text: string } } };
+
+      const text = result.details.data.text;
+      expect(text).toContain("reap-candidate");
+      expect(text).toContain("pid_survived");
+    });
+
+    it("annotates the sessions read path with lifecycle for live agents", async () => {
+      const getAgentLifecycleProjection = vi.fn(() => [makeLifecycleStatus()]);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-sessions-lc", {
+        action: "sessions",
+        args: { agent_name: "Golden Chalk Rabbit" },
+      })) as { details: { data: { text: string } } };
+
+      expect(getAgentLifecycleProjection).toHaveBeenCalledWith(["agent-1"]);
+      expect(result.details.data.text).toContain("Hibernation lifecycle:");
+      expect(result.details.data.text).toContain("agent-1: hibernated");
+    });
+
+    it("omits the lifecycle section when no projection dep is wired (backward compatible)", async () => {
+      const tools = registerWithDeps(createDeps());
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-no-lc", {
+        action: "agents",
+        args: {},
+      })) as { details: { data: { text: string } } };
+
+      expect(result.details.data.text).not.toContain("Hibernation lifecycle:");
+    });
+
+    it("omits the lifecycle section when the projection is empty", async () => {
+      const getAgentLifecycleProjection = vi.fn(() => []);
+      const tools = registerWithDeps(createDeps({ getAgentLifecycleProjection }));
+
+      const result = (await tools.get("pinet")?.execute("tc-agents-empty-lc", {
+        action: "agents",
+        args: {},
+      })) as { details: { data: { text: string } } };
+
+      expect(result.details.data.text).not.toContain("Hibernation lifecycle:");
+    });
   });
 });

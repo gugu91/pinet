@@ -821,4 +821,60 @@ describe("MessageRouter — multi-agent scenarios", () => {
 
     expect(decision).toEqual({ action: "reject", reason: "User not in allowlist" });
   });
+
+  it("keeps thread affinity on a hibernated owner (queues + cold-wake, never reroutes)", () => {
+    // A hibernated owner has a socket-level disconnect and no resumable window,
+    // but is a durable routing target. Affinity must be preserved.
+    const hibernated = makeAgent({
+      id: "sleepy",
+      name: "Sleepy Owner",
+      stableId: "stable-sleepy",
+      disconnectedAt: "2026-01-01T00:00:00Z",
+      resumableUntil: null,
+      lifecycleState: "hibernated",
+    });
+    const other = makeAgent({ id: "awake", name: "Awake Worker" });
+    db.agents = [hibernated, other];
+    db.threads.set("t-100", makeThread({ threadId: "t-100", ownerAgent: "sleepy" }));
+
+    const decision = router.route(makeMessage({ threadId: "t-100" }));
+
+    expect(decision).toEqual({ action: "deliver", agentId: "sleepy" });
+    expect(db.threads.get("t-100")?.ownerAgent).toBe("sleepy");
+  });
+
+  it("waking and hibernating owners remain routable", () => {
+    for (const state of ["hibernating", "waking"] as const) {
+      const owner = makeAgent({
+        id: `owner-${state}`,
+        name: `Owner ${state}`,
+        stableId: `stable-${state}`,
+        disconnectedAt: "2026-01-01T00:00:00Z",
+        resumableUntil: null,
+        lifecycleState: state,
+      });
+      db.agents = [owner];
+      db.threads.set("t-x", makeThread({ threadId: "t-x", ownerAgent: owner.id }));
+      const decision = router.route(makeMessage({ threadId: "t-x" }));
+      expect(decision).toEqual({ action: "deliver", agentId: owner.id });
+    }
+  });
+
+  it("does not treat a terminated owner as routable", () => {
+    const dead = makeAgent({
+      id: "gone",
+      name: "Gone Worker",
+      stableId: "stable-gone",
+      disconnectedAt: "2026-01-01T00:00:00Z",
+      resumableUntil: null,
+      lifecycleState: "terminated",
+    });
+    db.agents = [dead];
+    db.threads.set("t-100", makeThread({ threadId: "t-100", ownerAgent: "gone" }));
+
+    const decision = router.route(makeMessage({ threadId: "t-100" }));
+
+    expect(db.threads.get("t-100")?.ownerAgent).toBeNull();
+    expect(decision).toEqual({ action: "unrouted" });
+  });
 });

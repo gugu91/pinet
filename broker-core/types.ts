@@ -5,6 +5,275 @@ export const DEFAULT_EXTERNAL_THREAD_SOURCE = "external";
 // ─── Domain types ─────────────────────────────────────────
 
 export type AgentSupervisionState = "root" | "supervised" | "orphaned" | "stopping";
+export type AgentLifecycleState =
+  | "live"
+  | "active"
+  | "grace"
+  | "idle"
+  | "hibernating"
+  | "hibernated"
+  | "waking"
+  | "reap-candidate"
+  | "terminated";
+export type AgentHibernatePolicy = "auto" | "never" | "manual";
+
+export interface HibernateEligibility {
+  eligible: boolean;
+  reason: string;
+}
+
+export type AgentLifecycleOperation = "hibernate" | "wake";
+export interface AgentLifecycleLease {
+  agentId: string;
+  operation: AgentLifecycleOperation;
+  fenceToken: number;
+  ownerBrokerInstanceId: string;
+  leaseId: string;
+  acquiredAt: string;
+  expiresAt: string;
+  attempt: number;
+  triggerMessageId: number | null;
+}
+export interface AgentLifecycleRetentionInfo {
+  retainedCount: number;
+  prunedCount: number;
+  lastPrunedAt: string | null;
+}
+
+/** Optional structured telemetry captured alongside lifecycle events. */
+export interface AgentLifecycleEventMetrics {
+  fenceToken?: number | null;
+  queueDepth?: number | null;
+  oldestQueueAgeMs?: number | null;
+  durationMs?: number | null;
+  rssBytesBefore?: number | null;
+  rssBytesAfter?: number | null;
+}
+
+export interface AgentLifecycleTransitionInput extends AgentLifecycleEventMetrics {
+  agentId: string;
+  expectedVersion: number;
+  toState: AgentLifecycleState;
+  reason: string;
+  actor: string;
+  correlationId: string;
+  triggerSource?: string;
+  /**
+   * Optional strict lease-identity binding for fenced transitions. When
+   * `fenceToken` is presented these tighten the fence check so that only the
+   * live, matching lease can drive the transition: `leaseId` must equal the
+   * held lease's id, `expectedOperation` its operation, and (with `now`) the
+   * lease must be unexpired. This rejects an expired, superseded, or
+   * wrong-operation lease that would otherwise pass on the fence token alone.
+   */
+  leaseId?: string;
+  expectedOperation?: AgentLifecycleOperation;
+  now?: number;
+}
+
+/**
+ * Audit-only lifecycle event that records an outcome (typically a refusal,
+ * fenced stale attempt, or duplicate-launch prevention) without transitioning
+ * the agent's lifecycle state.
+ */
+export interface AgentLifecycleEventInput extends AgentLifecycleEventMetrics {
+  agentId: string;
+  fromState: AgentLifecycleState;
+  toState: AgentLifecycleState;
+  lifecycleVersion: number;
+  reason: string;
+  actor: string;
+  correlationId: string;
+  outcome: string;
+  errorCode?: string | null;
+  triggerSource?: string;
+}
+
+export interface AgentLifecycleEvent {
+  id: number;
+  correlationId: string;
+  agentId: string;
+  fromState: AgentLifecycleState;
+  toState: AgentLifecycleState;
+  lifecycleVersion: number;
+  fenceToken: number | null;
+  reason: string;
+  triggerSource: string | null;
+  actor: string;
+  outcome: string;
+  errorCode: string | null;
+  queueDepth: number | null;
+  oldestQueueAgeMs: number | null;
+  durationMs: number | null;
+  rssBytesBefore: number | null;
+  rssBytesAfter: number | null;
+  createdAt: string;
+}
+
+/**
+ * Durable, sanitized launch/resume manifest for a broker-managed follower.
+ *
+ * This is the record used to cold-wake exactly the same logical agent. It must
+ * never persist secrets, tokens, prompt/message bodies, or an unrestricted
+ * environment: only an env allowlist and opaque credential references. Secrets
+ * are injected from broker memory/config at launch time.
+ */
+export interface AgentRuntimeSpec {
+  agentId: string;
+  stableId: string;
+  brokerOwnerId: string;
+  cwd: string;
+  repoRoot: string;
+  worktreePath: string;
+  /** Canonical tmux server socket path recorded at launch; never searched for. */
+  tmuxSocket: string;
+  tmuxSession: string;
+  /** Fully-qualified tmux target (session:window.pane) recorded at launch. */
+  tmuxTarget: string;
+  executable: string;
+  /** Argument vector without secrets; credential values are references only. */
+  argv: string[];
+  /** Allowlisted environment variable names (never values). */
+  envAllowlist: string[];
+  /** Opaque, broker-resolvable session resume reference (not a raw path). */
+  sessionResumeRef: string;
+  configFingerprint: string;
+  expectedHost: string;
+  expectedUser: string;
+  launchSource: string;
+  /**
+   * Canonical, broker-derived VCS identity (`owner/repo`) captured at spawn from
+   * the runtime's git remote — NEVER inferred from filesystem directory names.
+   * The repo allowlist authorization matches this exactly, so distinct roots
+   * that share their final path segments never collapse onto one authorization
+   * identity and a repo shares one identity with all of its worktrees. `null`
+   * when no remote was resolvable at spawn (the fail-closed gate then refuses).
+   */
+  vcsIdentity: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AgentRuntimeSpecInput = Omit<AgentRuntimeSpec, "createdAt" | "updatedAt">;
+
+/**
+ * Client-facing redacted view of a runtime spec. Raw stable paths, private
+ * socket paths, and env details are withheld unless an authorized operator
+ * requests full inspection.
+ */
+export interface RedactedAgentRuntimeSpec {
+  agentId: string;
+  session: AgentSessionSummary;
+  repo: string | null;
+  hasWorktree: boolean;
+  hasTmuxSession: boolean;
+  configFingerprint: string;
+  expectedHost: string;
+  launchSource: string;
+  envAllowlistCount: number;
+  updatedAt: string;
+}
+
+/**
+ * Receipt confirming a follower cooperatively flushed a checkpoint before a
+ * clean process exit. `hibernateSafe=false` records a refusal reason so the
+ * orchestrator fails closed rather than exiting an unsafe runtime.
+ */
+export interface AgentCheckpointReceipt {
+  agentId: string;
+  runtimeGeneration: number;
+  correlationId: string;
+  hibernateSafe: boolean;
+  reason: string | null;
+  sessionResumeRef: string | null;
+  pendingInboxCount: number;
+  rssBytes: number | null;
+  createdAt: string;
+}
+
+export type AgentCheckpointReceiptInput = Omit<AgentCheckpointReceipt, "createdAt">;
+
+/**
+ * Single-winner wake reservation. Exactly one may exist per agent; it binds the
+ * wake lease/fence to the specific runtime generation the broker will accept on
+ * registration. Any registration presenting a different generation/lease/fence
+ * is a stale runtime and is rejected.
+ */
+export interface AgentWakeReservation {
+  agentId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+  /** Fresh per-attempt token distinguishing this reservation from a retry's. */
+  reservationNonce: string;
+  correlationId: string;
+  createdAt: string;
+}
+
+export interface AcceptRuntimeGenerationInput {
+  agentId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+  /** Must equal the current reservation's nonce; fences out superseded attempts. */
+  reservationNonce: string;
+  /** Epoch ms for lease-expiry comparison. Defaults to Date.now(). */
+  now?: number;
+}
+
+/**
+ * Durable record of the EXACT wake fence that accepted a generation, written in
+ * the acceptance transaction. Enables idempotent re-binding of a runtime whose
+ * acceptance committed but whose register RPC response was lost to a broker crash
+ * (so the client replays its single-use wake fence). Superseded by the next wake
+ * reservation so a stale fence cannot rebind during a fresh wake window.
+ */
+export interface AgentWakeAcceptanceReceipt {
+  agentId: string;
+  stableId: string;
+  wakeLeaseId: string;
+  fenceToken: number;
+  reservedGeneration: number;
+  reservationNonce: string;
+  acceptedAt: string;
+}
+
+export type RuntimeGenerationAcceptance =
+  | { accepted: true; runtimeGeneration: number }
+  | { accepted: false; reason: string };
+
+export type WakeTriggerKind =
+  | "slack_thread"
+  | "direct_a2a"
+  | "lane_assignment"
+  | "scheduled"
+  | "manual";
+
+export interface AgentWakeQueueEntry {
+  id: number;
+  agentId: string;
+  repoRoot: string | null;
+  triggerKind: WakeTriggerKind;
+  triggerMessageId: number | null;
+  /** Lower sorts first; targeted (direct/affinity) work uses a smaller value. */
+  priority: number;
+  reason: string;
+  correlationId: string;
+  status: "queued" | "dispatching" | "done" | "cancelled";
+  attempt: number;
+  enqueuedAt: string;
+  updatedAt: string;
+}
+
+export interface EnqueueWakeInput {
+  agentId: string;
+  repoRoot?: string | null;
+  triggerKind: WakeTriggerKind;
+  triggerMessageId?: number | null;
+  priority?: number;
+  reason: string;
+  correlationId: string;
+}
 
 export interface AgentInfo {
   id: string;
@@ -29,6 +298,16 @@ export interface AgentInfo {
   resumableUntil?: string | null;
   idleSince?: string | null;
   lastActivity?: string | null;
+  lifecycleState?: AgentLifecycleState;
+  lifecycleVersion?: number;
+  hibernatePolicy?: AgentHibernatePolicy;
+  graceUntil?: string | null;
+  idleEligibleAt?: string | null;
+  hibernatedAt?: string | null;
+  terminatedAt?: string | null;
+  hibernateReason?: string | null;
+  lastWakeReason?: string | null;
+  runtimeGeneration?: number;
   outboundCount?: number;
   pendingInboxCount?: number;
 }
@@ -37,9 +316,15 @@ export type AgentSessionKind = "session" | "leaf" | "cwd" | "broker" | "unknown"
 
 export interface AgentSessionSummary {
   kind: AgentSessionKind;
-  /** Broker-safe, path-free stable session reference such as "session:1a2b3c4d5e6f". */
+  /**
+   * Broker-safe, path-free session reference of the form "<kind>:#<fp>" where
+   * <fp> is a stable, non-reversible fingerprint of the raw session resume ref.
+   * The raw payload (which for cwd/leaf kinds may be a filesystem path) is never
+   * surfaced.
+   */
   ref: string;
   host?: string | null;
+  /** True when the raw ref payload looked path-like (still never exposed). */
   hasPath?: boolean;
 }
 
@@ -393,6 +678,12 @@ export const RPC_INTERNAL_ERROR = -32603;
 export const RPC_AUTH_REQUIRED = -32001;
 export const RPC_AGENT_NAME_CONFLICT = -32002;
 export const RPC_AGENT_STABLE_ID_CONFLICT = -32003;
+/**
+ * A registration targeted a durable hibernation identity but did not present a
+ * valid broker-issued wake fence (missing/stale wake lease, fence token, or
+ * runtime generation). Only a broker-initiated fenced wake may revive it.
+ */
+export const RPC_AGENT_WAKE_FENCE_REJECTED = -32004;
 
 // ─── Message adapter (canonical transport contracts) ─────
 
