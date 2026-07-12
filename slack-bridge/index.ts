@@ -99,7 +99,15 @@ import {
 import { createPinetRegistrationGate } from "./pinet-registration-gate.js";
 import { createBrokerRuntimeAccess } from "./broker-runtime-access.js";
 import { createInboxDrainRuntime } from "./inbox-drain-runtime.js";
-import { createSubtreeBrokerRuntime } from "./subtree-broker-runtime.js";
+import {
+  createSubtreeBrokerRuntime,
+  getExtensionEntryPath,
+  SUBTREE_INHERITED_ENV_KEYS,
+} from "./subtree-broker-runtime.js";
+import {
+  hibernationRuntimeActive,
+  createHibernationOrchestrator,
+} from "./broker/hibernation-activation.js";
 import { createAgentCompletionRuntime } from "./agent-completion-runtime.js";
 import { sendBrokerMessage } from "./broker/message-send.js";
 import { SlackThreadStatusManager } from "./slack-thread-status.js";
@@ -991,15 +999,35 @@ export default function (pi: ExtensionAPI) {
     const repoIdentifier = db.getAgentRuntimeSpec(agent.id)?.vcsIdentity ?? null;
 
     // Live process/tmux checkpoint/respawn adapters are a separate, explicitly
-    // gated activation step (default-off, unactivated). In the default disabled
-    // configuration the policy gate refuses before this executor is consulted;
-    // if hibernation is enabled without adapters wired, callers get a clear
-    // activation_pending refusal rather than a silent no-op.
-    const executor: HibernateCommandExecutor & WakeCommandExecutor = {
-      prepareHibernation: () => ({ ready: false, state, reason: "activation_pending" }),
-      hibernate: async () => ({ ok: false, state, reason: "activation_pending" }),
-      wake: async () => ({ ok: false, state, reason: "activation_pending" }),
-    };
+    // gated activation step (default-off). In the default disabled configuration
+    // the policy gate refuses before this executor is consulted; if hibernation
+    // is enabled but runtime activation is NOT, callers get a clear
+    // activation_pending refusal rather than a silent no-op. Only when BOTH
+    // `enabled` and `activateRuntimeAdapters` are set (Phase B) is the real
+    // process/tmux HibernationOrchestrator composed in this executor slot. The
+    // woken worker's respawn env is the subtree broker's child-launch env (the
+    // socket/mesh it must reconnect to); inherited secret var NAMES come from the
+    // shared spawn/wake allowlist.
+    const subtreeStatus = subtreeBrokerRuntime.getStatus();
+    const executor: HibernateCommandExecutor & WakeCommandExecutor = hibernationRuntimeActive(hib)
+      ? createHibernationOrchestrator({
+          db,
+          brokerInstanceId: getActiveBrokerSelfId() ?? subtreeStatus.selfAgentId ?? "broker",
+          extensionEntryPath: getExtensionEntryPath(),
+          baseLaunchEnv: subtreeStatus.childLaunchEnv,
+          inheritedEnvKeys: SUBTREE_INHERITED_ENV_KEYS,
+          config: {
+            handshakeTimeoutMs: hib.handshakeTimeoutMs,
+            wakeLeaseMs: hib.wakeLeaseMs,
+            maxConcurrentWakes: hib.maxConcurrentWakes,
+            maxConcurrentWakesPerRepo: hib.maxConcurrentWakesPerRepo,
+          },
+        })
+      : {
+          prepareHibernation: () => ({ ready: false, state, reason: "activation_pending" }),
+          hibernate: async () => ({ ok: false, state, reason: "activation_pending" }),
+          wake: async () => ({ ok: false, state, reason: "activation_pending" }),
+        };
 
     if (command === "hibernate") {
       return executeHibernateCommand({

@@ -62,6 +62,15 @@ export interface SlackBridgeSettings {
   hibernation?: {
     /** Master kill switch. Defaults false; waking/draining existing rows remains permitted. */
     enabled?: boolean;
+    /**
+     * Live-runtime activation gate (Phase B). Default false. Independent of and
+     * ANDed with `enabled`: only when BOTH are true does the broker compose the
+     * real process/tmux `HibernationOrchestrator` in place of the
+     * `activation_pending` stub, persist runtime specs at spawn, and run startup
+     * stranded-wake recovery. Left unset in production until an explicit,
+     * quiescent-boundary activation, so the default configuration is a no-op.
+     */
+    activateRuntimeAdapters?: boolean;
     mode?: "observe" | "manual" | "auto";
     allowedRepos?: string[];
     graceMs?: number;

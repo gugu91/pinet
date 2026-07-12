@@ -2,6 +2,8 @@ import type { SlackBridgeSettings } from "./helpers.js";
 
 export interface ResolvedHibernationSettings {
   enabled: boolean;
+  /** Phase B live-runtime activation gate (default false; ANDed with `enabled`). */
+  activateRuntimeAdapters: boolean;
   mode: "observe" | "manual" | "auto";
   allowedRepos: string[];
   graceMs: number;
@@ -18,6 +20,7 @@ export function resolveHibernationSettings(
   const value = settings.hibernation;
   return {
     enabled: value?.enabled === true,
+    activateRuntimeAdapters: value?.activateRuntimeAdapters === true,
     mode: value?.mode ?? "observe",
     allowedRepos: [...(value?.allowedRepos ?? [])],
     graceMs: value?.graceMs ?? 60 * 60_000,

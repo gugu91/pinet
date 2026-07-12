@@ -27,6 +27,13 @@ import {
   type PinetRemoteControlRequestResult,
   type SlackBridgeSettings,
 } from "./helpers.js";
+import { resolveHibernationSettings } from "./hibernation-config.js";
+import {
+  hibernationRuntimeActive,
+  createHibernationOrchestrator,
+  persistSpawnedRuntimeSpec,
+  recoverStrandedWakesBeforeRegistrations,
+} from "./broker/hibernation-activation.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_SPAWN_REGISTRATION_TIMEOUT_MS = 45_000;
@@ -280,11 +287,27 @@ function buildTmuxMonitorCommand(sessionName: string, socketPath: string | null)
   return `tmux ${socketArgs}attach -t ${quoteShellValue(sessionName)}`;
 }
 
-function getExtensionEntryPath(): string {
+export function getExtensionEntryPath(): string {
   const currentPath = fileURLToPath(import.meta.url);
   const extension = path.extname(currentPath) || ".js";
   return path.join(path.dirname(currentPath), `index${extension}`);
 }
+
+/**
+ * Broker env var NAMES (never values) a spawned — or later WOKEN — worker
+ * re-exports to re-establish itself. Single source of truth shared by the
+ * ordinary spawn launcher and the Phase B wake path so both stay in lockstep.
+ */
+export const SUBTREE_INHERITED_ENV_KEYS = [
+  "PI_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
+  "PI_OFFLINE",
+  "PI_SETTINGS_PATH",
+  "PINET_MESH_SECRET",
+  "PINET_MESH_SECRET_PATH",
+  "SLACK_APP_TOKEN",
+  "SLACK_BOT_TOKEN",
+];
 
 function childStartupPrompt(parentAgentId: string): string {
   return [
@@ -659,6 +682,30 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
       `${stableId}:subtree-broker`,
     );
 
+    // Phase B, Seam 3 (default-off): reconcile crash-stranded wake rows BEFORE
+    // this broker accepts (resolves) any new worker registration, so a stranded
+    // waking/dispatching row is completed/quarantined/requeued deterministically
+    // instead of racing an incoming (possibly duplicate) wake registration. A
+    // no-op unless hibernation runtime activation is explicitly enabled.
+    const startupHib = resolveHibernationSettings(deps.getSettings());
+    if (hibernationRuntimeActive(startupHib)) {
+      recoverStrandedWakesBeforeRegistrations(
+        createHibernationOrchestrator({
+          db: broker.db,
+          brokerInstanceId: selfAgent.id,
+          extensionEntryPath: getExtensionEntryPath(),
+          baseLaunchEnv: buildChildLaunchEnv(paths, selfAgent.id),
+          inheritedEnvKeys: SUBTREE_INHERITED_ENV_KEYS,
+          config: {
+            handshakeTimeoutMs: startupHib.handshakeTimeoutMs,
+            wakeLeaseMs: startupHib.wakeLeaseMs,
+            maxConcurrentWakes: startupHib.maxConcurrentWakes,
+            maxConcurrentWakesPerRepo: startupHib.maxConcurrentWakesPerRepo,
+          },
+        }),
+      );
+    }
+
     broker.server.setAgentRegistrationResolver((registration) => {
       const role = deps.getMeshRoleFromMetadata(registration.metadata, "worker");
       const identity = generateAgentName(registration.stableId ?? registration.agentId, role);
@@ -758,6 +805,31 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     });
     const updatedRecord: SubtreeWorkerRecord = { ...workerRecord, agentId: agent.id };
     spawnedWorkers.set(launchId, updatedRecord);
+
+    // Phase B, Seam 2 (default-off): record a durable, broker-authored runtime
+    // spec so this freshly-registered worker is hibernatable/wakeable later. The
+    // authz VCS identity is derived from the repo's REAL git remote (never the
+    // directory name); an unresolvable remote or non-durable locator set fails
+    // closed (no spec persisted). No-op unless runtime activation is enabled.
+    const spawnHib = resolveHibernationSettings(deps.getSettings());
+    if (hibernationRuntimeActive(spawnHib)) {
+      await persistSpawnedRuntimeSpec(activeBroker.db, {
+        agentId: agent.id,
+        stableId: agent.stableId ?? "",
+        brokerOwnerId: selfAgentId,
+        cwd: repoPath,
+        repoRoot: repoPath,
+        worktreePath: repoPath,
+        tmuxSocket: tmuxSocketPath ?? "",
+        tmuxSession: sessionName,
+        tmuxTarget: sessionName,
+        extensionEntryPath: getExtensionEntryPath(),
+        envAllowlist: Object.keys(childLaunchEnv),
+        configFingerprint: "subtree-broker-tmux",
+        expectedUser: os.userInfo().username,
+        launchSource: "subtree-broker-tmux",
+      });
+    }
 
     const messageResult = await sendMessage(agent.id, input.task, {
       subtreeTask: true,
