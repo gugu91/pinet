@@ -124,19 +124,35 @@ export function buildWakeFenceEnv(input: WakeFenceEnvInput): Record<string, stri
 }
 
 /**
+ * Parse a canonical positive decimal safe integer, or null. Unlike
+ * `Number.parseInt`, which silently coerces `"12abc"`→12, `" 12"`→12, `"+12"`→12
+ * and accepts leading-zero forms, this accepts ONLY a bare run of decimal digits
+ * with no sign, no leading zero, no surrounding whitespace, and a value within
+ * the safe-integer range. A garbled or hostile fence value therefore fails
+ * closed to an ordinary (fence-free) registration rather than silently
+ * round-tripping a corrupted generation/token.
+ */
+function parseCanonicalPositiveInt(raw: string | undefined): number | null {
+  if (raw == null || !/^[1-9][0-9]*$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/**
  * Parse a wake fence from a woken worker's environment (the boundary between the
  * respawn launcher and the follower's register RPC). Returns null unless ALL
- * required fields are present and well-formed, so a partial/garbled environment
- * fails closed to an ordinary (fence-free) registration rather than a malformed
- * fenced one.
+ * required fields are present and well-formed — the numeric fence token and
+ * reserved generation must be canonical positive decimal safe integers — so a
+ * partial/garbled environment fails closed to an ordinary (fence-free)
+ * registration rather than a malformed fenced one.
  */
 export function parseWakeFenceEnv(env: Record<string, string | undefined>): WakeFence | null {
   const wakeLeaseId = env.PINET_WAKE_LEASE_ID?.trim();
   const reservationNonce = env.PINET_WAKE_RESERVATION_NONCE?.trim();
-  const fenceToken = Number.parseInt(env.PINET_WAKE_FENCE_TOKEN ?? "", 10);
-  const reservedGeneration = Number.parseInt(env.PINET_WAKE_RESERVED_GENERATION ?? "", 10);
+  const fenceToken = parseCanonicalPositiveInt(env.PINET_WAKE_FENCE_TOKEN);
+  const reservedGeneration = parseCanonicalPositiveInt(env.PINET_WAKE_RESERVED_GENERATION);
   if (!wakeLeaseId || !reservationNonce) return null;
-  if (!Number.isInteger(fenceToken) || !Number.isInteger(reservedGeneration)) return null;
+  if (fenceToken == null || reservedGeneration == null) return null;
   return { wakeLeaseId, fenceToken, reservedGeneration, reservationNonce };
 }
 
@@ -237,6 +253,13 @@ export interface ResumeLauncherInput {
  * injecting a prompt would append a spurious user turn). The woken Pi therefore
  * re-registers under the SAME stable id (same session path) and presents the
  * fence for atomic generation acceptance.
+ *
+ * The script is secret-bearing (it exports mesh/Slack credential VALUES), so it
+ * removes its own file (`rm -f -- "$0"`) immediately before `exec`. The launcher
+ * fd stays open across the unlink (POSIX keeps the inode until the fd closes),
+ * so `exec pi` still runs, but no secret-bearing file lingers on the happy path.
+ * The broker separately unlinks on the failure path (where the script never
+ * ran) and materializes launchers only in a private, owner-only directory.
  */
 export function buildResumeLauncherScript(input: ResumeLauncherInput): string {
   const lines: string[] = ["#!/bin/bash", "set -euo pipefail", `cd ${shellQuote(input.repoPath)}`];
@@ -247,6 +270,9 @@ export function buildResumeLauncherScript(input: ResumeLauncherInput): string {
     lines.push(`export ${key}=${shellQuote(value)}`);
   }
   lines.push(`export PI_NICKNAME=${shellQuote(input.nickname)}`);
+  // Self-delete the secret-bearing launcher before exec; the open fd survives the
+  // unlink so `exec pi` still runs from the now-unnamed inode.
+  lines.push(`rm -f -- "$0"`);
   lines.push(
     `exec pi -e ${shellQuote(input.extensionEntryPath)} --session ${shellQuote(input.sessionPath)}`,
   );

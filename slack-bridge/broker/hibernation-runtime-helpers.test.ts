@@ -129,6 +129,30 @@ describe("wake fence env round-trip", () => {
       }),
     ).toBeNull();
   });
+
+  it("only accepts canonical positive decimal safe integers for the numeric fields", () => {
+    const withNumbers = (token: string, generation: string) =>
+      parseWakeFenceEnv({
+        PINET_WAKE_LEASE_ID: "lease-1",
+        PINET_WAKE_RESERVATION_NONCE: "nonce-xyz",
+        PINET_WAKE_FENCE_TOKEN: token,
+        PINET_WAKE_RESERVED_GENERATION: generation,
+      });
+    // Rejected: coercible-but-non-canonical forms Number.parseInt would accept.
+    for (const bad of ["12abc", " 7", "7 ", "+7", "-7", "07", "0", "0x10", "7.0", "1e3", ""]) {
+      expect(withNumbers(bad, "42")).toBeNull();
+      expect(withNumbers("7", bad)).toBeNull();
+    }
+    // Rejected: beyond the safe-integer range.
+    expect(withNumbers("9007199254740993", "42")).toBeNull();
+    // Accepted: canonical positive decimals.
+    expect(withNumbers("7", "42")).toEqual({
+      wakeLeaseId: "lease-1",
+      fenceToken: 7,
+      reservedGeneration: 42,
+      reservationNonce: "nonce-xyz",
+    });
+  });
 });
 
 describe("shellQuote", () => {
@@ -171,6 +195,16 @@ describe("buildResumeLauncherScript", () => {
   it("starts with a strict bash shebang preamble", () => {
     const script = buildResumeLauncherScript(base);
     expect(script.startsWith("#!/bin/bash\nset -euo pipefail\n")).toBe(true);
+  });
+
+  it("self-deletes the secret-bearing launcher immediately before exec", () => {
+    const script = buildResumeLauncherScript(base);
+    const rmIndex = script.indexOf('rm -f -- "$0"');
+    const execIndex = script.indexOf("exec pi -e");
+    expect(rmIndex).toBeGreaterThan(0);
+    // The self-delete must be the last statement before exec so the open fd
+    // survives the unlink while no secret file lingers.
+    expect(rmIndex).toBeLessThan(execIndex);
   });
 });
 

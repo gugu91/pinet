@@ -15,6 +15,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { AgentRuntimeSpec } from "@pinet/broker-core/types";
 import type { RuntimeLaunchContext } from "@pinet/broker-core";
 import {
+  createAttemptGenerationRegistry,
   createHibernationProcessController,
   createHibernationTmuxController,
   resolveVcsIdentity,
@@ -102,7 +103,14 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
     updatedAt: new Date().toISOString(),
   };
 
-  const proc = createHibernationProcessController({ pendingInboxCount: () => 0 });
+  // A shared attempt-generation registry binds the woken attempt's exact process
+  // generation across the two controllers (the tmux controller records it at
+  // respawn; the process controller reads it for attempt-scoped stop/liveness).
+  const attemptRegistry = createAttemptGenerationRegistry();
+  const proc = createHibernationProcessController({
+    pendingInboxCount: () => 0,
+    attemptRegistry,
+  });
   // The tmux server is started with minimalEnv, so every pane (resident + woken)
   // inherits clean PI_SETTINGS_PATH/session-dir; no per-launcher env export needed.
   const tmuxCtrl = createHibernationTmuxController({
@@ -110,6 +118,7 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
     baseLaunchEnv: {},
     inheritedEnvKeys: [],
     launcherDir: tmpRoot,
+    attemptRegistry,
   });
 
   it("checkpoints, stops (session survives), and wakes a real pi runtime", async () => {
@@ -203,8 +212,16 @@ suite("hibernation adapters — real disposable pi + tmux", () => {
     expect(await tmuxCtrl.isSessionAttachable(spec)).toBe(true);
     // The resumable session file is untouched by hibernation.
     expect(fs.existsSync(sessionFile)).toBe(true);
+    // The pane is now explicitly DEAD (remain-on-exit kept it attachable); the
+    // wake path refuses to respawn anything but a present, explicitly-dead pane.
+    let paneDead = false;
+    for (let i = 0; i < 20 && !paneDead; i++) {
+      await sleep(200);
+      paneDead = tmux(["display-message", "-p", "-t", tmuxSession, "#{pane_dead}"]).trim() === "1";
+    }
+    expect(paneDead).toBe(true);
 
-    // ── Wake: respawn pi --session into the surviving pane ────────────
+    // ── Wake: respawn pi --session into the surviving (dead) pane ─────
     const ctx: RuntimeLaunchContext = {
       agentId: spec.agentId,
       stableId: spec.stableId,
