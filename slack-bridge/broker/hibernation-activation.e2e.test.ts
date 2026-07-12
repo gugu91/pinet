@@ -75,6 +75,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Read a spawned worker's REAL tmux pane PID + dead flag, via the SAME tmux socket
+ *  the subtree broker launched it on (parsed from the spawn result's monitor
+ *  command, e.g. `tmux -S '<socket>' attach -t '<session>'`). This is direct
+ *  process evidence — DB lifecycle state alone is insufficient to prove the child
+ *  was untouched/alive across a refusal. */
+function readWorkerPane(
+  monitorCommand: string,
+  sessionName: string,
+): { pid: string; dead: string } {
+  const socketMatch = monitorCommand.match(/tmux\s+-S\s+'([^']+)'/);
+  const socketArgs = socketMatch ? ["-S", socketMatch[1]] : [];
+  const out = execFileSync(
+    "tmux",
+    [...socketArgs, "display-message", "-p", "-t", sessionName, "#{pane_pid} #{pane_dead}"],
+    { encoding: "utf8" },
+  ).trim();
+  const [pid, dead] = out.split(/\s+/);
+  return { pid, dead };
+}
+
 /** Minimal, fully-typed subtree deps: the inbox/steering callbacks never fire (no
  *  inbound traffic beyond the child's own registration in test 6). */
 function makeDeps(stableId: string, settings: SlackBridgeSettings): SubtreeBrokerRuntimeDeps {
@@ -234,6 +254,13 @@ suite(
       // spawnWorker persisted the child's durable spec into the authoritative subtree DB.
       expect(control!.db.getAgentRuntimeSpec(result.agentId)?.vcsIdentity).toBe("test/repo");
 
+      // Capture the child's REAL tmux pane PID + liveness BEFORE any refusal, so we
+      // can prove the PROCESS (not just the DB row) is untouched and alive after both.
+      const paneBefore = readWorkerPane(result.monitorCommand, result.sessionName);
+      expect(paneBefore.dead).toBe("0");
+      expect(Number(paneBefore.pid)).toBeGreaterThan(0);
+      const genBefore = control!.db.getAgentById(result.agentId)?.runtimeGeneration ?? null;
+
       const routeChild = (target: string) =>
         routeHibernationCommand({
           command: "hibernate",
@@ -250,6 +277,10 @@ suite(
       const byDefault = await routeChild(result.agentId);
       expect(byDefault.outcome).toBe("refused");
       expect(byDefault.reason).toBe("policy_never");
+      // The child PROCESS is untouched: same pane PID, still alive (pane_dead=0).
+      const paneAfterDefault = readWorkerPane(result.monitorCommand, result.sessionName);
+      expect(paneAfterDefault.pid).toBe(paneBefore.pid);
+      expect(paneAfterDefault.dead).toBe("0");
 
       // Elevate the policy to ISOLATE the supervised guard: even a policy-permitted,
       // allowlisted supervised child is still refused, purely because it is supervised.
@@ -257,11 +288,17 @@ suite(
       const supervised = await routeChild(result.agentId);
       expect(supervised.outcome).toBe("refused");
       expect(supervised.reason).toBe("supervised_subtree_unsupported");
+      // Still the SAME live pane PID after the second refusal — no stop/respawn happened.
+      const paneAfterSupervised = readWorkerPane(result.monitorCommand, result.sessionName);
+      expect(paneAfterSupervised.pid).toBe(paneBefore.pid);
+      expect(paneAfterSupervised.dead).toBe("0");
 
-      // The child is untouched: still live, still connected.
+      // And the DB row is likewise untouched: still live, still connected, generation
+      // unchanged (no wake/respawn was performed).
       const after = control!.db.getAgentById(result.agentId);
       expect(after?.lifecycleState).toBe("live");
       expect(after?.disconnectedAt ?? null).toBeNull();
+      expect(after?.runtimeGeneration ?? null).toBe(genBefore);
     }, 180_000);
 
     // ── Assertion 7 (+ pre-listen recovery + negative allowlist) ───────────────

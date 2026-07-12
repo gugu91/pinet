@@ -25,10 +25,17 @@
 //       DB only. If it read the central decoy, the outcomes below would differ.
 //   (C) The repo allowlist is authorized from the DB-sourced spec identity, refusing
 //       BEFORE any side effect; an allowlisted identity reaches the real executor.
-//   (D) Activation is the durable, non-reloadable, frozen broker-start authority: a
-//       later settings reload changes operational policy but a broker frozen OFF at
-//       start can NEVER be elevated, and a broker frozen ON stays authoritative — and
-//       the freeze happens via the REAL start path, with NO freeze-call surrogate.
+//   (D) Activation is the durable, non-reloadable, frozen broker-start authority. The
+//       reload is a DISPOSABLE but REAL production reload boundary — an on-disk
+//       settings file mutated then run through the REAL `reloadPinetRuntimeSafely`
+//       (refresh-from-disk → validate → stop → rebuild) route, exactly as the live
+//       extension's `reloadPinetRuntime` does — NOT an in-memory `settings = …`
+//       surrogate. A broker frozen OFF at start can NEVER be elevated by that
+//       reload even when the new on-disk settings enable hibernation AND the
+//       activation env is flipped on after start; a broker frozen ON stays
+//       authoritative while the reload changes only operational policy. The freeze
+//       (and its idempotent survival across the rebuild) happens via the REAL start
+//       path, with NO freeze-call surrogate.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
@@ -49,6 +56,7 @@ import { hibernationRuntimeActive } from "./hibernation-activation.js";
 import { __resetHibernationActivationAuthorityForTest } from "./hibernation-activation-authority.js";
 import { buildRuntimeSpecInput } from "./hibernation-runtime-helpers.js";
 import { BrokerDB } from "./schema.js";
+import { reloadPinetRuntimeSafely } from "../helpers.js";
 import type { SlackBridgeSettings, PinetControlCommand } from "../helpers.js";
 import { resolveHibernationSettings } from "../hibernation-config.js";
 
@@ -119,6 +127,82 @@ async function startRealSubtree(
   await runtime.start(ctx);
   runtimes.push(runtime);
   return runtime;
+}
+
+/**
+ * A real subtree broker whose settings are read from an ON-DISK file, with a
+ * `reload(next)` that drives the REAL production `reloadPinetRuntimeSafely` route:
+ * write the new settings file, refresh-from-disk, validate, stop the running
+ * subtree broker, and rebuild a fresh one on the SAME stableId (which re-opens the
+ * SAME persisted authoritative DB and re-invokes the idempotent activation freeze).
+ * This is the disposable stand-in for the live extension's `reloadPinetRuntime`,
+ * NOT an in-memory `settings = …` mutation. `holder.runtime`/`holder.settings`
+ * always point at the CURRENT (post-reload) runtime + resolved settings.
+ */
+interface FileBackedSubtree {
+  holder: { runtime: SubtreeBrokerRuntime; settings: SlackBridgeSettings };
+  reload: (nextOnDisk: SlackBridgeSettings) => Promise<void>;
+}
+
+async function startFileBackedSubtree(
+  stableId: string,
+  initial: SlackBridgeSettings,
+): Promise<FileBackedSubtree> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-hib-settings-"));
+  tmpDirs.push(dir);
+  const settingsPath = path.join(dir, "settings.json");
+  const readSettingsFile = (): SlackBridgeSettings =>
+    JSON.parse(fs.readFileSync(settingsPath, "utf8")) as SlackBridgeSettings;
+  fs.writeFileSync(settingsPath, JSON.stringify(initial));
+
+  // A settings ref (reassigned on refresh-from-disk) and a `runtime` binding
+  // (reassigned on rebuild); `deps.getSettings` reads the ref LIVE so the rebuilt
+  // runtime picks up the refreshed on-disk settings (the freeze latch is
+  // process-global and survives the rebuild). The returned `holder` exposes both
+  // via getters so callers always see the CURRENT (post-reload) runtime + settings.
+  const settingsRef: { current: SlackBridgeSettings } = { current: readSettingsFile() };
+  const deps: SubtreeBrokerRuntimeDeps = {
+    ...makeDeps(stableId, settingsRef.current),
+    getSettings: () => settingsRef.current,
+  };
+  subtreeRoots.push(buildSubtreeBrokerPaths(stableId).rootDir);
+  let runtime = createSubtreeBrokerRuntime(deps);
+  await runtime.start(ctx);
+  runtimes.push(runtime);
+
+  const reload = async (nextOnDisk: SlackBridgeSettings): Promise<void> => {
+    fs.writeFileSync(settingsPath, JSON.stringify(nextOnDisk));
+    await reloadPinetRuntimeSafely<SlackBridgeSettings>({
+      getCurrentRole: () => "broker",
+      snapshotState: () => settingsRef.current,
+      restoreState: (snap) => {
+        settingsRef.current = snap;
+      },
+      refreshState: () => {
+        settingsRef.current = readSettingsFile();
+      },
+      validateRefreshedState: () => {},
+      stopRuntime: async () => {
+        await runtime.stop({ releaseIdentity: true });
+      },
+      startRuntime: async () => {
+        runtime = createSubtreeBrokerRuntime(deps);
+        await runtime.start(ctx);
+        runtimes.push(runtime);
+      },
+    });
+  };
+  return {
+    holder: {
+      get runtime(): SubtreeBrokerRuntime {
+        return runtime;
+      },
+      get settings(): SlackBridgeSettings {
+        return settingsRef.current;
+      },
+    },
+    reload,
+  };
 }
 
 /** Seed a real crash-stranded `waking` row into a broker DB before it starts. */
@@ -339,12 +423,14 @@ describe("Phase B production-route (deterministic) — real subtree start + shar
     expect(centralDb.getAgentById("worker-x")?.lifecycleState).toBe(centralBefore);
   }, 30_000);
 
-  it("keeps a broker frozen OFF at start un-elevatable by a later settings reload (real start freeze, no surrogate)", async () => {
+  it("keeps a broker frozen OFF at start un-elevatable by a REAL on-disk reload + rebuild, even with the activation env flipped on after start", async () => {
     // Activation OFF via the REAL start freeze (env cleared BEFORE start).
     delete process.env[ACTIVATION_ENV];
     const stableId = brokerStableId("off");
-    const settings = settingsWith({ enabled: false, mode: "observe" });
-    const runtime = await startRealSubtree(stableId, settings);
+    const subtree = await startFileBackedSubtree(
+      stableId,
+      settingsWith({ enabled: false, mode: "observe" }),
+    );
     // The real start path performed the freeze reading the (absent) env: OFF.
     expect(hibernationRuntimeActive()).toBe(false);
 
@@ -359,42 +445,76 @@ describe("Phase B production-route (deterministic) — real subtree start + shar
       brokerOwnerId: "central-broker",
     });
 
-    // "Reload": mutate the live settings to the most permissive policy possible.
-    settings.hibernation = { enabled: true, mode: "manual", allowedRepos: ["off/repo"] };
+    // Adversarial reload: the on-disk settings now enable the most permissive
+    // hibernation policy possible, AND the activation env is flipped on after start.
+    // Neither can elevate a broker frozen OFF: the rebuild re-invokes the freeze but
+    // the process-lifetime latch already captured OFF at the first start.
+    process.env[ACTIVATION_ENV] = "1";
+    await subtree.reload(
+      settingsWith({ enabled: true, mode: "manual", allowedRepos: ["off/repo"] }),
+    );
+    // The frozen authority stays OFF; the router therefore ignores any live subtree
+    // control and falls back to the central `activation_pending` stub. (The control
+    // accessor itself is unconditional when a broker is live — the gate is the
+    // router's `hibernationRuntimeActive()` check, exercised below.)
+    expect(hibernationRuntimeActive()).toBe(false);
 
-    const result = await routeHibernate(runtime, centralDb, settings, "worker-off");
+    const result = await routeHibernate(
+      subtree.holder.runtime,
+      centralDb,
+      subtree.holder.settings,
+      "worker-off",
+    );
     // Policy would allow it, target+spec resolve, allowlist passes — yet the executor
-    // is still the `activation_pending` stub: a reload cannot elevate frozen-OFF.
+    // is still the `activation_pending` stub: a real reload+rebuild cannot elevate
+    // frozen-OFF.
     expect(result.outcome).toBe("refused");
     expect(result.reason).toBe("activation_pending");
-    // And the direct authority read is still OFF after the reload.
     expect(hibernationRuntimeActive()).toBe(false);
   }, 30_000);
 
-  it("keeps a broker frozen ON authoritative while a settings reload changes only operational policy", async () => {
+  it("keeps a broker frozen ON authoritative across a REAL on-disk reload + rebuild that changes only operational policy", async () => {
     process.env[ACTIVATION_ENV] = "1";
     const stableId = brokerStableId("onpolicy");
-    const settings = settingsWith({ enabled: true, mode: "manual", allowedRepos: ["sub/repo"] });
-    const runtime = await startRealSubtree(stableId, settings);
+    const subtree = await startFileBackedSubtree(
+      stableId,
+      settingsWith({ enabled: true, mode: "manual", allowedRepos: ["sub/repo"] }),
+    );
     expect(hibernationRuntimeActive()).toBe(true);
 
-    const control = runtime.getHibernationRuntimeControl();
-    expect(control).not.toBeNull();
-    registerWorkerWithSpec(control!.db, {
+    // Register the worker + spec into the authoritative subtree DB BEFORE the reload;
+    // the rebuild re-opens the SAME persisted DB on the same stableId, so it survives.
+    const controlBefore = subtree.holder.runtime.getHibernationRuntimeControl();
+    expect(controlBefore).not.toBeNull();
+    registerWorkerWithSpec(controlBefore!.db, {
       agentId: "worker-on",
       stableId: `${os.hostname()}:session:/tmp/on.jsonl`,
       vcsIdentity: "sub/repo",
-      brokerOwnerId: control!.brokerInstanceId,
+      brokerOwnerId: controlBefore!.brokerInstanceId,
     });
 
     const centralDb = makeCentralDb();
 
-    // "Reload" flips operational policy OFF (enabled=false). Authority stays ON, so
-    // routing still resolves the target from the SUBTREE control DB: the refusal is
-    // `hibernation_disabled` (policy), NOT `unknown` (which a central-DB regression
-    // would produce, since the central fallback has no such agent).
-    settings.hibernation = { enabled: false, mode: "manual", allowedRepos: ["sub/repo"] };
-    const result = await routeHibernate(runtime, centralDb, settings, "worker-on");
+    // Real reload flips operational policy OFF (enabled=false) on disk. Authority
+    // stays ON across the rebuild, so routing still resolves the target from the
+    // (persisted) SUBTREE control DB: the refusal is `hibernation_disabled` (the
+    // reloaded policy took effect), NOT `unknown` (which a central-DB regression
+    // would produce, since the central fallback has no such agent) and NOT
+    // `activation_pending` (which losing frozen-ON would produce).
+    await subtree.reload(
+      settingsWith({ enabled: false, mode: "manual", allowedRepos: ["sub/repo"] }),
+    );
+    expect(hibernationRuntimeActive()).toBe(true);
+    const controlAfter = subtree.holder.runtime.getHibernationRuntimeControl();
+    expect(controlAfter).not.toBeNull();
+    expect(controlAfter!.db.getAgentById("worker-on")).toBeTruthy();
+
+    const result = await routeHibernate(
+      subtree.holder.runtime,
+      centralDb,
+      subtree.holder.settings,
+      "worker-on",
+    );
     expect(result.outcome).toBe("refused");
     expect(result.reason).toBe("hibernation_disabled");
     expect(hibernationRuntimeActive()).toBe(true);
