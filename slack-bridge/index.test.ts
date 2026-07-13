@@ -838,6 +838,7 @@ describe("slack-bridge top-level shutdown", () => {
     slackBridge(pi);
 
     const sessionStart = events.get("session_start");
+    const sessionCompact = events.get("session_compact");
     const sessionShutdown = events.get("session_shutdown");
     const pinetStart = commands.get("pinet");
     const beforeAgentStart = events.get("before_agent_start") as
@@ -848,11 +849,16 @@ describe("slack-bridge top-level shutdown", () => {
       | undefined;
 
     expect(sessionStart).toBeDefined();
+    expect(sessionCompact).toBeDefined();
     expect(sessionShutdown).toBeDefined();
     expect(pinetStart).toBeDefined();
     expect(beforeAgentStart).toBeDefined();
 
     await sessionStart?.({}, ctx);
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    await sessionCompact?.({}, ctx);
+    expect(sendMessage).not.toHaveBeenCalled();
 
     const sentinelSystemPrompt = "SENTINEL ROOT PROMPT";
     const beforeBroker = await beforeAgentStart?.({ systemPrompt: sentinelSystemPrompt }, ctx);
@@ -870,6 +876,7 @@ describe("slack-bridge top-level shutdown", () => {
     const brokerPolicyText = "the Pinet BROKER for a fully autonomous / unchained broker lane";
     expect(stablePrompt).not.toContain(brokerPolicyText);
     expect(stablePrompt).toContain("🚫 BROKER TOOL RESTRICTION:");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         customType: "pinet-runtime-guidance",
@@ -884,6 +891,14 @@ describe("slack-bridge top-level shutdown", () => {
     );
 
     await sessionShutdown?.({}, ctx);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        customType: "pinet-runtime-guidance",
+        content: expect.stringContaining("PINET RUNTIME STATE: off."),
+        details: { role: "off" },
+      }),
+    );
   });
 
   it("sends an iMessage through the broker adapter when enabled", async () => {

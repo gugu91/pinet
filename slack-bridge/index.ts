@@ -413,6 +413,7 @@ export default function (pi: ExtensionAPI) {
     getBrokerPromptSetting: () => settings.brokerPrompt,
   });
   let lastPromptGuidanceContextUpdate: string | null = null;
+  let hasPublishedPromptGuidanceContext = false;
   let promptGuidanceGeneration = 0;
   let promptGuidanceUpdateQueue = Promise.resolve();
 
@@ -421,7 +422,10 @@ export default function (pi: ExtensionAPI) {
     const update = promptGuidanceUpdateQueue
       .catch(() => undefined)
       .then(async () => {
-        if (generation !== promptGuidanceGeneration) {
+        if (
+          generation !== promptGuidanceGeneration ||
+          (brokerRole === null && !hasPublishedPromptGuidanceContext)
+        ) {
           return;
         }
 
@@ -440,6 +444,7 @@ export default function (pi: ExtensionAPI) {
           details: { role: brokerRole ?? "off" },
         });
         lastPromptGuidanceContextUpdate = content;
+        hasPublishedPromptGuidanceContext = true;
       });
     promptGuidanceUpdateQueue = update;
     return update.catch((error) => {
@@ -1710,6 +1715,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     promptGuidanceGeneration += 1;
     lastPromptGuidanceContextUpdate = null;
+    hasPublishedPromptGuidanceContext = false;
     singlePlayerRuntime.resetShutdownState();
     slackRequestRuntime.reset();
     resetRemoteControlState();
