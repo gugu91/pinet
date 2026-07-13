@@ -66,7 +66,7 @@ export interface FollowerRuntimeDeps {
     name: string;
     emoji: string;
     metadata?: Record<string, unknown> | null;
-  }) => void;
+  }) => Promise<void> | void;
   persistState: () => void;
   updateBadge: () => void;
   maybeDrainInboxIfIdle: (ctx: ExtensionContext) => boolean;
@@ -233,7 +233,7 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
         await deps.getAgentMetadata("worker"),
         deps.getAgentStableId(),
       );
-      deps.applyRegistrationIdentity(registration);
+      await deps.applyRegistrationIdentity(registration);
       client.setHeartbeatMetadataProvider(() => deps.getAgentMetadata("worker"));
     }
 
@@ -455,7 +455,7 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
             );
             const registration = client.getRegisteredIdentity();
             if (registration) {
-              deps.applyRegistrationIdentity(registration);
+              await deps.applyRegistrationIdentity(registration);
             }
           }
           await resumeThreadClaims();

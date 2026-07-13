@@ -278,7 +278,7 @@ export function isBrokerForbiddenTool(toolName: string): boolean {
 
 /**
  * Build a prompt snippet describing broker tool restrictions.
- * Injected into the system prompt when the broker role is active.
+ * Kept in the role-invariant system prompt so runtime role changes do not bust its cache prefix.
  */
 export function buildBrokerToolGuardrailsPrompt(): string {
   const forbidden = [...BROKER_FORBIDDEN_TOOLS].join(", ");

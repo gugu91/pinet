@@ -412,6 +412,60 @@ export default function (pi: ExtensionAPI) {
     getBrokerRole: () => brokerRole,
     getBrokerPromptSetting: () => settings.brokerPrompt,
   });
+  let lastPromptGuidanceContextUpdate: string | null = null;
+  let promptGuidanceGeneration = 0;
+  let promptGuidanceUpdateQueue = Promise.resolve();
+
+  function appendPromptGuidanceContextUpdate(force = false): Promise<void> {
+    const generation = promptGuidanceGeneration;
+    const update = promptGuidanceUpdateQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (generation !== promptGuidanceGeneration) {
+          return;
+        }
+
+        const content = await agentPromptGuidance.buildContextUpdate();
+        if (
+          generation !== promptGuidanceGeneration ||
+          (!force && content === lastPromptGuidanceContextUpdate)
+        ) {
+          return;
+        }
+
+        pi.sendMessage({
+          customType: "pinet-runtime-guidance",
+          content,
+          display: false,
+          details: { role: brokerRole ?? "off" },
+        });
+        lastPromptGuidanceContextUpdate = content;
+      });
+    promptGuidanceUpdateQueue = update;
+    return update.catch((error) => {
+      console.error(`[slack-bridge] failed to append Pinet runtime guidance: ${msg(error)}`);
+    });
+  }
+
+  function queuePromptGuidanceContextUpdate(): void {
+    void appendPromptGuidanceContextUpdate();
+  }
+
+  function applyLocalAgentIdentityWithPromptUpdate(
+    name: string,
+    emoji: string,
+    personality: string | null,
+  ): void {
+    applyLocalAgentIdentity(name, emoji, personality);
+    queuePromptGuidanceContextUpdate();
+  }
+
+  async function applyRegistrationIdentityWithPromptUpdate(
+    registration: Parameters<typeof applyRegistrationIdentity>[0],
+  ): Promise<void> {
+    applyRegistrationIdentity(registration);
+    await appendPromptGuidanceContextUpdate();
+  }
 
   let isSinglePlayerShuttingDown = () => false;
   let isSinglePlayerConnected = () => false;
@@ -718,7 +772,7 @@ export default function (pi: ExtensionAPI) {
       agentOwnerToken = ownerToken;
     },
     getAgentMetadata,
-    applyLocalAgentIdentity,
+    applyLocalAgentIdentity: applyLocalAgentIdentityWithPromptUpdate,
     buildSkinMetadata: (metadata, personality, statusVocabulary) =>
       buildSkinMetadata(metadata ?? undefined, personality, statusVocabulary),
     getMeshRoleFromMetadata: (metadata, fallbackRole) =>
@@ -1197,6 +1251,7 @@ export default function (pi: ExtensionAPI) {
     pinetEnabled = false;
     desiredAgentStatus = "idle";
     currentRuntimeMode = "off";
+    await appendPromptGuidanceContextUpdate();
     setExtStatus(ctx, "off");
   }
 
@@ -1469,6 +1524,7 @@ export default function (pi: ExtensionAPI) {
     pinetEnabled = true;
     desiredAgentStatus = "idle";
     currentRuntimeMode = "broker";
+    await appendPromptGuidanceContextUpdate();
 
     if (recoveredBrokerMessages > 0 || releasedBrokerClaims > 0) {
       const recoveredTargetedDetail =
@@ -1531,7 +1587,7 @@ export default function (pi: ExtensionAPI) {
       inbox.push(...messages);
     },
     getAgentMetadata,
-    applyRegistrationIdentity,
+    applyRegistrationIdentity: applyRegistrationIdentityWithPromptUpdate,
     persistState,
     updateBadge,
     maybeDrainInboxIfIdle,
@@ -1608,7 +1664,7 @@ export default function (pi: ExtensionAPI) {
       spawnSubtreeWorker: (ctx, input) => subtreeBrokerRuntime.spawnWorker(ctx, input),
       sendPinetAgentMessage,
       signalAgentFree,
-      applyLocalAgentIdentity,
+      applyLocalAgentIdentity: applyLocalAgentIdentityWithPromptUpdate,
       setExtStatus,
       setExtCtx: sessionUiRuntime.setExtCtx,
     },
@@ -1626,6 +1682,7 @@ export default function (pi: ExtensionAPI) {
     pinetEnabled = true;
     desiredAgentStatus = "idle";
     currentRuntimeMode = "follower";
+    await appendPromptGuidanceContextUpdate();
     setExtStatus(ctx, "ok");
   }
 
@@ -1639,6 +1696,7 @@ export default function (pi: ExtensionAPI) {
     brokerRole = null;
     pinetEnabled = false;
     currentRuntimeMode = "off";
+    await appendPromptGuidanceContextUpdate();
     if (!options.preserveErrorState) {
       followerRuntimeDiagnostic = null;
       setExtStatus(ctx, "off");
@@ -1650,6 +1708,8 @@ export default function (pi: ExtensionAPI) {
   // ─── Lifecycle ──────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
+    promptGuidanceGeneration += 1;
+    lastPromptGuidanceContextUpdate = null;
     singlePlayerRuntime.resetShutdownState();
     slackRequestRuntime.reset();
     resetRemoteControlState();
@@ -1663,6 +1723,7 @@ export default function (pi: ExtensionAPI) {
       console.log("[slack-bridge] detected local subagent context; skipping Pinet registration");
       currentRuntimeMode = "off";
       setExtStatus(ctx, "off");
+      await appendPromptGuidanceContextUpdate();
       return;
     }
 
@@ -1675,6 +1736,7 @@ export default function (pi: ExtensionAPI) {
 
     try {
       await transitionToRuntimeMode(ctx, startupMode);
+      await appendPromptGuidanceContextUpdate();
       if (startupMode === "single") {
         maybeWarnSlackGuardrailPosture(ctx);
         console.log("[slack-bridge] runtime mode: single");
@@ -1687,6 +1749,7 @@ export default function (pi: ExtensionAPI) {
       console.error(`[slack-bridge] runtime start (${startupMode}) failed: ${msg(err)}`);
       currentRuntimeMode = "off";
       setExtStatus(ctx, "off");
+      await appendPromptGuidanceContextUpdate();
     }
   });
 
@@ -1695,6 +1758,7 @@ export default function (pi: ExtensionAPI) {
   agentEventRuntime.register(pi);
 
   pi.on("session_compact", async (_event, ctx) => {
+    await appendPromptGuidanceContextUpdate(true);
     maybeDrainInboxIfIdle(ctx);
   });
 

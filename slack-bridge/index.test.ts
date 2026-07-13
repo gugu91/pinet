@@ -760,12 +760,13 @@ describe("slack-bridge top-level shutdown", () => {
     expect(brokerRuntimes[1]?.stop).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves the incoming system prompt prefix when broker guidance is appended at root runtime", async () => {
+  it("keeps the system prompt byte-stable when broker guidance is lazily appended to context", async () => {
     const dbPath = path.join(testHome, ".pi", "pinet-broker.db");
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     const commands = new Map<string, CommandDefinition>();
     const events = new Map<string, EventHandler>();
+    const sendMessage = vi.fn();
 
     const pi = {
       appendEntry: vi.fn(),
@@ -776,6 +777,7 @@ describe("slack-bridge top-level shutdown", () => {
       on: vi.fn((eventName: string, handler: EventHandler) => {
         events.set(eventName, handler);
       }),
+      sendMessage,
       sendUserMessage: vi.fn(),
     } as unknown as ExtensionAPI;
 
@@ -851,34 +853,34 @@ describe("slack-bridge top-level shutdown", () => {
     expect(beforeAgentStart).toBeDefined();
 
     await sessionStart?.({}, ctx);
-    await pinetStart?.handler("start", ctx);
-    expect(startBrokerSpy).toHaveBeenCalledTimes(1);
 
     const sentinelSystemPrompt = "SENTINEL ROOT PROMPT";
-    const result = await beforeAgentStart?.({ systemPrompt: sentinelSystemPrompt }, ctx);
-    const nextPrompt = result?.systemPrompt ?? "";
+    const beforeBroker = await beforeAgentStart?.({ systemPrompt: sentinelSystemPrompt }, ctx);
+    const stablePrompt = beforeBroker?.systemPrompt ?? "";
 
-    expect(nextPrompt.startsWith(`${sentinelSystemPrompt}\n\n`)).toBe(true);
-    expect(nextPrompt).toContain("First message in a new thread:");
-    expect(nextPrompt).toContain("COMMUNICATION STYLE:");
-    expect(nextPrompt).toContain("Slack emoji reactions are ignored by default");
+    await pinetStart?.handler("start", ctx);
+    expect(startBrokerSpy).toHaveBeenCalledTimes(1);
+    const afterBroker = await beforeAgentStart?.({ systemPrompt: sentinelSystemPrompt }, ctx);
+
+    expect(afterBroker?.systemPrompt).toBe(stablePrompt);
+    expect(stablePrompt.startsWith(`${sentinelSystemPrompt}\n\n`)).toBe(true);
+    expect(stablePrompt).not.toContain("First message in a new thread:");
+    expect(stablePrompt).not.toContain("COMMUNICATION STYLE:");
+    expect(stablePrompt).toContain("Slack emoji reactions are ignored by default");
     const brokerPolicyText = "the Pinet BROKER for a fully autonomous / unchained broker lane";
-    expect(nextPrompt).toContain(brokerPolicyText);
-    expect(nextPrompt).toContain("🚫 BROKER TOOL RESTRICTION:");
-    expect(nextPrompt.indexOf("First message in a new thread:")).toBeGreaterThan(
-      nextPrompt.indexOf(sentinelSystemPrompt),
-    );
-    expect(nextPrompt.indexOf("COMMUNICATION STYLE:")).toBeGreaterThan(
-      nextPrompt.indexOf("First message in a new thread:"),
-    );
-    expect(nextPrompt.indexOf("Slack emoji reactions are ignored by default")).toBeGreaterThan(
-      nextPrompt.indexOf("COMMUNICATION STYLE:"),
-    );
-    expect(nextPrompt.indexOf(brokerPolicyText)).toBeGreaterThan(
-      nextPrompt.indexOf("Slack emoji reactions are ignored by default"),
-    );
-    expect(nextPrompt.indexOf("🚫 BROKER TOOL RESTRICTION:")).toBeGreaterThan(
-      nextPrompt.indexOf(brokerPolicyText),
+    expect(stablePrompt).not.toContain(brokerPolicyText);
+    expect(stablePrompt).toContain("🚫 BROKER TOOL RESTRICTION:");
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "pinet-runtime-guidance",
+        display: false,
+        content: expect.stringMatching(
+          new RegExp(
+            `First message in a new thread:[\\s\\S]*COMMUNICATION STYLE:[\\s\\S]*${brokerPolicyText}`,
+          ),
+        ),
+        details: { role: "broker" },
+      }),
     );
 
     await sessionShutdown?.({}, ctx);
