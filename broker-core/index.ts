@@ -1,4 +1,5 @@
 export * from "./agent-messaging.js";
+export * from "./approval-receipts.js";
 export * from "./auth.js";
 export * from "./leader.js";
 export * from "./lifecycle.js";
@@ -14,4 +15,5 @@ export * from "./paths.js";
 export * from "./raw-tcp-loopback.js";
 export * from "./router.js";
 export * from "./schema.js";
+export * from "./slack-approval-authenticator.js";
 export * from "./types.js";
