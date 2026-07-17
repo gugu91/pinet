@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { PinetLaneInfo, ThreadInfo } from "./broker/types.js";
 import {
   applyTrackedAssignmentIdleReplyStalls,
   buildTrackedAssignmentReplyNudgeMessage,
@@ -324,6 +325,258 @@ describe("runRalphLoopCycle snooze", () => {
     expect(state.snoozeEmptyCycleCount).toBe(0);
     expect(records).toHaveLength(1);
     expect(logActivity.mock.calls.map(([entry]) => entry.title)).toEqual(["RALPH cycle"]);
+  });
+});
+
+describe("runRalphLoopCycle GitHub event relay", () => {
+  async function runGithubRelayCycle(
+    overrides: {
+      resolvedStatus?: "assigned" | "pr_open" | "pr_merged";
+      nextStatus?: "assigned" | "pr_open" | "pr_merged" | "pr_closed";
+      nextPrNumber?: number | null;
+      safeThread?: boolean;
+      lanes?: PinetLaneInfo[];
+      threads?: Map<string, ThreadInfo>;
+    } = {},
+  ) {
+    const state = createRalphLoopState();
+    const logActivity = vi.fn();
+    const emitGithubEventRelay = vi.fn(async () => undefined);
+    const upsertPinetLane = vi.fn();
+    const updateTaskAssignmentProgress = vi.fn();
+    const now = new Date().toISOString();
+    const rawAssignment = {
+      id: 1,
+      agentId: "worker-1",
+      issueNumber: 774,
+      branch: "feat/github-event-relay-774",
+      prNumber: null,
+      status: "assigned",
+      threadId: "a2a:broker:worker",
+      sourceMessageId: null,
+      repoOwner: "gugu91",
+      repoName: "extensions",
+      repoRoot: null,
+      taskKind: "implementation",
+      createdAt: now,
+      updatedAt: now,
+    } as const;
+    const lane: PinetLaneInfo = {
+      laneId: "issue-774",
+      name: null,
+      task: null,
+      issueNumber: 774,
+      prNumber: null,
+      threadId: "123.456",
+      ownerAgentId: null,
+      implementationLeadAgentId: null,
+      pmMode: false,
+      state: "active",
+      summary: null,
+      metadata: { consent: "maintainer", github: { owner: "gugu91", repo: "extensions" } },
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+      participants: [],
+    };
+    const threads =
+      overrides.threads ??
+      new Map<string, ThreadInfo>([
+        [
+          "123.456",
+          {
+            threadId: "123.456",
+            source: "slack",
+            channel: "C123",
+            ownerAgent: "worker-1",
+            ownerBinding: null,
+            metadata: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      ]);
+    const db = {
+      getRecentRalphCycles: () => [],
+      getAllAgents: () => [],
+      getPendingInboxCount: () => 0,
+      getOwnedThreadCount: () => 0,
+      getBacklogCount: () => 0,
+      listTaskAssignmentsAwaitingFirstReply: () => [],
+      listTaskAssignments: () => [rawAssignment],
+      getMessagesByIds: () => [],
+      listPinetLanes: () => overrides.lanes ?? [lane],
+      upsertPinetLane,
+      updateTaskAssignmentProgress,
+      getThread: (threadId: string) =>
+        overrides.safeThread === false ? null : (threads.get(threadId) ?? null),
+      recordRalphCycle: vi.fn(),
+    };
+    const deps = createLoopDeps({
+      getBrokerDb: () => db as never,
+      getBrokerAgentId: () => "broker-1",
+      getLastMaintenance: () => ({
+        pendingBacklogCount: 0,
+        assignedBacklogCount: 0,
+        reapedAgentIds: [],
+        nudgedAgentIds: [],
+        repairedThreadClaims: 0,
+        anomalies: [],
+      }),
+      logActivity,
+      emitGithubEventRelay,
+      resolveTrackedTaskAssignments: vi.fn(async () => [
+        {
+          ...rawAssignment,
+          status: overrides.resolvedStatus ?? "assigned",
+          prNumber:
+            (overrides.resolvedStatus ?? "assigned") === (overrides.nextStatus ?? "pr_open")
+              ? overrides.nextPrNumber === undefined
+                ? 123
+                : overrides.nextPrNumber
+              : rawAssignment.prNumber,
+          nextStatus: overrides.nextStatus ?? "pr_open",
+          nextPrNumber: overrides.nextPrNumber === undefined ? 123 : overrides.nextPrNumber,
+          branchAheadCount: 0,
+          issueState: "OPEN" as const,
+        },
+      ]),
+    });
+    const ctx = { isIdle: () => true, ui: { notify: vi.fn() } } as unknown as ExtensionContext;
+
+    const originalCwd = process.cwd();
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ralph-github-relay-test-"));
+    try {
+      process.chdir(tempDir);
+      await runRalphLoopCycle(ctx, state, deps);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+
+    return { emitGithubEventRelay, logActivity, upsertPinetLane, updateTaskAssignmentProgress };
+  }
+
+  it("emits PR-open relays, merges lane metadata, and updates assignment progress", async () => {
+    const { emitGithubEventRelay, upsertPinetLane, updateTaskAssignmentProgress } =
+      await runGithubRelayCycle();
+
+    expect(updateTaskAssignmentProgress).toHaveBeenCalledWith(1, "pr_open", 123);
+    expect(upsertPinetLane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "issue-774",
+        prNumber: 123,
+        metadata: expect.objectContaining({
+          consent: "maintainer",
+          github: expect.objectContaining({
+            owner: "gugu91",
+            repo: "extensions",
+            repoKey: "gugu91/extensions",
+            prNumber: 123,
+            status: "pr_open",
+          }),
+        }),
+      }),
+    );
+    expect(emitGithubEventRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { threadId: "123.456", source: "slack", channel: "C123" },
+        text: expect.stringContaining("opened"),
+        metadata: expect.objectContaining({
+          githubEventRelay: expect.objectContaining({ status: "pr_open", prNumber: 123 }),
+        }),
+      }),
+    );
+  });
+
+  it("uses active lanes for visible delivery when exact repo matches include done lanes", async () => {
+    const now = "2026-06-04T00:00:00.000Z";
+    const baseLane = {
+      name: null,
+      task: null,
+      issueNumber: 774,
+      prNumber: null,
+      ownerAgentId: null,
+      implementationLeadAgentId: null,
+      pmMode: false,
+      summary: null,
+      metadata: { github: { owner: "gugu91", repo: "extensions" } },
+      createdAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+      participants: [],
+    } satisfies Partial<PinetLaneInfo>;
+    const activeLane: PinetLaneInfo = {
+      ...baseLane,
+      laneId: "active-lane",
+      threadId: "active-thread",
+      state: "active",
+    } as PinetLaneInfo;
+    const doneLane: PinetLaneInfo = {
+      ...baseLane,
+      laneId: "done-lane",
+      threadId: "done-thread",
+      state: "done",
+    } as PinetLaneInfo;
+    const threads = new Map<string, ThreadInfo>([
+      [
+        "active-thread",
+        {
+          threadId: "active-thread",
+          source: "slack",
+          channel: "C123",
+          ownerAgent: "worker-1",
+          ownerBinding: null,
+          metadata: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      [
+        "done-thread",
+        {
+          threadId: "done-thread",
+          source: "slack",
+          channel: "C999",
+          ownerAgent: "worker-1",
+          ownerBinding: null,
+          metadata: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    ]);
+
+    const { emitGithubEventRelay, upsertPinetLane } = await runGithubRelayCycle({
+      lanes: [doneLane, activeLane],
+      threads,
+    });
+
+    expect(upsertPinetLane).toHaveBeenCalledTimes(2);
+    expect(emitGithubEventRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { threadId: "active-thread", source: "slack", channel: "C123" },
+      }),
+    );
+  });
+
+  it("skips unchanged assignments to preserve status-transition dedupe", async () => {
+    const { emitGithubEventRelay, upsertPinetLane, updateTaskAssignmentProgress } =
+      await runGithubRelayCycle({ resolvedStatus: "pr_open", nextStatus: "pr_open" });
+
+    expect(updateTaskAssignmentProgress).not.toHaveBeenCalled();
+    expect(upsertPinetLane).not.toHaveBeenCalled();
+    expect(emitGithubEventRelay).not.toHaveBeenCalled();
+  });
+
+  it("skips visible delivery when no safe Slack-backed target is resolvable", async () => {
+    const { emitGithubEventRelay, logActivity, upsertPinetLane } = await runGithubRelayCycle({
+      safeThread: false,
+    });
+
+    expect(upsertPinetLane).toHaveBeenCalled();
+    expect(emitGithubEventRelay).not.toHaveBeenCalled();
+    expect(logActivity.mock.calls.map(([entry]) => entry.title)).toContain("GitHub relay skipped");
   });
 });
 
