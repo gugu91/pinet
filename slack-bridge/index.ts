@@ -1714,8 +1714,20 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     promptGuidanceGeneration += 1;
-    lastPromptGuidanceContextUpdate = null;
-    hasPublishedPromptGuidanceContext = false;
+    const activeSessionEntries =
+      typeof ctx.sessionManager.getBranch === "function"
+        ? ctx.sessionManager.getBranch()
+        : ctx.sessionManager.getEntries();
+    const previousPromptGuidance = [...activeSessionEntries]
+      .reverse()
+      .find(
+        (entry) => entry.type === "custom_message" && entry.customType === "pinet-runtime-guidance",
+      );
+    lastPromptGuidanceContextUpdate =
+      previousPromptGuidance && typeof previousPromptGuidance.content === "string"
+        ? previousPromptGuidance.content
+        : null;
+    hasPublishedPromptGuidanceContext = previousPromptGuidance !== undefined;
     singlePlayerRuntime.resetShutdownState();
     slackRequestRuntime.reset();
     resetRemoteControlState();

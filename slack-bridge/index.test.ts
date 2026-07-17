@@ -767,6 +767,16 @@ describe("slack-bridge top-level shutdown", () => {
     const commands = new Map<string, CommandDefinition>();
     const events = new Map<string, EventHandler>();
     const sendMessage = vi.fn();
+    let activeSessionEntries: Array<{
+      type: "custom_message";
+      id: string;
+      parentId: string | null;
+      timestamp: string;
+      customType: string;
+      content: string;
+      display: boolean;
+      details: { role: string };
+    }> = [];
 
     const pi = {
       appendEntry: vi.fn(),
@@ -793,7 +803,8 @@ describe("slack-bridge top-level shutdown", () => {
         setStatus: vi.fn(),
       },
       sessionManager: {
-        getEntries: () => [],
+        getEntries: () => activeSessionEntries,
+        getBranch: () => activeSessionEntries,
         getHeader: () => null,
         getLeafId: () => "broker-prompt-layering-leaf",
         getSessionFile: () => "/tmp/slack-bridge-broker-prompt-layering-session.json",
@@ -892,6 +903,29 @@ describe("slack-bridge top-level shutdown", () => {
 
     await sessionShutdown?.({}, ctx);
     expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        customType: "pinet-runtime-guidance",
+        content: expect.stringContaining("PINET RUNTIME STATE: off."),
+        details: { role: "off" },
+      }),
+    );
+
+    activeSessionEntries = [
+      {
+        type: "custom_message",
+        id: "historical-broker-guidance",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType: "pinet-runtime-guidance",
+        content: "PINET RUNTIME STATE: broker. Historical broker workflow.",
+        display: false,
+        details: { role: "broker" },
+      },
+    ];
+    await sessionStart?.({}, ctx);
+
+    expect(sendMessage).toHaveBeenCalledTimes(3);
     expect(sendMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
         customType: "pinet-runtime-guidance",
