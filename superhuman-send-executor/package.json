@@ -14,7 +14,7 @@
     "build": "pnpm --filter @pinet/transport-core build && pnpm --filter @pinet/broker-core build && node ../scripts/build-package.mjs",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm run build && vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh && ./scripts/test-release.sh"
+    "test": "node ../scripts/build-package.mjs && vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh && ./scripts/test-release.sh"
   },
   "engines": {
     "node": ">=22.5"
