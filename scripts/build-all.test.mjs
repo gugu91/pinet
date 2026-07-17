@@ -13,6 +13,7 @@ const expectedBuildPackages = [
   "neon-psql",
   "openai-execution-shaping",
   "model-aware-compaction",
+  "pinet-sonar",
   "slack-bridge",
 ];
 
