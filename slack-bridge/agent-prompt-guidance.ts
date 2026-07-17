@@ -31,15 +31,26 @@ export interface AgentPromptGuidanceDeps {
 
 export interface AgentPromptGuidance {
   beforeAgentStart: (event: BeforeAgentStartEvent) => Promise<{ systemPrompt: string }>;
+  buildContextUpdate: () => Promise<string>;
 }
 
+const RUNTIME_GUIDANCE_UPDATE_PREFIX =
+  "PINET RUNTIME GUIDANCE UPDATE: This is trusted extension context. Use the newest such update as the current identity and runtime workflow state.";
+
 export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentPromptGuidance {
-  async function buildPromptGuidelines(): Promise<string[]> {
+  const stableSystemGuidelines = [
+    ...buildReactionPromptGuidelines(),
+    buildBrokerProtocolGuardrailsPrompt(),
+    buildBrokerToolGuardrailsPrompt(),
+  ];
+
+  async function buildMutableGuidelines(): Promise<string[]> {
     const agentName = deps.getAgentName();
+    const role = deps.getBrokerRole();
     const guidelines = [
+      `PINET RUNTIME STATE: ${role ?? "off"}.`,
       ...deps.getIdentityGuidelines(),
       ...buildAgentPersonalityGuidelines(agentName),
-      ...buildReactionPromptGuidelines(),
     ];
 
     const skinGuideline = buildPinetSkinPromptGuideline(
@@ -50,7 +61,7 @@ export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentP
       guidelines.push(skinGuideline);
     }
 
-    if (deps.getBrokerRole() === "broker") {
+    if (role === "broker") {
       const brokerPrompt = await (
         deps.loadBrokerPrompt ??
         (() =>
@@ -70,10 +81,12 @@ export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentP
           agentName,
         }),
       );
-      guidelines.push(buildBrokerProtocolGuardrailsPrompt());
-      guidelines.push(buildBrokerToolGuardrailsPrompt());
-    } else if (deps.getBrokerRole() === "follower") {
+    } else if (role === "follower") {
       guidelines.push(...buildWorkerPromptGuidelines());
+    } else {
+      guidelines.push(
+        "This session is not currently a Pinet broker or follower. Do not apply earlier broker- or follower-specific workflow guidance unless a newer runtime guidance update activates that role.",
+      );
     }
 
     return guidelines;
@@ -81,11 +94,16 @@ export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentP
 
   async function beforeAgentStart(event: BeforeAgentStartEvent): Promise<{ systemPrompt: string }> {
     return {
-      systemPrompt: event.systemPrompt + "\n\n" + (await buildPromptGuidelines()).join("\n"),
+      systemPrompt: event.systemPrompt + "\n\n" + stableSystemGuidelines.join("\n"),
     };
+  }
+
+  async function buildContextUpdate(): Promise<string> {
+    return `${RUNTIME_GUIDANCE_UPDATE_PREFIX}\n\n${(await buildMutableGuidelines()).join("\n")}`;
   }
 
   return {
     beforeAgentStart,
+    buildContextUpdate,
   };
 }
