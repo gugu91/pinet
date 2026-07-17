@@ -146,7 +146,7 @@ describe("createHibernationOrchestrator — composition", () => {
 describe("persistSpawnedRuntimeSpec — Seam 2 (durable spec + git-remote VCS identity)", () => {
   it("derives owner/repo from the real git remote and persists a readable spec", async () => {
     const db = freshDb();
-    const repo = freshRepo("git@github.com:gugu91/extensions.git");
+    const repo = freshRepo("git@github.com:gugu91/pinet.git");
     db.registerAgent(
       "worker-1",
       "Worker",
@@ -158,12 +158,12 @@ describe("persistSpawnedRuntimeSpec — Seam 2 (durable spec + git-remote VCS id
 
     const persisted = await persistSpawnedRuntimeSpec(db, specFacts(repo));
     expect(persisted).not.toBeNull();
-    expect(persisted?.vcsIdentity).toBe("gugu91/extensions");
+    expect(persisted?.vcsIdentity).toBe("gugu91/pinet");
 
     const readBack = db.getAgentRuntimeSpec("worker-1");
     expect(readBack).not.toBeNull();
     // Authorization identity is the git-remote-derived owner/repo, NOT any dir name.
-    expect(readBack?.vcsIdentity).toBe("gugu91/extensions");
+    expect(readBack?.vcsIdentity).toBe("gugu91/pinet");
     // Session resume ref + expected host are derived from the session stable id.
     expect(readBack?.sessionResumeRef).toBe(`session:${join(repo, "session.jsonl")}`);
     expect(readBack?.expectedHost).toBe("host-a");
@@ -200,7 +200,7 @@ describe("persistSpawnedRuntimeSpec — Seam 2 (durable spec + git-remote VCS id
 
   it("persists NOTHING when a durable locator is missing (empty tmux socket)", async () => {
     const db = freshDb();
-    const repo = freshRepo("git@github.com:gugu91/extensions.git");
+    const repo = freshRepo("git@github.com:gugu91/pinet.git");
     db.registerAgent(
       "worker-1",
       "Worker",
@@ -217,7 +217,7 @@ describe("persistSpawnedRuntimeSpec — Seam 2 (durable spec + git-remote VCS id
 
   it("persists NOTHING for a non-session stable id (no resumable session)", async () => {
     const db = freshDb();
-    const repo = freshRepo("git@github.com:gugu91/extensions.git");
+    const repo = freshRepo("git@github.com:gugu91/pinet.git");
     // `cwd`-kind stable id exposes a path but carries no resumable Pi session.
     const facts = specFacts(repo, { stableId: `host-a:cwd:${repo}` });
     db.registerAgent("worker-1", "Worker", "🦉", 4242, { brokerManaged: true }, facts.stableId);

@@ -2,7 +2,7 @@
 
 Pinet is a local-first coordination layer for [pi](pi.dev) coding agents. One broker runs the mesh: it routes every Slack message, and you can talk to it directly at its own terminal. It keeps named worker agents shipping: writing code, reviewing each other's pull requests, and repairing themselves when something stalls. Pretty animation on the [website](pinet-mesh.vercel.app).
 
-Get Pinet working in your Slack workspace in 10 minutes. 
+Get Pinet working in your Slack workspace in 10 minutes.
 This repository also provides pi coding agent extensions for Neovim and Neon Postgres.
 
 ## What Pinet does
@@ -215,7 +215,7 @@ RALPH checks for stalls every 5 minutes by default. You can:
 
 ## Repository information
 
-- GitHub: [github.com/gugu91/extensions](https://github.com/gugu91/extensions)
+- GitHub: [github.com/gugu91/pinet](https://github.com/gugu91/pinet)
 - License: MIT
 - Package manager: pnpm with workspaces
 - Build tool: Turborepo with local caching

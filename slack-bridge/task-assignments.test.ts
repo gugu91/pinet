@@ -105,7 +105,7 @@ describe("extractTaskAssignmentsFromMessage", () => {
 
   it("captures repo identity from GitHub issue URLs and classifies review-only work", () => {
     const message = [
-      "Please do a read-only review of PR #292 against https://github.com/gugu91/extensions/issues/287.",
+      "Please do a read-only review of PR #292 against https://github.com/gugu91/pinet/issues/287.",
       "Do not mutate files; just report findings.",
     ].join("\n");
 
@@ -114,7 +114,7 @@ describe("extractTaskAssignmentsFromMessage", () => {
         issueNumber: 287,
         branch: null,
         repoOwner: "gugu91",
-        repoName: "extensions",
+        repoName: "pinet",
         taskKind: "review",
       },
     ]);
@@ -122,7 +122,7 @@ describe("extractTaskAssignmentsFromMessage", () => {
 
   it("uses pull request URLs for repo context without tracking the PR number as an issue", () => {
     const message = [
-      "Please do a read-only review of https://github.com/gugu91/extensions/pull/292.",
+      "Please do a read-only review of https://github.com/gugu91/pinet/pull/292.",
       "Issue: #287",
       "Do not mutate files; just report findings.",
     ].join("\n");
@@ -132,7 +132,7 @@ describe("extractTaskAssignmentsFromMessage", () => {
         issueNumber: 287,
         branch: null,
         repoOwner: "gugu91",
-        repoName: "extensions",
+        repoName: "pinet",
         taskKind: "review",
       },
     ]);
@@ -190,7 +190,7 @@ describe("normalizeTrackedTaskAssignments", () => {
           issueNumber: 418,
           branch: "fix/task-tracker-418",
           repoOwner: "gugu91",
-          repoName: "extensions",
+          repoName: "pinet",
           sourceMessageId: 100,
         }),
       ],
@@ -210,7 +210,7 @@ describe("normalizeTrackedTaskAssignments", () => {
       expect.objectContaining({
         issueNumber: 418,
         repoOwner: "gugu91",
-        repoName: "extensions",
+        repoName: "pinet",
         taskKind: "implementation",
       }),
     ]);
@@ -382,7 +382,7 @@ describe("resolveTaskAssignments", () => {
           issueNumber: 114,
           branch: "feat/ralph",
           repoOwner: "gugu91",
-          repoName: "extensions",
+          repoName: "pinet",
           repoRoot: null,
         }),
       ],
@@ -614,7 +614,7 @@ describe("resolveTaskAssignments", () => {
           issueNumber: 271,
           status: "assigned",
           repoOwner: "gugu91",
-          repoName: "extensions",
+          repoName: "pinet",
         }),
       ],
       "/repo",
@@ -677,7 +677,7 @@ describe("resolveTaskAssignments", () => {
         return {
           stdout: JSON.stringify({
             number: 747,
-            state: repo === "gugu91/extensions" ? "CLOSED" : "OPEN",
+            state: repo === "gugu91/pinet" ? "CLOSED" : "OPEN",
           }),
         };
       }
@@ -691,7 +691,7 @@ describe("resolveTaskAssignments", () => {
           agentId: "worker-1",
           issueNumber: 747,
           repoOwner: "gugu91",
-          repoName: "extensions",
+          repoName: "pinet",
         }),
         makeAssignment({
           id: 2,
@@ -708,7 +708,7 @@ describe("resolveTaskAssignments", () => {
     expect(assignments.map((assignment) => assignment.issueState)).toEqual(["CLOSED", "OPEN"]);
     expect(runner).toHaveBeenCalledWith(
       "gh",
-      expect.arrayContaining(["issue", "view", "747", "--repo", "gugu91/extensions"]),
+      expect.arrayContaining(["issue", "view", "747", "--repo", "gugu91/pinet"]),
       expect.any(Object),
     );
     expect(runner).toHaveBeenCalledWith(
@@ -879,7 +879,7 @@ describe("buildTaskAssignmentReport", () => {
           issueNumber: 114,
           branch: "feat/ralph",
           repoOwner: "gugu91",
-          repoName: "extensions",
+          repoName: "pinet",
           repoRoot: null,
           status: "assigned",
         }),

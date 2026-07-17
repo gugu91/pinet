@@ -116,8 +116,8 @@ export function evaluateHibernateCommandGate(
 
   // Fail-closed allowlist with EXACT identity matching and NO basename collapse
   // (C2): an allowlist entry must equal the broker-derived repo identifier
-  // exactly. A bare "extensions" entry therefore never admits a *different* root
-  // that merely shares a basename (e.g. "gugu91/extensions" or "evil/extensions"),
+  // exactly. A bare "pinet" entry therefore never admits a *different* root
+  // that merely shares a basename (e.g. "gugu91/pinet" or "evil/pinet"),
   // and an "owner/repo" slug entry never admits a different owner. Blank
   // identifiers/entries never match. Windows backslash separators are normalized
   // to "/" on both sides so matching is OS-agnostic, and trailing slashes are

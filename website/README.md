@@ -61,4 +61,4 @@ Deployed on Vercel: project `tmustiers-projects/pinet`, root directory
 `website/`, production alias <https://pinet-mesh.vercel.app>. Deploys are
 CLI-driven for now (`vercel deploy --prod` from the repo root); native git
 integration waits on the Vercel GitHub App being installed for
-`gugu91/extensions`. `site` is set in `astro.config.mjs`.
+`gugu91/pinet`. `site` is set in `astro.config.mjs`.

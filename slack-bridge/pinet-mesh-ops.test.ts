@@ -237,17 +237,17 @@ function createFollowerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
 
 describe("parseGitHubRemoteRepo", () => {
   it("parses github.com remotes and local SSH host aliases", () => {
-    expect(parseGitHubRemoteRepo("git@github.com:gugu91/extensions.git")).toEqual({
+    expect(parseGitHubRemoteRepo("git@github.com:gugu91/pinet.git")).toEqual({
       repoOwner: "gugu91",
-      repoName: "extensions",
+      repoName: "pinet",
     });
-    expect(parseGitHubRemoteRepo("github-gugu91:gugu91/extensions.git")).toEqual({
+    expect(parseGitHubRemoteRepo("github-gugu91:gugu91/pinet.git")).toEqual({
       repoOwner: "gugu91",
-      repoName: "extensions",
+      repoName: "pinet",
     });
-    expect(parseGitHubRemoteRepo("https://github.com/gugu91/extensions")).toEqual({
+    expect(parseGitHubRemoteRepo("https://github.com/gugu91/pinet")).toEqual({
       repoOwner: "gugu91",
-      repoName: "extensions",
+      repoName: "pinet",
     });
   });
 });
@@ -315,7 +315,7 @@ describe("createPinetMeshOps", () => {
       1,
       expect.objectContaining({
         repoOwner: "gugu91",
-        repoName: "extensions",
+        repoName: "pinet",
         repoRoot: expect.any(String),
         taskKind: "implementation",
       }),

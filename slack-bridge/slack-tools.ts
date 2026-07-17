@@ -78,7 +78,7 @@ export interface SlackPinetDeliveryPort {
    * live broker connectivity. When true, threaded Slack replies MUST route
    * through the broker; direct Slack fallback is refused even if the broker
    * is momentarily unavailable, to preserve broker-enforced thread
-   * ownership (see gugu91/extensions#855).
+   * ownership (see gugu91/pinet#855).
    */
   isEnabled: () => boolean;
   isAvailable: () => boolean;
@@ -917,7 +917,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     // Slack when the broker is unavailable or the delivery errors: direct
     // Slack posting bypasses broker thread-ownership enforcement and lets any
     // worker with a valid bot token take over a Slack thread it does not own.
-    // See gugu91/extensions#855. Single-player mode (isEnabled === false) and
+    // See gugu91/pinet#855. Single-player mode (isEnabled === false) and
     // top-level channel posts (no threadTs) remain unaffected.
     if (input.threadTs && pinetDelivery?.isEnabled()) {
       if (!pinetDelivery.isAvailable()) {

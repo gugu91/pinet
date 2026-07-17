@@ -28,7 +28,7 @@ function makeSpec(overrides: Partial<AgentRuntimeSpec> = {}): AgentRuntimeSpec {
     expectedHost: "host",
     expectedUser: "user",
     launchSource: "subtree-broker-tmux",
-    vcsIdentity: "gugu91/extensions",
+    vcsIdentity: "gugu91/pinet",
     createdAt: "2026-07-12T00:00:00Z",
     updatedAt: "2026-07-12T00:00:00Z",
     ...overrides,
@@ -437,8 +437,8 @@ describe("HibernationTmuxController", () => {
 
 describe("resolveVcsIdentity", () => {
   it("derives owner/repo from the git origin remote", async () => {
-    const { runner } = makeRunner({ remoteUrl: "git@github.com:gugu91/extensions.git\n" });
-    expect(await resolveVcsIdentity("/repo/root", runner)).toBe("gugu91/extensions");
+    const { runner } = makeRunner({ remoteUrl: "git@github.com:gugu91/pinet.git\n" });
+    expect(await resolveVcsIdentity("/repo/root", runner)).toBe("gugu91/pinet");
   });
 
   it("returns null when no origin remote is resolvable", async () => {

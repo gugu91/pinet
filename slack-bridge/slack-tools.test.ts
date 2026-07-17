@@ -161,7 +161,7 @@ describe("registerSlackTools", () => {
             {
               id: "Bk123",
               title: "Repo",
-              link: "https://github.com/gugu91/extensions",
+              link: "https://github.com/gugu91/pinet",
               emoji: ":rabbit:",
             },
           ],
@@ -1062,7 +1062,7 @@ describe("registerSlackTools", () => {
     const response = await tools.get("slack_bookmark")!.execute("tool-9", {
       action: "add",
       title: "Repo",
-      url: "https://github.com/gugu91/extensions",
+      url: "https://github.com/gugu91/pinet",
       emoji: ":rocket:",
     });
 
@@ -1073,7 +1073,7 @@ describe("registerSlackTools", () => {
         channel_id: "resolved:docs",
         title: "Repo",
         type: "link",
-        link: "https://github.com/gugu91/extensions",
+        link: "https://github.com/gugu91/pinet",
         emoji: ":rocket:",
       }),
     );

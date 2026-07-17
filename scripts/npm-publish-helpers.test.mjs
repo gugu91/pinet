@@ -33,7 +33,7 @@ function publishManifest(directory, overrides = {}) {
     license: "MIT",
     repository: {
       type: "git",
-      url: "git+https://github.com/gugu91/extensions.git",
+      url: "git+https://github.com/gugu91/pinet.git",
       directory,
     },
     publishConfig: { access: "public" },
@@ -218,7 +218,7 @@ test("validatePublishMetadata blocks incorrect GitHub package links", () => {
 
   assert.throws(
     () => validatePublishMetadata(entries, { dryRun: true }),
-    /repository\.url must be git\+https:\/\/github\.com\/gugu91\/extensions\.git[\s\S]*repository\.directory must be slack-bridge[\s\S]*homepage must be https:\/\/github\.com\/gugu91\/extensions#readme[\s\S]*bugs\.url must be https:\/\/github\.com\/gugu91\/extensions\/issues/,
+    /repository\.url must be git\+https:\/\/github\.com\/gugu91\/pinet\.git[\s\S]*repository\.directory must be slack-bridge[\s\S]*homepage must be https:\/\/github\.com\/gugu91\/pinet#readme[\s\S]*bugs\.url must be https:\/\/github\.com\/gugu91\/pinet\/issues/,
   );
 });
 

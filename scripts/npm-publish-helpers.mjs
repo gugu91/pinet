@@ -23,9 +23,9 @@ const publishPackageNamesByDirectory = new Map(
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const publicDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 const requiredPackageFiles = ["README.md", "LICENSE", "dist/"];
-const expectedRepositoryUrl = "git+https://github.com/gugu91/extensions.git";
-const expectedHomepageUrl = "https://github.com/gugu91/extensions#readme";
-const expectedBugsUrl = "https://github.com/gugu91/extensions/issues";
+const expectedRepositoryUrl = "git+https://github.com/gugu91/pinet.git";
+const expectedHomepageUrl = "https://github.com/gugu91/pinet#readme";
+const expectedBugsUrl = "https://github.com/gugu91/pinet/issues";
 
 export function parseArgs(argv) {
   const args = {

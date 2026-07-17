@@ -1839,7 +1839,7 @@ function createWakeAcceptanceReceiptTable(db: DatabaseSync): void {
  * from the runtime's git remote (never inferred from directory names). The repo
  * allowlist authorization matches this identity EXACTLY, so distinct filesystem
  * roots that happen to share their final path segments (e.g.
- * `/trusted/gugu91/extensions` vs `/tmp/impostor/gugu91/extensions`) do not
+ * `/trusted/gugu91/pinet` vs `/tmp/impostor/gugu91/pinet`) do not
  * collapse onto one authorization identity, and a repo shares one identity with
  * all of its git worktrees. Nullable — a spec captured without a resolvable
  * remote leaves it null and the fail-closed gate refuses. Added for dogfood DBs
