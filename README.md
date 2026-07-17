@@ -1,6 +1,9 @@
-# Extensions
+# Pinet
 
-Get Pinet working in your Slack workspace in 10 minutes. This repository provides pi coding agent extensions for Slack, Neovim, and Neon Postgres.
+Pinet is a local-first coordination layer for [pi](pi.dev) coding agents. One broker runs the mesh: it routes every Slack message, and you can talk to it directly at its own terminal. It keeps named worker agents shipping: writing code, reviewing each other's pull requests, and repairing themselves when something stalls. Pretty animation on the [website](pinet-mesh.vercel.app).
+
+Get Pinet working in your Slack workspace in 10 minutes. 
+This repository also provides pi coding agent extensions for Neovim and Neon Postgres.
 
 ## What Pinet does
 
