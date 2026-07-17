@@ -88,43 +88,43 @@ describe("evaluateHibernateCommandGate", () => {
   });
 
   it("bare-basename allowlist entry matches ONLY the identical bare identifier (no collapse)", () => {
-    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["extensions"] };
+    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["pinet"] };
     // Exact identity proceeds.
     expect(
-      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "extensions", policy }),
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "pinet", policy }),
     ).toMatchObject({ outcome: "proceed" });
     // A slug that merely *ends in* the basename must NOT be admitted by a bare
     // entry — a filesystem parent is not authoritative repository ownership.
     expect(
-      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/extensions", policy }),
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/pinet", policy }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 
   it("slug allowlist entry requires an exact slug — no basename collapse", () => {
-    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["gugu91/extensions"] };
+    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["gugu91/pinet"] };
     // Exact slug proceeds.
     expect(
-      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/extensions", policy }),
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "gugu91/pinet", policy }),
     ).toMatchObject({ outcome: "proceed" });
     // A different owner with the same basename must NOT be admitted.
     expect(
-      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "evil/extensions", policy }),
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "evil/pinet", policy }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
     // A bare basename does not collapse into a slug entry either.
     expect(
-      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "extensions", policy }),
+      evaluateHibernateCommandGate({ state: "idle", repoIdentifier: "pinet", policy }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
 
   it("rejects a same-basename different-root identifier (defense-in-depth C2)", () => {
-    // Two distinct roots share the basename `extensions`; only the exact
+    // Two distinct roots share the basename `pinet`; only the exact
     // allowlisted identity may proceed.
-    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["gugu91/extensions"] };
+    const policy: HibernationCommandPolicy = { ...ENABLED, allowedRepos: ["gugu91/pinet"] };
     for (const repoIdentifier of [
-      "attacker/extensions",
-      "extensions",
-      "gugu91/extensions-fork",
-      "nested/gugu91/extensions", // trailing slug differs after normalization
+      "attacker/pinet",
+      "pinet",
+      "gugu91/pinet-fork",
+      "nested/gugu91/pinet", // trailing slug differs after normalization
     ]) {
       expect(evaluateHibernateCommandGate({ state: "idle", repoIdentifier, policy })).toMatchObject(
         { outcome: "refused", refusal: { reason: "repo_not_allowlisted" } },
@@ -157,16 +157,16 @@ describe("evaluateHibernateCommandGate", () => {
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
-        repoIdentifier: "gugu91\\extensions",
-        policy: { ...ENABLED, allowedRepos: ["gugu91/extensions"] },
+        repoIdentifier: "gugu91\\pinet",
+        policy: { ...ENABLED, allowedRepos: ["gugu91/pinet"] },
       }),
     ).toMatchObject({ outcome: "proceed" });
     // A backslash allowlist entry is normalized too.
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
-        repoIdentifier: "gugu91/extensions",
-        policy: { ...ENABLED, allowedRepos: ["gugu91\\extensions"] },
+        repoIdentifier: "gugu91/pinet",
+        policy: { ...ENABLED, allowedRepos: ["gugu91\\pinet"] },
       }),
     ).toMatchObject({ outcome: "proceed" });
     // A full Windows path is NOT admitted by a bare-basename entry (no collapse):
@@ -174,8 +174,8 @@ describe("evaluateHibernateCommandGate", () => {
     expect(
       evaluateHibernateCommandGate({
         state: "idle",
-        repoIdentifier: "C:\\Users\\tm\\repo\\extensions",
-        policy: { ...ENABLED, allowedRepos: ["extensions"] },
+        repoIdentifier: "C:\\Users\\tm\\repo\\pinet",
+        policy: { ...ENABLED, allowedRepos: ["pinet"] },
       }),
     ).toMatchObject({ outcome: "refused", refusal: { reason: "repo_not_allowlisted" } });
   });
@@ -323,7 +323,7 @@ function runtimeSpec(agentId: string, stableId: string): AgentRuntimeSpecInput {
     expectedHost: "host-1",
     expectedUser: "tm",
     launchSource: "pinet-spawn",
-    vcsIdentity: "gugu91/extensions",
+    vcsIdentity: "gugu91/pinet",
   };
 }
 
@@ -336,7 +336,7 @@ describe("repo allowlist authorization consumes the persisted VCS identity (neve
   const gatePolicy: HibernationCommandPolicy = {
     enabled: true,
     mode: "manual",
-    allowedRepos: ["gugu91/extensions"],
+    allowedRepos: ["gugu91/pinet"],
   };
   function gateFor(db: BrokerDB, agentId: string) {
     return evaluateHibernateCommandGate({
@@ -355,13 +355,13 @@ describe("repo allowlist authorization consumes the persisted VCS identity (neve
     db.upsertAgentRuntimeSpec({
       ...runtimeSpec("clone", "host:session:clone"),
       repoRoot: "/Users/alice/projects/extensions",
-      vcsIdentity: "gugu91/extensions",
+      vcsIdentity: "gugu91/pinet",
     });
     db.registerAgent("wt", "s-wt", "🦉", 2, undefined, "host:session:wt");
     db.upsertAgentRuntimeSpec({
       ...runtimeSpec("wt", "host:session:wt"),
       repoRoot: "/tmp/build/extensions/.worktrees/feat",
-      vcsIdentity: "gugu91/extensions",
+      vcsIdentity: "gugu91/pinet",
     });
 
     expect(gateFor(db, "clone")).toMatchObject({ outcome: "proceed" });
@@ -371,13 +371,13 @@ describe("repo allowlist authorization consumes the persisted VCS identity (neve
   it("refuses an impostor root that shares the allowlisted repo's final path segments", () => {
     const db = freshDb();
     // A DIFFERENT repository whose filesystem root collides on its last two
-    // segments (`gugu91/extensions`) with the allowlisted repo. A path-segment
+    // segments (`gugu91/pinet`) with the allowlisted repo. A path-segment
     // slug would have wrongly authorized it; the remote-derived identity does not.
     db.registerAgent("impostor", "s-imp", "🦉", 1, undefined, "host:session:imp");
     db.upsertAgentRuntimeSpec({
       ...runtimeSpec("impostor", "host:session:imp"),
-      repoRoot: "/tmp/impostor/gugu91/extensions",
-      vcsIdentity: "impostor/extensions",
+      repoRoot: "/tmp/impostor/gugu91/pinet",
+      vcsIdentity: "impostor/pinet",
     });
 
     expect(gateFor(db, "impostor")).toMatchObject({
@@ -393,7 +393,7 @@ describe("repo allowlist authorization consumes the persisted VCS identity (neve
     db.registerAgent("noremote", "s-nr", "🦉", 1, undefined, "host:session:nr");
     db.upsertAgentRuntimeSpec({
       ...runtimeSpec("noremote", "host:session:nr"),
-      repoRoot: "/srv/gugu91/extensions",
+      repoRoot: "/srv/gugu91/pinet",
       vcsIdentity: null,
     });
 

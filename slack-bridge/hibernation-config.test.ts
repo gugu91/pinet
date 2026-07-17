@@ -14,8 +14,8 @@ describe("hibernation settings", () => {
   it("requires explicit enablement and preserves an allowlist", () => {
     expect(
       resolveHibernationSettings({
-        hibernation: { enabled: true, mode: "manual", allowedRepos: ["gugu91/extensions"] },
+        hibernation: { enabled: true, mode: "manual", allowedRepos: ["gugu91/pinet"] },
       }),
-    ).toMatchObject({ enabled: true, mode: "manual", allowedRepos: ["gugu91/extensions"] });
+    ).toMatchObject({ enabled: true, mode: "manual", allowedRepos: ["gugu91/pinet"] });
   });
 });

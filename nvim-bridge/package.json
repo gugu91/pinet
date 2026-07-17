@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gugu91/extensions.git",
+    "url": "git+https://github.com/gugu91/pinet.git",
     "directory": "nvim-bridge"
   },
   "publishConfig": {

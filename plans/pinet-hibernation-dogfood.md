@@ -47,7 +47,7 @@ Configuration defaults to **disabled** and observe-only:
     "hibernation": {
       "enabled": false,
       "mode": "observe",
-      "allowedRepos": ["gugu91/extensions"],
+      "allowedRepos": ["gugu91/pinet"],
       "graceMs": 3600000,
       "idleDebounceMs": 120000,
       "handshakeTimeoutMs": 30000,
@@ -186,8 +186,8 @@ spec's **canonical VCS identity** (`vcsIdentity`, an `owner/repo` derived at spa
 from the runtime's git remote — schema v22). Ownership is **never inferred from
 filesystem directory names**: a path-segment slug (last two segments of
 `repoRoot`) would collapse distinct repositories that happen to share their final
-segments (`/trusted/gugu91/extensions` and `/tmp/impostor/gugu91/extensions` would
-both authorize as `gugu91/extensions`), mis-derive ordinary layouts
+segments (`/trusted/gugu91/pinet` and `/tmp/impostor/gugu91/pinet` would
+both authorize as `gugu91/pinet`), mis-derive ordinary layouts
 (`/Users/alice/projects/extensions` → `projects/extensions`), and reduce worktree
 roots to `.worktrees/<branch>`. Matching the remote-derived identity instead means
 a repository shares one identity with all of its git worktrees (same remote), and

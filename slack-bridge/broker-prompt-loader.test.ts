@@ -232,8 +232,8 @@ describe("packaged default broker prompt", () => {
       const defaultPrompt = await fs.readFile(defaultPromptPath, "utf8");
 
       expect(defaultPrompt).toContain("NEVER WRITE CODE");
-      expect(defaultPrompt).toContain("GUGU91/EXTENSIONS PRIORITIZED ISSUE GATE");
-      expect(defaultPrompt).toContain("For work in `gugu91/extensions`");
+      expect(defaultPrompt).toContain("GUGU91/PINET PRIORITIZED ISSUE GATE");
+      expect(defaultPrompt).toContain("For work in `gugu91/pinet`");
       expect(defaultPrompt).toContain("including `tmustier/pi-extensions`");
       expect(defaultPrompt).toContain(
         "follow their own instructions and normal requester authority",
@@ -328,7 +328,7 @@ describe("packaged default broker prompt", () => {
       });
 
       expect(result.source).toBe("packaged");
-      expect(result.content).toContain("GUGU91/EXTENSIONS PRIORITIZED ISSUE GATE");
+      expect(result.content).toContain("GUGU91/PINET PRIORITIZED ISSUE GATE");
       expect(result.content).toContain(
         "follow their own instructions and normal requester authority",
       );

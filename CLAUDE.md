@@ -100,7 +100,7 @@ test, or CI check so the next agent gets the correction before review.
 
 ## GitHub
 
-- Remote: `github.com:gugu91/extensions.git`
+- Remote: `github.com:gugu91/pinet.git`
 - Auth: `GH_TOKEN=$(gh auth token --user gugu91)` prefix for `gh` commands
 - Create PRs with `gh pr create`
 - Merge with `gh pr merge`

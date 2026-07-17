@@ -471,6 +471,6 @@ Prevent all modifications:
 
 ## Support
 
-- [GitHub repository](https://github.com/gugu91/extensions)
+- [GitHub repository](https://github.com/gugu91/pinet)
 - [Architecture documentation](../plans/)
 - Check the log channel in Slack for runtime issues

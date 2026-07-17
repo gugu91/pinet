@@ -18,17 +18,15 @@ import {
 
 describe("deriveVcsIdentity", () => {
   it("parses scp-style github remotes", () => {
-    expect(deriveVcsIdentity("git@github.com:gugu91/extensions.git")).toBe("gugu91/extensions");
-    expect(deriveVcsIdentity("git@github.com:gugu91/extensions")).toBe("gugu91/extensions");
+    expect(deriveVcsIdentity("git@github.com:gugu91/pinet.git")).toBe("gugu91/pinet");
+    expect(deriveVcsIdentity("git@github.com:gugu91/pinet")).toBe("gugu91/pinet");
   });
 
   it("parses https and ssh URL remotes", () => {
-    expect(deriveVcsIdentity("https://github.com/gugu91/extensions.git")).toBe("gugu91/extensions");
-    expect(deriveVcsIdentity("https://github.com/gugu91/extensions/")).toBe("gugu91/extensions");
-    expect(deriveVcsIdentity("ssh://git@github.com/gugu91/extensions.git")).toBe(
-      "gugu91/extensions",
-    );
-    expect(deriveVcsIdentity("git://github.com/gugu91/extensions")).toBe("gugu91/extensions");
+    expect(deriveVcsIdentity("https://github.com/gugu91/pinet.git")).toBe("gugu91/pinet");
+    expect(deriveVcsIdentity("https://github.com/gugu91/pinet/")).toBe("gugu91/pinet");
+    expect(deriveVcsIdentity("ssh://git@github.com/gugu91/pinet.git")).toBe("gugu91/pinet");
+    expect(deriveVcsIdentity("git://github.com/gugu91/pinet")).toBe("gugu91/pinet");
   });
 
   it("takes the final owner/repo of deeper paths (e.g. gitlab subgroups)", () => {
@@ -47,8 +45,8 @@ describe("deriveVcsIdentity", () => {
   it("returns identity from the remote, not the working directory path", () => {
     // Two different worktree dirs sharing a final segment resolve to the SAME
     // remote-derived identity — the security property the allowlist relies on.
-    expect(deriveVcsIdentity("git@github.com:gugu91/extensions.git")).toBe(
-      deriveVcsIdentity("https://github.com/gugu91/extensions"),
+    expect(deriveVcsIdentity("git@github.com:gugu91/pinet.git")).toBe(
+      deriveVcsIdentity("https://github.com/gugu91/pinet"),
     );
   });
 });
@@ -266,7 +264,7 @@ describe("buildRuntimeSpecInput", () => {
     configFingerprint: "cfg#abc",
     expectedUser: "tmnexcade",
     launchSource: "subtree-broker-tmux",
-    vcsIdentity: "gugu91/extensions",
+    vcsIdentity: "gugu91/pinet",
   };
 
   it("composes a complete spec from broker-known facts", () => {
@@ -278,7 +276,7 @@ describe("buildRuntimeSpecInput", () => {
       tmuxTarget: "pinet-worker-1:0.0",
       executable: "pi",
       sessionResumeRef: "session:/sessions/worker.jsonl",
-      vcsIdentity: "gugu91/extensions",
+      vcsIdentity: "gugu91/pinet",
       expectedHost: "host.local",
     });
     // argv mirrors the resume launch, with the path recovered from the ref only.

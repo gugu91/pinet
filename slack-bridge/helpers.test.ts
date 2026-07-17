@@ -1889,12 +1889,12 @@ describe("buildWorkerPromptGuidelines", () => {
     expect(joined).toContain("ack/work/ask/report");
   });
 
-  it("scopes the prioritized-issue gate to gugu91/extensions for workers", () => {
+  it("scopes the prioritized-issue gate to gugu91/pinet for workers", () => {
     const guidelines = buildWorkerPromptGuidelines();
     const joined = guidelines.join(" ");
     expect(joined).toContain("pinet action=agents` with the target repo");
     expect(joined).toContain("same repo/worktree");
-    expect(joined).toContain("For work in `gugu91/extensions`");
+    expect(joined).toContain("For work in `gugu91/pinet`");
     expect(joined).toContain("maintainer priority/approval");
     expect(joined).toContain("including `tmustier/pi-extensions`");
     expect(joined).toContain("follow their own instructions and normal requester authority");

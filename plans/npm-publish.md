@@ -55,7 +55,7 @@ Manual real publishes require all of these gates before the publish job can run:
 - The same preflight job confirms `release_approval` exactly matches `publish all`.
 - The `npm-publish` GitHub environment is approved by a maintainer after preflight passes.
 - The publish job has `id-token: write` so npm Trusted Publishing can exchange GitHub OIDC for npm publish authority.
-- npm Trusted Publishers are configured for every package in the full set with repository `gugu91/extensions`, workflow `npm-publish.yml`, and environment `npm-publish` when npm asks for an environment.
+- npm Trusted Publishers are configured for every package in the full set with repository `gugu91/pinet`, workflow `npm-publish.yml`, and environment `npm-publish` when npm asks for an environment.
 
 Tag-triggered real publishes require all of these gates before the publish job can run:
 
@@ -93,7 +93,7 @@ node ./scripts/bootstrap-npm-packages.mjs \
 
 The real bootstrap mode still runs the same package-name, metadata/artifact, build-output, public-type, placeholder-version, and already-published-version gates. It then runs `npm publish --access public` for the full package set from the local npm CLI login. The maintainer running it must already be logged in with `npm login` as a `pinet` org owner/admin with package creation rights. This repo does not configure token auth and does not make bootstrap publishing the normal release path.
 
-Immediately after any successful first-publish bootstrap, configure npm Trusted Publishing for every package in <https://www.npmjs.com/settings/pinet/packages> with owner/repo `gugu91/extensions`, workflow `npm-publish.yml`, and environment `npm-publish` if npm asks for one. Normal future publishes should then use the GitHub Actions Trusted Publishing/OIDC workflow with provenance. If npm's team/access UI loops or blocks package creation, resolve org/team/admin access in npm first rather than adding CI token automation.
+Immediately after any successful first-publish bootstrap, configure npm Trusted Publishing for every package in <https://www.npmjs.com/settings/pinet/packages> with owner/repo `gugu91/pinet`, workflow `npm-publish.yml`, and environment `npm-publish` if npm asks for one. Normal future publishes should then use the GitHub Actions Trusted Publishing/OIDC workflow with provenance. If npm's team/access UI loops or blocks package creation, resolve org/team/admin access in npm first rather than adding CI token automation.
 
 ## Package artifacts and type/declaration artifacts
 
@@ -129,7 +129,7 @@ GitHub environment:
 npm org/package configuration:
 
 - Configure/verify the npm `pinet` org package settings for every package in the full set.
-- Each package's Trusted Publisher should point at owner/repo `gugu91/extensions`, workflow `npm-publish.yml`, and environment `npm-publish` if npm asks for one.
+- Each package's Trusted Publisher should point at owner/repo `gugu91/pinet`, workflow `npm-publish.yml`, and environment `npm-publish` if npm asks for one.
 - The maintainer performing npm setup must have enough org/package admin rights to create packages and configure publishing trust.
 
 GitHub permissions:
