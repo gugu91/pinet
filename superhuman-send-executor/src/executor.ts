@@ -46,6 +46,7 @@ export class Executor {
     private readonly provider: Provider,
     private readonly verifier: RotatingApprovalReceiptVerifier,
     private readonly audit: AuditSink,
+    private readonly now: () => Date = () => new Date(),
   ) {}
   async execute(receipt: ApprovalReceipt): Promise<ExecutionStatus> {
     const key = receipt.claims.approvalId;
@@ -78,7 +79,7 @@ export class Executor {
       approvalId: receipt.claims.approvalId,
       envelope: receipt.claims.envelope,
     });
-    this.journal.assertActive(receipt, new Date().toISOString());
+    this.journal.assertActive(receipt, this.now().toISOString());
     if (
       receipt.claims.envelope.action !== "send" ||
       receipt.claims.envelope.provider !== "superhuman" ||
@@ -94,7 +95,7 @@ export class Executor {
       approvalId: receipt.claims.approvalId,
       envelope: draft.envelope,
     });
-    const claim = this.journal.consumeAndClaim(receipt, receiptHash, new Date().toISOString());
+    const claim = this.journal.consumeAndClaim(receipt, receiptHash, this.now().toISOString());
     if (!claim.inserted) return claim.status;
     let providerResult: { readonly messageId: string } | undefined;
     let providerError: Error | undefined;
@@ -113,21 +114,21 @@ export class Executor {
       status = this.journal.finish(
         receipt.claims.approvalId,
         "sent",
-        new Date().toISOString(),
+        this.now().toISOString(),
         providerResult.messageId,
       );
     } else if (providerError instanceof ProviderPreSendRejection) {
       status = this.journal.finish(
         receipt.claims.approvalId,
         "failed",
-        new Date().toISOString(),
+        this.now().toISOString(),
         providerError.code,
       );
     } else {
       status = this.journal.finish(
         receipt.claims.approvalId,
         "unknown",
-        new Date().toISOString(),
+        this.now().toISOString(),
         "provider_outcome_unknown",
       );
     }

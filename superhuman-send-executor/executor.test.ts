@@ -145,7 +145,13 @@ function executor(
   verifier: RotatingApprovalReceiptVerifier,
   adapter: Provider,
 ): Executor {
-  return new Executor(new Journal(path), adapter, verifier, { write() {} });
+  return new Executor(
+    new Journal(path),
+    adapter,
+    verifier,
+    { write() {} },
+    () => new Date("2026-07-11T10:00:00.000Z"),
+  );
 }
 describe("credential-free issuer-to-executor execution", () => {
   it("accepts the exact issuer receipt once and replays canonical sent status", async () => {
