@@ -26,7 +26,7 @@
     "build": "turbo run build",
     "build:packages": "node ./scripts/build-all.mjs",
     "build:test-deps": "node ./scripts/build-all.mjs --test-deps",
-    "test": "turbo run test && node --test scripts/*.test.mjs",
+    "test": "pnpm build:test-deps && turbo run test && node --test scripts/*.test.mjs",
     "deploy:slack": "node --experimental-strip-types ./slack-bridge/deploy-manifest.ts",
     "publish:npm": "node ./scripts/publish-npm-packages.mjs",
     "bootstrap:npm": "node ./scripts/bootstrap-npm-packages.mjs",
