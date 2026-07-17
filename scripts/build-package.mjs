@@ -18,6 +18,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "claude-code-worker": {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   "broker-core": {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
