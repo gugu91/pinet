@@ -187,6 +187,37 @@ jobs:
       - name: Run Neovim smoke tests
         run: pnpm --filter @gugu910/pi-nvim-bridge test nvim-lua.test.ts
 
+  executor-macos-security:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Test native credential boundary
+        run: ./superhuman-send-executor/scripts/test-native.sh
+
+      - name: Test fail-closed signed release inputs
+        run: ./superhuman-send-executor/scripts/test-release.sh
+
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -197,6 +228,7 @@ jobs:
       - format
       - test
       - nvim-smoke
+      - executor-macos-security
     if: ${{ always() }}
     steps:
       - name: Verify quality jobs
@@ -207,6 +239,7 @@ jobs:
           echo "format: ${{ needs.format.result }}"
           echo "test: ${{ needs.test.result }}"
           echo "nvim-smoke: ${{ needs.nvim-smoke.result }}"
+          echo "executor-macos-security: ${{ needs.executor-macos-security.result }}"
 
           [[ "${{ needs.lint.result }}" == "success" ]]
           [[ "${{ needs.typecheck.result }}" == "success" ]]
@@ -214,3 +247,4 @@ jobs:
           [[ "${{ needs.format.result }}" == "success" ]]
           [[ "${{ needs.test.result }}" == "success" ]]
           [[ "${{ needs.nvim-smoke.result }}" == "success" ]]
+          [[ "${{ needs.executor-macos-security.result }}" == "success" ]]

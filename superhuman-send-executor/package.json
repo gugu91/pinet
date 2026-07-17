@@ -1,0 +1,22 @@
+{
+  "name": "@pinet/superhuman-send-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Credential-isolated executor for shm-approval-receipt/v1",
+  "bin": {
+    "pinet-superhuman-send-executor": "dist/src/daemon.js"
+  },
+  "dependencies": {
+    "@pinet/broker-core": "file:../broker-core"
+  },
+  "scripts": {
+    "build": "pnpm --filter @pinet/transport-core build && pnpm --filter @pinet/broker-core build && node ../scripts/build-package.mjs",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node ../scripts/build-package.mjs && vitest run --config ../vitest.config.ts *.test.ts && ./scripts/test-native.sh && ./scripts/test-release.sh"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
