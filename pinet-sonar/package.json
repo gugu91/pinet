@@ -1,0 +1,54 @@
+{
+  "name": "@pinet/sonar",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Sonar for the Pinet mesh: one read-only sweep of the broker database, rendered as a self-contained datasheet",
+  "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gugu91/pinet.git",
+    "directory": "pinet-sonar"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pinet-sonar": "./dist/sonar-bin.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./snapshot": "./dist/snapshot.js",
+    "./render": "./dist/render.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "dist/"
+  ],
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "node ../scripts/build-package.mjs",
+    "prepack": "pnpm run build",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config ../vitest.config.ts *.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@pinet/broker-core": "file:../broker-core"
+  }
+}
