@@ -1,0 +1,81 @@
+# GitHub Pages deployment workflow
+#
+# IMPORTANT: This workflow is disabled by default.
+# To enable GitHub Pages deployment:
+#
+# 1. Rename this file from deploy-docs.yml.disabled to deploy-docs.yml
+# 2. Go to Settings > Pages in your repository
+# 3. Set Source to 'GitHub Actions'
+# 4. Commit and push the renamed file
+#
+# The workflow will then deploy on pushes to main.
+# For manual control, use the workflow_dispatch trigger.
+
+name: Deploy documentation to GitHub Pages
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+
+  # Automatic deployment on main (when enabled)
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - '**.md'
+
+# Sets permissions for GITHUB_TOKEN
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v4
+
+      - name: Build static documentation site
+        run: pnpm docs:build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

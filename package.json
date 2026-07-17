@@ -34,7 +34,10 @@
     "prepush": "pnpm lint && pnpm typecheck && pnpm test",
     "lint-staged": "lint-staged",
     "prepare": "node ./scripts/prepare.mjs",
-    "postinstall": "node ./scripts/build-all.mjs"
+    "postinstall": "node ./scripts/build-all.mjs",
+    "docs:check": "node ./scripts/build-docs-site.mjs --check",
+    "docs:build": "node ./scripts/build-docs-site.mjs",
+    "docs:serve": "pnpm docs:build && python3 -m http.server 4000 --directory docs/_site"
   },
   "lint-staged": {
     "*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml}": "prettier --write",
