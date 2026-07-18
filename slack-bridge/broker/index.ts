@@ -109,9 +109,16 @@ export async function startBroker(options: BrokerOptions = {}): Promise<Broker> 
   const resolvedMeshSecret =
     meshSecret || (meshSecretPath ? loadOrCreateMeshSecret(meshSecretPath) : null);
 
-  const server = new BrokerSocketServer(db, target, {
-    ...(resolvedMeshSecret ? { meshSecret: resolvedMeshSecret } : {}),
-  });
+  let server: BrokerSocketServer;
+  try {
+    server = new BrokerSocketServer(db, target, {
+      ...(resolvedMeshSecret ? { meshSecret: resolvedMeshSecret } : {}),
+    });
+  } catch (err) {
+    db.close();
+    lock.release();
+    throw err;
+  }
 
   // Run startup reconciliation strictly BEFORE the socket opens, so nothing can
   // connect/register until it completes. A failure here must not leave a
