@@ -66,9 +66,11 @@ amp --orb-execute -m high -x "Clone the worker repository, provision the broker 
 ```
 
 Orbs are thread-bound; Amp does not expose a CLI for creating a detached bare
-orb. For a supervised bridge that survives CLI updates and orb pause/resume,
-declare it in `.amp/services.yaml` or run `amp orb service start` inside the
-orb. Put idempotent restart/bootstrap work in `.agents/resume`. Use Amp project
+orb. Pass `--no-archive-after-execute` when the launch turn must leave the orb
+running: execute-mode auto-archive pauses the orb immediately and interrupts
+background workers. For a supervised bridge that survives CLI updates and orb
+pause/resume, declare it in `.amp/services.yaml` or run `amp orb service start`
+inside the orb. Put idempotent restart/bootstrap work in `.agents/resume`. Use Amp project
 secrets for the mesh secret and CA material; never put them in the repository,
 prompt, service command line, or logs.
 

@@ -208,6 +208,37 @@ A new harness adapter needs:
    `mail-control` contract.
 4. Registration metadata naming the harness, adapter, and versions.
 
+## Live end-to-end evidence (18 July 2026)
+
+A real local Amp CLI worker and a real Amp-managed orb worker joined the same
+broker mesh through the new TLS transport. The orb reached the Mac-hosted
+broker over an outbound public raw-TCP relay; TLS certificate pinning and a
+temporary mesh secret authenticated the connection end to end.
+
+Observed roster and exchange:
+
+- `e2e-local-amp`: `executor=local`, Darwin/arm64, TLS, Amp mode `low`.
+- `e2e-orb-amp`: `executor=orb`, Linux/x64 host `e2b.local`, TLS, Amp mode
+  `low`, OIDC issuer/audience and Amp thread identity present in metadata.
+- Both were visible concurrently in one broker database with distinct agent
+  IDs and healthy heartbeats.
+- The broker delivered one durable a2a assignment to each worker. Replies were
+  exactly `same mesh local passed` and `same mesh orb passed`, persisted in the
+  broker inbox and acknowledged by the broker client.
+- The orb advertised `steer=next-safe-boundary`,
+  `interrupt=sigterm-owned-process`, graceful exit, and the explicit
+  `subtree.spawn=false` capability with the Amp API limitation reason.
+
+The proof also caught an Amp lifecycle edge: orb execute turns auto-archive by
+default, which pauses the orb and interrupts a detached worker. Relaunching the
+same thread with `--no-archive-after-execute` kept the orb live and the exchange
+passed. The setup docs now call this out explicitly.
+
+The automated TLS suite separately stops and restarts the real broker server,
+then proves the stable worker reconnects and re-registers as one logical agent.
+Existing stable-ID live-owner conflict checks remain green, covering the
+no-duplicate-owner fence.
+
 ## Troubleshooting
 
 - `Broker TLS certificate chain verification failed` / pin mismatch: the
