@@ -121,14 +121,17 @@ ahead of disk. Corrupt or unsupported state files fail closed at startup
 rather than risk duplicate executions.
 
 On restart or redelivery: an `executed` job replays only the reply; a
-`replied` job only acks. Replies carry a stable per-job idempotency key
-(`externalId`) that the broker deduplicates on, so a reply retried after a
-crash or lost response is committed exactly once. A crash during an
-unrecorded Amp run re-runs it — at-least-once execution is the documented
-floor because Amp offers no idempotency handle. Repeated startup failures
-produce one bounded durable error reply instead of a redelivery loop. A
-durable-state commit failure is terminal: the worker stops with
-`StateCommitError` rather than risk re-running a completed Amp turn.
+`replied` job only acks. Replies carry a stable per-job idempotency key (`externalId`). Broker and a2a
+retries deduplicate a committed reply and do not redispatch it. External
+transports are at-least-once in the unavoidable crash window after the adapter
+accepts a send but before the broker records it, unless the provider itself
+supports an idempotency key. Preferring delivery over silent loss is deliberate
+and this ambiguity is visible in the durable `executed` phase. A crash during
+an unrecorded Amp run can also re-run it because Amp offers no idempotency
+handle. Repeated startup failures produce one bounded durable error reply
+instead of a redelivery loop. A durable-state commit failure is terminal: the
+worker stops with `StateCommitError` rather than risk re-running a completed Amp
+turn.
 
 Replies route by assignment origin: mesh agent threads (`a2a:*`) get a
 durable direct agent message back to the originating agent, while external

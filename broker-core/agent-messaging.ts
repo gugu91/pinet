@@ -76,6 +76,7 @@ export interface AgentMessageStorage {
     targetAgentIds: string[],
     metadata?: AgentMessageMetadata,
   ): BrokerMessage;
+  getMessageByExternalId?(source: string, externalId: string): BrokerMessage | null;
 }
 
 export interface AgentDispatchTarget {
@@ -343,6 +344,25 @@ export function dispatchDirectAgentMessage(
 
   const resolvedTarget: AgentDispatchTarget = { id: target.id, name: target.name };
   const metadata = buildAgentMessageMetadata(input.senderAgentName, input.body, input.metadata);
+  const expectedThreadId = `a2a:${input.senderAgentId}:${resolvedTarget.id}`;
+  const rawExternalId = metadata.externalId ?? metadata.external_id;
+  const externalId =
+    typeof rawExternalId === "string" && rawExternalId.trim().length > 0
+      ? rawExternalId.trim()
+      : null;
+  if (externalId && storage.getMessageByExternalId) {
+    const committed = storage.getMessageByExternalId("agent", externalId);
+    if (committed) {
+      if (
+        committed.threadId !== expectedThreadId ||
+        committed.sender !== input.senderAgentId ||
+        committed.body !== input.body
+      ) {
+        throw new Error('Idempotency key collision for transport source "agent".');
+      }
+      return { target: resolvedTarget, messageId: committed.id, threadId: expectedThreadId };
+    }
+  }
   const { threadId, messageId } = deliverAgentMessage(
     storage,
     input.senderAgentId,

@@ -85,15 +85,17 @@ poll ─▶ execute (Amp) ─▶ persist "executed" ─▶ reply ─▶ persist 
   - External transport threads (slack, imessage, …): the reply goes through
     the broker's adapter path (`message.send`), so success means the external
     transport accepted the delivery.
-- Replies are idempotent at the broker: each reply carries a stable
-  `externalId` (`amp-worker:<stable-id>:reply:<message-id>`) and the broker
-  deduplicates messages on `(source, externalId)`. If the broker committed a
-  send but the response was lost — or the worker crashed between sending and
-  persisting `replied` — the retried send returns the existing message
-  instead of duplicating the reply, and already-acked recipients are not
-  re-notified. On the adapter path the broker also short-circuits a retried
-  `externalId` before invoking the transport adapter, so an ambiguous retry
-  does not post a duplicate external message.
+- Each reply carries a stable `externalId`
+  (`amp-worker:<stable-id>:reply:<message-id>`). Committed broker and a2a
+  retries deduplicate on `(source, externalId)`; a2a retries do not invoke the
+  live dispatch callback again, and key collisions across thread/sender/body
+  fail closed.
+- External adapters have an unavoidable ambiguity when the provider accepts a
+  send but the broker crashes before its DB commit. Without a provider-native
+  idempotency key, retrying is at-least-once (possible duplicate) while
+  suppressing the retry could silently lose a message. Pinet deliberately
+  prefers durable delivery and documents this clear `executed`-phase state;
+  adapters can close the window when their provider supports idempotency.
 - A durable-state commit failure is terminal (`StateCommitError`): the worker
   stops instead of retrying, because polling on with a broken store could
   re-run a completed Amp turn whose `executed` record never persisted.

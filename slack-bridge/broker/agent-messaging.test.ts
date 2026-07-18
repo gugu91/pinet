@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentInfo, BrokerMessage } from "./types.js";
 import {
   agentSubscribesToBroadcastChannel,
@@ -182,6 +182,69 @@ describe("dispatchDirectAgentMessage", () => {
       },
     });
     expect(delivered).toEqual(["target:1:Sender Agent"]);
+  });
+
+  it("does not redispatch a committed direct message with the same idempotency key", () => {
+    const storage = createStorage([
+      createAgent("sender", "sender", { capabilities: { repo: "extensions", role: "worker" } }),
+      createAgent("target", "target", { capabilities: { repo: "extensions", role: "worker" } }),
+    ]);
+    const onDispatch = vi.fn();
+    const committed: BrokerMessage = {
+      id: 42,
+      threadId: "a2a:sender:target",
+      source: "agent",
+      direction: "inbound",
+      sender: "sender",
+      body: "same reply",
+      metadata: { externalId: "amp-worker:w1:reply:7" },
+      createdAt: "2026-04-02T00:00:00.000Z",
+    };
+    storage.getMessageByExternalId = (_source, externalId) =>
+      externalId === "amp-worker:w1:reply:7" ? committed : null;
+
+    const result = dispatchDirectAgentMessage(
+      storage,
+      {
+        senderAgentId: "sender",
+        senderAgentName: "Sender Agent",
+        target: "target",
+        body: "same reply",
+        metadata: { externalId: "amp-worker:w1:reply:7" },
+      },
+      onDispatch,
+    );
+
+    expect(result.messageId).toBe(42);
+    expect(storage.inserted).toHaveLength(0);
+    expect(onDispatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a direct-message idempotency key collision", () => {
+    const storage = createStorage([
+      createAgent("sender", "sender", { capabilities: { repo: "extensions", role: "worker" } }),
+      createAgent("target", "target", { capabilities: { repo: "extensions", role: "worker" } }),
+    ]);
+    storage.getMessageByExternalId = () => ({
+      id: 42,
+      threadId: "a2a:sender:other",
+      source: "agent",
+      direction: "inbound",
+      sender: "sender",
+      body: "same reply",
+      metadata: { externalId: "amp-worker:w1:reply:7" },
+      createdAt: "2026-04-02T00:00:00.000Z",
+    });
+
+    expect(() =>
+      dispatchDirectAgentMessage(storage, {
+        senderAgentId: "sender",
+        senderAgentName: "Sender Agent",
+        target: "target",
+        body: "same reply",
+        metadata: { externalId: "amp-worker:w1:reply:7" },
+      }),
+    ).toThrow(/idempotency key collision/i);
   });
 
   it("stamps inferred mail classes on direct a2a messages", () => {

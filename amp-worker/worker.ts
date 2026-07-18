@@ -17,10 +17,10 @@
  *   path (`message.send`), so success means the external delivery was
  *   accepted. Neither path can silently succeed with zero recipients.
  *
- * Replies carry a stable per-job `externalId` in their metadata; the broker
- * deduplicates messages on (source, externalId), so a reply retried after a
- * crash, lost response, or disconnect commits exactly once even though the
- * worker only guarantees at-least-once sending.
+ * Replies carry a stable per-job `externalId` in their metadata. Broker and
+ * a2a retries deduplicate committed sends. External adapters remain
+ * at-least-once in the unavoidable crash window after their side effect but
+ * before the broker DB commit unless that provider supports idempotency.
  *
  * Control envelopes (pinet:control) are honored per the shared mesh contract:
  * - interrupt: SIGTERM the locally owned Amp child process (Amp has no
