@@ -4,10 +4,12 @@ import type { BrokerMessage, ThreadInfo } from "./types.js";
 
 function createFakeDb() {
   const threads = new Map<string, ThreadInfo>();
+  const messages: BrokerMessage[] = [];
   let nextMessageId = 1;
 
   return {
     threads,
+    messages,
     getThread(threadId: string) {
       return threads.get(threadId) ?? null;
     },
@@ -62,7 +64,8 @@ function createFakeDb() {
       _targetAgentIds: string[],
       metadata?: Record<string, unknown>,
     ): BrokerMessage {
-      return {
+      const externalId = typeof metadata?.externalId === "string" ? metadata.externalId : null;
+      const message: BrokerMessage = {
         id: nextMessageId++,
         threadId,
         source,
@@ -70,8 +73,18 @@ function createFakeDb() {
         sender,
         body,
         metadata: metadata ?? null,
+        ...(externalId ? { externalId } : {}),
         createdAt: new Date().toISOString(),
       };
+      messages.push(message);
+      return message;
+    },
+    getMessageByExternalId(source: string, externalId: string): BrokerMessage | null {
+      return (
+        messages.find(
+          (message) => message.source === source && message.externalId === externalId,
+        ) ?? null
+      );
     },
   };
 }
@@ -328,6 +341,101 @@ describe("sendBrokerMessage", () => {
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
     expect(send).toHaveBeenCalledTimes(1);
     expect(db.getThread("100.303")?.ownerAgent).toBe("agent-1");
+  });
+
+  it("does not re-deliver through the adapter when the same explicit externalId is retried", async () => {
+    const db = createFakeDb();
+    const send = vi.fn(async () => undefined);
+    const deps = { db, adapters: [{ name: "slack", send }] };
+    const input = {
+      threadId: "slack:C9:100.500",
+      body: "worker reply",
+      senderAgentId: "agent-1",
+      source: "slack",
+      channel: "C9",
+      metadata: { externalId: "amp-worker:w1:reply:42" },
+    };
+
+    const first = await sendBrokerMessage(deps, input);
+    const retry = await sendBrokerMessage(deps, input);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(retry.message.id).toBe(first.message.id);
+    expect(retry.adapter).toBe("slack");
+    expect(db.messages).toHaveLength(1);
+  });
+
+  it("rejects an idempotency key reused for a different thread", async () => {
+    const db = createFakeDb();
+    const send = vi.fn(async () => undefined);
+    const deps = { db, adapters: [{ name: "slack", send }] };
+
+    await sendBrokerMessage(deps, {
+      threadId: "slack:C9:100.500",
+      body: "reply one",
+      senderAgentId: "agent-1",
+      source: "slack",
+      channel: "C9",
+      metadata: { externalId: "amp-worker:w1:reply:42" },
+    });
+
+    await expect(
+      sendBrokerMessage(deps, {
+        threadId: "slack:C9:100.501",
+        body: "reply one",
+        senderAgentId: "agent-1",
+        source: "slack",
+        channel: "C9",
+        metadata: { externalId: "amp-worker:w1:reply:42" },
+      }),
+    ).rejects.toThrow(/idempotency key collision/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an idempotent retry bypass thread ownership", async () => {
+    const db = createFakeDb();
+    const send = vi.fn(async () => undefined);
+    const deps = { db, adapters: [{ name: "slack", send }] };
+    const input = {
+      threadId: "slack:C9:100.500",
+      body: "reply one",
+      senderAgentId: "agent-1",
+      source: "slack",
+      channel: "C9",
+      metadata: { externalId: "amp-worker:w1:reply:42" },
+    };
+
+    await sendBrokerMessage(deps, input);
+    db.threads.set(input.threadId, { ...db.threads.get(input.threadId)!, ownerAgent: "agent-2" });
+
+    await expect(sendBrokerMessage(deps, input)).rejects.toThrow(/owned by another agent/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats different explicit externalIds as distinct deliveries", async () => {
+    const db = createFakeDb();
+    const send = vi.fn(async () => undefined);
+    const deps = { db, adapters: [{ name: "slack", send }] };
+
+    const first = await sendBrokerMessage(deps, {
+      threadId: "slack:C9:100.500",
+      body: "reply one",
+      senderAgentId: "agent-1",
+      source: "slack",
+      channel: "C9",
+      metadata: { externalId: "amp-worker:w1:reply:1" },
+    });
+    const second = await sendBrokerMessage(deps, {
+      threadId: "slack:C9:100.500",
+      body: "reply two",
+      senderAgentId: "agent-1",
+      source: "slack",
+      channel: "C9",
+      metadata: { externalId: "amp-worker:w1:reply:2" },
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(second.message.id).not.toBe(first.message.id);
   });
 
   it("fails cleanly when no adapter is registered for the thread source", async () => {

@@ -42,6 +42,18 @@ importers:
         specifier: ^4.1.2
         version: 4.1.2(@types/node@22.19.11)(vite@8.0.3(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@22.19.11)(jiti@2.7.0)(yaml@2.8.2))
 
+  amp-worker:
+    dependencies:
+      "@pinet/broker-core":
+        specifier: file:../broker-core
+        version: link:../broker-core
+      "@pinet/pinet-core":
+        specifier: file:../pinet-core
+        version: link:../pinet-core
+      "@pinet/transport-core":
+        specifier: file:../transport-core
+        version: link:../transport-core
+
   broker-core:
     dependencies:
       "@pinet/transport-core":

@@ -1,14 +1,14 @@
 {
-  "name": "@pinet/pinet-core",
+  "name": "@pinet/amp-worker",
   "version": "0.2.4",
   "type": "module",
-  "description": "Pinet runtime core for pi — broker/follower orchestration and mesh tooling",
+  "description": "Amp harness worker for the Pinet mesh — executes Amp threads from durable broker inbox assignments",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gugu91/pinet.git",
-    "directory": "pinet-core"
+    "directory": "amp-worker"
   },
   "publishConfig": {
     "access": "public"
@@ -16,15 +16,22 @@
   "main": "./dist/index.js",
   "exports": {
     ".": "./dist/index.js",
-    "./broker-client": "./dist/broker-client.js",
-    "./output-options": "./dist/output-options.js",
-    "./pinet-read-formatting": "./dist/pinet-read-formatting.js",
-    "./scheduled-wakeups": "./dist/scheduled-wakeups.js",
+    "./amp-runner": "./dist/amp-runner.js",
+    "./amp-stream": "./dist/amp-stream.js",
+    "./capabilities": "./dist/capabilities.js",
+    "./config": "./dist/config.js",
+    "./orb-identity": "./dist/orb-identity.js",
+    "./state-store": "./dist/state-store.js",
+    "./worker": "./dist/worker.js",
     "./package.json": "./package.json"
+  },
+  "bin": {
+    "pinet-amp-worker": "./bin/pinet-amp-worker"
   },
   "files": [
     "README.md",
     "LICENSE",
+    "bin/",
     "dist/"
   ],
   "pi": {},
@@ -33,10 +40,11 @@
     "prepack": "pnpm run build",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --config ../vitest.config.ts *.test.ts"
+    "test": "vitest run --config ../vitest.config.ts"
   },
   "dependencies": {
     "@pinet/broker-core": "file:../broker-core",
+    "@pinet/pinet-core": "file:../pinet-core",
     "@pinet/transport-core": "file:../transport-core"
   },
   "types": "./dist/index.d.ts"

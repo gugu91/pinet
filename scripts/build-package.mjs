@@ -34,6 +34,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  "amp-worker": {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   "imessage-bridge": {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),

@@ -10,6 +10,7 @@ import {
   DEFAULT_PINET_SKIN_THEME,
   formatPinetSteeringMessage,
   normalizePinetSkinTheme,
+  resolvePinetBrokerTls,
   resolvePinetMeshAuth,
   syncBrokerInboxEntries,
 } from "./helpers.js";
@@ -531,10 +532,25 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
     async connect(ctx: ExtensionContext): Promise<BrokerRuntimeConnectResult> {
       const settings = deps.getSettings();
       const meshAuth = resolvePinetMeshAuth(settings);
+      const brokerTls = resolvePinetBrokerTls(settings);
       const allowedUsers = deps.getAllowedUsers();
       const broker = await startBroker({
         ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
         ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+        ...(brokerTls
+          ? {
+              listenTarget: {
+                type: "tls" as const,
+                host: brokerTls.host,
+                port: brokerTls.port,
+                tls: {
+                  key: brokerTls.key,
+                  cert: brokerTls.cert,
+                  ...(brokerTls.clientCa ? { clientCa: brokerTls.clientCa } : {}),
+                },
+              },
+            }
+          : {}),
       });
       let selfId: string | null = null;
       activityLogContext = ctx;

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import {
   loadSettings,
+  resolvePinetBrokerTls,
   resolvePinetMeshAuth,
   resolveAllowAllWorkspaceUsers,
   buildAllowlist,
@@ -275,6 +276,36 @@ describe("loadSettings", () => {
     fs.writeFileSync(p, JSON.stringify(settings));
     const result = loadSettings(p);
     expect(result.defaultChannel).toBe("ops-control");
+  });
+});
+
+describe("resolvePinetBrokerTls", () => {
+  it("is disabled when no listener is configured", () => {
+    expect(resolvePinetBrokerTls({}, {})).toBeNull();
+  });
+
+  it("reads PEM files without returning their paths", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pinet-broker-tls-"));
+    try {
+      const keyPath = path.join(directory, "broker.key");
+      const certPath = path.join(directory, "broker.crt");
+      fs.writeFileSync(keyPath, "PRIVATE KEY");
+      fs.writeFileSync(certPath, "CERTIFICATE");
+
+      expect(
+        resolvePinetBrokerTls({
+          brokerTls: { host: "0.0.0.0", port: 7433, keyPath, certPath },
+        }),
+      ).toEqual({ host: "0.0.0.0", port: 7433, key: "PRIVATE KEY", cert: "CERTIFICATE" });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on a partial listener configuration", () => {
+    expect(() => resolvePinetBrokerTls({}, { PINET_BROKER_TLS_HOST: "0.0.0.0" })).toThrow(
+      /requires host, port, keyPath, and certPath/,
+    );
   });
 });
 

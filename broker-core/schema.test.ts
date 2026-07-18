@@ -664,6 +664,71 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("deduplicates internal agent sends by explicit externalId (idempotent worker replies)", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("slack:C1:123", "agent", "", null);
+
+      // A mesh worker's reply carries a stable per-job idempotency key. If the
+      // broker committed the first send but the worker's response was lost (or
+      // it crashed before persisting "replied"), the retry must return the
+      // existing message instead of inserting a duplicate.
+      const first = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "final Amp result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:55" },
+      );
+      const retry = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "final Amp result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:55" },
+      );
+
+      expect(retry.id).toBe(first.id);
+      expect(first.externalId).toBe("amp-worker:stable-1:reply:55");
+      expect(db.getInbox("agent-2")).toHaveLength(1);
+
+      // An acked recipient is not re-notified by a late retry.
+      const inboxId = db.getInbox("agent-2")[0].entry.id;
+      db.markDelivered([inboxId], "agent-2");
+      const lateRetry = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "final Amp result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:55" },
+      );
+      expect(lateRetry.id).toBe(first.id);
+      expect(db.getInbox("agent-2")).toHaveLength(0);
+
+      // A different key is a different message.
+      const other = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "another result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:56" },
+      );
+      expect(other.id).not.toBe(first.id);
+      expect(db.getInbox("agent-2")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("deduplicates non-Slack transport messages by neutral transport identity", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);

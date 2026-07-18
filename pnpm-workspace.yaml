@@ -1,6 +1,7 @@
 packages:
   - transport-core
   - broker-core
+  - amp-worker
   - browser-playwright
   - pinet-core
   - slack-bridge

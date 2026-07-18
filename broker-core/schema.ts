@@ -5671,7 +5671,7 @@ export class BrokerDB implements BrokerDBInterface {
     return typeof row?.id === "number" ? row.id : null;
   }
 
-  private getMessageByExternalId(source: string, externalId: string): BrokerMessage | null {
+  getMessageByExternalId(source: string, externalId: string): BrokerMessage | null {
     const messageId = this.getExistingMessageIdForIdentity(source, externalId);
     return messageId === null ? null : this.getMessageById(messageId);
   }

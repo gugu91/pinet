@@ -23,6 +23,7 @@
   "include": [
     "transport-core/**/*.ts",
     "broker-core/**/*.ts",
+    "amp-worker/**/*.ts",
     "browser-playwright/**/*.ts",
     "imessage-bridge/**/*.ts",
     "pinet-core/**/*.ts",
