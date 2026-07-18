@@ -225,6 +225,7 @@ describe("dispatchDirectAgentMessage", () => {
     };
     storage.getMessageByExternalId = (_source, externalId) =>
       externalId === "amp-worker:w1:reply:7" ? committed : null;
+    storage.ensureInboxDelivery = vi.fn();
 
     const result = dispatchDirectAgentMessage(
       storage,
@@ -240,6 +241,7 @@ describe("dispatchDirectAgentMessage", () => {
 
     expect(result.messageId).toBe(42);
     expect(storage.inserted).toHaveLength(0);
+    expect(storage.ensureInboxDelivery).toHaveBeenCalledWith("target", 42);
     expect(onDispatch).not.toHaveBeenCalled();
   });
 

@@ -79,6 +79,8 @@ export interface AgentMessageStorage {
     metadata?: AgentMessageMetadata,
   ): BrokerMessage;
   getMessageByExternalId?(source: string, externalId: string): BrokerMessage | null;
+  /** Repair a missing durable inbox row for an already committed message. */
+  ensureInboxDelivery?(agentId: string, messageId: number): void;
 }
 
 export interface AgentDispatchTarget {
@@ -362,6 +364,7 @@ export function dispatchDirectAgentMessage(
       ) {
         throw new Error('Idempotency key collision for transport source "agent".');
       }
+      storage.ensureInboxDelivery?.(resolvedTarget.id, committed.id);
       return { target: resolvedTarget, messageId: committed.id, threadId: expectedThreadId };
     }
   }

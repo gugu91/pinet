@@ -1874,6 +1874,30 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("repairs a missing inbox row for an idempotent direct-message retry", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("a2a:sender:target", "agent", "", "sender");
+      const message = db.insertMessage(
+        "a2a:sender:target",
+        "agent",
+        "inbound",
+        "sender",
+        "durable reply",
+        [],
+        { externalId: "amp-worker:w1:reply:7" },
+      );
+      expect(db.getInbox("target")).toHaveLength(0);
+
+      db.ensureInboxDelivery("target", message.id);
+      db.ensureInboxDelivery("target", message.id);
+      expect(db.getInbox("target")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("finds priority interrupt control beyond the normal inbox page", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);

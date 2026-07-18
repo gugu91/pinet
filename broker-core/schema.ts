@@ -5855,6 +5855,18 @@ export class BrokerDB implements BrokerDBInterface {
     return staleIds.length;
   }
 
+  ensureInboxDelivery(agentId: string, messageId: number): void {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO inbox (agent_id, message_id, delivered, created_at)
+       SELECT ?, ?, 0, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM inbox WHERE agent_id = ? AND message_id = ?
+       )`,
+    ).run(agentId, messageId, now, agentId, messageId);
+  }
+
   getInbox(
     agentId: string,
     limit = 50,
