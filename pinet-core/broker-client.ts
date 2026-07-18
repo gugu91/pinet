@@ -9,7 +9,11 @@ import {
   describeTlsPeerVerificationFailure,
   type BrokerClientTlsOptions,
 } from "@pinet/broker-core/tls";
-import { RPC_AGENT_NAME_CONFLICT, RPC_METHOD_NOT_FOUND } from "@pinet/broker-core/types";
+import {
+  RPC_AGENT_NAME_CONFLICT,
+  RPC_AGENT_STABLE_ID_CONFLICT,
+  RPC_METHOD_NOT_FOUND,
+} from "@pinet/broker-core/types";
 import type {
   PinetReadOptions,
   PinetReadResult,
@@ -166,13 +170,13 @@ function isRpcMethodNotFoundError(err: unknown, method: string): boolean {
 }
 
 // agent-standards-ignore prefer-inline-single-use-helper: preserved verbatim from slack-bridge/broker/client.ts during the pinet-core extraction; names the reconnect-conflict protocol check
-function isRpcAgentNameConflictError(err: unknown): err is BrokerRpcRequestError {
+function isRpcTerminalRegistrationConflictError(err: unknown): err is BrokerRpcRequestError {
   if (!(err instanceof Error)) {
     return false;
   }
 
   const rpcErr = err as BrokerRpcRequestError;
-  if (rpcErr.code === RPC_AGENT_NAME_CONFLICT) {
+  if (rpcErr.code === RPC_AGENT_NAME_CONFLICT || rpcErr.code === RPC_AGENT_STABLE_ID_CONFLICT) {
     return true;
   }
 
@@ -180,7 +184,8 @@ function isRpcAgentNameConflictError(err: unknown): err is BrokerRpcRequestError
     return false;
   }
 
-  return (rpcErr.data as { code?: unknown }).code === "AGENT_NAME_CONFLICT";
+  const dataCode = (rpcErr.data as { code?: unknown }).code;
+  return dataCode === "AGENT_NAME_CONFLICT" || dataCode === "AGENT_STABLE_ID_CONFLICT";
 }
 
 // agent-standards-ignore prefer-inline-single-use-helper: preserved verbatim from slack-bridge/broker/client.ts during the pinet-core extraction; keeps the user-facing compatibility message findable
@@ -1008,7 +1013,7 @@ export class BrokerClient {
       } catch {
         /* ignore */
       }
-      if (isRpcAgentNameConflictError(reconnectError)) {
+      if (isRpcTerminalRegistrationConflictError(reconnectError)) {
         this.reconnectAttempt = 0;
         this.reconnectFailedHandler?.(reconnectError);
         return;

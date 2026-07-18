@@ -184,6 +184,29 @@ describe("dispatchDirectAgentMessage", () => {
     expect(delivered).toEqual(["target:1:Sender Agent"]);
   });
 
+  it("queues a durable reply for a resumably disconnected target", () => {
+    const sender = createAgent("sender", "sender", {
+      capabilities: { repo: "extensions", role: "worker" },
+    });
+    const target = {
+      ...createAgent("target", "target", { capabilities: { repo: "extensions", role: "worker" } }),
+      disconnectedAt: "2026-04-02T00:01:00.000Z",
+      resumableUntil: "2026-04-02T00:02:00.000Z",
+    };
+    const storage = createStorage([sender]);
+    storage.getAllAgents = () => [sender, target];
+
+    const result = dispatchDirectAgentMessage(storage, {
+      senderAgentId: "sender",
+      senderAgentName: "Sender Agent",
+      target: "target",
+      body: "durable reply",
+    });
+
+    expect(result.target.id).toBe("target");
+    expect(storage.inserted[0]?.targetAgentIds).toEqual(["target"]);
+  });
+
   it("does not redispatch a committed direct message with the same idempotency key", () => {
     const storage = createStorage([
       createAgent("sender", "sender", { capabilities: { repo: "extensions", role: "worker" } }),

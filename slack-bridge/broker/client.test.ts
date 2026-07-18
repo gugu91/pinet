@@ -14,7 +14,11 @@ import {
   computeReconnectDelay,
 } from "./client.js";
 import type { BrokerClientOptions, BrokerConnectOpts } from "./client.js";
-import { RPC_AGENT_NAME_CONFLICT, RPC_METHOD_NOT_FOUND } from "./types.js";
+import {
+  RPC_AGENT_NAME_CONFLICT,
+  RPC_AGENT_STABLE_ID_CONFLICT,
+  RPC_METHOD_NOT_FOUND,
+} from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -1957,6 +1961,51 @@ describe("BrokerClient — onReconnect callback", () => {
     expect(client.getReconnectAttempt()).toBe(0);
     expect(client.getRegisteredIdentity()).toBeNull();
 
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mock.received).toHaveLength(1);
+
+    client.disconnect();
+    await mock.close();
+  }, 20000);
+
+  it("stops reconnecting when another live connection owns the stable identity", async () => {
+    let mock = await createMockServer();
+    const port = mock.port;
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
+    let reconnectFailed: Error | null = null;
+    client.onReconnectFailed((err) => {
+      reconnectFailed = err;
+    });
+
+    await client.connect();
+    const registerPromise = client.register("Amp Worker", "⚡", {}, "amp-worker:stable");
+    await waitFor(() => mock.received.length > 0);
+    const registerReq = JSON.parse(mock.received[0]) as { id: number };
+    mock.respondTo(mock.connections[0], registerReq.id, {
+      agentId: "amp-agent",
+      name: "Amp Worker",
+      emoji: "⚡",
+    });
+    await registerPromise;
+
+    await mock.close();
+    await waitFor(() => client.getReconnectAttempt() >= 2, 5000);
+    mock = await createMockServer(port);
+    await waitFor(() => mock.received.length > 0, 5000);
+    const reRegisterReq = JSON.parse(mock.received[0]) as { id: number };
+    mock.respondError(
+      mock.connections[0],
+      reRegisterReq.id,
+      RPC_AGENT_STABLE_ID_CONFLICT,
+      'Agent stableId "amp-worker:stable" is already active on another live connection.',
+    );
+
+    await waitFor(() => reconnectFailed !== null, 5000);
+    expect(reconnectFailed && (reconnectFailed as Error).message).toContain(
+      "already active on another live connection",
+    );
+    expect(client.isConnected()).toBe(false);
+    expect(client.getReconnectAttempt()).toBe(0);
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(mock.received).toHaveLength(1);
 

@@ -65,6 +65,8 @@ function buildAgentCapabilityTags(capabilities: AgentCapabilities): string[] {
 
 export interface AgentMessageStorage {
   getAgents(): AgentInfo[];
+  /** Durable identities, including resumably disconnected agents. */
+  getAllAgents?(): AgentInfo[];
   getThread(threadId: string): { threadId: string } | null;
   createThread(threadId: string, source: string, channel: string, ownerAgent: string | null): void;
   insertMessage(
@@ -325,7 +327,7 @@ export function dispatchDirectAgentMessage(
   input: DirectAgentDispatchInput,
   onDispatch?: AgentDispatchCallback,
 ): DirectAgentDispatchResult {
-  const agents = storage.getAgents();
+  const agents = storage.getAllAgents?.() ?? storage.getAgents();
   const target = resolveDirectAgentTarget(agents, input.target);
   if (!target) {
     throw new Error(`Agent not found: ${input.target}`);
