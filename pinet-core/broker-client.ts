@@ -474,8 +474,11 @@ export class BrokerClient {
 
   // ─── Messaging ───────────────────────────────────────
 
-  async pollInbox(): Promise<InboxItem[]> {
-    const result = (await this.request("inbox.poll")) as InboxItem[];
+  async pollInbox(options: { limit?: number; controlOnly?: boolean } = {}): Promise<InboxItem[]> {
+    const result = (await this.request("inbox.poll", {
+      ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
+      ...(typeof options.controlOnly === "boolean" ? { controlOnly: options.controlOnly } : {}),
+    })) as InboxItem[];
     return result;
   }
 

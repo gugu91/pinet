@@ -982,7 +982,12 @@ export class BrokerSocketServer {
 
     const params = req.params ?? {};
     const limit = typeof params.limit === "number" ? params.limit : 50;
-    const items = this.db.getInbox(state.agentId, limit);
+    if (params.controlOnly !== undefined && typeof params.controlOnly !== "boolean") {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "controlOnly must be a boolean");
+    }
+    const items = this.db.getInbox(state.agentId, limit, {
+      controlOnly: params.controlOnly === true,
+    });
 
     return rpcOk(
       req.id,

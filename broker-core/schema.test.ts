@@ -1874,6 +1874,41 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("finds priority interrupt control beyond the normal inbox page", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("a2a:broker:worker", "agent", "", null);
+      for (let index = 0; index < 60; index += 1) {
+        db.insertMessage(
+          "a2a:broker:worker",
+          "agent",
+          "inbound",
+          "broker",
+          `ordinary assignment ${index}`,
+          ["worker"],
+          { a2a: true },
+        );
+      }
+      db.insertMessage(
+        "a2a:broker:worker",
+        "agent",
+        "inbound",
+        "broker",
+        '{"type":"pinet:control","action":"interrupt"}',
+        ["worker"],
+        { a2a: true, type: "pinet:control", action: "interrupt" },
+      );
+
+      expect(db.getInbox("worker")).toHaveLength(50);
+      const controls = db.getInbox("worker", 50, { controlOnly: true });
+      expect(controls).toHaveLength(1);
+      expect(controls[0]?.message.metadata).toMatchObject({ action: "interrupt" });
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps mail classification derivable from durable inbox records without changing read state", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);

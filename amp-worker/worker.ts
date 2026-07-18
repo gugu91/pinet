@@ -55,7 +55,7 @@ export interface AmpWorkerBrokerPort {
     metadata?: TransportJsonObject,
     stableId?: string,
   ): Promise<{ agentId: string; name: string; emoji: string }>;
-  pollInbox(): Promise<InboxItem[]>;
+  pollInbox(options?: { limit?: number; controlOnly?: boolean }): Promise<InboxItem[]>;
   ackMessages(ids: number[]): Promise<void>;
   /**
    * Reply on an external transport thread (slack, imessage, …). The broker
@@ -479,7 +479,7 @@ export class AmpWorker {
 
     const tick = async (): Promise<void> => {
       try {
-        const items = await this.client.pollInbox();
+        const items = await this.client.pollInbox({ controlOnly: true });
         for (const item of items) {
           if (cancelled) return;
           if (this.handledControlInboxIds.has(item.inboxId)) continue;

@@ -5855,9 +5855,34 @@ export class BrokerDB implements BrokerDBInterface {
     return staleIds.length;
   }
 
-  getInbox(agentId: string, limit = 50): { entry: InboxEntry; message: BrokerMessage }[] {
+  getInbox(
+    agentId: string,
+    limit = 50,
+    options: { controlOnly?: boolean } = {},
+  ): { entry: InboxEntry; message: BrokerMessage }[] {
     this.dropStaleTransportInboxRows(agentId);
     const db = this.getDb();
+    const controlFilter = options.controlOnly
+      ? `AND m.thread_id LIKE 'a2a:%'
+         AND (
+           (
+             json_valid(m.metadata)
+             AND (
+               (json_extract(m.metadata, '$.type') = 'pinet:control'
+                AND json_extract(m.metadata, '$.action') IN ('interrupt', 'exit'))
+               OR
+               (json_extract(m.metadata, '$.kind') = 'pinet_control'
+                AND json_extract(m.metadata, '$.command') IN ('interrupt', 'exit'))
+             )
+           )
+           OR TRIM(m.body) IN ('/interrupt', '/exit')
+           OR (
+             json_valid(m.body)
+             AND json_extract(m.body, '$.type') = 'pinet:control'
+             AND json_extract(m.body, '$.action') IN ('interrupt', 'exit')
+           )
+         )`
+      : "";
 
     const rows = db
       .prepare(
@@ -5871,6 +5896,7 @@ export class BrokerDB implements BrokerDBInterface {
          FROM inbox i
          JOIN messages m ON m.id = i.message_id
          WHERE i.agent_id = ? AND i.delivered = 0
+         ${controlFilter}
          ORDER BY i.created_at ASC
          LIMIT ?`,
       )
