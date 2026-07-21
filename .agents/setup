@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Use each Orb user's personal noreply address when configured in Amp.
+if [[ -n "${GITHUB_NOREPLY_EMAIL:-}" ]]; then
+  git config --local user.email "$GITHUB_NOREPLY_EMAIL"
+else
+  echo "GITHUB_NOREPLY_EMAIL is not set; leaving Git email unchanged." >&2
+fi
