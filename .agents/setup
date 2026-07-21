@@ -5,11 +5,25 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p "$HOME/.local/bin"
 
-# Keep commits associated with the contributor when the VM supplies an address.
+# Keep commits associated with the contributor when the VM supplies an identity.
 if [[ -n "${GITHUB_NOREPLY_EMAIL:-}" ]]; then
   git -C "$repo_root" config --local user.email "$GITHUB_NOREPLY_EMAIL"
 else
   echo "GITHUB_NOREPLY_EMAIL is not set; leaving Git email unchanged." >&2
+fi
+
+if [[ -z "$(git -C "$repo_root" config --get user.name || true)" ]]; then
+  git_user_name="${GIT_AUTHOR_NAME:-${GITHUB_ACTOR:-}}"
+  if [[ -z "$git_user_name" && "${GITHUB_NOREPLY_EMAIL:-}" == *@* ]]; then
+    git_user_name="${GITHUB_NOREPLY_EMAIL%@*}"
+    git_user_name="${git_user_name#*+}"
+  fi
+
+  if [[ -n "$git_user_name" ]]; then
+    git -C "$repo_root" config --local user.name "$git_user_name"
+  else
+    echo "Git user.name is not set and no contributor name was supplied; leaving it unchanged." >&2
+  fi
 fi
 
 # Use the same Node major as CI without requiring root access.
