@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import * as tls from "node:tls";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -9,6 +10,7 @@ import { MessageRouter } from "./router.js";
 import { dispatchDirectAgentMessage } from "./agent-messaging.js";
 import { sendBrokerMessage } from "./message-send.js";
 import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { assertTlsListenTargetSecurity, type BrokerTlsServerConfig } from "./tls.js";
 import { summarizePinetStableId } from "../pinet-session-formatting.js";
 import type {
   AgentInfo,
@@ -52,7 +54,18 @@ export const DEFAULT_AUTH_TIMEOUT_MS = 2_000;
 
 export type ListenTarget =
   | { type: "unix"; path: string }
-  | { type: "tcp"; host: string; port: number };
+  | { type: "tcp"; host: string; port: number }
+  | {
+      /**
+       * Encrypted remote transport. The only listen target allowed to bind a
+       * non-loopback host, and then only when mesh authentication is also
+       * configured (enforced fail-closed in the constructor).
+       */
+      type: "tls";
+      host: string;
+      port: number;
+      tls: BrokerTlsServerConfig;
+    };
 
 export type AgentMessageCallback = (
   targetAgentId: string,
@@ -214,6 +227,14 @@ export class BrokerSocketServer {
     if (this.target.type === "tcp") {
       assertLoopbackTcpHost(this.target.host, "broker listen target");
     }
+    if (this.target.type === "tls") {
+      assertTlsListenTargetSecurity({
+        host: this.target.host,
+        hasKey: this.target.tls.key.trim().length > 0,
+        hasCert: this.target.tls.cert.trim().length > 0,
+        hasMeshAuth: this.meshSecret != null,
+      });
+    }
   }
 
   async start(): Promise<void> {
@@ -226,7 +247,21 @@ export class BrokerSocketServer {
     }
 
     return new Promise((resolve, reject) => {
-      this.server = net.createServer((socket) => this.onConnection(socket));
+      if (this.target.type === "tls") {
+        const tlsConfig = this.target.tls;
+        this.server = tls.createServer(
+          {
+            key: tlsConfig.key,
+            cert: tlsConfig.cert,
+            ...(tlsConfig.clientCa
+              ? { ca: tlsConfig.clientCa, requestCert: true, rejectUnauthorized: true }
+              : {}),
+          },
+          (socket) => this.onConnection(socket),
+        );
+      } else {
+        this.server = net.createServer((socket) => this.onConnection(socket));
+      }
 
       this.server.on("error", (err) => {
         reject(err);
@@ -291,12 +326,14 @@ export class BrokerSocketServer {
    * Get connection info for clients. Returns the socket path (Unix)
    * or { host, port } (TCP).
    */
-  getConnectInfo(): { type: "unix"; path: string } | { type: "tcp"; host: string; port: number } {
+  getConnectInfo():
+    | { type: "unix"; path: string }
+    | { type: "tcp" | "tls"; host: string; port: number } {
     if (this.target.type === "unix") {
       return { type: "unix", path: this.target.path };
     }
     return {
-      type: "tcp",
+      type: this.target.type,
       host: this.target.host,
       port: this.assignedPort ?? this.target.port,
     };
@@ -945,7 +982,12 @@ export class BrokerSocketServer {
 
     const params = req.params ?? {};
     const limit = typeof params.limit === "number" ? params.limit : 50;
-    const items = this.db.getInbox(state.agentId, limit);
+    if (params.controlOnly !== undefined && typeof params.controlOnly !== "boolean") {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "controlOnly must be a boolean");
+    }
+    const items = this.db.getInbox(state.agentId, limit, {
+      controlOnly: params.controlOnly === true,
+    });
 
     return rpcOk(
       req.id,

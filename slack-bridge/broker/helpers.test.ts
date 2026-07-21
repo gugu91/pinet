@@ -2476,6 +2476,27 @@ describe("startBroker leader lock", () => {
     expect(fs.existsSync(meshSecretPath)).toBe(false);
   });
 
+  it("releases broker resources when TLS listener validation fails", async () => {
+    const lockPath = path.join(dir, "broker.lock");
+
+    await expect(
+      startBroker({
+        dbPath: path.join(dir, "invalid-tls.db"),
+        listenTarget: {
+          type: "tls",
+          host: "0.0.0.0",
+          port: 0,
+          tls: { key: "", cert: "" },
+        },
+        lockPath,
+      }),
+    ).rejects.toThrow(/requires both a private key and a certificate/i);
+
+    expect(fs.existsSync(lockPath)).toBe(false);
+    const recovered = await launch({ lockPath, dbSuffix: "after-invalid-tls" });
+    expect(recovered.lock.isLeader()).toBe(true);
+  });
+
   it("starts without creating a mesh secret when none is configured", async () => {
     const meshSecretPath = path.join(dir, "pinet.secret");
 

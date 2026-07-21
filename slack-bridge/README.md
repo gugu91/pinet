@@ -157,6 +157,36 @@ How it works:
 - brokers create the secret file if it does not exist
 - followers need an existing file or will show an error
 
+### Encrypted cross-machine broker listener
+
+The default Unix socket and loopback TCP modes are local-only. To accept Amp
+orb or other remote workers, configure a TLS listener and mesh authentication:
+
+```json
+{
+  "slack-bridge": {
+    "runtimeMode": "broker",
+    "meshSecretPath": "/secure/path/pinet.secret",
+    "brokerTls": {
+      "host": "0.0.0.0",
+      "port": 7433,
+      "keyPath": "/secure/path/broker.key",
+      "certPath": "/secure/path/broker-fullchain.pem"
+    }
+  }
+}
+```
+
+The equivalent environment variables are `PINET_BROKER_TLS_HOST`,
+`PINET_BROKER_TLS_PORT`, `PINET_BROKER_TLS_KEY_PATH`,
+`PINET_BROKER_TLS_CERT_PATH`, and optionally
+`PINET_BROKER_TLS_CLIENT_CA_PATH` for mTLS. A non-loopback TLS listener refuses
+to start without mesh authentication. Remote clients must verify a CA and/or
+an exact certificate SHA-256 pin; there is no insecure trust-all option.
+
+Only expose the configured TLS port. Do not expose the local Unix socket or a
+plaintext broker port.
+
 ### Require mentions in channels
 
 Make Pinet respond only when mentioned in specific channels:
@@ -207,6 +237,12 @@ This is separate from `allowedUsers`. Authorization decides who can use Pinet. T
     "ralphSnoozeAfterEmptyCycles": 0,
     "ralphSnoozeDurationMs": 1800000,
     "meshSecretPath": "/path/to/secret",
+    "brokerTls": {
+      "host": "0.0.0.0",
+      "port": 7433,
+      "keyPath": "/path/to/broker.key",
+      "certPath": "/path/to/broker-fullchain.pem"
+    },
     "suggestedPrompts": [
       {
         "title": "Status",
@@ -237,6 +273,7 @@ This is separate from `allowedUsers`. Authorization decides who can use Pinet. T
 | `ralphLoopIntervalMs`    | How often to check for stalls (milliseconds)           | `300000` (5 minutes) |
 | `meshSecret`             | Shared secret for mesh auth                            | none                 |
 | `meshSecretPath`         | File containing shared secret                          | none                 |
+| `brokerTls`              | TLS listener for authenticated remote workers          | none                 |
 
 ## Using Pinet
 

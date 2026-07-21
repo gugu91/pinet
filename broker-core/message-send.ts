@@ -27,6 +27,7 @@ export interface BrokerMessageSenderDb {
     targetAgentIds: string[],
     metadata?: TransportJsonObject,
   ): BrokerMessage;
+  getMessageByExternalId(source: string, externalId: string): BrokerMessage | null;
 }
 
 export interface BrokerMessageSenderDeps {
@@ -125,6 +126,28 @@ export async function sendBrokerMessage(
   if (thread.source !== source || thread.channel !== channel) {
     deps.db.updateThread(threadId, { source, channel });
     thread = { ...thread, source, channel };
+  }
+
+  // Idempotent retry: validate ownership first, then require the committed
+  // message to match the same thread, sender, and body. A reused key is a
+  // collision, never permission to skip delivery for unrelated content.
+  const rawExternalId = input.metadata?.externalId ?? input.metadata?.external_id;
+  const explicitExternalId =
+    typeof rawExternalId === "string" && rawExternalId.trim().length > 0 ? rawExternalId : null;
+  if (explicitExternalId) {
+    const committed = deps.db.getMessageByExternalId(source, explicitExternalId);
+    if (committed) {
+      if (
+        committed.threadId !== threadId ||
+        committed.sender !== input.senderAgentId ||
+        committed.body !== messageBody
+      ) {
+        throw new Error(
+          `Idempotency key collision for transport source ${JSON.stringify(source)}.`,
+        );
+      }
+      return { thread, message: committed, adapter: adapter.name };
+    }
   }
 
   const outbound: OutboundMessage = {

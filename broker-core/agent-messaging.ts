@@ -65,6 +65,8 @@ function buildAgentCapabilityTags(capabilities: AgentCapabilities): string[] {
 
 export interface AgentMessageStorage {
   getAgents(): AgentInfo[];
+  /** Durable identities, including resumably disconnected agents. */
+  getAllAgents?(): AgentInfo[];
   getThread(threadId: string): { threadId: string } | null;
   createThread(threadId: string, source: string, channel: string, ownerAgent: string | null): void;
   insertMessage(
@@ -76,6 +78,9 @@ export interface AgentMessageStorage {
     targetAgentIds: string[],
     metadata?: AgentMessageMetadata,
   ): BrokerMessage;
+  getMessageByExternalId?(source: string, externalId: string): BrokerMessage | null;
+  /** Repair a missing durable inbox row for an already committed message. */
+  ensureInboxDelivery?(agentId: string, messageId: number): void;
 }
 
 export interface AgentDispatchTarget {
@@ -324,7 +329,7 @@ export function dispatchDirectAgentMessage(
   input: DirectAgentDispatchInput,
   onDispatch?: AgentDispatchCallback,
 ): DirectAgentDispatchResult {
-  const agents = storage.getAgents();
+  const agents = storage.getAllAgents?.() ?? storage.getAgents();
   const target = resolveDirectAgentTarget(agents, input.target);
   if (!target) {
     throw new Error(`Agent not found: ${input.target}`);
@@ -343,6 +348,26 @@ export function dispatchDirectAgentMessage(
 
   const resolvedTarget: AgentDispatchTarget = { id: target.id, name: target.name };
   const metadata = buildAgentMessageMetadata(input.senderAgentName, input.body, input.metadata);
+  const expectedThreadId = `a2a:${input.senderAgentId}:${resolvedTarget.id}`;
+  const rawExternalId = metadata.externalId ?? metadata.external_id;
+  const externalId =
+    typeof rawExternalId === "string" && rawExternalId.trim().length > 0
+      ? rawExternalId.trim()
+      : null;
+  if (externalId && storage.getMessageByExternalId) {
+    const committed = storage.getMessageByExternalId("agent", externalId);
+    if (committed) {
+      if (
+        committed.threadId !== expectedThreadId ||
+        committed.sender !== input.senderAgentId ||
+        committed.body !== input.body
+      ) {
+        throw new Error('Idempotency key collision for transport source "agent".');
+      }
+      storage.ensureInboxDelivery?.(resolvedTarget.id, committed.id);
+      return { target: resolvedTarget, messageId: committed.id, threadId: expectedThreadId };
+    }
+  }
   const { threadId, messageId } = deliverAgentMessage(
     storage,
     input.senderAgentId,

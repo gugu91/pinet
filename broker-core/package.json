@@ -21,11 +21,13 @@
     "./leader": "./dist/leader.js",
     "./maintenance": "./dist/maintenance.js",
     "./mail-classification": "./dist/mail-classification.js",
+    "./mail-control": "./dist/mail-control.js",
     "./message-send": "./dist/message-send.js",
     "./paths": "./dist/paths.js",
     "./raw-tcp-loopback": "./dist/raw-tcp-loopback.js",
     "./router": "./dist/router.js",
     "./schema": "./dist/schema.js",
+    "./tls": "./dist/tls.js",
     "./types": "./dist/types.js",
     "./package.json": "./package.json"
   },

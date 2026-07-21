@@ -6,6 +6,11 @@ import {
   formatPinetMailClassLabel,
 } from "@pinet/broker-core/mail-classification";
 import {
+  extractPinetControlCommand,
+  extractPinetSteeringMessage,
+  type PinetControlCommand,
+} from "@pinet/broker-core/mail-control";
+import {
   buildCompatibilityInstanceScope,
   buildCompatibilityWorkspaceScope,
   buildRuntimeScopeCarrier,
@@ -59,6 +64,14 @@ export interface SlackBridgeSettings {
   agentEmoji?: string;
   meshSecret?: string;
   meshSecretPath?: string;
+  /** Optional encrypted cross-machine broker listener. Plain TCP remains loopback-only. */
+  brokerTls?: {
+    host?: string;
+    port?: number;
+    keyPath?: string;
+    certPath?: string;
+    clientCaPath?: string;
+  };
   hibernation?: {
     /** Master kill switch. Defaults false; waking/draining existing rows remains permitted. */
     enabled?: boolean;
@@ -117,6 +130,55 @@ export function buildSlackCompatibilityScope(
       instanceName: normalizeOptionalSetting(options.instanceName) ?? undefined,
     }),
   })!;
+}
+
+export interface ResolvedPinetBrokerTlsSettings {
+  host: string;
+  port: number;
+  key: string;
+  cert: string;
+  clientCa?: string;
+}
+
+/**
+ * Resolve an opt-in TLS listener from settings or environment. PEM material is
+ * read from files and never stored in settings, diagnostics, or logs.
+ */
+export function resolvePinetBrokerTls(
+  settings: SlackBridgeSettings,
+  env = process.env,
+): ResolvedPinetBrokerTlsSettings | null {
+  const configured = settings.brokerTls;
+  const host = normalizeOptionalSetting(configured?.host ?? env.PINET_BROKER_TLS_HOST);
+  const rawPort = configured?.port ?? Number(env.PINET_BROKER_TLS_PORT);
+  const keyPath = normalizeOptionalSetting(configured?.keyPath ?? env.PINET_BROKER_TLS_KEY_PATH);
+  const certPath = normalizeOptionalSetting(configured?.certPath ?? env.PINET_BROKER_TLS_CERT_PATH);
+  const clientCaPath = normalizeOptionalSetting(
+    configured?.clientCaPath ?? env.PINET_BROKER_TLS_CLIENT_CA_PATH,
+  );
+  const anyConfigured = Boolean(
+    host || keyPath || certPath || configured?.port || env.PINET_BROKER_TLS_PORT,
+  );
+  if (!anyConfigured) return null;
+  if (
+    !host ||
+    !Number.isInteger(rawPort) ||
+    rawPort < 1 ||
+    rawPort > 65535 ||
+    !keyPath ||
+    !certPath
+  ) {
+    throw new Error(
+      "brokerTls requires host, port, keyPath, and certPath (or matching PINET_BROKER_TLS_* environment variables)",
+    );
+  }
+  return {
+    host,
+    port: rawPort,
+    key: fs.readFileSync(keyPath, "utf-8"),
+    cert: fs.readFileSync(certPath, "utf-8"),
+    ...(clientCaPath ? { clientCa: fs.readFileSync(clientCaPath, "utf-8") } : {}),
+  };
 }
 
 export function resolvePinetMeshAuth(
@@ -566,8 +628,30 @@ export function formatPinetInboxMessages(entries: FollowerInboxEntry[]): string 
 }
 
 // ─── Pinet control messages ─────────────────────────────
+// The control/steering wire contract lives in @pinet/broker-core/mail-control
+// so non-Slack mesh workers (e.g. @pinet/amp-worker) can share it. Re-exported
+// here for compatibility with existing slack-bridge imports.
 
-export type PinetControlCommand = "interrupt" | "reload" | "exit";
+export {
+  parsePinetControlCommand,
+  getPinetControlCommandFromText,
+  buildPinetControlMetadata,
+  buildPinetControlMessage,
+  normalizeOutgoingPinetControlMessage,
+  getPinetSteeringMessageFromText,
+  buildPinetSteeringMetadata,
+  buildPinetSteeringMessage,
+  normalizeOutgoingPinetSteeringMessage,
+  extractPinetControlCommand,
+  extractPinetSteeringMessage,
+} from "@pinet/broker-core/mail-control";
+export type {
+  PinetControlCommand,
+  PinetControlMetadata,
+  PinetControlEnvelope,
+  PinetSteeringEnvelope,
+  PinetControlCommandMessage,
+} from "@pinet/broker-core/mail-control";
 
 export interface PinetRemoteControlState {
   currentCommand: PinetControlCommand | null;
@@ -580,10 +664,6 @@ export interface PinetRemoteControlRequestResult extends PinetRemoteControlState
   status: "start" | "queued" | "covered";
   scheduledCommand: PinetControlCommand;
   ackDisposition: "immediate" | "on_start";
-}
-
-export function parsePinetControlCommand(value: unknown): PinetControlCommand | null {
-  return value === "interrupt" || value === "reload" || value === "exit" ? value : null;
 }
 
 function comparePinetControlPriority(
@@ -724,148 +804,6 @@ export async function reloadPinetRuntimeSafely<State>(
   }
 }
 
-export type PinetControlMetadata = Record<string, unknown>;
-
-export interface PinetControlEnvelope extends PinetControlMetadata {
-  type: "pinet:control";
-  action: PinetControlCommand;
-}
-
-function parsePinetControlEnvelope(value: unknown): PinetControlCommand | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as PinetControlMetadata;
-  if (record.type !== "pinet:control") return null;
-  return parsePinetControlCommand(record.action);
-}
-
-function parseStructuredPinetControlCommandFromText(
-  text: string | undefined,
-): PinetControlCommand | null {
-  const trimmed = text?.trim();
-  if (!trimmed) return null;
-
-  try {
-    return parsePinetControlEnvelope(JSON.parse(trimmed));
-  } catch {
-    return null;
-  }
-}
-
-function parseLegacyPinetControlCommandFromText(
-  text: string | undefined,
-): PinetControlCommand | null {
-  const trimmed = text?.trim();
-  if (trimmed === "/interrupt") return "interrupt";
-  if (trimmed === "/reload") return "reload";
-  if (trimmed === "/exit") return "exit";
-  return null;
-}
-
-export function getPinetControlCommandFromText(
-  text: string | undefined,
-): PinetControlCommand | null {
-  return (
-    parseStructuredPinetControlCommandFromText(text) ?? parseLegacyPinetControlCommandFromText(text)
-  );
-}
-
-export function buildPinetControlMetadata(command: PinetControlCommand): PinetControlEnvelope {
-  return { type: "pinet:control", action: command };
-}
-
-export function buildPinetControlMessage(command: PinetControlCommand): string {
-  return JSON.stringify(buildPinetControlMetadata(command));
-}
-
-export function normalizeOutgoingPinetControlMessage(
-  body: string,
-  metadata?: PinetControlMetadata,
-): { body: string; metadata: PinetControlMetadata } | null {
-  const command = getPinetControlCommandFromText(body);
-  if (!command) return null;
-
-  return {
-    body: buildPinetControlMessage(command),
-    metadata: {
-      ...(metadata ?? {}),
-      ...buildPinetControlMetadata(command),
-    },
-  };
-}
-
-// ─── Pinet steering messages ────────────────────────────
-
-export interface PinetSteeringEnvelope extends PinetControlMetadata {
-  type: "pinet:steer";
-  message: string;
-}
-
-function normalizePinetSteeringText(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function parsePinetSteeringEnvelope(value: unknown): string | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as PinetControlMetadata;
-  if (record.type !== "pinet:steer") return null;
-  return (
-    normalizePinetSteeringText(record.message) ??
-    normalizePinetSteeringText(record.text) ??
-    normalizePinetSteeringText(record.body)
-  );
-}
-
-function parseStructuredPinetSteeringMessageFromText(text: string | undefined): string | null {
-  const trimmed = text?.trim();
-  if (!trimmed) return null;
-
-  try {
-    return parsePinetSteeringEnvelope(JSON.parse(trimmed));
-  } catch {
-    return null;
-  }
-}
-
-function parseLegacyPinetSteeringMessageFromText(text: string | undefined): string | null {
-  const trimmed = text?.trim();
-  if (!trimmed?.startsWith("/steer")) return null;
-  const nextChar = trimmed.charAt("/steer".length);
-  if (nextChar && !/\s/.test(nextChar)) return null;
-  return normalizePinetSteeringText(trimmed.slice("/steer".length));
-}
-
-export function getPinetSteeringMessageFromText(text: string | undefined): string | null {
-  return (
-    parseStructuredPinetSteeringMessageFromText(text) ??
-    parseLegacyPinetSteeringMessageFromText(text)
-  );
-}
-
-export function buildPinetSteeringMetadata(message: string): PinetSteeringEnvelope {
-  return { type: "pinet:steer", message };
-}
-
-export function buildPinetSteeringMessage(message: string): string {
-  return JSON.stringify(buildPinetSteeringMetadata(message));
-}
-
-export function normalizeOutgoingPinetSteeringMessage(
-  body: string,
-  metadata?: PinetControlMetadata,
-): { body: string; metadata: PinetControlMetadata } | null {
-  const message = getPinetSteeringMessageFromText(body);
-  if (!message) return null;
-
-  return {
-    body: buildPinetSteeringMessage(message),
-    metadata: {
-      ...(metadata ?? {}),
-      ...buildPinetSteeringMetadata(message),
-      kind: "pinet_steer",
-    },
-  };
-}
-
 export type PinetSkinStatusKey = "idle" | "working" | "healthy" | "stale" | "ghost" | "resumable";
 
 export type PinetSkinStatusVocabulary = Partial<Record<PinetSkinStatusKey, string>>;
@@ -885,64 +823,6 @@ function extractPinetSkinStatusVocabulary(value: unknown): PinetSkinStatusVocabu
   return Object.keys(vocabulary).length > 0 ? vocabulary : undefined;
 }
 
-export interface PinetControlCommandMessage {
-  threadId?: string;
-  body?: string;
-  metadata?: PinetControlMetadata | null;
-}
-
-export function extractPinetControlCommand(
-  message: PinetControlCommandMessage,
-): PinetControlCommand | null {
-  const metadata = message.metadata ?? {};
-  if (metadata.scheduledWakeup === true) return null;
-
-  const isAgentToAgent =
-    metadata.a2a === true ||
-    (typeof message.threadId === "string" && message.threadId.startsWith("a2a:"));
-  const isSlackReactionInterrupt =
-    metadata.slackReactionControl === true && metadata.reactionAction === "interrupt";
-
-  const metadataCommand =
-    parsePinetControlEnvelope(metadata) ??
-    (metadata.kind === "pinet_control" ? parsePinetControlCommand(metadata.command) : null);
-
-  if (isSlackReactionInterrupt) {
-    return metadataCommand === "interrupt" ? "interrupt" : null;
-  }
-
-  if (!isAgentToAgent) return null;
-
-  if (metadataCommand) return metadataCommand;
-
-  // Backward-compatible fallback for structured JSON or exact slash commands sent over a2a flows.
-  return getPinetControlCommandFromText(message.body);
-}
-
-export function extractPinetSteeringMessage(message: {
-  threadId?: string;
-  body?: string;
-  metadata?: PinetControlMetadata | null;
-}): string | null {
-  const metadata = message.metadata ?? {};
-  if (metadata.scheduledWakeup === true) return null;
-
-  const metadataMessage =
-    parsePinetSteeringEnvelope(metadata) ??
-    (metadata.kind === "pinet_steer" || metadata.kind === "pinet_steering"
-      ? (normalizePinetSteeringText(metadata.message) ??
-        normalizePinetSteeringText(metadata.text) ??
-        normalizePinetSteeringText(metadata.body))
-      : null);
-
-  if (metadataMessage) return metadataMessage;
-
-  if (metadata.reactionTrigger === true && metadata.reactionAction === "steer") {
-    return normalizePinetSteeringText(message.body);
-  }
-
-  return getPinetSteeringMessageFromText(message.body);
-}
 // ─── Slack API encoding ──────────────────────────────────
 
 export const FORM_METHODS = new Set([
