@@ -29,7 +29,7 @@ fi
 # Use the same Node major as CI without requiring root access.
 node_version=v24.18.0
 node_root="$HOME/.local/node-$node_version"
-if [[ ! -x "$node_root/bin/node" ]]; then
+if [[ ! -x "$node_root/bin/node" || ! -x "$node_root/bin/npm" || ! -x "$node_root/bin/npx" ]]; then
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64|Linux-amd64)
       node_platform=linux-x64
@@ -54,7 +54,8 @@ if [[ ! -x "$node_root/bin/node" ]]; then
   esac
 
   node_tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "${node_tmp_dir:-}"' EXIT
+  node_stage_dir="$(mktemp -d "$HOME/.local/.node-$node_version.XXXXXX")"
+  trap 'rm -rf "${node_tmp_dir:-}" "${node_stage_dir:-}"' EXIT
   node_archive="$node_tmp_dir/node.tar.gz"
   curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
     "https://nodejs.org/dist/$node_version/node-$node_version-$node_platform.tar.gz" \
@@ -67,8 +68,16 @@ if [[ ! -x "$node_root/bin/node" ]]; then
     echo "sha256sum or shasum is required to verify Node.js" >&2
     exit 1
   fi
-  mkdir -p "$node_root"
-  tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+  tar -xzf "$node_archive" --strip-components=1 -C "$node_stage_dir"
+  for executable in node npm npx; do
+    if [[ ! -x "$node_stage_dir/bin/$executable" ]]; then
+      echo "Downloaded Node.js archive is missing bin/$executable" >&2
+      exit 1
+    fi
+  done
+  rm -rf "$node_root"
+  mv "$node_stage_dir" "$node_root"
+  node_stage_dir=""
   rm -rf "$node_tmp_dir"
   node_tmp_dir=""
 fi
@@ -82,7 +91,7 @@ npm install --global --prefix "$HOME/.local" --ignore-scripts --no-audit --no-fu
   @earendil-works/pi-coding-agent@0.81.0 \
   pnpm@10.18.1
 
-pnpm --dir "$repo_root" install --frozen-lockfile
+CI=1 pnpm --dir "$repo_root" install --frozen-lockfile
 
 printf 'Agent VM setup complete: Node %s, pnpm %s, Pi %s\n' \
   "$(node --version)" "$(pnpm --version)" "$(pi --version)"
