@@ -1,9 +1,74 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Use each Orb user's personal noreply address when configured in Amp.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PATH="$HOME/.local/bin:$PATH"
+mkdir -p "$HOME/.local/bin"
+
+# Keep commits associated with the contributor when the VM supplies an address.
 if [[ -n "${GITHUB_NOREPLY_EMAIL:-}" ]]; then
-  git config --local user.email "$GITHUB_NOREPLY_EMAIL"
+  git -C "$repo_root" config --local user.email "$GITHUB_NOREPLY_EMAIL"
 else
   echo "GITHUB_NOREPLY_EMAIL is not set; leaving Git email unchanged." >&2
 fi
+
+# Use the same Node major as CI without requiring root access.
+node_version=v24.18.0
+node_root="$HOME/.local/node-$node_version"
+if [[ ! -x "$node_root/bin/node" ]]; then
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64|Linux-amd64)
+      node_platform=linux-x64
+      node_sha256=783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8
+      ;;
+    Linux-arm64|Linux-aarch64)
+      node_platform=linux-arm64
+      node_sha256=6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508
+      ;;
+    Darwin-x86_64|Darwin-amd64)
+      node_platform=darwin-x64
+      node_sha256=dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080
+      ;;
+    Darwin-arm64|Darwin-aarch64)
+      node_platform=darwin-arm64
+      node_sha256=e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1
+      ;;
+    *)
+      echo "Unsupported platform for Node.js: $(uname -s) $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+
+  node_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "${node_tmp_dir:-}"' EXIT
+  node_archive="$node_tmp_dir/node.tar.gz"
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+    "https://nodejs.org/dist/$node_version/node-$node_version-$node_platform.tar.gz" \
+    --output "$node_archive"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$node_sha256" "$node_archive" | sha256sum --check --status
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$node_sha256" "$node_archive" | shasum --algorithm 256 --check --status
+  else
+    echo "sha256sum or shasum is required to verify Node.js" >&2
+    exit 1
+  fi
+  mkdir -p "$node_root"
+  tar -xzf "$node_archive" --strip-components=1 -C "$node_root"
+  rm -rf "$node_tmp_dir"
+  node_tmp_dir=""
+fi
+for executable in node npm npx; do
+  ln -sfn "$node_root/bin/$executable" "$HOME/.local/bin/$executable"
+done
+hash -r
+
+# Install the agent runtime and the repository's pinned package manager.
+npm install --global --prefix "$HOME/.local" --ignore-scripts --no-audit --no-fund \
+  @earendil-works/pi-coding-agent@0.81.0 \
+  pnpm@10.18.1
+
+pnpm --dir "$repo_root" install --frozen-lockfile
+
+printf 'Agent VM setup complete: Node %s, pnpm %s, Pi %s\n' \
+  "$(node --version)" "$(pnpm --version)" "$(pi --version)"
