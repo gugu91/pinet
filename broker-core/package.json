@@ -17,6 +17,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./agent-messaging": "./dist/agent-messaging.js",
+    "./approval-receipts": "./dist/approval-receipts.js",
     "./auth": "./dist/auth.js",
     "./leader": "./dist/leader.js",
     "./maintenance": "./dist/maintenance.js",
@@ -26,6 +27,7 @@
     "./raw-tcp-loopback": "./dist/raw-tcp-loopback.js",
     "./router": "./dist/router.js",
     "./schema": "./dist/schema.js",
+    "./slack-approval-authenticator": "./dist/slack-approval-authenticator.js",
     "./types": "./dist/types.js",
     "./package.json": "./package.json"
   },
