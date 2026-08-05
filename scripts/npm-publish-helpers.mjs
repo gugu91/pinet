@@ -7,6 +7,7 @@ export const publishPackages = Object.freeze([
   { directory: "transport-core", packageName: "@pinet/transport-core" },
   { directory: "broker-core", packageName: "@pinet/broker-core" },
   { directory: "pinet-core", packageName: "@pinet/pinet-core" },
+  { directory: "amp-worker", packageName: "@pinet/amp-worker" },
   { directory: "imessage-bridge", packageName: "@pinet/imessage-bridge" },
   { directory: "slack-bridge", packageName: "@pinet/slack-bridge" },
   { directory: "model-aware-compaction", packageName: "@pinet/model-aware-compaction" },

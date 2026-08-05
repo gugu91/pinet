@@ -27,6 +27,7 @@ export interface BrokerMessageSenderDb {
     targetAgentIds: string[],
     metadata?: TransportJsonObject,
   ): BrokerMessage;
+  getMessageByExternalId(source: string, externalId: string): BrokerMessage | null;
 }
 
 export interface BrokerMessageSenderDeps {
@@ -77,6 +78,22 @@ export interface SendBrokerMessageResult {
   adapter: string;
 }
 
+/**
+ * The target transport thread is owned by a different agent. Permanent for
+ * this sender: retrying the identical send cannot succeed unless ownership
+ * changes, so callers should treat it as a terminal delivery outcome rather
+ * than a transient failure.
+ */
+export class ThreadOwnershipConflictError extends Error {
+  readonly threadId: string;
+
+  constructor(threadId: string) {
+    super(`Thread ${threadId} is already owned by another agent.`);
+    this.name = "ThreadOwnershipConflictError";
+    this.threadId = threadId;
+  }
+}
+
 export async function sendBrokerMessage(
   deps: BrokerMessageSenderDeps,
   input: SendBrokerMessageInput,
@@ -106,15 +123,42 @@ export async function sendBrokerMessage(
   const content = normalizeMessageContent(input.content);
   const messageBody = content?.text ?? body;
 
+  // Idempotent retry, checked before the ownership claim: a send that already
+  // committed must stay recoverable even if thread ownership has since
+  // changed, so the retry never re-claims or re-delivers. The committed
+  // message must match the same thread, sender, and body — a reused key is a
+  // collision, never permission to skip delivery for unrelated content.
+  const rawExternalId = input.metadata?.externalId ?? input.metadata?.external_id;
+  const explicitExternalId =
+    typeof rawExternalId === "string" && rawExternalId.trim().length > 0 ? rawExternalId : null;
+  if (explicitExternalId) {
+    const committed = deps.db.getMessageByExternalId(source, explicitExternalId);
+    if (committed) {
+      if (
+        committed.threadId !== threadId ||
+        committed.sender !== input.senderAgentId ||
+        committed.body !== messageBody
+      ) {
+        throw new Error(
+          `Idempotency key collision for transport source ${JSON.stringify(source)}.`,
+        );
+      }
+      if (!existingThread) {
+        throw new Error(`Thread ${threadId} has a committed message but no thread record.`);
+      }
+      return { thread: existingThread, message: committed, adapter: adapter.name };
+    }
+  }
+
   let thread = existingThread;
   if (thread?.ownerAgent && thread.ownerAgent !== input.senderAgentId) {
-    throw new Error(`Thread ${threadId} is already owned by another agent.`);
+    throw new ThreadOwnershipConflictError(threadId);
   }
 
   if (!thread || thread.ownerAgent === null) {
     const claimed = deps.db.claimThread(threadId, input.senderAgentId, source, channel);
     if (!claimed) {
-      throw new Error(`Thread ${threadId} is already owned by another agent.`);
+      throw new ThreadOwnershipConflictError(threadId);
     }
     thread = deps.db.getThread(threadId);
     if (!thread) {

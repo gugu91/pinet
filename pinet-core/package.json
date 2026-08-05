@@ -16,6 +16,7 @@
   "main": "./dist/index.js",
   "exports": {
     ".": "./dist/index.js",
+    "./broker-client": "./dist/broker-client.js",
     "./output-options": "./dist/output-options.js",
     "./pinet-read-formatting": "./dist/pinet-read-formatting.js",
     "./scheduled-wakeups": "./dist/scheduled-wakeups.js",

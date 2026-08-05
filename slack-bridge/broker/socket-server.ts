@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import * as tls from "node:tls";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -7,8 +8,9 @@ import type { BrokerDB } from "./schema.js";
 import { DEFAULT_SOCKET_PATH } from "./paths.js";
 import { MessageRouter } from "./router.js";
 import { dispatchDirectAgentMessage } from "./agent-messaging.js";
-import { sendBrokerMessage } from "./message-send.js";
+import { sendBrokerMessage, ThreadOwnershipConflictError } from "./message-send.js";
 import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { assertTlsListenTargetSecurity, type BrokerTlsServerConfig } from "./tls.js";
 import { summarizePinetStableId } from "../pinet-session-formatting.js";
 import type {
   AgentInfo,
@@ -42,6 +44,7 @@ import {
   RPC_AGENT_NAME_CONFLICT,
   RPC_AGENT_STABLE_ID_CONFLICT,
   RPC_AGENT_WAKE_FENCE_REJECTED,
+  RPC_THREAD_OWNERSHIP_CONFLICT,
 } from "./types.js";
 
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;
@@ -52,7 +55,18 @@ export const DEFAULT_AUTH_TIMEOUT_MS = 2_000;
 
 export type ListenTarget =
   | { type: "unix"; path: string }
-  | { type: "tcp"; host: string; port: number };
+  | { type: "tcp"; host: string; port: number }
+  | {
+      /**
+       * Encrypted remote transport. The only listen target allowed to bind a
+       * non-loopback host, and then only when mesh authentication is also
+       * configured (enforced fail-closed in the constructor).
+       */
+      type: "tls";
+      host: string;
+      port: number;
+      tls: BrokerTlsServerConfig;
+    };
 
 export type AgentMessageCallback = (
   targetAgentId: string,
@@ -215,6 +229,14 @@ export class BrokerSocketServer {
     if (this.target.type === "tcp") {
       assertLoopbackTcpHost(this.target.host, "broker listen target");
     }
+    if (this.target.type === "tls") {
+      assertTlsListenTargetSecurity({
+        host: this.target.host,
+        hasKey: this.target.tls.key.trim().length > 0,
+        hasCert: this.target.tls.cert.trim().length > 0,
+        hasMeshAuth: this.meshSecret != null,
+      });
+    }
   }
 
   async start(): Promise<void> {
@@ -227,7 +249,21 @@ export class BrokerSocketServer {
     }
 
     return new Promise((resolve, reject) => {
-      this.server = net.createServer((socket) => this.onConnection(socket));
+      if (this.target.type === "tls") {
+        const tlsConfig = this.target.tls;
+        this.server = tls.createServer(
+          {
+            key: tlsConfig.key,
+            cert: tlsConfig.cert,
+            ...(tlsConfig.clientCa
+              ? { ca: tlsConfig.clientCa, requestCert: true, rejectUnauthorized: true }
+              : {}),
+          },
+          (socket) => this.onConnection(socket),
+        );
+      } else {
+        this.server = net.createServer((socket) => this.onConnection(socket));
+      }
 
       this.server.on("error", (err) => {
         reject(err);
@@ -292,12 +328,14 @@ export class BrokerSocketServer {
    * Get connection info for clients. Returns the socket path (Unix)
    * or { host, port } (TCP).
    */
-  getConnectInfo(): { type: "unix"; path: string } | { type: "tcp"; host: string; port: number } {
+  getConnectInfo():
+    | { type: "unix"; path: string }
+    | { type: "tcp" | "tls"; host: string; port: number } {
     if (this.target.type === "unix") {
       return { type: "unix", path: this.target.path };
     }
     return {
-      type: "tcp",
+      type: this.target.type,
       host: this.target.host,
       port: this.assignedPort ?? this.target.port,
     };
@@ -983,7 +1021,12 @@ export class BrokerSocketServer {
 
     const params = req.params ?? {};
     const limit = typeof params.limit === "number" ? params.limit : 50;
-    const items = this.db.getInbox(state.agentId, limit);
+    if (params.controlOnly !== undefined && typeof params.controlOnly !== "boolean") {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "controlOnly must be a boolean");
+    }
+    const items = this.db.getInbox(state.agentId, limit, {
+      controlOnly: params.controlOnly === true,
+    });
 
     return rpcOk(
       req.id,
@@ -1178,26 +1221,36 @@ export class BrokerSocketServer {
       return rpcError(req.id, RPC_INVALID_PARAMS, "threadId and body are required");
     }
 
-    const result = await sendBrokerMessage(
-      {
-        db: this.db,
-        adapters: this.outboundMessageAdapters,
-      },
-      {
-        threadId,
-        body,
-        senderAgentId: state.agentId,
-        ...(source ? { source } : {}),
-        ...(channel ? { channel } : {}),
-        ...(content ? { content } : {}),
-        ...(blocks && blocks.length > 0 ? { blocks } : {}),
-        ...(files && files.length > 0 ? { files } : {}),
-        ...(agentName ? { agentName } : {}),
-        ...(agentEmoji ? { agentEmoji } : {}),
-        ...(agentOwnerToken ? { agentOwnerToken } : {}),
-        ...(metadata ? { metadata } : {}),
-      },
-    );
+    let result;
+    try {
+      result = await sendBrokerMessage(
+        {
+          db: this.db,
+          adapters: this.outboundMessageAdapters,
+        },
+        {
+          threadId,
+          body,
+          senderAgentId: state.agentId,
+          ...(source ? { source } : {}),
+          ...(channel ? { channel } : {}),
+          ...(content ? { content } : {}),
+          ...(blocks && blocks.length > 0 ? { blocks } : {}),
+          ...(files && files.length > 0 ? { files } : {}),
+          ...(agentName ? { agentName } : {}),
+          ...(agentEmoji ? { agentEmoji } : {}),
+          ...(agentOwnerToken ? { agentOwnerToken } : {}),
+          ...(metadata ? { metadata } : {}),
+        },
+      );
+    } catch (err) {
+      if (err instanceof ThreadOwnershipConflictError) {
+        // Typed code so senders can distinguish this permanent conflict from
+        // transient adapter/network failures and stop retrying.
+        return rpcError(req.id, RPC_THREAD_OWNERSHIP_CONFLICT, err.message);
+      }
+      throw err;
+    }
 
     this.db.touchAgentActivity(state.agentId);
 

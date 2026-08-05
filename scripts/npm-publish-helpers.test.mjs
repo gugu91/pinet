@@ -49,6 +49,7 @@ test("getPublishPackages returns the full publish set in dependency order", () =
     "transport-core",
     "broker-core",
     "pinet-core",
+    "amp-worker",
     "imessage-bridge",
     "slack-bridge",
     "model-aware-compaction",

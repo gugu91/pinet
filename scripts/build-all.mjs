@@ -18,10 +18,11 @@ export const buildTiers = [
     "slack-api",
     "openai-execution-shaping",
     "model-aware-compaction",
+    "orb-node",
   ],
   ["broker-core", "imessage-bridge"],
   ["pinet-core"],
-  ["slack-bridge"],
+  ["slack-bridge", "amp-worker"],
 ];
 
 // The test suite imports most packages from TypeScript source via Vitest aliases,

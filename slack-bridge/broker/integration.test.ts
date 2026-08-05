@@ -7,7 +7,7 @@ import { BrokerSocketServer } from "./socket-server.js";
 import { BrokerClient } from "./client.js";
 import { runBrokerMaintenancePass } from "./maintenance.js";
 import { MessageRouter } from "./router.js";
-import type { OutboundMessage } from "./types.js";
+import { RPC_THREAD_OWNERSHIP_CONFLICT, type OutboundMessage } from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -1155,6 +1155,25 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       source: "imessage",
       channel: "chat:alice",
       ownerAgent: reg.agentId,
+    });
+  });
+
+  it("message.send surfaces a typed RPC code when the thread is owned by another agent", async () => {
+    server.setOutboundMessageAdapters([{ name: "imessage", send: async () => undefined }]);
+    db.createThread("imessage:chat:bob", "imessage", "chat:bob", "some-other-agent");
+
+    await client.register("imessage-conflict-sender", "💬");
+
+    const attempt = client.sendMessage({
+      threadId: "imessage:chat:bob",
+      body: "hello from broker",
+      source: "imessage",
+      channel: "chat:bob",
+    });
+
+    await expect(attempt).rejects.toMatchObject({
+      code: RPC_THREAD_OWNERSHIP_CONFLICT,
+      message: expect.stringContaining("already owned by another agent"),
     });
   });
 

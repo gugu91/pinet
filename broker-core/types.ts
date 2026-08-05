@@ -712,6 +712,13 @@ export const RPC_AGENT_STABLE_ID_CONFLICT = -32003;
  * runtime generation). Only a broker-initiated fenced wake may revive it.
  */
 export const RPC_AGENT_WAKE_FENCE_REJECTED = -32004;
+/**
+ * A `message.send` targeted a transport thread that is already owned by a
+ * different agent. Permanent for the requesting sender: retrying the same
+ * send cannot succeed unless ownership changes, so callers should stop
+ * retrying and handle it as a terminal delivery outcome.
+ */
+export const RPC_THREAD_OWNERSHIP_CONFLICT = -32005;
 
 // ─── Message adapter (canonical transport contracts) ─────
 

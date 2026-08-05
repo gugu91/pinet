@@ -664,6 +664,71 @@ describe("BrokerDB message sync identity", () => {
     }
   });
 
+  it("deduplicates internal agent sends by explicit externalId (idempotent worker replies)", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("slack:C1:123", "agent", "", null);
+
+      // A mesh worker's reply carries a stable per-job idempotency key. If the
+      // broker committed the first send but the worker's response was lost (or
+      // it crashed before persisting "replied"), the retry must return the
+      // existing message instead of inserting a duplicate.
+      const first = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "final Amp result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:55" },
+      );
+      const retry = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "final Amp result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:55" },
+      );
+
+      expect(retry.id).toBe(first.id);
+      expect(first.externalId).toBe("amp-worker:stable-1:reply:55");
+      expect(db.getInbox("agent-2")).toHaveLength(1);
+
+      // An acked recipient is not re-notified by a late retry.
+      const inboxId = db.getInbox("agent-2")[0].entry.id;
+      db.markDelivered([inboxId], "agent-2");
+      const lateRetry = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "final Amp result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:55" },
+      );
+      expect(lateRetry.id).toBe(first.id);
+      expect(db.getInbox("agent-2")).toHaveLength(0);
+
+      // A different key is a different message.
+      const other = db.insertMessage(
+        "slack:C1:123",
+        "agent",
+        "outbound",
+        "amp-worker-1",
+        "another result",
+        ["agent-2"],
+        { harness: "amp", externalId: "amp-worker:stable-1:reply:56" },
+      );
+      expect(other.id).not.toBe(first.id);
+      expect(db.getInbox("agent-2")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("deduplicates non-Slack transport messages by neutral transport identity", () => {
     const { db, dir } = createDb();
     cleanupDirs.push(dir);
@@ -1804,6 +1869,65 @@ describe("BrokerDB message sync identity", () => {
       const replacement = db.acquirePortLease({ purpose: "reuse", ttlMs: 1000, port: 52020 });
       expect(replacement.id).not.toBe(lease.id);
       expect(replacement.port).toBe(52020);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("repairs a missing inbox row for an idempotent direct-message retry", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("a2a:sender:target", "agent", "", "sender");
+      const message = db.insertMessage(
+        "a2a:sender:target",
+        "agent",
+        "inbound",
+        "sender",
+        "durable reply",
+        [],
+        { externalId: "amp-worker:w1:reply:7" },
+      );
+      expect(db.getInbox("target")).toHaveLength(0);
+
+      db.ensureInboxDelivery("target", message.id);
+      db.ensureInboxDelivery("target", message.id);
+      expect(db.getInbox("target")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("finds priority interrupt control beyond the normal inbox page", () => {
+    const { db, dir } = createDb();
+    cleanupDirs.push(dir);
+    try {
+      db.createThread("a2a:broker:worker", "agent", "", null);
+      for (let index = 0; index < 60; index += 1) {
+        db.insertMessage(
+          "a2a:broker:worker",
+          "agent",
+          "inbound",
+          "broker",
+          `ordinary assignment ${index}`,
+          ["worker"],
+          { a2a: true },
+        );
+      }
+      db.insertMessage(
+        "a2a:broker:worker",
+        "agent",
+        "inbound",
+        "broker",
+        '{"type":"pinet:control","action":"interrupt"}',
+        ["worker"],
+        { a2a: true, type: "pinet:control", action: "interrupt" },
+      );
+
+      expect(db.getInbox("worker")).toHaveLength(50);
+      const controls = db.getInbox("worker", 50, { controlOnly: true });
+      expect(controls).toHaveLength(1);
+      expect(controls[0]?.message.metadata).toMatchObject({ action: "interrupt" });
     } finally {
       db.close();
     }

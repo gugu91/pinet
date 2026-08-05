@@ -7,12 +7,14 @@ const expectedBuildPackages = [
   "transport-core",
   "broker-core",
   "pinet-core",
+  "amp-worker",
   "imessage-bridge",
   "slack-api",
   "nvim-bridge",
   "neon-psql",
   "openai-execution-shaping",
   "model-aware-compaction",
+  "orb-node",
   "slack-bridge",
 ];
 
@@ -20,6 +22,7 @@ const distExportDependencies = {
   "broker-core": ["transport-core"],
   "imessage-bridge": ["transport-core"],
   "pinet-core": ["broker-core", "transport-core"],
+  "amp-worker": ["broker-core", "pinet-core", "transport-core"],
   "slack-bridge": ["broker-core", "imessage-bridge", "pinet-core", "transport-core"],
 };
 

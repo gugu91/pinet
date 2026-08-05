@@ -3,11 +3,13 @@ minimumReleaseAge: 10080 # 7 days
 packages:
   - transport-core
   - broker-core
+  - amp-worker
   - pinet-core
   - slack-bridge
   - slack-api
   - imessage-bridge
   - nvim-bridge
   - neon-psql
+  - orb-node
   - openai-execution-shaping
   - model-aware-compaction
