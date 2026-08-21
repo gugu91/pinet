@@ -21,6 +21,7 @@ import {
 import { buildSecurityPrompt, type SecurityGuardrails } from "./guardrails.js";
 import { TtlCache, TtlSet } from "./ttl-cache.js";
 import { resolveReactionCommands } from "./reaction-triggers.js";
+import { resolveFollowerBrokerSocketPath } from "./follower-socket.js";
 import {
   inspectBrokerLock,
   probeBrokerSocket,
@@ -63,11 +64,7 @@ import {
   markFollowerInboxIdsDelivered,
   queueFollowerInboxIds,
 } from "./follower-delivery.js";
-import {
-  createFollowerRuntime,
-  resolveBrokerSocketPath,
-  type BrokerClientRef,
-} from "./follower-runtime.js";
+import { createFollowerRuntime, type BrokerClientRef } from "./follower-runtime.js";
 import {
   createSinglePlayerRuntime,
   type SinglePlayerPendingAttentionEntry,
@@ -130,12 +127,18 @@ import {
 // Settings and helpers imported from ./helpers.js
 
 export default function (pi: ExtensionAPI) {
+  pi.registerFlag("pinet-follow", {
+    description: "Start this process as a Pinet follower without changing persistent settings",
+    type: "boolean",
+  });
+
   let settings = loadSettingsFromFile();
 
   let botToken = settings.botToken ?? process.env.SLACK_BOT_TOKEN;
   let appToken = settings.appToken ?? process.env.SLACK_APP_TOKEN;
+  const initialProcessFollowRequested = pi.getFlag("pinet-follow") === true;
 
-  if (!botToken || !appToken) return;
+  if (!initialProcessFollowRequested && (!botToken || !appToken)) return;
 
   const slackRequestRuntime = createSlackRequestRuntime();
   const { slack } = slackRequestRuntime;
@@ -1858,13 +1861,47 @@ export default function (pi: ExtensionAPI) {
 
     refreshSettings();
     maybeWarnSlackUserAccess(ctx);
+    const processFollowRequested = pi.getFlag("pinet-follow") === true;
+    const brokerSocketPath = resolveFollowerBrokerSocketPath();
+    const brokerSocketExists = fs.existsSync(brokerSocketPath);
     const startupMode = resolveSlackBridgeStartupRuntimeMode(settings, {
-      brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
+      brokerSocketExists,
       brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+      processFollowRequested,
     });
+
+    if (processFollowRequested && !brokerSocketExists) {
+      const failure = `--pinet-follow could not find a broker socket at ${brokerSocketPath}. Continuing with Slack/Pinet/iMessage communication tools off. Start the broker or correct PINET_SOCKET_PATH, then restart this process.`;
+      console.error(`[slack-bridge] ${failure}`);
+      ctx.ui.notify(failure, "warning");
+    }
 
     if (startupMode === "off") {
       await transitionToRuntimeMode(ctx, startupMode);
+      return;
+    }
+
+    if (processFollowRequested) {
+      await toolRegistrationRuntime.sync(pi, "off");
+      setExtStatus(ctx, "reconnecting");
+      try {
+        await transitionToRuntimeMode(ctx, startupMode);
+        if (startupMode === "single") {
+          maybeWarnSlackGuardrailPosture(ctx);
+        }
+        console.log(`[slack-bridge] runtime mode: ${startupMode}`);
+      } catch (error) {
+        const failure = `--pinet-follow failed to connect and register with the broker at ${brokerSocketPath}: ${msg(error)}. Continuing with Slack/Pinet/iMessage communication tools off. Verify the broker, mesh authentication, and PINET_SOCKET_PATH, then restart this process.`;
+        console.error(`[slack-bridge] ${failure}`);
+        ctx.ui.notify(failure, "warning");
+        await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: true })).catch(
+          (cleanupError) => {
+            console.error(`[slack-bridge] runtime cleanup failed: ${msg(cleanupError)}`);
+          },
+        );
+        slackRequestRuntime.reset();
+        singlePlayerRuntime.resetShutdownState();
+      }
       return;
     }
 

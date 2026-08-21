@@ -83,6 +83,8 @@ describe("createToolRegistrationRuntime", () => {
       on: vi.fn(),
       registerTool: vi.fn(),
       registerCommand: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(() => undefined),
       registerMessageRenderer: vi.fn(),
       sendUserMessage: vi.fn(),
       sendMessage: vi.fn(),

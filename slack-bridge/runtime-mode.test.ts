@@ -127,6 +127,41 @@ describe("resolveSlackBridgeStartupRuntimeMode", () => {
     expect(resolveSlackBridgeStartupRuntimeMode({ runtimeMode: "broker" })).toBe("broker");
   });
 
+  it("lets a process-scoped follow request override persistent modes without mutating settings", () => {
+    for (const runtimeMode of ["off", "single", "broker"] as const) {
+      const settings = { runtimeMode };
+      expect(
+        resolveSlackBridgeStartupRuntimeMode(settings, {
+          brokerSocketExists: true,
+          processFollowRequested: true,
+        }),
+      ).toBe("follower");
+      expect(settings.runtimeMode).toBe(runtimeMode);
+    }
+  });
+
+  it("keeps a process-scoped follow request off when its broker socket is unavailable", () => {
+    expect(
+      resolveSlackBridgeStartupRuntimeMode(
+        { runtimeMode: "broker" },
+        { brokerSocketExists: false, processFollowRequested: true },
+      ),
+    ).toBe("off");
+  });
+
+  it("honors an explicit process follow request for broker-managed launches", () => {
+    expect(
+      resolveSlackBridgeStartupRuntimeMode(
+        { runtimeMode: "broker" },
+        {
+          brokerSocketExists: true,
+          brokerManagedFollowerLaunch: true,
+          processFollowRequested: true,
+        },
+      ),
+    ).toBe("follower");
+  });
+
   it("keeps broker-managed follower launches off even when persistent settings request broker mode", () => {
     expect(
       resolveSlackBridgeStartupRuntimeMode(

@@ -26,6 +26,13 @@ type CommandDefinition = {
 type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
 
 function slackBridge(pi: ExtensionAPI, onActiveToolsChanged?: (toolNames: string[]) => void): void {
+  if (typeof pi.registerFlag !== "function") {
+    pi.registerFlag = vi.fn();
+  }
+  if (typeof pi.getFlag !== "function") {
+    pi.getFlag = vi.fn(() => undefined);
+  }
+
   const activeTools = new Set([
     "read",
     "slack",
@@ -1190,7 +1197,7 @@ describe("slack-bridge top-level shutdown", () => {
     await sessionShutdown?.({}, ctx);
   });
 
-  it("does not auto-follow into the mesh for headless ephemeral subagent sessions", async () => {
+  it("keeps the local-subagent gate above a process-scoped follow request", async () => {
     const settingsPath = `${process.env.HOME}/.pi/agent/settings.json`;
     fs.mkdirSync(`${process.env.HOME}/.pi/agent`, { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify({ "slack-bridge": { autoFollow: true } }));
@@ -1198,6 +1205,7 @@ describe("slack-bridge top-level shutdown", () => {
     const events = new Map<string, EventHandler>();
     const pi = {
       appendEntry: vi.fn(),
+      getFlag: vi.fn((name: string) => name === "pinet-follow"),
       registerTool: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn((eventName: string, handler: EventHandler) => {

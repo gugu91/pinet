@@ -87,6 +87,11 @@ declare module "@earendil-works/pi-coding-agent" {
     on(event: string, handler: (event: any, ctx: ExtensionContext) => any): void;
     registerTool(definition: ToolDefinition): void;
     registerCommand(name: string, options: CommandDefinition): void;
+    registerFlag(
+      name: string,
+      options: { description?: string; type: "boolean" | "string"; default?: boolean | string },
+    ): void;
+    getFlag(name: string): boolean | string | undefined;
     registerMessageRenderer(
       name: string,
       renderer: (message: any, options: any, theme: any) => any,
