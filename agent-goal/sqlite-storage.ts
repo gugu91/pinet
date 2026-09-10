@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
   AgentGoal,
+  GoalCheckpoint,
   GoalContinuationClaim,
   GoalEvaluation,
   GoalPendingEvaluation,
@@ -14,9 +15,11 @@ import type {
 interface GoalRow {
   id: string;
   scope_id: string;
+  name: string | null;
   objective: string;
   status: GoalStatus;
   blocked_reason: string | null;
+  snoozed_until: string | null;
   max_iterations: number;
   max_tokens: number | null;
   max_runtime_ms: number | null;
@@ -83,9 +86,11 @@ export class SqliteGoalStorage implements GoalStorage {
     const goalTableSql = `CREATE TABLE IF NOT EXISTS agent_goals (
       scope_id TEXT PRIMARY KEY NOT NULL,
       id TEXT UNIQUE NOT NULL,
+      name TEXT,
       objective TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'blocked', 'budget_limited', 'complete')),
       blocked_reason TEXT,
+      snoozed_until TEXT,
       max_iterations INTEGER NOT NULL DEFAULT 25,
       max_tokens INTEGER,
       max_runtime_ms INTEGER,
@@ -107,6 +112,8 @@ export class SqliteGoalStorage implements GoalStorage {
       ),
     );
     for (const [name, definition] of [
+      ["name", "TEXT"],
+      ["snoozed_until", "TEXT"],
       ["max_iterations", "INTEGER NOT NULL DEFAULT 25"],
       ["max_tokens", "INTEGER"],
       ["max_runtime_ms", "INTEGER"],
@@ -149,6 +156,19 @@ export class SqliteGoalStorage implements GoalStorage {
     }
     this.db.exec(`
       PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS agent_goal_checkpoints (
+        id TEXT PRIMARY KEY NOT NULL,
+        scope_id TEXT NOT NULL,
+        goal_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        evidence TEXT,
+        next_step TEXT,
+        blocker TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (scope_id) REFERENCES agent_goals(scope_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS agent_goal_checkpoints_scope_created
+        ON agent_goal_checkpoints(scope_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS agent_goal_terminal_candidates (
         scope_id TEXT PRIMARY KEY NOT NULL,
         goal_id TEXT NOT NULL,
@@ -222,11 +242,13 @@ export class SqliteGoalStorage implements GoalStorage {
     return {
       id: row.id,
       scopeId: row.scope_id,
+      name: row.name ?? undefined,
       objective: row.objective,
       status: row.status,
       blockedReason: row.blocked_reason ?? undefined,
+      snoozedUntil: row.snoozed_until ?? undefined,
       budget: {
-        maxIterations: row.max_iterations,
+        maxIterations: row.max_iterations > 0 ? row.max_iterations : undefined,
         maxTokens: row.max_tokens ?? undefined,
         maxRuntimeMs: row.max_runtime_ms ?? undefined,
       },
@@ -254,19 +276,21 @@ export class SqliteGoalStorage implements GoalStorage {
     this.db
       .prepare(
         `INSERT INTO agent_goals
-          (scope_id, id, objective, status, blocked_reason, max_iterations, max_tokens,
-           max_runtime_ms, iterations_used, tokens_used, last_settled_at,
-           last_evaluation_id, last_evaluation_outcome, last_evaluation_reason, last_evaluation_at,
-           version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (scope_id, id, name, objective, status, blocked_reason, snoozed_until,
+           max_iterations, max_tokens, max_runtime_ms, iterations_used, tokens_used,
+           last_settled_at, last_evaluation_id, last_evaluation_outcome,
+           last_evaluation_reason, last_evaluation_at, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         goal.scopeId,
         goal.id,
+        goal.name ?? null,
         goal.objective,
         goal.status,
         goal.blockedReason ?? null,
-        goal.budget.maxIterations,
+        goal.snoozedUntil ?? null,
+        goal.budget.maxIterations ?? 0,
         goal.budget.maxTokens ?? null,
         goal.budget.maxRuntimeMs ?? null,
         goal.usage.iterations,
@@ -285,18 +309,20 @@ export class SqliteGoalStorage implements GoalStorage {
   async replace(goal: AgentGoal, expectedVersion: number): Promise<boolean> {
     const result = this.db
       .prepare(
-        `UPDATE agent_goals SET objective = ?, status = ?, blocked_reason = ?,
-         max_iterations = ?, max_tokens = ?, max_runtime_ms = ?, iterations_used = ?,
-         tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
+        `UPDATE agent_goals SET name = ?, objective = ?, status = ?, blocked_reason = ?,
+         snoozed_until = ?, max_iterations = ?, max_tokens = ?, max_runtime_ms = ?,
+         iterations_used = ?, tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
          last_evaluation_outcome = ?, last_evaluation_reason = ?, last_evaluation_at = ?,
          version = ?, updated_at = ?
          WHERE scope_id = ? AND id = ? AND version = ?`,
       )
       .run(
+        goal.name ?? null,
         goal.objective,
         goal.status,
         goal.blockedReason ?? null,
-        goal.budget.maxIterations,
+        goal.snoozedUntil ?? null,
+        goal.budget.maxIterations ?? 0,
         goal.budget.maxTokens ?? null,
         goal.budget.maxRuntimeMs ?? null,
         goal.usage.iterations,
@@ -320,18 +346,20 @@ export class SqliteGoalStorage implements GoalStorage {
     try {
       const result = this.db
         .prepare(
-          `UPDATE agent_goals SET objective = ?, status = ?, blocked_reason = ?,
-           max_iterations = ?, max_tokens = ?, max_runtime_ms = ?, iterations_used = ?,
-           tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
+          `UPDATE agent_goals SET name = ?, objective = ?, status = ?, blocked_reason = ?,
+           snoozed_until = ?, max_iterations = ?, max_tokens = ?, max_runtime_ms = ?,
+           iterations_used = ?, tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
            last_evaluation_outcome = ?, last_evaluation_reason = ?, last_evaluation_at = ?,
            version = ?, updated_at = ?
            WHERE scope_id = ? AND id = ? AND version = ?`,
         )
         .run(
+          goal.name ?? null,
           goal.objective,
           goal.status,
           goal.blockedReason ?? null,
-          goal.budget.maxIterations,
+          goal.snoozedUntil ?? null,
+          goal.budget.maxIterations ?? 0,
           goal.budget.maxTokens ?? null,
           goal.budget.maxRuntimeMs ?? null,
           goal.usage.iterations,
@@ -375,6 +403,59 @@ export class SqliteGoalStorage implements GoalStorage {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  async addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean> {
+    const result = this.db
+      .prepare(
+        `INSERT INTO agent_goal_checkpoints
+         (id, scope_id, goal_id, summary, evidence, next_step, blocker, created_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (
+           SELECT 1 FROM agent_goals WHERE scope_id = ? AND id = ? AND status != 'complete'
+         )`,
+      )
+      .run(
+        checkpoint.id,
+        checkpoint.scopeId,
+        checkpoint.goalId,
+        checkpoint.summary,
+        checkpoint.evidence ?? null,
+        checkpoint.nextStep ?? null,
+        checkpoint.blocker ?? null,
+        checkpoint.createdAt,
+        checkpoint.scopeId,
+        checkpoint.goalId,
+      );
+    return result.changes === 1;
+  }
+
+  async listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]> {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM agent_goal_checkpoints WHERE scope_id = ? ORDER BY created_at DESC, id DESC",
+      )
+      .all(scopeId);
+    return rows.map((row) => {
+      if (
+        typeof row.id !== "string" ||
+        typeof row.scope_id !== "string" ||
+        typeof row.goal_id !== "string" ||
+        typeof row.summary !== "string" ||
+        typeof row.created_at !== "string"
+      ) {
+        throw new Error("Stored goal checkpoint is malformed");
+      }
+      return {
+        id: row.id,
+        scopeId: row.scope_id,
+        goalId: row.goal_id,
+        summary: row.summary,
+        evidence: typeof row.evidence === "string" ? row.evidence : undefined,
+        nextStep: typeof row.next_step === "string" ? row.next_step : undefined,
+        blocker: typeof row.blocker === "string" ? row.blocker : undefined,
+        createdAt: row.created_at,
+      };
+    });
   }
 
   async delete(scopeId: string, expectedVersion: number): Promise<boolean> {
@@ -573,8 +654,7 @@ export class SqliteGoalStorage implements GoalStorage {
     try {
       const updated = this.db
         .prepare(
-          `UPDATE agent_goals SET objective = ?, status = ?, blocked_reason = ?,
-           max_iterations = ?, max_tokens = ?, max_runtime_ms = ?, iterations_used = ?,
+          `UPDATE agent_goals SET status = ?, blocked_reason = ?, iterations_used = ?,
            tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
            last_evaluation_outcome = ?, last_evaluation_reason = ?, last_evaluation_at = ?,
            version = ?, updated_at = ?
@@ -584,12 +664,8 @@ export class SqliteGoalStorage implements GoalStorage {
            )`,
         )
         .run(
-          goal.objective,
           goal.status,
           goal.blockedReason ?? null,
-          goal.budget.maxIterations,
-          goal.budget.maxTokens ?? null,
-          goal.budget.maxRuntimeMs ?? null,
           goal.usage.iterations,
           goal.usage.tokens,
           goal.lastSettledAt ?? null,

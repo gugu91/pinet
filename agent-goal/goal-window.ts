@@ -6,38 +6,50 @@ import {
   wrapTextWithAnsi,
   type Component,
 } from "@earendil-works/pi-tui";
-import { displayGoalText } from "./dashboard.js";
-import type { AgentGoal, GoalContinuationClaim } from "./domain.js";
+import { displayGoalText, formatElapsed, goalDisplayName } from "./dashboard.js";
+import type { AgentGoal, GoalCheckpoint, GoalContinuationClaim } from "./domain.js";
 
-function progressBar(value: number, maximum: number, width: number): string {
-  const ratio = Math.min(1, Math.max(0, value / maximum));
-  const filled = Math.round(ratio * width);
-  return `${"━".repeat(filled)}${"─".repeat(width - filled)}`;
-}
-
-function compactNumber(value: number): string {
-  if (value < 1_000) return String(value);
-  const divisor = value < 1_000_000 ? 1_000 : 1_000_000;
-  const suffix = value < 1_000_000 ? "k" : "m";
-  const scaled = value / divisor;
-  return `${scaled.toFixed(scaled < 100 ? 1 : 0).replace(/\.0$/, "")}${suffix}`;
-}
-
-export type GoalWindowLifecycleAction = "pause" | "resume" | "complete" | "clear" | "close";
 export type GoalWindowAction =
-  | GoalWindowLifecycleAction
-  | { type: "budget"; maxIterations: number; maxTokens?: number };
+  | "close"
+  | "closeGoal"
+  /** @deprecated Parsed only for compatibility with older integrations; not exposed in the UI. */
+  | "pause"
+  /** @deprecated Parsed only for compatibility with older integrations; not exposed in the UI. */
+  | "resume"
+  | {
+      type: "create";
+      name: string;
+      objective: string;
+      maxIterations?: number;
+      maxRuntimeMs?: number;
+    }
+  | { type: "edit"; name: string; objective: string }
+  | {
+      type: "budget";
+      maxIterations?: number;
+      maxRuntimeMs?: number;
+      maxTokens?: number;
+      disabled?: boolean;
+    }
+  | { type: "snooze"; durationMs: number };
 
-type ConfirmableGoalWindowAction = Extract<GoalWindowLifecycleAction, "complete" | "clear">;
-type BudgetField = "turns" | "tokens";
+type Mode = "details" | "create" | "edit" | "budget" | "snooze";
+type TextField = "name" | "objective" | "turns" | "runtime";
+type BudgetField = "turns" | "runtime";
 
 export class GoalWindow implements Component {
-  private pendingConfirmation: ConfirmableGoalWindowAction | undefined;
-  private budgetField: BudgetField | undefined;
+  private mode: Mode = "details";
+  private textField: TextField = "name";
+  private name = "";
+  private objective = "";
+  private budgetField: BudgetField = "turns";
   private budgetTurns = "";
-  private budgetTokens = "";
-  private replaceBudgetValue = false;
-  private budgetInputError: string | undefined;
+  private budgetRuntime = "";
+  private snoozeDuration = "30m";
+  private inputError: string | undefined;
+  private confirmClose = false;
+  private showAllCheckpoints = false;
+  private checkpointOffset = 0;
 
   constructor(
     private readonly goal: AgentGoal | undefined,
@@ -47,231 +59,374 @@ export class GoalWindow implements Component {
     private readonly requestRender: () => void = () => undefined,
     private readonly now: () => number = Date.now,
     private readonly actionError?: string,
+    private readonly checkpoints: GoalCheckpoint[] = [],
   ) {}
 
   handleInput(data: string): void {
     const key = data.toLowerCase();
-    if (matchesKey(data, "ctrl+c") || key === "q") {
+    if (matchesKey(data, "ctrl+c") || (this.mode === "details" && key === "q")) {
       this.onAction("close");
       return;
     }
     if (matchesKey(data, "escape")) {
-      if (this.pendingConfirmation) {
-        this.pendingConfirmation = undefined;
+      if (this.mode !== "details") {
+        this.mode = "details";
+        this.inputError = undefined;
         this.requestRender();
-      } else if (this.budgetField) {
-        this.budgetField = undefined;
-        this.budgetInputError = undefined;
+      } else if (this.confirmClose) {
+        this.confirmClose = false;
         this.requestRender();
-      } else {
-        this.onAction("close");
-      }
+      } else this.onAction("close");
       return;
     }
-    if (!this.goal) return;
 
-    if (this.budgetField) {
-      if (matchesKey(data, "tab") || matchesKey(data, "up") || matchesKey(data, "down")) {
-        this.budgetField = this.budgetField === "turns" ? "tokens" : "turns";
-        this.replaceBudgetValue = true;
-        this.budgetInputError = undefined;
-      } else if (matchesKey(data, "backspace")) {
-        const value = this.budgetField === "turns" ? this.budgetTurns : this.budgetTokens;
-        if (this.budgetField === "turns") this.budgetTurns = value.slice(0, -1);
-        else this.budgetTokens = value.slice(0, -1);
-        this.replaceBudgetValue = false;
-        this.budgetInputError = undefined;
-      } else if (matchesKey(data, "enter")) {
-        const maxIterations = Number(this.budgetTurns);
-        if (!Number.isInteger(maxIterations) || maxIterations <= 0) {
-          this.budgetInputError = "Turns must be a positive integer";
-        } else {
-          const maxTokens = this.budgetTokens ? Number(this.budgetTokens) : undefined;
-          this.onAction({ type: "budget", maxIterations, maxTokens });
-          return;
-        }
-      } else if (/^\d+$/.test(data)) {
-        const value = this.replaceBudgetValue
-          ? data
-          : `${this.budgetField === "turns" ? this.budgetTurns : this.budgetTokens}${data}`;
-        if (this.budgetField === "turns") this.budgetTurns = value;
-        else this.budgetTokens = value;
-        this.replaceBudgetValue = false;
-        this.budgetInputError = undefined;
-      } else {
-        return;
-      }
+    if (this.mode === "create" || this.mode === "edit") {
+      this.handleTextForm(data);
+      return;
+    }
+    if (this.mode === "budget") {
+      this.handleBudgetForm(data);
+      return;
+    }
+    if (this.mode === "snooze") {
+      this.handleSnoozeForm(data);
+      return;
+    }
+
+    if (!this.goal) {
+      if (key === "n" || matchesKey(data, "enter")) this.openTextForm("create");
+      return;
+    }
+    if (this.showAllCheckpoints && matchesKey(data, "down")) {
+      this.checkpointOffset = Math.min(
+        Math.max(0, this.checkpoints.length - 1),
+        this.checkpointOffset + 1,
+      );
       this.requestRender();
       return;
     }
-
-    if (this.pendingConfirmation) {
-      const confirmationKey = this.pendingConfirmation === "complete" ? "c" : "x";
-      if (key === confirmationKey) {
-        this.onAction(this.pendingConfirmation);
-      } else {
-        this.pendingConfirmation = undefined;
+    if (this.showAllCheckpoints && matchesKey(data, "up")) {
+      this.checkpointOffset = Math.max(0, this.checkpointOffset - 1);
+      this.requestRender();
+      return;
+    }
+    if (this.confirmClose) {
+      if (key === "x") this.onAction("closeGoal");
+      else {
+        this.confirmClose = false;
         this.requestRender();
       }
       return;
     }
-
-    if (key === "b" && this.goal.status !== "complete") {
-      this.budgetField = "turns";
-      this.budgetTurns = String(this.goal.budget.maxIterations);
-      this.budgetTokens =
-        this.goal.budget.maxTokens === undefined ? "" : String(this.goal.budget.maxTokens);
-      this.replaceBudgetValue = true;
-      this.budgetInputError = undefined;
+    if (key === "e") this.openTextForm("edit");
+    else if (key === "b" && this.goal.status !== "complete") this.openBudgetForm();
+    else if (key === "s" && this.goal.status !== "complete") {
+      this.mode = "snooze";
+      this.inputError = undefined;
       this.requestRender();
-    } else if (key === "p" && this.goal.status === "active") {
-      this.onAction("pause");
-    } else if (key === "r" && (this.goal.status === "paused" || this.goal.status === "blocked")) {
-      this.onAction("resume");
-    } else if (key === "c" && this.goal.status !== "complete") {
-      this.pendingConfirmation = "complete";
+    } else if (key === "h" && this.checkpoints.length > 3) {
+      this.showAllCheckpoints = !this.showAllCheckpoints;
+      this.checkpointOffset = 0;
       this.requestRender();
     } else if (key === "x") {
-      this.pendingConfirmation = "clear";
+      this.confirmClose = true;
       this.requestRender();
     }
+  }
+
+  private openTextForm(mode: "create" | "edit"): void {
+    this.mode = mode;
+    this.textField = "name";
+    this.name = mode === "edit" && this.goal ? goalDisplayName(this.goal) : "";
+    this.objective = mode === "edit" && this.goal ? this.goal.objective : "";
+    if (mode === "create") {
+      this.budgetTurns = "";
+      this.budgetRuntime = "";
+    }
+    this.inputError = undefined;
+    this.requestRender();
+  }
+
+  private handleTextForm(data: string): void {
+    if (matchesKey(data, "tab") || matchesKey(data, "down")) {
+      const fields: TextField[] =
+        this.mode === "create" ? ["name", "objective", "turns", "runtime"] : ["name", "objective"];
+      this.textField = fields[(fields.indexOf(this.textField) + 1) % fields.length]!;
+    } else if (matchesKey(data, "up")) {
+      const fields: TextField[] =
+        this.mode === "create" ? ["name", "objective", "turns", "runtime"] : ["name", "objective"];
+      this.textField =
+        fields[(fields.indexOf(this.textField) + fields.length - 1) % fields.length]!;
+    } else if (matchesKey(data, "backspace")) {
+      if (this.textField === "name") this.name = this.name.slice(0, -1);
+      else if (this.textField === "objective") this.objective = this.objective.slice(0, -1);
+      else if (this.textField === "turns") this.budgetTurns = this.budgetTurns.slice(0, -1);
+      else this.budgetRuntime = this.budgetRuntime.slice(0, -1);
+    } else if (matchesKey(data, "enter")) {
+      const name = this.name.trim();
+      const objective = this.objective.trim();
+      const maxIterations = this.budgetTurns ? Number(this.budgetTurns) : undefined;
+      const maxRuntimeMs = this.budgetRuntime ? parseDuration(this.budgetRuntime) : undefined;
+      if (!name || !objective) this.inputError = "Name and objective are required";
+      else if (
+        maxIterations !== undefined &&
+        (!Number.isInteger(maxIterations) || maxIterations <= 0)
+      )
+        this.inputError = "Turns must be a positive integer";
+      else if (this.budgetRuntime && maxRuntimeMs === undefined)
+        this.inputError = "Runtime must use m, h, or d";
+      else if (this.mode === "create")
+        this.onAction({ type: "create", name, objective, maxIterations, maxRuntimeMs });
+      else this.onAction({ type: "edit", name, objective });
+      this.requestRender();
+      return;
+    } else if (
+      data.length > 0 &&
+      Array.from(data).every((character) => {
+        const code = character.codePointAt(0) ?? 0;
+        return code > 31 && code !== 127;
+      })
+    ) {
+      if (this.textField === "name") this.name += data;
+      else if (this.textField === "objective") this.objective += data;
+      else if (this.textField === "turns" && /^\d+$/.test(data)) this.budgetTurns += data;
+      else if (this.textField === "runtime" && /^[0-9mhd]+$/i.test(data))
+        this.budgetRuntime += data;
+      else return;
+    } else return;
+    this.inputError = undefined;
+    this.requestRender();
+  }
+
+  private openBudgetForm(): void {
+    this.mode = "budget";
+    this.budgetField = "turns";
+    this.budgetTurns = this.goal?.budget.maxIterations?.toString() ?? "";
+    this.budgetRuntime = this.goal?.budget.maxRuntimeMs
+      ? `${Math.round(this.goal.budget.maxRuntimeMs / 60_000)}m`
+      : "";
+    this.inputError = undefined;
+    this.requestRender();
+  }
+
+  private handleBudgetForm(data: string): void {
+    if (data.toLowerCase() === "o") {
+      this.onAction({ type: "budget", disabled: true });
+      return;
+    }
+    if (matchesKey(data, "tab") || matchesKey(data, "up") || matchesKey(data, "down")) {
+      this.budgetField = this.budgetField === "turns" ? "runtime" : "turns";
+    } else if (matchesKey(data, "backspace")) {
+      if (this.budgetField === "turns") this.budgetTurns = this.budgetTurns.slice(0, -1);
+      else this.budgetRuntime = this.budgetRuntime.slice(0, -1);
+    } else if (matchesKey(data, "enter")) {
+      const maxIterations = this.budgetTurns ? Number(this.budgetTurns) : undefined;
+      const maxRuntimeMs = this.budgetRuntime ? parseDuration(this.budgetRuntime) : undefined;
+      if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations <= 0))
+        this.inputError = "Turns must be a positive integer";
+      else if (this.budgetRuntime && maxRuntimeMs === undefined)
+        this.inputError = "Runtime must use m, h, or d (for example 2h)";
+      else if (maxIterations === undefined && maxRuntimeMs === undefined)
+        this.inputError = "Set a limit or press o to turn limits off";
+      else this.onAction({ type: "budget", maxIterations, maxRuntimeMs });
+      this.requestRender();
+      return;
+    } else if (/^[0-9mhd]+$/i.test(data)) {
+      if (this.budgetField === "turns" && /^\d+$/.test(data)) this.budgetTurns += data;
+      else if (this.budgetField === "runtime") this.budgetRuntime += data;
+      else return;
+    } else return;
+    this.inputError = undefined;
+    this.requestRender();
+  }
+
+  private handleSnoozeForm(data: string): void {
+    if (matchesKey(data, "backspace")) this.snoozeDuration = this.snoozeDuration.slice(0, -1);
+    else if (matchesKey(data, "enter")) {
+      const durationMs = parseDuration(this.snoozeDuration);
+      if (durationMs === undefined) this.inputError = "Duration must use m, h, or d";
+      else this.onAction({ type: "snooze", durationMs });
+      this.requestRender();
+      return;
+    } else if (/^[0-9mhd]+$/i.test(data)) this.snoozeDuration += data;
+    else return;
+    this.inputError = undefined;
+    this.requestRender();
   }
 
   render(width: number): string[] {
     if (width < 8) return [truncateToWidth("Goal", Math.max(0, width), "")];
     const innerWidth = width - 2;
     const contentWidth = Math.max(1, innerWidth - 2);
-    const borderColor = this.goal?.status === "complete" ? "success" : "borderAccent";
-    const border = (text: string): string => this.theme.fg(borderColor, text);
+    const border = (text: string): string => this.theme.fg("borderAccent", text);
     const row = (content = ""): string => {
       const truncated = truncateToWidth(content, innerWidth, "", true);
       return `${border("│")}${truncated}${" ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)))}${border("│")}`;
     };
-    const title = this.theme.fg("accent", this.theme.bold(" Goal "));
-    const titleWidth = visibleWidth(title);
+    const title = this.theme.fg(
+      "accent",
+      this.theme.bold(` Goal${this.mode === "details" ? "" : ` · ${this.mode}`} `),
+    );
     const lines = [
-      `${border("╭")}${title}${border(`${"─".repeat(Math.max(0, innerWidth - titleWidth))}╮`)}`,
+      `${border("╭")}${title}${border(`${"─".repeat(Math.max(0, innerWidth - visibleWidth(title)))}╮`)}`,
     ];
-
-    if (!this.goal) {
+    if (!this.goal && this.mode === "details") {
       lines.push(row(), row(` ${this.theme.fg("muted", "No goal for this session.")}`));
-      lines.push(row(` ${this.theme.fg("dim", "/goal <objective> to begin")}`), row());
-      lines.push(row(` ${this.theme.fg("dim", "esc · q  close")}`));
+      lines.push(row(` ${this.theme.fg("dim", "n · enter  create · q close")}`));
       lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
       return lines;
     }
+    if (this.mode === "create" || this.mode === "edit") {
+      lines.push(
+        row(` ${this.textField === "name" ? "›" : " "} Name      ${this.name || "_"}`),
+        row(` ${this.textField === "objective" ? "›" : " "} Objective ${this.objective || "_"}`),
+        ...(this.mode === "create"
+          ? [
+              row(
+                ` ${this.textField === "turns" ? "›" : " "} Turns     ${this.budgetTurns || "off"}`,
+              ),
+              row(
+                ` ${this.textField === "runtime" ? "›" : " "} Runtime   ${this.budgetRuntime || "off"}`,
+              ),
+            ]
+          : []),
+        row(),
+        row(` ${this.theme.fg("dim", "tab field · enter save · esc cancel")}`),
+      );
+      if (this.mode === "edit")
+        lines.push(
+          row(` ${this.theme.fg("warning", "Objective applies on the next continuation.")}`),
+        );
+      this.finish(lines, row, border, innerWidth);
+      return lines;
+    }
+    if (this.mode === "budget") {
+      lines.push(
+        row(` › Limits are opt-in and stop continuation, not in-flight work.`),
+        row(` ${this.budgetField === "turns" ? "›" : " "} Turns  ${this.budgetTurns || "off"}`),
+        row(
+          ` ${this.budgetField === "runtime" ? "›" : " "} Runtime ${this.budgetRuntime || "off"}`,
+        ),
+        row(),
+        row(` ${this.theme.fg("dim", "tab field · enter save · o off · esc cancel")}`),
+      );
+      this.finish(lines, row, border, innerWidth);
+      return lines;
+    }
+    if (this.mode === "snooze") {
+      lines.push(
+        row(` Snooze for ${this.snoozeDuration || "_"}`),
+        row(
+          ` ${this.theme.fg("dim", "Automatically continues when due · enter save · esc cancel")}`,
+        ),
+      );
+      this.finish(lines, row, border, innerWidth);
+      return lines;
+    }
 
-    const statusColor =
-      this.goal.status === "complete"
-        ? "success"
-        : this.goal.status === "blocked"
-          ? "error"
-          : this.goal.status === "active"
-            ? "accent"
-            : "warning";
-    lines.push(row(` ${this.theme.fg(statusColor, `● ${this.goal.status.toUpperCase()}`)}`));
-
-    const objectiveLines = wrapTextWithAnsi(
-      displayGoalText(this.goal.objective, 500),
-      contentWidth,
-    ).slice(0, 3);
-    for (const objectiveLine of objectiveLines) lines.push(row(` ${objectiveLine}`));
-    lines.push(row());
-
-    const turnBar = progressBar(
-      this.goal.usage.iterations,
-      this.goal.budget.maxIterations,
-      Math.min(12, Math.max(4, contentWidth - 23)),
+    const goal = this.goal!;
+    const status = goal.snoozedUntil
+      ? `SNOOZED UNTIL ${goal.snoozedUntil}`
+      : goal.status.toUpperCase();
+    lines.push(
+      row(` ${this.theme.fg(goal.status === "complete" ? "success" : "accent", `● ${status}`)}`),
     );
+    lines.push(row(` ${this.theme.bold(goalDisplayName(goal))}`));
+    for (const objectiveLine of wrapTextWithAnsi(
+      displayGoalText(goal.objective, 500),
+      contentWidth,
+    ).slice(0, 3))
+      lines.push(row(` ${objectiveLine}`));
+    const elapsedEnd = goal.status === "active" ? this.now() : Date.parse(goal.updatedAt);
     lines.push(
       row(
-        ` Turns  ${this.theme.fg("accent", turnBar)}  ${this.goal.usage.iterations}/${this.goal.budget.maxIterations}`,
+        ` ${this.theme.fg("muted", `Elapsed ${formatElapsed(elapsedEnd - Date.parse(goal.createdAt))}`)}`,
       ),
     );
-
-    if (this.goal.budget.maxTokens === undefined) {
-      lines.push(row(` Tokens ${compactNumber(this.goal.usage.tokens)}`));
-    } else {
-      const tokenBar = progressBar(
-        this.goal.usage.tokens,
-        this.goal.budget.maxTokens,
-        Math.min(12, Math.max(4, contentWidth - 23)),
-      );
-      lines.push(
-        row(
-          ` Tokens ${this.theme.fg("accent", tokenBar)}  ${compactNumber(this.goal.usage.tokens)}/${compactNumber(this.goal.budget.maxTokens)}`,
-        ),
-      );
+    const limits = [
+      goal.budget.maxIterations === undefined
+        ? undefined
+        : `${goal.usage.iterations}/${goal.budget.maxIterations} turns`,
+      goal.budget.maxRuntimeMs === undefined
+        ? undefined
+        : `${Math.round(goal.budget.maxRuntimeMs / 60_000)}m runtime`,
+    ].filter((value): value is string => value !== undefined);
+    lines.push(
+      row(` ${this.theme.fg("muted", `Limits ${limits.length ? limits.join(" · ") : "off"}`)}`),
+    );
+    if (this.claim)
+      lines.push(row(` ${this.theme.fg("muted", `Continuation ${this.claim.state}`)}`));
+    if (this.checkpoints.length) {
+      lines.push(row(), row(` ${this.theme.fg("accent", "Checkpoints · agent-reported")}`));
+      const shown = this.showAllCheckpoints
+        ? this.checkpoints.slice(this.checkpointOffset, this.checkpointOffset + 3)
+        : this.checkpoints.slice(0, 3);
+      for (const checkpoint of shown) {
+        lines.push(
+          row(
+            ` ${checkpoint.createdAt.slice(11, 16)} · ${displayGoalText(checkpoint.summary, contentWidth - 10)}`,
+          ),
+        );
+        if (this.showAllCheckpoints && checkpoint.evidence)
+          lines.push(
+            row(`   evidence · ${displayGoalText(checkpoint.evidence, contentWidth - 14)}`),
+          );
+        if (this.showAllCheckpoints && (checkpoint.blocker || checkpoint.nextStep))
+          lines.push(
+            row(
+              `   ${checkpoint.blocker ? "blocker" : "next"} · ${displayGoalText(checkpoint.blocker ?? checkpoint.nextStep ?? "", contentWidth - 11)}`,
+            ),
+          );
+      }
+      if (!this.showAllCheckpoints && this.checkpoints.length > 3)
+        lines.push(
+          row(` ${this.theme.fg("dim", `… and ${this.checkpoints.length - 3} more · h show all`)}`),
+        );
+      else if (this.showAllCheckpoints && this.checkpoints.length > 3)
+        lines.push(
+          row(
+            ` ${this.theme.fg(
+              "dim",
+              `history ${this.checkpointOffset + 1}-${Math.min(
+                this.checkpointOffset + shown.length,
+                this.checkpoints.length,
+              )}/${this.checkpoints.length} · ↑↓ scroll · h newest 3`,
+            )}`,
+          ),
+        );
     }
-
-    if (this.goal.budget.maxRuntimeMs !== undefined) {
-      const end = this.goal.status === "active" ? this.now() : Date.parse(this.goal.updatedAt);
-      const elapsed = Math.max(0, end - Date.parse(this.goal.createdAt));
-      const runtimeBar = progressBar(
-        elapsed,
-        this.goal.budget.maxRuntimeMs,
-        Math.min(12, Math.max(4, contentWidth - 23)),
-      );
-      lines.push(
-        row(
-          ` Time   ${this.theme.fg("accent", runtimeBar)}  ${Math.floor(elapsed / 60_000)}m/${Math.ceil(this.goal.budget.maxRuntimeMs / 60_000)}m`,
-        ),
-      );
-    }
-
-    if (this.goal.lastEvaluation) {
-      lines.push(
-        row(),
-        row(
-          ` ${this.theme.fg("muted", "Latest")} ${displayGoalText(this.goal.lastEvaluation.reason, Math.max(20, contentWidth - 8))}`,
-        ),
-      );
-    } else if (this.goal.blockedReason) {
-      lines.push(
-        row(),
-        row(
-          ` ${this.theme.fg("muted", "Reason")} ${displayGoalText(this.goal.blockedReason, Math.max(20, contentWidth - 8))}`,
-        ),
-      );
-    }
-    if (this.claim) {
-      lines.push(
-        row(
-          ` ${this.theme.fg("muted", "Continuation")} ${this.claim.state} · attempt ${this.claim.attempt}`,
-        ),
-      );
-    }
-
-    if (this.budgetField) {
-      const turns = `${this.budgetField === "turns" ? "›" : " "} Turns  ${this.budgetTurns || "_"}`;
-      const tokens = `${this.budgetField === "tokens" ? "›" : " "} Tokens ${this.budgetTokens || "unchanged"}`;
-      lines.push(
-        row(),
-        row(` ${this.theme.fg("accent", "Edit budget")}`),
-        row(` ${turns}`),
-        row(` ${tokens}`),
-      );
-    }
-    const error = this.budgetInputError ?? this.actionError;
-    if (error) lines.push(row(` ${this.theme.fg("error", displayGoalText(error, contentWidth))}`));
-
-    const actions = [
-      this.goal.status === "active" ? "p pause" : undefined,
-      this.goal.status === "paused" || this.goal.status === "blocked" ? "r resume" : undefined,
-      this.goal.status !== "complete" ? "b budget" : undefined,
-      this.goal.status !== "complete" ? "c complete" : undefined,
-      "x clear",
-      "q close",
-    ].filter((action): action is string => action !== undefined);
-    const footer = this.pendingConfirmation
-      ? `${this.pendingConfirmation === "complete" ? "c" : "x"} again to confirm ${this.pendingConfirmation} · esc cancel`
-      : this.budgetField
-        ? "digits edit · tab field · enter save · esc cancel"
-        : actions.join(" · ");
+    const footer = this.confirmClose
+      ? "x again to close goal · esc cancel"
+      : goal.status === "complete"
+        ? "x close goal · q close overlay"
+        : "e edit · b limits · s snooze · x close goal · q overlay";
     lines.push(row(), row(` ${this.theme.fg("dim", footer)}`));
-    lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
+    this.finish(lines, row, border, innerWidth);
     return lines;
   }
 
+  private finish(
+    lines: string[],
+    row: (content?: string) => string,
+    border: (text: string) => string,
+    innerWidth: number,
+  ): void {
+    const error = this.inputError ?? this.actionError;
+    if (error)
+      lines.push(row(` ${this.theme.fg("error", displayGoalText(error, innerWidth - 2))}`));
+    lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
+  }
+
   invalidate(): void {}
+}
+
+export function parseDuration(value: string): number | undefined {
+  const match = value
+    .trim()
+    .toLowerCase()
+    .match(/^(\d+)(m|h|d)$/);
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount <= 0) return undefined;
+  return amount * (match[2] === "m" ? 60_000 : match[2] === "h" ? 3_600_000 : 86_400_000);
 }

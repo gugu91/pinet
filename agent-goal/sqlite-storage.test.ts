@@ -87,14 +87,33 @@ describe("SqliteGoalStorage", () => {
     const path = join(directory, "nested", "goals.sqlite");
 
     const first = new SqliteGoalStorage(path);
-    await first.create(goal);
+    const persistedGoal = {
+      ...goal,
+      name: "Ship goal UX",
+      snoozedUntil: "2026-01-01T01:00:00.000Z",
+    };
+    await first.create(persistedGoal);
+    expect(
+      await first.addCheckpoint({
+        id: "checkpoint-1",
+        scopeId: goal.scopeId,
+        goalId: goal.id,
+        summary: "Storage works",
+        evidence: "round-trip verified",
+        nextStep: "continue",
+        createdAt: "2026-01-01T00:02:00.000Z",
+      }),
+    ).toBe(true);
     expect(await first.putPendingEvaluation(pending)).toBe(true);
     expect(await first.putTerminalCandidate(candidate)).toBe(true);
     expect(await first.createContinuationClaim(claim)).toBe(true);
     first.close();
     const second = new SqliteGoalStorage(path);
 
-    expect(await second.get("session-1")).toEqual(goal);
+    expect(await second.get("session-1")).toEqual(persistedGoal);
+    expect(await second.listCheckpoints("session-1")).toEqual([
+      expect.objectContaining({ summary: "Storage works", evidence: "round-trip verified" }),
+    ]);
     expect(await second.getPendingEvaluation("session-1")).toEqual(pending);
     expect(await second.getTerminalCandidate("session-1")).toEqual(candidate);
     expect(await second.getContinuationClaim("session-1")).toEqual(claim);

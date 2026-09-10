@@ -312,19 +312,19 @@ describe("registerAgentGoal", () => {
 
     await tool.execute(
       "call-1",
-      { maxTurns: 12, maxTokens: 50_000 },
+      { maxTurns: 12, maxRuntimeMs: 7_200_000 },
       new AbortController().signal,
       undefined,
       context,
     );
-    await command.handler("budget turns=8 tokens=30000", context);
+    await command.handler("update budget turns 8", context);
 
     expect(await storage.get("session-1")).toMatchObject({
-      budget: { maxIterations: 8, maxTokens: 30_000 },
+      budget: { maxIterations: 8, maxTokens: 10_000, maxRuntimeMs: 7_200_000 },
       usage: { iterations: 1, tokens: 500 },
       version: 3,
     });
-    expect(notify).toHaveBeenCalledWith("Goal budget: 8 turns · 30000 tokens", "info");
+    expect(notify).toHaveBeenCalledWith("Goal command applied: update budget turns 8", "info");
   });
 
   it("keeps passive UI compact and applies modal actions before refreshing", async () => {
@@ -388,7 +388,7 @@ describe("registerAgentGoal", () => {
     await handlers.get("session_start")?.({}, context);
     await command.handler("", context);
 
-    expect(setStatus).toHaveBeenCalledWith("agent-goal", "goal: active · 1/5 turns");
+    expect(setStatus).toHaveBeenCalledWith("agent-goal", expect.stringMatching(/^🎯 \| ship \| /));
     expect(setWidget).toHaveBeenCalledWith("agent-goal", undefined);
     expect(custom).toHaveBeenCalledTimes(4);
     expect(await storage.get("session-1")).toMatchObject({
@@ -397,7 +397,7 @@ describe("registerAgentGoal", () => {
     });
     expect(setStatus).toHaveBeenLastCalledWith(
       "agent-goal",
-      "goal: paused · 1/4 turns · 10/1000 tok",
+      expect.stringMatching(/^🎯 \| ship \| /),
     );
   });
 
@@ -445,18 +445,9 @@ describe("registerAgentGoal", () => {
       }
 
       await handlers.get("agent_start")?.({}, context);
-      await expect(
-        createGoalTool.execute(
-          "rejected-call",
-          { objective: "unbounded task", maxIterations: 9 },
-          new AbortController().signal,
-          undefined,
-          context,
-        ),
-      ).rejects.toThrow("configured limit of 8");
       await createGoalTool.execute(
         "call-1",
-        { objective: "finish the approved task", maxIterations: 4 },
+        { name: "Finish task", objective: "finish the approved task" },
         new AbortController().signal,
         undefined,
         context,
@@ -478,7 +469,8 @@ describe("registerAgentGoal", () => {
       expect(await storage.get("session-1")).toMatchObject({
         objective: "finish the approved task",
         status: outcome,
-        budget: { maxIterations: 4 },
+        name: "Finish task",
+        budget: { maxIterations: 8 },
         usage: { iterations: 0, tokens: 0 },
       });
       expect(continuation.continueIfIdle).not.toHaveBeenCalled();

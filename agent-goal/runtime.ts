@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentGoal,
   GoalBudget,
+  GoalCheckpoint,
   GoalBudgetUpdate,
   GoalContinuation,
   GoalContinuationClaim,
@@ -20,7 +21,7 @@ import type {
 } from "./domain.js";
 import { TimerGoalWakeScheduler } from "./wake-scheduler.js";
 
-const DEFAULT_BUDGET: GoalBudget = { maxIterations: 25 };
+const DEFAULT_BUDGET: GoalBudget = {};
 const DEFAULT_RETRY_POLICY: GoalRetryPolicy = {
   maxAttempts: 3,
   baseDelayMs: 250,
@@ -91,11 +92,32 @@ export class GoalRuntime {
     return this.storage.getTerminalCandidate(scopeId);
   }
 
-  async create(scopeId: string, objective: string, budget = this.budget): Promise<AgentGoal> {
+  async listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]> {
+    return this.storage.listCheckpoints(scopeId);
+  }
+
+  async create(
+    scopeId: string,
+    objective: string,
+    budget = this.budget,
+    name?: string,
+  ): Promise<AgentGoal> {
     const trimmedObjective = objective.trim();
     if (!trimmedObjective) throw new Error("Goal objective cannot be empty");
-    if (!Number.isInteger(budget.maxIterations) || budget.maxIterations <= 0) {
+    if (
+      budget.maxIterations !== undefined &&
+      (!Number.isInteger(budget.maxIterations) || budget.maxIterations <= 0)
+    ) {
       throw new Error("Goal maxIterations must be a positive integer");
+    }
+    if (
+      budget.maxIterations !== undefined &&
+      this.budget.maxIterations !== undefined &&
+      budget.maxIterations > this.budget.maxIterations
+    ) {
+      throw new Error(
+        `Goal maxIterations cannot exceed the configured limit of ${this.budget.maxIterations}`,
+      );
     }
     if (
       budget.maxTokens !== undefined &&
@@ -104,10 +126,28 @@ export class GoalRuntime {
       throw new Error("Goal maxTokens must be a positive finite number");
     }
     if (
+      budget.maxTokens !== undefined &&
+      this.budget.maxTokens !== undefined &&
+      budget.maxTokens > this.budget.maxTokens
+    ) {
+      throw new Error(
+        `Goal maxTokens cannot exceed the configured limit of ${this.budget.maxTokens}`,
+      );
+    }
+    if (
       budget.maxRuntimeMs !== undefined &&
       (!Number.isFinite(budget.maxRuntimeMs) || budget.maxRuntimeMs <= 0)
     ) {
       throw new Error("Goal maxRuntimeMs must be a positive finite number");
+    }
+    if (
+      budget.maxRuntimeMs !== undefined &&
+      this.budget.maxRuntimeMs !== undefined &&
+      budget.maxRuntimeMs > this.budget.maxRuntimeMs
+    ) {
+      throw new Error(
+        `Goal maxRuntimeMs cannot exceed the configured limit of ${this.budget.maxRuntimeMs}`,
+      );
     }
     if (await this.storage.get(scopeId)) {
       throw new Error("This session already has a goal; clear it before creating another");
@@ -117,6 +157,7 @@ export class GoalRuntime {
     const goal: AgentGoal = {
       id: randomUUID(),
       scopeId,
+      name: name?.trim() || trimmedObjective.slice(0, 72),
       objective: trimmedObjective,
       status: "active",
       budget: { ...budget },
@@ -133,8 +174,13 @@ export class GoalRuntime {
   async updateBudget(scopeId: string, update: GoalBudgetUpdate): Promise<AgentGoal> {
     const current = await this.requireGoal(scopeId);
     if (current.status === "complete") throw new Error("Cannot change a complete goal budget");
-    if (update.maxIterations === undefined && update.maxTokens === undefined) {
-      throw new Error("A goal budget update requires maxIterations or maxTokens");
+    if (
+      update.maxIterations === undefined &&
+      update.maxRuntimeMs === undefined &&
+      update.maxTokens === undefined &&
+      !update.disabled
+    ) {
+      throw new Error("A goal limit update requires turns, runtime, or off");
     }
     if (
       update.maxIterations !== undefined &&
@@ -143,12 +189,22 @@ export class GoalRuntime {
       throw new Error("Goal maxIterations must be a positive integer");
     }
     if (
+      update.maxRuntimeMs !== undefined &&
+      (!Number.isFinite(update.maxRuntimeMs) || update.maxRuntimeMs <= 0)
+    ) {
+      throw new Error("Goal maxRuntimeMs must be a positive finite number");
+    }
+    if (
       update.maxTokens !== undefined &&
       (!Number.isFinite(update.maxTokens) || update.maxTokens <= 0)
     ) {
       throw new Error("Goal maxTokens must be a positive finite number");
     }
-    if (update.maxIterations !== undefined && update.maxIterations > this.budget.maxIterations) {
+    if (
+      update.maxIterations !== undefined &&
+      this.budget.maxIterations !== undefined &&
+      update.maxIterations > this.budget.maxIterations
+    ) {
       throw new Error(
         `Goal maxIterations cannot exceed the configured limit of ${this.budget.maxIterations}`,
       );
@@ -160,6 +216,15 @@ export class GoalRuntime {
     ) {
       throw new Error(
         `Goal maxTokens cannot exceed the configured limit of ${this.budget.maxTokens}`,
+      );
+    }
+    if (
+      update.maxRuntimeMs !== undefined &&
+      this.budget.maxRuntimeMs !== undefined &&
+      update.maxRuntimeMs > this.budget.maxRuntimeMs
+    ) {
+      throw new Error(
+        `Goal maxRuntimeMs cannot exceed the configured limit of ${this.budget.maxRuntimeMs}`,
       );
     }
     const minimumIterations =
@@ -181,11 +246,14 @@ export class GoalRuntime {
       );
     }
 
-    const nextBudget: GoalBudget = {
-      ...current.budget,
-      ...(update.maxIterations === undefined ? {} : { maxIterations: update.maxIterations }),
-      ...(update.maxTokens === undefined ? {} : { maxTokens: update.maxTokens }),
-    };
+    const nextBudget: GoalBudget = update.disabled
+      ? {}
+      : {
+          ...current.budget,
+          ...(update.maxIterations === undefined ? {} : { maxIterations: update.maxIterations }),
+          ...(update.maxRuntimeMs === undefined ? {} : { maxRuntimeMs: update.maxRuntimeMs }),
+          ...(update.maxTokens === undefined ? {} : { maxTokens: update.maxTokens }),
+        };
     const candidate: AgentGoal = {
       ...current,
       budget: nextBudget,
@@ -207,6 +275,91 @@ export class GoalRuntime {
     return next;
   }
 
+  async updateDetails(
+    scopeId: string,
+    update: { name?: string; objective?: string },
+  ): Promise<AgentGoal> {
+    const current = await this.requireGoal(scopeId);
+    if (current.status === "complete") throw new Error("Cannot edit a closed goal");
+    const name = update.name?.trim();
+    const objective = update.objective?.trim();
+    if (update.name !== undefined && !name) throw new Error("Goal name cannot be empty");
+    if (update.objective !== undefined && !objective)
+      throw new Error("Goal objective cannot be empty");
+    if (name === undefined && objective === undefined)
+      throw new Error("A goal update requires name or objective");
+    const next: AgentGoal = {
+      ...current,
+      ...(name === undefined ? {} : { name }),
+      ...(objective === undefined ? {} : { objective }),
+      version: current.version + 1,
+      updatedAt: this.now().toISOString(),
+    };
+    if (!(await this.storage.updateBudget(next, current.version))) {
+      throw new Error("Goal changed while it was being edited; retry the command");
+    }
+    await this.record({ type: "goal.updated", goal: next });
+    if (await this.storage.getPendingEvaluation(scopeId)) {
+      await this.processPendingEvaluation(scopeId);
+    }
+    return (await this.storage.get(scopeId)) ?? next;
+  }
+
+  async addCheckpoint(
+    scopeId: string,
+    input: { summary: string; evidence?: string; nextStep?: string; blocker?: string },
+  ): Promise<GoalCheckpoint> {
+    const goal = await this.requireGoal(scopeId);
+    if (goal.status === "complete") throw new Error("Cannot checkpoint a closed goal");
+    const summary = input.summary.trim();
+    if (!summary) throw new Error("A checkpoint summary is required");
+    const checkpoint: GoalCheckpoint = {
+      id: randomUUID(),
+      scopeId,
+      goalId: goal.id,
+      summary,
+      evidence: input.evidence?.trim() || undefined,
+      nextStep: input.nextStep?.trim() || undefined,
+      blocker: input.blocker?.trim() || undefined,
+      createdAt: this.now().toISOString(),
+    };
+    if (!(await this.storage.addCheckpoint(checkpoint))) {
+      throw new Error("Goal changed while its checkpoint was being recorded; retry");
+    }
+    await this.record({ type: "goal.checkpoint_added", goal, checkpoint });
+    return checkpoint;
+  }
+
+  async snooze(scopeId: string, durationMs: number): Promise<AgentGoal> {
+    if (!Number.isFinite(durationMs) || durationMs <= 0)
+      throw new Error("Goal snooze duration must be positive");
+    const current = await this.requireGoal(scopeId);
+    if (current.status === "complete") throw new Error("Cannot snooze a closed goal");
+    const snoozedUntil = new Date(this.now().getTime() + durationMs).toISOString();
+    const next: AgentGoal = {
+      ...current,
+      status: "active",
+      blockedReason: undefined,
+      snoozedUntil,
+      version: current.version + 1,
+      updatedAt: this.now().toISOString(),
+    };
+    if (!(await this.storage.updateBudget(next, current.version))) {
+      throw new Error("Goal changed while it was being snoozed; retry the command");
+    }
+    const claim = await this.storage.getContinuationClaim(scopeId);
+    if (claim) await this.storage.deleteContinuationClaim(scopeId, claim.claimId);
+    this.scheduleRecovery(scopeId, snoozedUntil);
+    await this.record({ type: "goal.snoozed", goal: next, snoozedUntil });
+    return next;
+  }
+
+  async closeGoal(scopeId: string): Promise<AgentGoal> {
+    const current = await this.requireGoal(scopeId);
+    if (current.status === "complete") return current;
+    return this.setStatus(scopeId, "complete");
+  }
+
   async setStatus(
     scopeId: string,
     status: Extract<GoalStatus, "active" | "paused" | "complete">,
@@ -221,6 +374,7 @@ export class GoalRuntime {
       ...current,
       status,
       blockedReason: undefined,
+      snoozedUntil: undefined,
       version: current.version + 1,
       updatedAt: this.now().toISOString(),
     };
@@ -297,8 +451,23 @@ export class GoalRuntime {
     try {
       if (await this.storage.getPendingEvaluation(scopeId))
         await this.processPendingEvaluation(scopeId);
-      const goal = await this.storage.get(scopeId);
+      let goal = await this.storage.get(scopeId);
       if (!goal || goal.status !== "active") return;
+      if (goal.snoozedUntil) {
+        if (Date.parse(goal.snoozedUntil) > this.now().getTime()) {
+          this.scheduleRecovery(scopeId, goal.snoozedUntil);
+          return;
+        }
+        const awakened: AgentGoal = {
+          ...goal,
+          snoozedUntil: undefined,
+          version: goal.version + 1,
+          updatedAt: this.now().toISOString(),
+        };
+        if (!(await this.storage.updateBudget(awakened, goal.version))) return;
+        goal = awakened;
+        await this.record({ type: "goal.snooze_expired", goal });
+      }
       if (this.budgetExhausted(goal)) {
         await this.markBudgetLimited(goal);
         return;
@@ -552,6 +721,10 @@ export class GoalRuntime {
   }
 
   private async continueWithClaim(goal: AgentGoal, reason: string): Promise<void> {
+    if (goal.snoozedUntil && Date.parse(goal.snoozedUntil) > this.now().getTime()) {
+      this.scheduleRecovery(goal.scopeId, goal.snoozedUntil);
+      return;
+    }
     const existingClaim = await this.storage.getContinuationClaim(goal.scopeId);
     if (existingClaim) {
       if (existingClaim.goalId === goal.id && existingClaim.goalVersion === goal.version) return;
@@ -720,7 +893,8 @@ export class GoalRuntime {
 
   private budgetExhausted(goal: AgentGoal): boolean {
     return (
-      goal.usage.iterations >= goal.budget.maxIterations ||
+      (goal.budget.maxIterations !== undefined &&
+        goal.usage.iterations >= goal.budget.maxIterations) ||
       (goal.budget.maxTokens !== undefined && goal.usage.tokens >= goal.budget.maxTokens) ||
       (goal.budget.maxRuntimeMs !== undefined &&
         this.now().getTime() - Date.parse(goal.createdAt) >= goal.budget.maxRuntimeMs)

@@ -820,6 +820,105 @@ describe("GoalRuntime", () => {
     expect(wakeScheduler.schedule).not.toHaveBeenCalled();
   });
 
+  it("persists editable details and fences an evaluation using the old objective", async () => {
+    const storage = new MemoryGoalStorage();
+    let releaseFirst: ((value: { outcome: "continue"; reason: string }) => void) | undefined;
+    const firstEvaluation = new Promise<{ outcome: "continue"; reason: string }>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const evaluator: GoalEvaluator = {
+      evaluate: vi
+        .fn()
+        .mockReturnValueOnce(firstEvaluation)
+        .mockResolvedValueOnce({ outcome: "complete", reason: "new objective verified" }),
+    };
+    const runtime = new GoalRuntime(storage, evaluator, startedContinuation());
+    await runtime.create("session-1", "old objective", {}, "Old name");
+
+    const settling = runtime.settle("session-1", { latestOutput: "work" });
+    await vi.waitFor(() => expect(evaluator.evaluate).toHaveBeenCalledTimes(1));
+    const editing = runtime.updateDetails("session-1", {
+      name: "New name",
+      objective: "new objective",
+    });
+    releaseFirst?.({ outcome: "continue", reason: "stale result" });
+    await vi.waitFor(() => expect(evaluator.evaluate).toHaveBeenCalledTimes(2));
+    await Promise.all([settling, editing]);
+
+    expect(evaluator.evaluate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: "New name", objective: "new objective" }),
+      expect.any(Object),
+    );
+    expect(await runtime.get("session-1")).toMatchObject({
+      name: "New name",
+      objective: "new objective",
+      status: "complete",
+      usage: { iterations: 1, tokens: 0 },
+    });
+  });
+
+  it("records newest-first durable checkpoints", async () => {
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const runtime = new GoalRuntime(
+      new MemoryGoalStorage(),
+      { evaluate: vi.fn() },
+      startedContinuation(),
+      () => now,
+    );
+    await runtime.create("session-1", "ship");
+    await runtime.addCheckpoint("session-1", {
+      summary: "First",
+      evidence: "test A passes",
+      nextStep: "run test B",
+    });
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await runtime.addCheckpoint("session-1", { summary: "Second", blocker: "waiting on CI" });
+    expect((await runtime.listCheckpoints("session-1")).map(({ summary }) => summary)).toEqual([
+      "Second",
+      "First",
+    ]);
+  });
+
+  it("automatically expires timed snooze exactly once", async () => {
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const wakes: Array<() => void> = [];
+    const wakeScheduler: GoalWakeScheduler = {
+      schedule: vi.fn((_scopeId, _wakeAt, callback) => wakes.push(callback)),
+      cancel: vi.fn(),
+      close: vi.fn(),
+    };
+    const continuation = startedContinuation();
+    const runtime = new GoalRuntime(
+      new MemoryGoalStorage(),
+      { evaluate: vi.fn() },
+      continuation,
+      () => now,
+      { wakeScheduler },
+    );
+    await runtime.create("session-1", "ship");
+    const snoozed = await runtime.snooze("session-1", 60_000);
+    expect(snoozed.snoozedUntil).toBe("2026-01-01T00:01:00.000Z");
+    now = new Date("2026-01-01T00:01:00.000Z");
+    wakes[0]?.();
+    wakes[0]?.();
+    await vi.waitFor(() => expect(continuation.continueIfIdle).toHaveBeenCalledTimes(1));
+    expect(await runtime.get("session-1")).toMatchObject({ snoozedUntil: undefined });
+  });
+
+  it("closes a budget-limited goal and supports opt-in limits", async () => {
+    const storage = new MemoryGoalStorage();
+    const runtime = new GoalRuntime(storage, { evaluate: vi.fn() }, startedContinuation());
+    const unlimited = await runtime.create("session-1", "ship");
+    expect(unlimited.budget).toEqual({});
+    const limited = await runtime.updateBudget("session-1", { maxIterations: 2 });
+    await storage.replace(
+      { ...limited, status: "budget_limited", version: limited.version + 1 },
+      limited.version,
+    );
+    expect(limited.usage).toEqual(unlimited.usage);
+    expect(await runtime.closeGoal("session-1")).toMatchObject({ status: "complete" });
+  });
+
   it("enforces status transitions and clears continuation claims", async () => {
     const runtime = new GoalRuntime(
       new MemoryGoalStorage(),
