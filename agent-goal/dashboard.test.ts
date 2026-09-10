@@ -26,7 +26,7 @@ const checkpoints: GoalCheckpoint[] = [1, 2, 3, 4].map((number) => ({
 describe("goal dashboard", () => {
   it("formats the compact row and newest-three checkpoint detail", () => {
     expect(formatGoalStatus(goal, Date.parse("2026-01-01T00:15:00.000Z"))).toBe(
-      "🎯 | Ship goal UX | 15m 0s",
+      "🎯 Ship goal UX 15m 0s",
     );
     const dashboard = formatGoalDashboard(goal, undefined, checkpoints);
     expect(dashboard).toContain("Limits: Turns 3/8 · Runtime 60m");

@@ -27,7 +27,7 @@ export function formatElapsed(milliseconds: number): string {
 
 export function formatGoalStatus(goal: AgentGoal, now = Date.now()): string {
   const end = goal.status === "active" ? now : Date.parse(goal.updatedAt);
-  return `🎯 | ${goalDisplayName(goal)} | ${formatElapsed(end - Date.parse(goal.createdAt))}`;
+  return `🎯 ${goalDisplayName(goal)} ${formatElapsed(end - Date.parse(goal.createdAt))}`;
 }
 
 export function formatGoalDashboard(

@@ -452,17 +452,14 @@ describe("registerAgentGoal", () => {
     await handlers.get("session_start")?.({}, context);
     await command.handler("", context);
 
-    expect(setStatus).toHaveBeenCalledWith("agent-goal", expect.stringMatching(/^🎯 \| ship \| /));
+    expect(setStatus).toHaveBeenCalledWith("agent-goal", expect.stringMatching(/^🎯 ship /));
     expect(setWidget).toHaveBeenCalledWith("agent-goal", undefined);
     expect(custom).toHaveBeenCalledTimes(4);
     expect(await storage.get("session-1")).toMatchObject({
       status: "paused",
       budget: { maxIterations: 4, maxTokens: 1_000 },
     });
-    expect(setStatus).toHaveBeenLastCalledWith(
-      "agent-goal",
-      expect.stringMatching(/^🎯 \| ship \| /),
-    );
+    expect(setStatus).toHaveBeenLastCalledWith("agent-goal", expect.stringMatching(/^🎯 ship /));
   });
 
   it.each(["complete", "blocked"] as const)(

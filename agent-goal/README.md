@@ -27,7 +27,7 @@ For local development: `pi -e ./agent-goal/index.ts`.
 /goal hide | /goal show              Hide or show compact status
 ```
 
-The persistent row is deliberately compact: `🎯 | name | elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form, while `q`, Escape, or Ctrl+C closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
+The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form, while `q`, Escape, or Ctrl+C closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
 
 Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
 
