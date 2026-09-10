@@ -2,11 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatGoalDashboard, formatGoalStatus } from "./dashboard.js";
-import {
-  GoalWindow,
-  type GoalWindowAction,
-  type GoalWindowLifecycleAction,
-} from "./goal-window.js";
+import { GoalWindow, parseDuration, type GoalWindowAction } from "./goal-window.js";
 import type {
   GoalBudget,
   GoalContinuation,
@@ -48,11 +44,7 @@ export type {
   GoalWakeScheduler,
 } from "./domain.js";
 export { displayGoalText, formatGoalDashboard, formatGoalStatus } from "./dashboard.js";
-export {
-  GoalWindow,
-  type GoalWindowAction,
-  type GoalWindowLifecycleAction,
-} from "./goal-window.js";
+export { GoalWindow, parseDuration, type GoalWindowAction } from "./goal-window.js";
 export { MemoryGoalStorage } from "./memory-storage.js";
 export { parseGoalEvaluation, PiGoalEvaluator } from "./pi-evaluator.js";
 export {
@@ -112,9 +104,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   const hiddenScopes = new Set<string>();
   const agentCreatedGoalScopes = new Set<string>();
   const defaultBudget: GoalBudget = options.defaultBudget ?? {
-    maxIterations: Number(process.env.PI_AGENT_GOAL_MAX_ITERATIONS ?? 25),
-    maxTokens: process.env.PI_AGENT_GOAL_MAX_TOKENS
-      ? Number(process.env.PI_AGENT_GOAL_MAX_TOKENS)
+    maxIterations: process.env.PI_AGENT_GOAL_MAX_ITERATIONS
+      ? Number(process.env.PI_AGENT_GOAL_MAX_ITERATIONS)
       : undefined,
     maxRuntimeMs: process.env.PI_AGENT_GOAL_MAX_RUNTIME_MS
       ? Number(process.env.PI_AGENT_GOAL_MAX_RUNTIME_MS)
@@ -177,28 +168,39 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
 
   const applyGoalAction = async (
     scopeId: string,
-    action: Exclude<GoalWindowLifecycleAction, "close"> | Extract<GoalWindowAction, object>,
+    action: Exclude<GoalWindowAction, "close">,
   ): Promise<void> => {
-    if (typeof action === "object") {
-      await runtime.updateBudget(scopeId, {
-        maxIterations: action.maxIterations,
-        maxTokens: action.maxTokens,
-      });
+    if (action === "closeGoal") {
+      await runtime.closeGoal(scopeId);
       return;
     }
-    switch (action) {
-      case "pause":
-        await runtime.setStatus(scopeId, "paused");
+    if (action === "pause" || action === "resume") {
+      await runtime.setStatus(scopeId, action === "pause" ? "paused" : "active");
+      if (action === "resume") await runtime.start(scopeId, "Resume the goal from current state.");
+      return;
+    }
+    switch (action.type) {
+      case "create":
+        await runtime.create(
+          scopeId,
+          action.objective,
+          {
+            ...defaultBudget,
+            ...(action.maxIterations === undefined ? {} : { maxIterations: action.maxIterations }),
+            ...(action.maxRuntimeMs === undefined ? {} : { maxRuntimeMs: action.maxRuntimeMs }),
+          },
+          action.name,
+        );
+        await runtime.start(scopeId);
         break;
-      case "resume":
-        await runtime.setStatus(scopeId, "active");
-        await runtime.start(scopeId, "Resume the goal from current state.");
+      case "edit":
+        await runtime.updateDetails(scopeId, action);
         break;
-      case "complete":
-        await runtime.setStatus(scopeId, "complete");
+      case "budget":
+        await runtime.updateBudget(scopeId, action);
         break;
-      case "clear":
-        if (!(await runtime.clear(scopeId))) throw new Error("This session has no goal");
+      case "snooze":
+        await runtime.snooze(scopeId, action.durationMs);
         break;
     }
   };
@@ -274,58 +276,20 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     parameters: {
       type: "object",
       properties: {
+        name: { type: "string", description: "Short terminal-friendly goal name." },
         objective: { type: "string", description: "The complete user-aligned outcome to achieve." },
-        maxIterations: {
-          type: "integer",
-          minimum: 1,
-          maximum: defaultBudget.maxIterations,
-        },
-        maxTokens: { type: "number", exclusiveMinimum: 0 },
-        maxRuntimeMs: { type: "number", exclusiveMinimum: 0 },
       },
       required: ["objective"],
       additionalProperties: false,
     },
     async execute(_toolCallId, rawParams, _signal, _onUpdate, rawCtx) {
       const params = rawParams as {
+        name?: string;
         objective: string;
-        maxIterations?: number;
-        maxTokens?: number;
-        maxRuntimeMs?: number;
       };
       const ctx = rawCtx as CompatibleContext;
       const scopeId = ctx.sessionManager.getSessionId();
-      if (
-        params.maxIterations !== undefined &&
-        params.maxIterations > defaultBudget.maxIterations
-      ) {
-        throw new Error(
-          `Goal maxIterations cannot exceed the configured limit of ${defaultBudget.maxIterations}`,
-        );
-      }
-      if (
-        params.maxTokens !== undefined &&
-        defaultBudget.maxTokens !== undefined &&
-        params.maxTokens > defaultBudget.maxTokens
-      ) {
-        throw new Error(
-          `Goal maxTokens cannot exceed the configured limit of ${defaultBudget.maxTokens}`,
-        );
-      }
-      if (
-        params.maxRuntimeMs !== undefined &&
-        defaultBudget.maxRuntimeMs !== undefined &&
-        params.maxRuntimeMs > defaultBudget.maxRuntimeMs
-      ) {
-        throw new Error(
-          `Goal maxRuntimeMs cannot exceed the configured limit of ${defaultBudget.maxRuntimeMs}`,
-        );
-      }
-      const goal = await runtime.create(scopeId, params.objective, {
-        maxIterations: params.maxIterations ?? defaultBudget.maxIterations,
-        maxTokens: params.maxTokens ?? defaultBudget.maxTokens,
-        maxRuntimeMs: params.maxRuntimeMs ?? defaultBudget.maxRuntimeMs,
-      });
+      const goal = await runtime.create(scopeId, params.objective, defaultBudget, params.name);
       agentCreatedGoalScopes.add(scopeId);
       await refreshUi(ctx);
       return {
@@ -342,10 +306,10 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
 
   pi.registerTool({
     name: "update_goal_budget",
-    label: "Update goal budget",
+    label: "Update goal limits",
     description:
-      "Adjust this session goal's bounded turn or token ceiling without replacing the goal. Changes remain constrained by configured limits and cannot discard accounted usage.",
-    promptSnippet: "Adjust the active session goal's bounded turn or token budget.",
+      "Set optional turns/runtime continuation limits, or turn limits off. Limits never interrupt in-flight work and changes preserve accounted usage.",
+    promptSnippet: "Adjust the active session goal's optional continuation limits.",
     promptGuidelines: [
       "Only change a goal budget when more or less capacity is genuinely needed for the existing user-aligned objective.",
       "Never use budget changes to broaden the objective or evade configured hard limits.",
@@ -357,31 +321,34 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         maxTurns: {
           type: "integer",
           minimum: 1,
-          maximum: defaultBudget.maxIterations,
+          ...(defaultBudget.maxIterations === undefined
+            ? {}
+            : { maximum: defaultBudget.maxIterations }),
           description: "New total settled-turn ceiling, including turns already accounted.",
         },
-        maxTokens: {
+        maxRuntimeMs: {
           type: "number",
           exclusiveMinimum: 0,
-          ...(defaultBudget.maxTokens === undefined ? {} : { maximum: defaultBudget.maxTokens }),
-          description: "New total token ceiling, including tokens already accounted.",
+          description: "New total runtime ceiling in milliseconds.",
         },
+        off: { type: "boolean", description: "Disable all continuation limits." },
       },
       additionalProperties: false,
     },
     async execute(_toolCallId, rawParams, _signal, _onUpdate, rawCtx) {
-      const params = rawParams as { maxTurns?: number; maxTokens?: number };
+      const params = rawParams as { maxTurns?: number; maxRuntimeMs?: number; off?: boolean };
       const ctx = rawCtx as CompatibleContext;
       const goal = await runtime.updateBudget(ctx.sessionManager.getSessionId(), {
         maxIterations: params.maxTurns,
-        maxTokens: params.maxTokens,
+        maxRuntimeMs: params.maxRuntimeMs,
+        disabled: params.off,
       });
       await refreshUi(ctx);
       return {
         content: [
           {
             type: "text",
-            text: `Updated goal budget to ${goal.budget.maxIterations} turns${goal.budget.maxTokens === undefined ? "" : ` and ${goal.budget.maxTokens} tokens`}.`,
+            text: `Updated goal limits: ${goal.budget.maxIterations ?? "unlimited"} turns, ${goal.budget.maxRuntimeMs ?? "unlimited"}ms runtime.`,
           },
         ],
         details: { goal },
@@ -467,9 +434,37 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     },
   });
 
+  pi.registerTool({
+    name: "checkpoint_goal",
+    label: "Checkpoint goal",
+    description: "Record durable agent-reported progress, evidence, and the next step or blocker.",
+    promptSnippet: "Record a concise durable progress checkpoint for the active goal.",
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        evidence: { type: "string" },
+        nextStep: { type: "string" },
+        blocker: { type: "string" },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId, rawParams, _signal, _onUpdate, rawCtx) {
+      const checkpoint = await runtime.addCheckpoint(
+        (rawCtx as CompatibleContext).sessionManager.getSessionId(),
+        rawParams as { summary: string; evidence?: string; nextStep?: string; blocker?: string },
+      );
+      return {
+        content: [{ type: "text", text: `Checkpoint recorded: ${checkpoint.summary}` }],
+        details: { checkpoint },
+      };
+    },
+  });
+
   pi.registerCommand("goal", {
     description:
-      "Create, inspect, adjust budget, pause, resume, complete, clear, show, or hide this session's goal",
+      "Create or inspect a goal; update its name, objective, or limits; snooze, close, show, or hide it",
     handler: async (args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
       activeContext = ctx;
@@ -483,6 +478,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
           while (true) {
             const goal = await runtime.get(scopeId);
             const claim = await runtime.getContinuationClaim(scopeId);
+            const checkpoints = await runtime.listCheckpoints(scopeId);
             const action = await ctx.ui.custom<GoalWindowAction>(
               (tui, theme, _keybindings, done) => {
                 openedWindow = true;
@@ -494,6 +490,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
                   () => tui.requestRender(),
                   Date.now,
                   actionError,
+                  checkpoints,
                 );
               },
               {
@@ -512,7 +509,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
                 {
                   customType: "agent-goal.status",
                   content: goal
-                    ? formatGoalDashboard(goal, claim).join("\n")
+                    ? formatGoalDashboard(goal, claim, checkpoints).join("\n")
                     : "This session has no goal.",
                   display: true,
                 },
@@ -532,48 +529,35 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         }
 
         const command = input.toLowerCase();
-        if (command === "budget" || command.startsWith("budget ")) {
-          const update: { maxIterations?: number; maxTokens?: number } = {};
-          for (const token of input.slice("budget".length).trim().split(/\s+/).filter(Boolean)) {
-            const separator = token.indexOf("=");
-            if (separator < 1) throw new Error(`Invalid goal budget argument: ${token}`);
-            const key = token.slice(0, separator).toLowerCase();
-            const value = Number(token.slice(separator + 1));
-            if (key === "turns" || key === "maxturns" || key === "iterations") {
-              update.maxIterations = value;
-            } else if (key === "tokens" || key === "maxtokens") {
-              update.maxTokens = value;
-            } else {
-              throw new Error(`Unknown goal budget field: ${key}`);
-            }
-          }
-          const goal = await runtime.updateBudget(scopeId, update);
-          await refreshUi(ctx);
-          if (ctx.hasUI) {
-            ctx.ui.notify(
-              `Goal budget: ${goal.budget.maxIterations} turns${goal.budget.maxTokens === undefined ? "" : ` · ${goal.budget.maxTokens} tokens`}`,
-              "info",
-            );
-          }
-          return;
-        }
-        switch (command) {
-          case "pause":
-          case "resume":
-          case "complete":
-          case "clear":
-            await applyGoalAction(scopeId, command);
-            break;
-          case "hide":
-            hiddenScopes.add(scopeId);
-            break;
-          case "show":
-            hiddenScopes.delete(scopeId);
-            break;
-          default:
-            await runtime.create(scopeId, input);
-            await runtime.start(scopeId);
-            break;
+        if (command.startsWith("update name ")) {
+          await runtime.updateDetails(scopeId, { name: input.slice("update name ".length) });
+        } else if (command.startsWith("update objective ")) {
+          await runtime.updateDetails(scopeId, {
+            objective: input.slice("update objective ".length),
+          });
+        } else if (command === "update budget off") {
+          await runtime.updateBudget(scopeId, { disabled: true });
+        } else if (command.startsWith("update budget turns ")) {
+          await runtime.updateBudget(scopeId, {
+            maxIterations: Number(input.slice("update budget turns ".length)),
+          });
+        } else if (command.startsWith("update budget runtime ")) {
+          const duration = parseDuration(input.slice("update budget runtime ".length));
+          if (duration === undefined) throw new Error("Runtime must use m, h, or d");
+          await runtime.updateBudget(scopeId, { maxRuntimeMs: duration });
+        } else if (command.startsWith("snooze ")) {
+          const duration = parseDuration(input.slice("snooze ".length));
+          if (duration === undefined) throw new Error("Snooze must use m, h, or d");
+          await runtime.snooze(scopeId, duration);
+        } else if (command === "close") {
+          await runtime.closeGoal(scopeId);
+        } else if (command === "hide") {
+          hiddenScopes.add(scopeId);
+        } else if (command === "show") {
+          hiddenScopes.delete(scopeId);
+        } else {
+          await runtime.create(scopeId, input);
+          await runtime.start(scopeId);
         }
         await refreshUi(ctx);
         if (ctx.hasUI) ctx.ui.notify(`Goal command applied: ${input}`, "info");

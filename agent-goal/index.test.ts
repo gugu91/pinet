@@ -312,19 +312,83 @@ describe("registerAgentGoal", () => {
 
     await tool.execute(
       "call-1",
-      { maxTurns: 12, maxTokens: 50_000 },
+      { maxTurns: 12, maxRuntimeMs: 7_200_000 },
       new AbortController().signal,
       undefined,
       context,
     );
-    await command.handler("budget turns=8 tokens=30000", context);
+    await command.handler("update budget turns 8", context);
 
     expect(await storage.get("session-1")).toMatchObject({
-      budget: { maxIterations: 8, maxTokens: 30_000 },
+      budget: { maxIterations: 8, maxTokens: 10_000, maxRuntimeMs: 7_200_000 },
       usage: { iterations: 1, tokens: 500 },
       version: 3,
     });
-    expect(notify).toHaveBeenCalledWith("Goal budget: 8 turns · 30000 tokens", "info");
+    expect(notify).toHaveBeenCalledWith("Goal command applied: update budget turns 8", "info");
+  });
+
+  it("applies the documented update, limit, snooze, and close commands to persisted state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const commands = new Map<string, RegisteredCommand>();
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand(name: string, command: RegisteredCommand) {
+        commands.set(name, command);
+      },
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      name: "Old name",
+      objective: "old objective",
+      status: "active",
+      budget: { maxIterations: 5, maxTokens: 10_000 },
+      usage: { iterations: 1, tokens: 500 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const context = {
+      hasUI: true,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionCommandContext;
+    registerAgentGoal(pi, { storage });
+    const command = commands.get("goal");
+    if (!command) throw new Error("goal command was not registered");
+
+    await command.handler("update name New name", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      name: "New name",
+      objective: "old objective",
+      usage: { iterations: 1, tokens: 500 },
+    });
+    await command.handler("update objective new objective", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      name: "New name",
+      objective: "new objective",
+    });
+    await command.handler("update budget runtime 2h", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      budget: { maxIterations: 5, maxTokens: 10_000, maxRuntimeMs: 7_200_000 },
+    });
+    await command.handler("update budget off", context);
+    expect((await storage.get("session-1"))?.budget).toEqual({});
+    await command.handler("snooze 30m", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      status: "active",
+      snoozedUntil: "2026-01-01T00:30:00.000Z",
+    });
+    await command.handler("close", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      status: "complete",
+      snoozedUntil: undefined,
+      usage: { iterations: 1, tokens: 500 },
+    });
   });
 
   it("keeps passive UI compact and applies modal actions before refreshing", async () => {
@@ -388,17 +452,14 @@ describe("registerAgentGoal", () => {
     await handlers.get("session_start")?.({}, context);
     await command.handler("", context);
 
-    expect(setStatus).toHaveBeenCalledWith("agent-goal", "goal: active · 1/5 turns");
+    expect(setStatus).toHaveBeenCalledWith("agent-goal", expect.stringMatching(/^🎯 ship /));
     expect(setWidget).toHaveBeenCalledWith("agent-goal", undefined);
     expect(custom).toHaveBeenCalledTimes(4);
     expect(await storage.get("session-1")).toMatchObject({
       status: "paused",
       budget: { maxIterations: 4, maxTokens: 1_000 },
     });
-    expect(setStatus).toHaveBeenLastCalledWith(
-      "agent-goal",
-      "goal: paused · 1/4 turns · 10/1000 tok",
-    );
+    expect(setStatus).toHaveBeenLastCalledWith("agent-goal", expect.stringMatching(/^🎯 ship /));
   });
 
   it.each(["complete", "blocked"] as const)(
@@ -445,18 +506,9 @@ describe("registerAgentGoal", () => {
       }
 
       await handlers.get("agent_start")?.({}, context);
-      await expect(
-        createGoalTool.execute(
-          "rejected-call",
-          { objective: "unbounded task", maxIterations: 9 },
-          new AbortController().signal,
-          undefined,
-          context,
-        ),
-      ).rejects.toThrow("configured limit of 8");
       await createGoalTool.execute(
         "call-1",
-        { objective: "finish the approved task", maxIterations: 4 },
+        { name: "Finish task", objective: "finish the approved task" },
         new AbortController().signal,
         undefined,
         context,
@@ -478,7 +530,8 @@ describe("registerAgentGoal", () => {
       expect(await storage.get("session-1")).toMatchObject({
         objective: "finish the approved task",
         status: outcome,
-        budget: { maxIterations: 4 },
+        name: "Finish task",
+        budget: { maxIterations: 8 },
         usage: { iterations: 0, tokens: 0 },
       });
       expect(continuation.continueIfIdle).not.toHaveBeenCalled();

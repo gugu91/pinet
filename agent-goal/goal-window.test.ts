@@ -1,8 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentGoal, GoalContinuationClaim } from "./domain.js";
-import { GoalWindow } from "./goal-window.js";
+import type { AgentGoal, GoalCheckpoint } from "./domain.js";
+import { GoalWindow, parseDuration } from "./goal-window.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -12,131 +12,133 @@ const theme = {
 const goal: AgentGoal = {
   id: "goal-1",
   scopeId: "session-1",
-  objective:
-    "Ship a focused goal window that remains readable even when the objective is longer than one line.",
+  name: "Ship goal UX",
+  objective: "Ship a focused terminal-native goal window.",
   status: "active",
-  budget: { maxIterations: 8, maxTokens: 50_000, maxRuntimeMs: 3_600_000 },
+  budget: { maxIterations: 8, maxRuntimeMs: 3_600_000 },
   usage: { iterations: 3, tokens: 12_430 },
-  lastEvaluation: {
-    id: "evaluation-1",
-    outcome: "continue",
-    reason: "Interaction tests remain",
-    at: "2026-01-01T00:10:00.000Z",
-  },
   version: 4,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:10:00.000Z",
 };
 
-const claim: GoalContinuationClaim = {
-  scopeId: "session-1",
-  goalId: "goal-1",
-  goalVersion: 4,
-  claimId: "claim-1",
-  state: "deferred",
-  reason: "session busy",
-  attempt: 2,
-  availableAt: "2026-01-01T00:10:01.000Z",
-  expiresAt: "2026-01-01T00:11:00.000Z",
-  createdAt: "2026-01-01T00:10:00.000Z",
-  updatedAt: "2026-01-01T00:10:00.000Z",
-};
+const checkpoints: GoalCheckpoint[] = [1, 2, 3, 4].map((number) => ({
+  id: `checkpoint-${number}`,
+  scopeId: goal.scopeId,
+  goalId: goal.id,
+  summary: `Checkpoint ${number}`,
+  createdAt: `2026-01-01T00:0${number}:00.000Z`,
+}));
 
 describe("GoalWindow", () => {
-  it("renders compact goal state and keeps every line within the available width", () => {
-    const window = new GoalWindow(goal, claim, theme, vi.fn(), vi.fn(), () =>
-      Date.parse("2026-01-01T00:15:00.000Z"),
+  it("renders the terminal-native details and newest checkpoint summary", () => {
+    const lines = new GoalWindow(
+      goal,
+      undefined,
+      theme,
+      vi.fn(),
+      vi.fn(),
+      () => Date.parse("2026-01-01T00:15:00.000Z"),
+      undefined,
+      checkpoints,
+    ).render(60);
+
+    expect(lines.join("\n")).toContain("Ship goal UX");
+    expect(lines.join("\n")).toContain("Elapsed 15m 0s");
+    expect(lines.join("\n")).toContain("3/8 turns");
+    expect(lines.join("\n")).toContain("… and 1 more · h show all");
+    expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
+  });
+
+  it("creates with editable name, objective, and optional limits", () => {
+    const onAction = vi.fn();
+    const window = new GoalWindow(undefined, undefined, theme, onAction);
+    expect(window.render(44).join("\n")).toContain("No goal for this session");
+    window.handleInput("n");
+    window.handleInput("New goal");
+    window.handleInput("\t");
+    window.handleInput("Complete the work");
+    window.handleInput("\t");
+    window.handleInput("4");
+    window.handleInput("\t");
+    window.handleInput("2h");
+    window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({
+      type: "create",
+      name: "New goal",
+      objective: "Complete the work",
+      maxIterations: 4,
+      maxRuntimeMs: 7_200_000,
+    });
+  });
+
+  it("edits name and objective as one atomic action", () => {
+    const onAction = vi.fn();
+    const window = new GoalWindow(goal, undefined, theme, onAction);
+    window.handleInput("e");
+    for (let index = 0; index < (goal.name?.length ?? 0); index += 1) window.handleInput("\u007f");
+    window.handleInput("New name");
+    window.handleInput("\t");
+    for (let index = 0; index < goal.objective.length; index += 1) window.handleInput("\u007f");
+    window.handleInput("New objective");
+    window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({
+      type: "edit",
+      name: "New name",
+      objective: "New objective",
+    });
+  });
+
+  it("does not truncate a long stored name during an objective-only edit", () => {
+    const onAction = vi.fn();
+    const longName = "A".repeat(120);
+    const window = new GoalWindow({ ...goal, name: longName }, undefined, theme, onAction);
+    window.handleInput("e");
+    window.handleInput("\t");
+    window.handleInput(" with follow-up");
+    window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({
+      type: "edit",
+      objective: `${goal.objective} with follow-up`,
+    });
+    expect(onAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.any(String) }),
+    );
+  });
+
+  it("renders persisted control text safely and preserves the objective during a name edit", () => {
+    const onAction = vi.fn();
+    const rawObjective = "First line\n\u001b[31mred\u001b[0m\u0007 tail";
+    const persisted = { ...goal, name: "Old name", objective: rawObjective };
+    const window = new GoalWindow(persisted, undefined, theme, onAction);
+    window.handleInput("e");
+
+    const rendered = window.render(60);
+    expect(rendered.join("\n")).toContain("Objective First line red tail");
+    expect(rendered).toHaveLength(7);
+    expect(rendered.every((line) => !line.includes("\u001b") && !line.includes("\u0007"))).toBe(
+      true,
     );
 
-    const lines = window.render(52);
-
-    expect(lines.join("\n")).toContain("● ACTIVE");
-    expect(lines.join("\n")).toContain("Turns");
-    expect(lines.join("\n")).toContain("3/8");
-    expect(lines.join("\n")).toContain("12.4k/50k");
-    expect(lines.join("\n")).toContain("15m/60m");
-    expect(lines.join("\n")).toContain("Latest Interaction tests remain");
-    expect(lines.join("\n")).toContain("Continuation deferred · attempt 2");
-    expect(lines.join("\n")).toContain("p pause · b budget · c complete");
-    expect(lines.every((line) => visibleWidth(line) <= 52)).toBe(true);
-  });
-
-  it("renders a useful empty state", () => {
-    const lines = new GoalWindow(undefined, undefined, theme, vi.fn()).render(40);
-
-    expect(lines.join("\n")).toContain("No goal for this session.");
-    expect(lines.join("\n")).toContain("/goal <objective> to begin");
-    expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
-  });
-
-  it.each([0, 1, 2, 3, 4, 5, 6, 7])(
-    "honors the strict line-width contract at width %i",
-    (width) => {
-      const lines = new GoalWindow(goal, claim, theme, vi.fn()).render(width);
-
-      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-    },
-  );
-
-  it.each(["q", "Q", "\u001b", "\u0003"])("closes for %j", (input) => {
-    const onAction = vi.fn();
-    const window = new GoalWindow(goal, undefined, theme, onAction);
-
-    window.handleInput(input);
-
-    expect(onAction).toHaveBeenCalledWith("close");
-  });
-
-  it.each([
-    ["p", "pause"],
-    ["P", "pause"],
-  ] as const)("routes %s to %s", (input, action) => {
-    const onAction = vi.fn();
-    const window = new GoalWindow(goal, undefined, theme, onAction);
-
-    window.handleInput(input);
-
-    expect(onAction).toHaveBeenCalledWith(action);
-  });
-
-  it("edits turn and token budgets without closing the overlay", () => {
-    const onAction = vi.fn();
-    const requestRender = vi.fn();
-    const window = new GoalWindow(goal, undefined, theme, onAction, requestRender);
-
-    window.handleInput("b");
-    expect(window.render(52).join("\n")).toContain("Edit budget");
-    expect(window.render(52).join("\n")).toContain("› Turns  8");
-
-    window.handleInput("1");
-    window.handleInput("\t");
-    window.handleInput("60000");
+    for (let index = 0; index < persisted.name.length; index += 1) window.handleInput("\u007f");
+    window.handleInput("New name");
     window.handleInput("\r");
-
-    expect(onAction).toHaveBeenCalledWith({
-      type: "budget",
-      maxIterations: 1,
-      maxTokens: 60_000,
-    });
-    expect(requestRender).toHaveBeenCalledTimes(4);
+    expect(onAction).toHaveBeenCalledWith({ type: "edit", name: "New name" });
+    expect(onAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ objective: expect.any(String) }),
+    );
   });
 
-  it("validates budget input and cancels editing with escape", () => {
-    const onAction = vi.fn();
-    const requestRender = vi.fn();
-    const window = new GoalWindow(goal, undefined, theme, onAction, requestRender);
-
-    window.handleInput("b");
-    window.handleInput("\u007f");
-    window.handleInput("\r");
-
-    expect(window.render(52).join("\n")).toContain("Turns must be a positive integer");
-    window.handleInput("\u001b");
-    expect(window.render(52).join("\n")).toContain("b budget");
-    expect(onAction).not.toHaveBeenCalled();
-  });
-
-  it("renders runtime budget errors inside the reopened overlay", () => {
+  it("expands and scrolls the complete checkpoint history with the keyboard", () => {
+    const history = [1, 2, 3, 4, 5].map((number) => ({
+      id: `checkpoint-${number}`,
+      scopeId: goal.scopeId,
+      goalId: goal.id,
+      summary: `Checkpoint ${number}`,
+      evidence: `Evidence ${number}`,
+      nextStep: `Next ${number}`,
+      createdAt: `2026-01-01T00:0${number}:00.000Z`,
+    }));
     const window = new GoalWindow(
       goal,
       undefined,
@@ -144,65 +146,69 @@ describe("GoalWindow", () => {
       vi.fn(),
       vi.fn(),
       Date.now,
-      "Goal maxIterations cannot exceed the configured limit",
+      undefined,
+      history,
     );
 
-    expect(window.render(52).join("\n")).toContain("Goal maxIterations cannot exceed the configur");
+    expect(window.render(70).join("\n")).toContain("… and 2 more · h show all");
+    window.handleInput("h");
+    expect(window.render(70).join("\n")).toContain("Evidence 1");
+    expect(window.render(70).join("\n")).not.toContain("Checkpoint 4");
+    window.handleInput("\u001b[B");
+    const scrolled = window.render(70).join("\n");
+    expect(scrolled).toContain("Checkpoint 4");
+    expect(scrolled).not.toContain("Checkpoint 1");
+    expect(scrolled).toContain("history 2-4/5");
+    window.handleInput("\u001b[A");
+    expect(window.render(70).join("\n")).toContain("Checkpoint 1");
   });
 
-  it("offers resume for paused and blocked goals", () => {
-    const onPausedAction = vi.fn();
-    const onBlockedAction = vi.fn();
-    new GoalWindow({ ...goal, status: "paused" }, undefined, theme, onPausedAction).handleInput(
-      "r",
-    );
-    new GoalWindow({ ...goal, status: "blocked" }, undefined, theme, onBlockedAction).handleInput(
-      "r",
-    );
-
-    expect(onPausedAction).toHaveBeenCalledWith("resume");
-    expect(onBlockedAction).toHaveBeenCalledWith("resume");
-  });
-
-  it.each([
-    ["c", "complete"],
-    ["x", "clear"],
-  ] as const)("requires confirmation before %s", (input, action) => {
-    const onAction = vi.fn();
-    const requestRender = vi.fn();
-    const window = new GoalWindow(goal, undefined, theme, onAction, requestRender);
-
-    window.handleInput(input);
-
-    expect(onAction).not.toHaveBeenCalled();
-    expect(requestRender).toHaveBeenCalledOnce();
-    expect(window.render(52).join("\n")).toContain(`${input} again to confirm ${action}`);
-
-    window.handleInput(input);
-
-    expect(onAction).toHaveBeenCalledWith(action);
-  });
-
-  it("cancels a pending destructive action with escape", () => {
-    const onAction = vi.fn();
-    const requestRender = vi.fn();
-    const window = new GoalWindow(goal, undefined, theme, onAction, requestRender);
-
-    window.handleInput("x");
-    window.handleInput("\u001b");
-
-    expect(onAction).not.toHaveBeenCalled();
-    expect(requestRender).toHaveBeenCalledTimes(2);
-    expect(window.render(52).join("\n")).toContain("x clear");
-  });
-
-  it("ignores unavailable and unrelated actions", () => {
+  it("turns limits off explicitly", () => {
     const onAction = vi.fn();
     const window = new GoalWindow(goal, undefined, theme, onAction);
+    window.handleInput("b");
+    window.handleInput("o");
+    expect(onAction).toHaveBeenCalledWith({ type: "budget", disabled: true });
+  });
 
-    window.handleInput("r");
-    window.handleInput("z");
+  it("accepts timed snooze and has no manual resume action", () => {
+    const onAction = vi.fn();
+    const window = new GoalWindow(goal, undefined, theme, onAction);
+    window.handleInput("s");
+    for (let index = 0; index < 3; index += 1) window.handleInput("\u007f");
+    window.handleInput("2h");
+    window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({ type: "snooze", durationMs: 7_200_000 });
+    expect(window.render(60).join("\n")).not.toContain("resume");
+  });
 
-    expect(onAction).not.toHaveBeenCalled();
+  it("makes close available for budget-limited goals", () => {
+    const onAction = vi.fn();
+    const window = new GoalWindow(
+      { ...goal, status: "budget_limited" },
+      undefined,
+      theme,
+      onAction,
+    );
+    window.handleInput("x");
+    window.handleInput("x");
+    expect(onAction).toHaveBeenCalledWith("closeGoal");
+  });
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 7])("keeps every line within width %i", (width) => {
+    expect(
+      new GoalWindow(goal, undefined, theme, vi.fn())
+        .render(width)
+        .every((line) => visibleWidth(line) <= width),
+    ).toBe(true);
+  });
+});
+
+describe("parseDuration", () => {
+  it("parses timed units and rejects indefinite values", () => {
+    expect(parseDuration("30m")).toBe(1_800_000);
+    expect(parseDuration("2h")).toBe(7_200_000);
+    expect(parseDuration("1d")).toBe(86_400_000);
+    expect(parseDuration("forever")).toBeUndefined();
   });
 });

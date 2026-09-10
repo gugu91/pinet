@@ -1,5 +1,6 @@
 import type {
   AgentGoal,
+  GoalCheckpoint,
   GoalContinuationClaim,
   GoalPendingEvaluation,
   GoalStorage,
@@ -18,6 +19,7 @@ function cloneGoal(goal: AgentGoal): AgentGoal {
 export class MemoryGoalStorage implements GoalStorage {
   private readonly goals = new Map<string, AgentGoal>();
   private readonly pendingEvaluations = new Map<string, GoalPendingEvaluation>();
+  private readonly checkpoints = new Map<string, GoalCheckpoint[]>();
   private readonly terminalCandidates = new Map<string, GoalTerminalCandidateRecord>();
   private readonly claims = new Map<string, GoalContinuationClaim>();
 
@@ -57,12 +59,26 @@ export class MemoryGoalStorage implements GoalStorage {
     return true;
   }
 
+  async addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean> {
+    const goal = this.goals.get(checkpoint.scopeId);
+    if (!goal || goal.id !== checkpoint.goalId || goal.status === "complete") return false;
+    const checkpoints = this.checkpoints.get(checkpoint.scopeId) ?? [];
+    checkpoints.push({ ...checkpoint });
+    this.checkpoints.set(checkpoint.scopeId, checkpoints);
+    return true;
+  }
+
+  async listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]> {
+    return (this.checkpoints.get(scopeId) ?? []).map((checkpoint) => ({ ...checkpoint })).reverse();
+  }
+
   async delete(scopeId: string, expectedVersion: number): Promise<boolean> {
     const current = this.goals.get(scopeId);
     if (!current || current.version !== expectedVersion) return false;
     this.pendingEvaluations.delete(scopeId);
     this.terminalCandidates.delete(scopeId);
     this.claims.delete(scopeId);
+    this.checkpoints.delete(scopeId);
     return this.goals.delete(scopeId);
   }
 
@@ -147,7 +163,13 @@ export class MemoryGoalStorage implements GoalStorage {
     ) {
       return false;
     }
-    this.goals.set(goal.scopeId, cloneGoal(goal));
+    this.goals.set(goal.scopeId, {
+      ...cloneGoal(goal),
+      name: current.name,
+      objective: current.objective,
+      budget: { ...current.budget },
+      snoozedUntil: current.snoozedUntil,
+    });
     this.pendingEvaluations.delete(goal.scopeId);
     return true;
   }

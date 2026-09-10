@@ -1,7 +1,8 @@
 export type GoalStatus = "active" | "paused" | "blocked" | "budget_limited" | "complete";
 
 export interface GoalBudget {
-  maxIterations: number;
+  maxIterations?: number;
+  /** @deprecated Token usage is provider-reported and is retained for stored-goal compatibility only. */
   maxTokens?: number;
   maxRuntimeMs?: number;
 }
@@ -13,7 +14,21 @@ export interface GoalUsage {
 
 export interface GoalBudgetUpdate {
   maxIterations?: number;
+  maxRuntimeMs?: number;
+  disabled?: boolean;
+  /** @deprecated Retained for compatibility with previously stored goals. */
   maxTokens?: number;
+}
+
+export interface GoalCheckpoint {
+  id: string;
+  scopeId: string;
+  goalId: string;
+  summary: string;
+  evidence?: string;
+  nextStep?: string;
+  blocker?: string;
+  createdAt: string;
 }
 
 export interface GoalEvaluationRecord {
@@ -26,9 +41,12 @@ export interface GoalEvaluationRecord {
 export interface AgentGoal {
   id: string;
   scopeId: string;
+  /** Legacy goals derive their display name from the objective until first edited. */
+  name?: string;
   objective: string;
   status: GoalStatus;
   blockedReason?: string;
+  snoozedUntil?: string;
   budget: GoalBudget;
   usage: GoalUsage;
   lastSettledAt?: string;
@@ -98,6 +116,8 @@ export interface GoalStorage {
   create(goal: AgentGoal): Promise<void>;
   replace(goal: AgentGoal, expectedVersion: number): Promise<boolean>;
   updateBudget(goal: AgentGoal, expectedVersion: number): Promise<boolean>;
+  addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean>;
+  listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]>;
   delete(scopeId: string, expectedVersion: number): Promise<boolean>;
   getPendingEvaluation(scopeId: string): Promise<GoalPendingEvaluation | undefined>;
   appendPendingEvaluation(pending: GoalPendingEvaluation): Promise<boolean>;
@@ -161,6 +181,10 @@ export type GoalEvent =
   | { type: "goal.status_changed"; goal: AgentGoal; previousStatus: GoalStatus }
   | { type: "goal.progress_accounted"; goal: AgentGoal; tokenDelta: number }
   | { type: "goal.budget_changed"; goal: AgentGoal; previousBudget: GoalBudget }
+  | { type: "goal.updated"; goal: AgentGoal }
+  | { type: "goal.checkpoint_added"; goal: AgentGoal; checkpoint: GoalCheckpoint }
+  | { type: "goal.snoozed"; goal: AgentGoal; snoozedUntil: string }
+  | { type: "goal.snooze_expired"; goal: AgentGoal }
   | { type: "goal.evaluated"; goal: AgentGoal; evaluation: GoalEvaluation }
   | { type: "goal.auto_continued"; goal: AgentGoal }
   | {
