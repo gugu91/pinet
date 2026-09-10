@@ -89,6 +89,80 @@ describe("GoalWindow", () => {
     });
   });
 
+  it("does not truncate a long stored name during an objective-only edit", () => {
+    const onAction = vi.fn();
+    const longName = "A".repeat(120);
+    const window = new GoalWindow({ ...goal, name: longName }, undefined, theme, onAction);
+    window.handleInput("e");
+    window.handleInput("\t");
+    window.handleInput(" with follow-up");
+    window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({
+      type: "edit",
+      objective: `${goal.objective} with follow-up`,
+    });
+    expect(onAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.any(String) }),
+    );
+  });
+
+  it("renders persisted control text safely and preserves the objective during a name edit", () => {
+    const onAction = vi.fn();
+    const rawObjective = "First line\n\u001b[31mred\u001b[0m\u0007 tail";
+    const persisted = { ...goal, name: "Old name", objective: rawObjective };
+    const window = new GoalWindow(persisted, undefined, theme, onAction);
+    window.handleInput("e");
+
+    const rendered = window.render(60);
+    expect(rendered.join("\n")).toContain("Objective First line red tail");
+    expect(rendered).toHaveLength(7);
+    expect(rendered.every((line) => !line.includes("\u001b") && !line.includes("\u0007"))).toBe(
+      true,
+    );
+
+    for (let index = 0; index < persisted.name.length; index += 1) window.handleInput("\u007f");
+    window.handleInput("New name");
+    window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({ type: "edit", name: "New name" });
+    expect(onAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ objective: expect.any(String) }),
+    );
+  });
+
+  it("expands and scrolls the complete checkpoint history with the keyboard", () => {
+    const history = [1, 2, 3, 4, 5].map((number) => ({
+      id: `checkpoint-${number}`,
+      scopeId: goal.scopeId,
+      goalId: goal.id,
+      summary: `Checkpoint ${number}`,
+      evidence: `Evidence ${number}`,
+      nextStep: `Next ${number}`,
+      createdAt: `2026-01-01T00:0${number}:00.000Z`,
+    }));
+    const window = new GoalWindow(
+      goal,
+      undefined,
+      theme,
+      vi.fn(),
+      vi.fn(),
+      Date.now,
+      undefined,
+      history,
+    );
+
+    expect(window.render(70).join("\n")).toContain("… and 2 more · h show all");
+    window.handleInput("h");
+    expect(window.render(70).join("\n")).toContain("Evidence 1");
+    expect(window.render(70).join("\n")).not.toContain("Checkpoint 4");
+    window.handleInput("\u001b[B");
+    const scrolled = window.render(70).join("\n");
+    expect(scrolled).toContain("Checkpoint 4");
+    expect(scrolled).not.toContain("Checkpoint 1");
+    expect(scrolled).toContain("history 2-4/5");
+    window.handleInput("\u001b[A");
+    expect(window.render(70).join("\n")).toContain("Checkpoint 1");
+  });
+
   it("turns limits off explicitly", () => {
     const onAction = vi.fn();
     const window = new GoalWindow(goal, undefined, theme, onAction);

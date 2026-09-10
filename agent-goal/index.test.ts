@@ -327,6 +327,70 @@ describe("registerAgentGoal", () => {
     expect(notify).toHaveBeenCalledWith("Goal command applied: update budget turns 8", "info");
   });
 
+  it("applies the documented update, limit, snooze, and close commands to persisted state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const commands = new Map<string, RegisteredCommand>();
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand(name: string, command: RegisteredCommand) {
+        commands.set(name, command);
+      },
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      name: "Old name",
+      objective: "old objective",
+      status: "active",
+      budget: { maxIterations: 5, maxTokens: 10_000 },
+      usage: { iterations: 1, tokens: 500 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const context = {
+      hasUI: true,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionCommandContext;
+    registerAgentGoal(pi, { storage });
+    const command = commands.get("goal");
+    if (!command) throw new Error("goal command was not registered");
+
+    await command.handler("update name New name", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      name: "New name",
+      objective: "old objective",
+      usage: { iterations: 1, tokens: 500 },
+    });
+    await command.handler("update objective new objective", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      name: "New name",
+      objective: "new objective",
+    });
+    await command.handler("update budget runtime 2h", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      budget: { maxIterations: 5, maxTokens: 10_000, maxRuntimeMs: 7_200_000 },
+    });
+    await command.handler("update budget off", context);
+    expect((await storage.get("session-1"))?.budget).toEqual({});
+    await command.handler("snooze 30m", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      status: "active",
+      snoozedUntil: "2026-01-01T00:30:00.000Z",
+    });
+    await command.handler("close", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      status: "complete",
+      snoozedUntil: undefined,
+      usage: { iterations: 1, tokens: 500 },
+    });
+  });
+
   it("keeps passive UI compact and applies modal actions before refreshing", async () => {
     const handlers = new Map<string, GoalEventHandler>();
     const commands = new Map<string, RegisteredCommand>();

@@ -23,7 +23,7 @@ export type GoalWindowAction =
       maxIterations?: number;
       maxRuntimeMs?: number;
     }
-  | { type: "edit"; name: string; objective: string }
+  | { type: "edit"; name?: string; objective?: string }
   | {
       type: "budget";
       maxIterations?: number;
@@ -42,6 +42,8 @@ export class GoalWindow implements Component {
   private textField: TextField = "name";
   private name = "";
   private objective = "";
+  private initialName = "";
+  private initialObjective = "";
   private budgetField: BudgetField = "turns";
   private budgetTurns = "";
   private budgetRuntime = "";
@@ -137,8 +139,10 @@ export class GoalWindow implements Component {
   private openTextForm(mode: "create" | "edit"): void {
     this.mode = mode;
     this.textField = "name";
-    this.name = mode === "edit" && this.goal ? goalDisplayName(this.goal) : "";
+    this.name = mode === "edit" && this.goal ? (this.goal.name ?? this.goal.objective) : "";
     this.objective = mode === "edit" && this.goal ? this.goal.objective : "";
+    this.initialName = this.name;
+    this.initialObjective = this.objective;
     if (mode === "create") {
       this.budgetTurns = "";
       this.budgetRuntime = "";
@@ -177,7 +181,15 @@ export class GoalWindow implements Component {
         this.inputError = "Runtime must use m, h, or d";
       else if (this.mode === "create")
         this.onAction({ type: "create", name, objective, maxIterations, maxRuntimeMs });
-      else this.onAction({ type: "edit", name, objective });
+      else {
+        const update = {
+          ...(this.name === this.initialName ? {} : { name }),
+          ...(this.objective === this.initialObjective ? {} : { objective }),
+        };
+        if (update.name === undefined && update.objective === undefined)
+          this.inputError = "Change the name or objective before saving";
+        else this.onAction({ type: "edit", ...update });
+      }
       this.requestRender();
       return;
     } else if (
@@ -277,9 +289,13 @@ export class GoalWindow implements Component {
       return lines;
     }
     if (this.mode === "create" || this.mode === "edit") {
+      const displayedName = displayGoalText(this.name, 500);
+      const displayedObjective = displayGoalText(this.objective, 500);
       lines.push(
-        row(` ${this.textField === "name" ? "›" : " "} Name      ${this.name || "_"}`),
-        row(` ${this.textField === "objective" ? "›" : " "} Objective ${this.objective || "_"}`),
+        row(` ${this.textField === "name" ? "›" : " "} Name      ${displayedName || "_"}`),
+        row(
+          ` ${this.textField === "objective" ? "›" : " "} Objective ${displayedObjective || "_"}`,
+        ),
         ...(this.mode === "create"
           ? [
               row(

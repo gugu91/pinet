@@ -1,10 +1,13 @@
+import { stripVTControlCharacters } from "node:util";
 import type { AgentGoal, GoalCheckpoint, GoalContinuationClaim } from "./domain.js";
 
 export function displayGoalText(value: string, maxLength: number): string {
-  const normalized = value
-    .replaceAll("\n", " ")
-    .replaceAll("\r", " ")
-    .replaceAll("\u001b", "")
+  const normalized = Array.from(stripVTControlCharacters(value).replaceAll(/\r?\n/g, " "))
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code >= 32 && (code < 127 || code > 159);
+    })
+    .join("")
     .trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
 }
