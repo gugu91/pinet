@@ -857,6 +857,37 @@ describe("GoalRuntime", () => {
     });
   });
 
+  it("does not complete an edited goal from a stale completion result", async () => {
+    const storage = new MemoryGoalStorage();
+    let releaseFirst!: (value: { outcome: "complete"; reason: string }) => void;
+    const firstEvaluation = new Promise<{ outcome: "complete"; reason: string }>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const evaluator: GoalEvaluator = {
+      evaluate: vi
+        .fn()
+        .mockReturnValueOnce(firstEvaluation)
+        .mockResolvedValueOnce({ outcome: "continue", reason: "updated objective needs work" }),
+    };
+    const runtime = new GoalRuntime(storage, evaluator, startedContinuation());
+    await runtime.create("session-1", "old objective");
+    const settling = runtime.settle("session-1", { latestOutput: "old work done" });
+    await vi.waitFor(() => expect(evaluator.evaluate).toHaveBeenCalledOnce());
+    const editing = runtime.updateDetails("session-1", { objective: "new unfinished objective" });
+    await vi.waitFor(async () =>
+      expect((await storage.get("session-1"))?.objective).toBe("new unfinished objective"),
+    );
+    releaseFirst({ outcome: "complete", reason: "old objective done" });
+    await Promise.all([settling, editing]);
+    expect(evaluator.evaluate).toHaveBeenCalledTimes(2);
+    expect(await runtime.get("session-1")).toMatchObject({
+      objective: "new unfinished objective",
+      status: "active",
+      lastEvaluation: { outcome: "continue" },
+    });
+    runtime.close(false);
+  });
+
   it("records newest-first durable checkpoints", async () => {
     let now = new Date("2026-01-01T00:00:00.000Z");
     const runtime = new GoalRuntime(
