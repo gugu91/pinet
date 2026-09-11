@@ -103,7 +103,7 @@ describe("GoalWindow", () => {
     expect(lines.join("\n")).toContain("Ship goal UX");
     expect(lines.join("\n")).toContain("Elapsed 15m 0s");
     expect(lines.join("\n")).toContain("3/8 turns");
-    expect(lines.join("\n")).toContain("… and 1 more · h show all");
+    expect(lines.join("\n")).toContain("tab/shift+tab select · enter open");
     expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
   });
 
@@ -207,17 +207,18 @@ describe("GoalWindow", () => {
       history,
     );
 
-    expect(window.render(70).join("\n")).toContain("… and 2 more · h show all");
-    window.handleInput("h");
+    window.handleInput("\u001b[Z");
+    window.handleInput("\r");
+    expect(window.render(70).join("\n")).toContain("Evidence 5");
+    window.handleInput("\u001b");
+    window.handleInput("\t");
+    window.handleInput("\r");
     expect(window.render(70).join("\n")).toContain("Evidence 1");
-    expect(window.render(70).join("\n")).not.toContain("Checkpoint 4");
-    window.handleInput("\u001b[B");
-    const scrolled = window.render(70).join("\n");
-    expect(scrolled).toContain("Checkpoint 4");
-    expect(scrolled).not.toContain("Checkpoint 1");
-    expect(scrolled).toContain("history 2-4/5");
-    window.handleInput("\u001b[A");
-    expect(window.render(70).join("\n")).toContain("Checkpoint 1");
+    window.handleInput("\u001b");
+    window.handleInput("\t");
+    window.handleInput("\r");
+    expect(window.render(70).join("\n")).toContain("Evidence 2");
+    window.dispose();
   });
 
   it("uses Escape rather than q to close the details overlay", () => {
@@ -228,6 +229,46 @@ describe("GoalWindow", () => {
     expect(onAction).not.toHaveBeenCalled();
     window.handleInput("\u001b");
     expect(onAction).toHaveBeenCalledWith("close");
+  });
+
+  it("expands and collapses even a single checkpoint", () => {
+    const window = new GoalWindow(goal, undefined, theme, vi.fn(), vi.fn(), Date.now, undefined, [
+      { ...checkpoints[0]!, evidence: "Tests passed", nextStep: "Review the diff" },
+    ]);
+    expect(window.render(70).join("\n")).toContain("tab/shift+tab select · enter open");
+    expect(window.render(70).join("\n")).not.toContain("Tests passed");
+    window.handleInput("\t");
+    window.handleInput("\r");
+    expect(window.render(70).join("\n")).toContain("Tests passed");
+    expect(window.render(70).join("\n")).toContain("Review the diff");
+    expect(window.render(70).join("\n")).toContain("esc back");
+    window.handleInput("\u001b");
+    expect(window.render(70).join("\n")).not.toContain("Tests passed");
+    window.dispose();
+  });
+
+  it("scrolls long checkpoint details without losing evidence or blockers", () => {
+    const window = new GoalWindow(goal, undefined, theme, vi.fn(), vi.fn(), Date.now, undefined, [
+      {
+        ...checkpoints[0]!,
+        summary: "Long summary ".repeat(100),
+        evidence: "Verified evidence",
+        nextStep: "Next action",
+        blocker: "External blocker",
+      },
+    ]);
+    window.handleInput("\t");
+    window.handleInput("\r");
+    expect(window.render(50).join("\n")).not.toContain("External blocker");
+    for (let index = 0; index < 100; index += 1) window.handleInput("\u001b[B");
+    const bottom = window.render(50);
+    expect(bottom.join("\n")).toContain("Verified evidence");
+    expect(bottom.join("\n")).toContain("Next action");
+    expect(bottom.join("\n")).toContain("External blocker");
+    expect(bottom.every((line) => visibleWidth(line) <= 50)).toBe(true);
+    for (let index = 0; index < 100; index += 1) window.handleInput("\u001b[A");
+    expect(window.render(50).join("\n")).toContain("Summary:");
+    window.dispose();
   });
 
   it("turns limits off explicitly", () => {

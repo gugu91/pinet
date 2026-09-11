@@ -511,6 +511,22 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
       const command = input.toLowerCase();
 
       try {
+        if (command === "demo") {
+          if (await runtime.get(scopeId))
+            throw new Error(
+              "Use a session without a goal for /goal demo; your current goal is unchanged.",
+            );
+          api.sendMessage(
+            {
+              customType: "agent-goal.demo",
+              content:
+                "Walk me through goals: agree a tiny example, create it, record a checkpoint, inspect /goal, then verify completion. Ask before changing any goal; preserve existing work.",
+              display: true,
+            },
+            { triggerTurn: true },
+          );
+          return;
+        }
         if (!input || command === "update") {
           let openedWindow = false;
           let actionError: string | undefined;
@@ -612,6 +628,10 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         } else if (command === "show") {
           hiddenScopes.delete(scopeId);
         } else {
+          if (await runtime.get(scopeId))
+            throw new Error(
+              "This session already has a goal. Use /goal to inspect it or /goal update to edit it.",
+            );
           api.sendMessage(
             {
               customType: "agent-goal.idea",

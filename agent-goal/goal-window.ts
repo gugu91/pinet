@@ -33,7 +33,7 @@ export type GoalWindowAction =
     }
   | { type: "snooze"; durationMs: number };
 
-type Mode = "details" | "create" | "edit" | "budget" | "snooze";
+type Mode = "details" | "create" | "edit" | "budget" | "snooze" | "checkpoint";
 type TextField = "name" | "objective" | "turns" | "runtime";
 type BudgetField = "turns" | "runtime";
 
@@ -50,8 +50,9 @@ export class GoalWindow implements Component {
   private snoozeDuration = "30m";
   private inputError: string | undefined;
   private confirmClose = false;
-  private showAllCheckpoints = false;
+  private selectedCheckpoint = -1;
   private checkpointOffset = 0;
+  private checkpointLineCount = 0;
   private refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
@@ -107,18 +108,36 @@ export class GoalWindow implements Component {
       if (key === "n" || matchesKey(data, "enter")) this.openTextForm("create");
       return;
     }
-    if (this.showAllCheckpoints && matchesKey(data, "down")) {
-      this.checkpointOffset = Math.min(
-        Math.max(0, this.checkpoints.length - 1),
-        this.checkpointOffset + 1,
-      );
+    if (this.mode === "checkpoint") {
+      if (matchesKey(data, "down"))
+        this.checkpointOffset = Math.min(
+          Math.max(0, this.checkpointLineCount - 8),
+          this.checkpointOffset + 1,
+        );
+      else if (matchesKey(data, "up"))
+        this.checkpointOffset = Math.max(0, this.checkpointOffset - 1);
       this.requestRender();
       return;
     }
-    if (this.showAllCheckpoints && matchesKey(data, "up")) {
-      this.checkpointOffset = Math.max(0, this.checkpointOffset - 1);
-      this.requestRender();
-      return;
+    if (!this.confirmClose && this.checkpoints.length) {
+      if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+        const backwards = matchesKey(data, "shift+tab");
+        this.selectedCheckpoint =
+          this.selectedCheckpoint < 0
+            ? backwards
+              ? this.checkpoints.length - 1
+              : 0
+            : (this.selectedCheckpoint + (backwards ? -1 : 1) + this.checkpoints.length) %
+              this.checkpoints.length;
+        this.requestRender();
+        return;
+      }
+      if (matchesKey(data, "enter") && this.selectedCheckpoint >= 0) {
+        this.mode = "checkpoint";
+        this.checkpointOffset = 0;
+        this.requestRender();
+        return;
+      }
     }
     if (this.confirmClose) {
       if (key === "x") this.onAction("closeGoal");
@@ -133,10 +152,6 @@ export class GoalWindow implements Component {
     else if (key === "s" && this.goal.status !== "complete") {
       this.mode = "snooze";
       this.inputError = undefined;
-      this.requestRender();
-    } else if (key === "h" && this.checkpoints.length > 3) {
-      this.showAllCheckpoints = !this.showAllCheckpoints;
-      this.checkpointOffset = 0;
       this.requestRender();
     } else if (key === "x") {
       this.confirmClose = true;
@@ -331,6 +346,31 @@ export class GoalWindow implements Component {
       this.finish(lines, row, border, innerWidth);
       return lines;
     }
+    if (this.mode === "checkpoint") {
+      const checkpoint = this.checkpoints[this.selectedCheckpoint]!;
+      const details: string[] = [];
+      for (const [label, value] of [
+        ["Summary", checkpoint.summary],
+        ["Evidence", checkpoint.evidence],
+        ["Next", checkpoint.nextStep],
+        ["Blocker", checkpoint.blocker],
+      ]) {
+        if (value)
+          details.push(
+            ...wrapTextWithAnsi(`${label}: ${displayGoalText(value, value.length)}`, contentWidth),
+          );
+      }
+      this.checkpointLineCount = details.length;
+      this.checkpointOffset = Math.min(this.checkpointOffset, Math.max(0, details.length - 8));
+      lines.push(
+        ...details
+          .slice(this.checkpointOffset, this.checkpointOffset + 8)
+          .map((line) => row(` ${line}`)),
+      );
+      lines.push(row(), row(" ↑↓ scroll · esc back"));
+      this.finish(lines, row, border, innerWidth);
+      return lines;
+    }
     if (this.mode === "budget") {
       lines.push(
         row(` › Limits are opt-in and stop continuation, not in-flight work.`),
@@ -389,42 +429,16 @@ export class GoalWindow implements Component {
       lines.push(row(` ${this.theme.fg("muted", `Continuation ${this.claim.state}`)}`));
     if (this.checkpoints.length) {
       lines.push(row(), row(` ${this.theme.fg("accent", "Checkpoints · agent-reported")}`));
-      const shown = this.showAllCheckpoints
-        ? this.checkpoints.slice(this.checkpointOffset, this.checkpointOffset + 3)
-        : this.checkpoints.slice(0, 3);
+      const start = Math.max(0, this.selectedCheckpoint - 2);
+      const shown = this.checkpoints.slice(start, start + 3);
       for (const checkpoint of shown) {
         lines.push(
           row(
-            ` ${checkpoint.createdAt.slice(11, 16)} · ${displayGoalText(checkpoint.summary, contentWidth - 10)}`,
+            ` ${checkpoint === this.checkpoints[this.selectedCheckpoint] ? "›" : " "} ${checkpoint.createdAt.slice(11, 16)} · ${displayGoalText(checkpoint.summary, contentWidth - 12)}`,
           ),
         );
-        if (this.showAllCheckpoints && checkpoint.evidence)
-          lines.push(
-            row(`   evidence · ${displayGoalText(checkpoint.evidence, contentWidth - 14)}`),
-          );
-        if (this.showAllCheckpoints && (checkpoint.blocker || checkpoint.nextStep))
-          lines.push(
-            row(
-              `   ${checkpoint.blocker ? "blocker" : "next"} · ${displayGoalText(checkpoint.blocker ?? checkpoint.nextStep ?? "", contentWidth - 11)}`,
-            ),
-          );
       }
-      if (!this.showAllCheckpoints && this.checkpoints.length > 3)
-        lines.push(
-          row(` ${this.theme.fg("dim", `… and ${this.checkpoints.length - 3} more · h show all`)}`),
-        );
-      else if (this.showAllCheckpoints && this.checkpoints.length > 3)
-        lines.push(
-          row(
-            ` ${this.theme.fg(
-              "dim",
-              `history ${this.checkpointOffset + 1}-${Math.min(
-                this.checkpointOffset + shown.length,
-                this.checkpoints.length,
-              )}/${this.checkpoints.length} · ↑↓ scroll · h newest 3`,
-            )}`,
-          ),
-        );
+      lines.push(row(` ${this.theme.fg("dim", "tab/shift+tab select · enter open")}`));
     }
     const footer = this.confirmClose
       ? "x again to close goal · esc cancel"

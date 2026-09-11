@@ -276,6 +276,69 @@ describe("registerAgentGoal", () => {
     await handlers.get("session_shutdown")?.({}, context);
   });
 
+  it.each([false, true])("demo leaves goal state unchanged (existing: %s)", async (existing) => {
+    const commands = new Map<string, RegisteredCommand>();
+    const sendMessage = vi.fn();
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      sendMessage,
+      registerCommand(name: string, command: RegisteredCommand) {
+        commands.set(name, command);
+      },
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    if (existing)
+      await storage.create({
+        id: "goal-1",
+        scopeId: "session-1",
+        objective: "Preserve my work",
+        status: "active",
+        budget: {},
+        usage: { iterations: 0, tokens: 0 },
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+    const before = await storage.get("session-1");
+    const evaluate = vi.fn();
+    const continueIfIdle = vi.fn();
+    registerAgentGoal(pi, { storage, evaluator: { evaluate }, continuation: { continueIfIdle } });
+    const notify = vi.fn();
+    const context = {
+      hasUI: true,
+      ui: { notify },
+      sessionManager: { getSessionId: () => "session-1" },
+    } as object as ExtensionCommandContext;
+    await commands.get("goal")!.handler("demo", context);
+    if (existing) {
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenLastCalledWith(
+        expect.stringContaining("current goal is unchanged"),
+        "error",
+      );
+      await commands.get("goal")!.handler("a new goal idea", context);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenLastCalledWith(
+        expect.stringContaining("already has a goal"),
+        "error",
+      );
+    } else
+      expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
+        {
+          customType: "agent-goal.demo",
+          content:
+            "Walk me through goals: agree a tiny example, create it, record a checkpoint, inspect /goal, then verify completion. Ask before changing any goal; preserve existing work.",
+          display: true,
+        },
+        { triggerTurn: true },
+      );
+    expect(await storage.get("session-1")).toEqual(before);
+    expect(await storage.getContinuationClaim("session-1")).toBeUndefined();
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(continueIfIdle).not.toHaveBeenCalled();
+  });
+
   it("automatically retries a continuation deferred while the session is busy", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
