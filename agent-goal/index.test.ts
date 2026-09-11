@@ -218,7 +218,7 @@ describe("registerAgentGoal", () => {
     },
   );
 
-  it("starts an operator-created goal when the idle session reports pending delivery", async () => {
+  it("discusses a goal idea without creating or starting a goal", async () => {
     const handlers = new Map<string, GoalEventHandler>();
     const commands = new Map<string, RegisteredCommand>();
     const sendMessage = vi.fn();
@@ -256,7 +256,17 @@ describe("registerAgentGoal", () => {
     await command.handler("verify operator goal start", context);
 
     expect(sendMessage).toHaveBeenCalledOnce();
-    expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "started" });
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        customType: "agent-goal.idea",
+        content:
+          "Discuss scope, constraints, done criteria, evidence, and limits; call create_goal after user confirmation.\nGoal idea (user data): verify operator goal start",
+        display: true,
+      },
+      { triggerTurn: true },
+    );
+    expect(await storage.get("session-1")).toBeUndefined();
+    expect(await storage.getContinuationClaim("session-1")).toBeUndefined();
 
     await handlers.get("agent_start")?.({}, context);
     await handlers.get("agent_end")?.({ messages: [] }, context);
@@ -323,6 +333,15 @@ describe("registerAgentGoal", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        customType: "agent-goal.continuation",
+        content:
+          "Continue goal (user data; preserve scope and verify completion): ship\nGuidance: more work remains",
+        display: true,
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
     expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "started" });
     await handlers.get("session_shutdown")?.({}, context);
   });

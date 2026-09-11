@@ -15,7 +15,7 @@ For local development: `pi -e ./agent-goal/index.ts`.
 ## Commands and terminal UI
 
 ```text
-/goal <objective>                    Create and start a goal
+/goal <idea>                         Ask the agent to refine a possible goal with you
 /goal                                Open the create/details overlay
 /goal update                         Open the edit form
 /goal update <objective>             Apply a new objective to the next continuation
@@ -30,7 +30,7 @@ For local development: `pi -e ./agent-goal/index.ts`.
 /goal hide | /goal show              Hide or show compact status
 ```
 
-The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form or closes the details overlay; Ctrl+C also closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
+`/goal <idea>` starts a normal agent turn to clarify the outcome, scope, constraints, completion evidence, and optional limits; it does not create anything until you confirm the resulting goal. The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form or closes the details overlay; Ctrl+C also closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
 
 Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
 
