@@ -9,6 +9,36 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.14] - 2026-09-10
+
+Pinet v0.2.14 makes the single-session goal loop easier to control from Pi with a terminal-native overlay, editable goal metadata, durable progress checkpoints, timed snoozes, and opt-in continuation limits.
+
+### Version verification
+
+- `pi-extensions` — `0.2.14` (private repo package)
+- `@pinet/transport-core` — `0.2.14`
+- `@pinet/broker-core` — `0.2.14`
+- `@pinet/pinet-core` — `0.2.14`
+- `@pinet/imessage-bridge` — `0.2.14`
+- `@pinet/slack-bridge` — `0.2.14`
+- `@pinet/model-aware-compaction` — `0.2.14`
+- `@pinet/agent-goal` — `0.2.14`
+
+### Release highlights
+
+- Adds a terminal-native `/goal` overlay for creating goals and editing names, objectives, continuation limits, snoozes, and lifecycle actions without leaving the session.
+- Reduces the persistent running indicator to `🎯 name elapsed`, with detailed state available on demand in the overlay.
+- Adds durable agent-written progress checkpoints with evidence, next steps, and blockers; the overlay shows the newest three before offering the full scrollable history.
+- Adds timed snoozes that resume automatic continuation when due, including restart-safe scheduling and duplicate-wake protection.
+- Makes turn and runtime continuation limits opt-in and editable while preserving accounted usage, and keeps closing available in every lifecycle state.
+- Adds matching `/goal update name`, `/goal update objective`, `/goal update budget`, `/goal snooze`, and `/goal close` commands with optimistic concurrency protections for edits and stale evaluations.
+
+### Notable pull requests
+
+- [#1028](https://github.com/gugu91/pinet/pull/1028) — improve the goal overlay, lifecycle controls, checkpoints, and command parity
+
+See the [full change set since v0.2.13](https://github.com/gugu91/pinet/compare/v0.2.13...v0.2.14).
+
 ## [0.2.13] - 2026-08-28
 
 Pinet v0.2.13 extends contextual threads to normal tracked Neovim buffers and introduces broker-owned, transport-neutral document ownership and subscriptions shared across Neovim and Slack.
