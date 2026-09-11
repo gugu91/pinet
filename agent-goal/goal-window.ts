@@ -52,6 +52,7 @@ export class GoalWindow implements Component {
   private confirmClose = false;
   private showAllCheckpoints = false;
   private checkpointOffset = 0;
+  private refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly goal: AgentGoal | undefined,
@@ -62,7 +63,14 @@ export class GoalWindow implements Component {
     private readonly now: () => number = Date.now,
     private readonly actionError?: string,
     private readonly checkpoints: GoalCheckpoint[] = [],
-  ) {}
+    initialMode: "details" | "edit" = "details",
+  ) {
+    if (initialMode === "edit" && goal) this.openTextForm("edit");
+    if (goal?.status === "active") {
+      this.refreshTimer = setInterval(this.requestRender, 1_000);
+      this.refreshTimer.unref();
+    }
+  }
 
   handleInput(data: string): void {
     const key = data.toLowerCase();
@@ -434,6 +442,12 @@ export class GoalWindow implements Component {
   }
 
   invalidate(): void {}
+
+  dispose(): void {
+    if (!this.refreshTimer) return;
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = undefined;
+  }
 }
 
 export function parseDuration(value: string): number | undefined {

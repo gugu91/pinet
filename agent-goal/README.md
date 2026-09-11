@@ -17,13 +17,16 @@ For local development: `pi -e ./agent-goal/index.ts`.
 ```text
 /goal <objective>                    Create and start a goal
 /goal                                Open the create/details overlay
+/goal update                         Open the edit form
+/goal update <objective>             Apply a new objective to the next continuation
 /goal update name <name>             Rename immediately
 /goal update objective <objective>   Apply a new objective to the next continuation
 /goal update budget turns <n>        Set an optional total-turn limit
 /goal update budget runtime <2h>     Set an optional total-runtime limit
 /goal update budget off              Disable continuation limits
 /goal snooze <30m|2h|1d>             Snooze, then continue automatically
-/goal close                          Close the goal in any lifecycle state
+/goal close                          Complete and clear the current goal
+/goal clear                          Clear the current goal immediately
 /goal hide | /goal show              Hide or show compact status
 ```
 
@@ -31,7 +34,7 @@ The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a
 
 Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
 
-Only one goal may exist per Pi session. Closed goals remain durable history rather than being silently deleted.
+Only one current goal may exist per Pi session. A verified completion clears that current goal so another can be created; `/goal close` records completion before clearing, while `/goal clear` removes it immediately. Clearing removes its persisted checkpoints as well.
 
 ## Agent tools and checkpoints
 

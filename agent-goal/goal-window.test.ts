@@ -31,6 +31,37 @@ const checkpoints: GoalCheckpoint[] = [1, 2, 3, 4].map((number) => ({
 }));
 
 describe("GoalWindow", () => {
+  it("refreshes elapsed time once per second while an active goal is visible", () => {
+    vi.useFakeTimers();
+    const requestRender = vi.fn();
+    const window = new GoalWindow(goal, undefined, theme, vi.fn(), requestRender);
+
+    vi.advanceTimersByTime(3_000);
+    expect(requestRender).toHaveBeenCalledTimes(3);
+
+    window.dispose();
+    vi.advanceTimersByTime(1_000);
+    expect(requestRender).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it("opens directly in edit mode when requested", () => {
+    const window = new GoalWindow(
+      goal,
+      undefined,
+      theme,
+      vi.fn(),
+      vi.fn(),
+      Date.now,
+      undefined,
+      [],
+      "edit",
+    );
+
+    expect(window.render(60).join("\n")).toContain("Goal · edit");
+    window.dispose();
+  });
+
   it("renders the terminal-native details and newest checkpoint summary", () => {
     const lines = new GoalWindow(
       goal,
