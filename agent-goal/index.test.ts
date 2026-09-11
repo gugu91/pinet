@@ -462,16 +462,26 @@ describe("registerAgentGoal", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
+    let windowCount = 0;
     const custom = vi.fn(async (factory: GoalWindowFactory) => {
+      let action: GoalWindowAction = "close";
       const component = factory(
         { requestRender: vi.fn() },
         { fg: (_color, text) => text, bold: (text) => text } as Theme,
         {},
-        vi.fn(),
-      ) as Component & { dispose?: () => void };
-      expect(component.render(66).join("\n")).toContain("Goal · edit");
+        (nextAction) => (action = nextAction),
+      ) as Component & { handleInput(data: string): void; dispose?: () => void };
+      if (windowCount === 0) {
+        expect(component.render(66).join("\n")).toContain("Goal · edit");
+        component.handleInput("\t");
+        for (let index = 0; index < "old objective".length; index += 1)
+          component.handleInput("\u007f");
+        component.handleInput("updated objective");
+        component.handleInput("\r");
+      }
+      windowCount += 1;
       component.dispose?.();
-      return "close" as const;
+      return action;
     });
     const context = {
       hasUI: true,
@@ -484,7 +494,12 @@ describe("registerAgentGoal", () => {
 
     await command.handler("update", context);
 
-    expect(custom).toHaveBeenCalledOnce();
+    expect(custom).toHaveBeenCalledTimes(2);
+    expect(await storage.get("session-1")).toMatchObject({
+      name: "Editable goal",
+      objective: "updated objective",
+      status: "active",
+    });
   });
 
   it("applies the documented update, limit, snooze, clear, and close commands", async () => {

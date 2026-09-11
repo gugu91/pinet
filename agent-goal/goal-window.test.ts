@@ -62,6 +62,32 @@ describe("GoalWindow", () => {
     window.dispose();
   });
 
+  it("wraps the editable objective across multiple lines", () => {
+    const editableGoal = {
+      ...goal,
+      objective:
+        "Preserve the complete user objective while showing enough context to review edits before saving.",
+    };
+    const window = new GoalWindow(
+      editableGoal,
+      undefined,
+      theme,
+      vi.fn(),
+      vi.fn(),
+      Date.now,
+      undefined,
+      [],
+      "edit",
+    );
+
+    const lines = window.render(44);
+    expect(lines).toHaveLength(10);
+    expect(lines.join("\n")).toContain("enough context");
+    expect(lines.join("\n")).toContain("before saving.");
+    expect(lines.every((line) => visibleWidth(line) <= 44)).toBe(true);
+    window.dispose();
+  });
+
   it("renders the terminal-native details and newest checkpoint summary", () => {
     const lines = new GoalWindow(
       goal,
@@ -192,6 +218,16 @@ describe("GoalWindow", () => {
     expect(scrolled).toContain("history 2-4/5");
     window.handleInput("\u001b[A");
     expect(window.render(70).join("\n")).toContain("Checkpoint 1");
+  });
+
+  it("uses Escape rather than q to close the details overlay", () => {
+    const onAction = vi.fn();
+    const window = new GoalWindow(goal, undefined, theme, onAction);
+
+    window.handleInput("q");
+    expect(onAction).not.toHaveBeenCalled();
+    window.handleInput("\u001b");
+    expect(onAction).toHaveBeenCalledWith("close");
   });
 
   it("turns limits off explicitly", () => {

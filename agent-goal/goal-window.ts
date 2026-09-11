@@ -74,7 +74,7 @@ export class GoalWindow implements Component {
 
   handleInput(data: string): void {
     const key = data.toLowerCase();
-    if (matchesKey(data, "ctrl+c") || (this.mode === "details" && key === "q")) {
+    if (matchesKey(data, "ctrl+c")) {
       this.onAction("close");
       return;
     }
@@ -292,17 +292,24 @@ export class GoalWindow implements Component {
     ];
     if (!this.goal && this.mode === "details") {
       lines.push(row(), row(` ${this.theme.fg("muted", "No goal for this session.")}`));
-      lines.push(row(` ${this.theme.fg("dim", "n · enter  create · q close")}`));
+      lines.push(row(` ${this.theme.fg("dim", "n · enter  create · esc close")}`));
       lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
       return lines;
     }
     if (this.mode === "create" || this.mode === "edit") {
       const displayedName = displayGoalText(this.name, 500);
       const displayedObjective = displayGoalText(this.objective, 500);
+      const objectivePrefix = ` ${this.textField === "objective" ? "›" : " "} Objective `;
+      const objectiveLines = wrapTextWithAnsi(
+        displayedObjective || "_",
+        Math.max(1, innerWidth - visibleWidth(objectivePrefix)),
+      ).slice(0, 4);
       lines.push(
         row(` ${this.textField === "name" ? "›" : " "} Name      ${displayedName || "_"}`),
-        row(
-          ` ${this.textField === "objective" ? "›" : " "} Objective ${displayedObjective || "_"}`,
+        ...objectiveLines.map((line, index) =>
+          row(
+            `${index === 0 ? objectivePrefix : " ".repeat(visibleWidth(objectivePrefix))}${line}`,
+          ),
         ),
         ...(this.mode === "create"
           ? [
@@ -422,8 +429,8 @@ export class GoalWindow implements Component {
     const footer = this.confirmClose
       ? "x again to close goal · esc cancel"
       : goal.status === "complete"
-        ? "x close goal · q close overlay"
-        : "e edit · b limits · s snooze · x close goal · q overlay";
+        ? "x close goal · esc close overlay"
+        : "e edit · b limits · s snooze · x close goal · esc close overlay";
     lines.push(row(), row(` ${this.theme.fg("dim", footer)}`));
     this.finish(lines, row, border, innerWidth);
     return lines;
