@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HerdrRuntimeAdapter,
+  NodeCommandRunner,
   ProcessRuntimeAdapter,
   TmuxRuntimeAdapter,
   type CommandRunner,
@@ -28,6 +29,11 @@ class FakeRunner implements CommandRunner {
   }
 }
 describe("runtime adapter safety", () => {
+  it("turns executable spawn errors into rejected launches", async () => {
+    await expect(
+      new NodeCommandRunner().start("/definitely-missing-pinet-runtime", [], "/tmp"),
+    ).rejects.toThrow();
+  });
   it("only terminates a process whose recorded launch identity still matches", async () => {
     const runner = new FakeRunner();
     const adapter = new ProcessRuntimeAdapter(runner);
@@ -52,7 +58,7 @@ describe("runtime adapter safety", () => {
     const runner = new FakeRunner();
     runner.exec = async (_command, args) => {
       calls.push(args);
-      return { stdout: args[0] === "list-panes" ? "%7|pi launch" : "pi launch" };
+      return { stdout: args[0] === "list-panes" ? "%7|77" : "77" };
     };
     const adapter = new TmuxRuntimeAdapter(runner);
     const handle = await adapter.spawn({
@@ -62,7 +68,8 @@ describe("runtime adapter safety", () => {
       sessionPath: "/tmp/session.jsonl",
       env: { PINET_CHAT_TOKEN: "scoped" },
     });
-    expect(handle).toEqual({ adapter: "tmux", handle: "%7", identity: "pi launch" });
+    expect(handle).toEqual({ adapter: "tmux", handle: "%7", identity: "77|start pi" });
+    expect(calls.flat().join(" ")).not.toContain("scoped");
     expect(await adapter.stop(handle)).toBe(true);
     expect(calls.at(-1)).toEqual(["kill-pane", "-t", "%7"]);
   });

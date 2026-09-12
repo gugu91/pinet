@@ -38,7 +38,35 @@ export type SlackAdapterOptions = {
   mentionMap?: Record<string, string>;
 };
 export class SlackAdapter {
+  private drainPromise: Promise<void> | undefined;
   constructor(private options: SlackAdapterOptions) {}
+  enqueue(message: SlackInboundMessage): void {
+    this.options.mappings.enqueueInbound(message);
+  }
+  drain(): Promise<void> {
+    if (this.drainPromise) return this.drainPromise;
+    this.drainPromise = this.drainQueued().finally(() => {
+      this.drainPromise = undefined;
+    });
+    return this.drainPromise;
+  }
+  private async drainQueued(): Promise<void> {
+    while (true) {
+      const rows = this.options.mappings.pendingInbound();
+      if (rows.length === 0) return;
+      while (rows.length > 0) {
+        const ready = rows.findIndex(
+          ({ message }) =>
+            !message.threadTs ||
+            message.threadTs === message.ts ||
+            Boolean(this.options.mappings.threadBySlack(message.channel, message.threadTs)),
+        );
+        const [row] = rows.splice(ready < 0 ? 0 : ready, 1);
+        await this.receive(row!.message);
+        this.options.mappings.removeInbound(row!.id);
+      }
+    }
+  }
   async receive(
     message: SlackInboundMessage,
   ): Promise<{ status: "relayed" | "ignored"; reason?: string; chatMessageId?: string }> {

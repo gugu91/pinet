@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 export type SpawnSpec = {
@@ -41,14 +42,27 @@ export class NodeCommandRunner implements CommandRunner {
     input?: string,
     env?: Record<string, string>,
   ): Promise<{ pid: number; identity: string }> {
+    const inherited = { ...process.env };
+    delete inherited.PINET_HOST_TOKEN;
     const child = spawn(command, args, {
       cwd,
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
-      env: { ...process.env, ...env },
+      env: { ...inherited, ...env },
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
     });
     if (!child.pid) throw new Error("runtime process did not return a PID");
-    if (input) child.stdin.write(`${input}\n`);
+    child.stdin.on("error", () => {});
+    if (input)
+      await new Promise<void>((resolve, reject) =>
+        child.stdin.write(`${input}\n`, (error) => (error ? reject(error) : resolve())),
+      ).catch((error) => {
+        child.kill("SIGTERM");
+        throw error;
+      });
     const identity = await this.processIdentity(child.pid);
     if (!identity) {
       child.kill("SIGTERM");
@@ -100,55 +114,59 @@ export class ProcessRuntimeAdapter implements RuntimeAdapter {
   }
 }
 
+async function createLauncher(spec: SpawnSpec): Promise<string> {
+  const path = join(spec.sessionPath.replace(/\.jsonl$/, ""), "..", `${spec.sessionId}.launch.sh`);
+  const environment = Object.entries(spec.env)
+    .map(([key, value]) => `export ${key}='${value.replaceAll("'", "'\\''")}'`)
+    .join("\n");
+  const quotedPrompt = `'${spec.prompt.replaceAll("'", "'\\''")}'`;
+  const quotedPath = `'${spec.sessionPath.replaceAll("'", "'\\''")}'`;
+  await writeFile(
+    path,
+    `#!/bin/sh\nunset PINET_HOST_TOKEN\n${environment}\nexec pi --session ${quotedPath} ${quotedPrompt}\n`,
+    { mode: 0o700 },
+  );
+  return path;
+}
+
 export class TmuxRuntimeAdapter implements RuntimeAdapter {
   constructor(private readonly runner: CommandRunner = new NodeCommandRunner()) {}
   async spawn(spec: SpawnSpec): Promise<RuntimeHandle> {
     const name = `pinet-${spec.sessionId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-    await this.runner.exec("tmux", [
-      "new-session",
-      "-d",
-      "-s",
-      name,
-      "-c",
-      spec.cwd,
-      "env",
-      ...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`),
-      "pi",
-      "--session",
-      spec.sessionPath,
-      spec.prompt,
-    ]);
+    const launcher = await createLauncher(spec);
     try {
+      await this.runner.exec("tmux", ["new-session", "-d", "-s", name, "-c", spec.cwd, launcher]);
       const pane = (
-        await this.runner.exec("tmux", [
-          "list-panes",
-          "-t",
-          name,
-          "-F",
-          "#{pane_id}|#{pane_start_command}",
-        ])
+        await this.runner.exec("tmux", ["list-panes", "-t", name, "-F", "#{pane_id}|#{pane_pid}"])
       ).stdout.trim();
       if (!pane) throw new Error("tmux did not report the launched pane");
       const [handle, identity] = pane.split("|", 2);
       if (!handle || !identity) throw new Error("tmux returned incomplete pane identity");
-      return { adapter: "tmux", handle, identity };
+      const processIdentity = await this.runner.processIdentity(Number(identity));
+      if (!processIdentity) throw new Error("tmux pane process identity unavailable");
+      await unlink(launcher);
+      return { adapter: "tmux", handle, identity: `${identity}|${processIdentity}` };
     } catch (error) {
-      await this.runner.exec("tmux", ["kill-session", "-t", name]);
+      await this.runner.exec("tmux", ["kill-session", "-t", name]).catch(() => ({ stdout: "" }));
+      await unlink(launcher).catch(() => {});
       throw error;
     }
   }
   async isAlive(handle: RuntimeHandle): Promise<boolean> {
     try {
-      const current = (
+      const pid = (
         await this.runner.exec("tmux", [
           "display-message",
           "-p",
           "-t",
           handle.handle,
-          "#{pane_start_command}",
+          "#{pane_pid}",
         ])
       ).stdout.trim();
-      return current === handle.identity;
+      const [expectedPid, expectedIdentity] = handle.identity.split("|", 2);
+      return (
+        pid === expectedPid && (await this.runner.processIdentity(Number(pid))) === expectedIdentity
+      );
     } catch {
       return false;
     }
@@ -180,25 +198,18 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
     const payload = JSON.parse(created.stdout) as { result?: { root_pane?: { pane_id?: string } } };
     const pane = payload.result?.root_pane?.pane_id;
     if (!pane) throw new Error("Herdr workspace create returned no pane ID");
+    const launcher = await createLauncher(spec);
     try {
-      const quotedPrompt = `'${spec.prompt.replaceAll("'", "'\\''")}'`;
-      const quotedPath = `'${spec.sessionPath.replaceAll("'", "'\\''")}'`;
-      const environment = Object.entries(spec.env)
-        .map(([key, value]) => `${key}='${value.replaceAll("'", "'\\''")}'`)
-        .join(" ");
-      await this.runner.exec("herdr", [
-        "--session",
-        this.session,
-        "pane",
-        "run",
-        pane,
-        `env ${environment} pi --session ${quotedPath} ${quotedPrompt}`,
-      ]);
+      await this.runner.exec("herdr", ["--session", this.session, "pane", "run", pane, launcher]);
       const identity = await this.paneIdentity(pane);
       if (!identity) throw new Error("Herdr pane returned no launched process PID");
+      await unlink(launcher);
       return { adapter: "herdr", handle: pane, identity };
     } catch (error) {
-      await this.runner.exec("herdr", ["--session", this.session, "pane", "close", pane]);
+      await this.runner
+        .exec("herdr", ["--session", this.session, "pane", "close", pane])
+        .catch(() => ({ stdout: "" }));
+      await unlink(launcher).catch(() => {});
       throw error;
     }
   }

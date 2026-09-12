@@ -30,8 +30,15 @@ describe("Slack Socket Mode lifecycle", () => {
       .fn()
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue(Response.json({ ok: true, url: "wss://socket.test" }));
-    const receive = vi.fn(async () => ({ status: "ignored" }));
-    const client = new SlackSocketModeClient("app-token", { receive } as never, transport, (() => {
+    const receive = vi.fn(async (_message?: object) => ({ status: "ignored" }));
+    const queue: object[] = [];
+    const adapter = {
+      enqueue: (message: object) => queue.push(message),
+      drain: vi.fn(async () => {
+        while (queue.length) await receive(queue.shift());
+      }),
+    };
+    const client = new SlackSocketModeClient("app-token", adapter as never, transport, (() => {
       const socket = new FakeSocket();
       sockets.push(socket);
       return socket;
@@ -64,9 +71,16 @@ describe("Slack Socket Mode lifecycle", () => {
   it("closes and reconnects when message delivery rejects", async () => {
     vi.useFakeTimers();
     const socket = new FakeSocket();
+    const adapter = {
+      enqueue: vi.fn(),
+      drain: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("delivery failed")),
+    };
     const client = new SlackSocketModeClient(
       "app-token",
-      { receive: vi.fn(async () => Promise.reject(new Error("delivery failed"))) } as never,
+      adapter as never,
       vi.fn(async () => Response.json({ ok: true, url: "wss://socket.test" })),
       (() => socket) as never,
     );

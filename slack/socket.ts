@@ -26,6 +26,7 @@ export class SlackSocketModeClient {
   ) {}
   async start() {
     this.stopped = false;
+    void this.adapter.drain().catch(() => {});
     await this.connect().catch(() => this.scheduleReconnect());
   }
   stop() {
@@ -47,6 +48,7 @@ export class SlackSocketModeClient {
     this.socket = socket;
     socket.addEventListener("open", () => {
       this.reconnectMs = 1000;
+      void this.adapter.drain().catch(() => socket.close());
     });
     socket.addEventListener("message", (event) => {
       void this.receive(event.data).catch(() => socket.close());
@@ -57,12 +59,13 @@ export class SlackSocketModeClient {
   private async receive(data: string | ArrayBuffer) {
     const encoded = typeof data === "string" ? data : new TextDecoder().decode(data);
     const envelope = JSON.parse(encoded) as Envelope;
+    if (!envelope.payload) return;
+    const message = parseSlackMessage(envelope.payload);
+    if (!message) return;
+    this.adapter.enqueue(message);
     if (envelope.envelope_id)
       this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
-    if (envelope.payload) {
-      const message = parseSlackMessage(envelope.payload);
-      if (message) await this.adapter.receive(message);
-    }
+    await this.adapter.drain();
   }
   private scheduleReconnect() {
     if (this.stopped || this.reconnectTimer) return;

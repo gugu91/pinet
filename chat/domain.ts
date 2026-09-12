@@ -38,6 +38,7 @@ export type RuntimeRequest = {
   stoppedAt: number | null;
   agentId: string | null;
   agentLastSeen: number | null;
+  heartbeatPath: string | null;
 };
 
 export interface ChatStorage {

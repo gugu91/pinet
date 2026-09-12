@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,13 +59,14 @@ describe("Chat extension lifecycle", () => {
         },
       },
     );
+    await vi.waitFor(() => expect(requests).toHaveLength(4));
     expect(requests.map((request) => request.path)).toEqual([
+      "/v1/mentions?after=0",
       "/v1/agents",
       "/v1/channels/channel/join",
       "/v1/runtime/requests/request/heartbeat",
-      "/v1/mentions?after=0",
     ]);
-    expect(JSON.parse(requests[2]!.body!)).toEqual({
+    expect(JSON.parse(requests[3]!.body!)).toEqual({
       sessionId: "actual-session-id",
       sessionPath,
     });
@@ -96,5 +97,54 @@ describe("Chat extension lifecycle", () => {
     await restartedHandlers.get("session_start")!({}, {});
     expect(requests.at(-1)?.path).toBe("/v1/mentions?after=7");
     restartedHandlers.get("session_shutdown")!({}, {});
+  });
+
+  it("installs independent retries and keeps the local heartbeat alive through remote bootstrap failure", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const directory = mkdtempSync(join(tmpdir(), "pinet-chat-outage-"));
+    directories.push(directory);
+    const heartbeatPath = join(directory, "runtime.heartbeat");
+    const transport = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("mention outage"))
+      .mockRejectedValueOnce(new Error("bootstrap outage"))
+      .mockResolvedValue(Response.json({ data: [] }));
+    const handlers = new Map<string, LifecycleHandler>();
+    registerChat(
+      {
+        on: (name: string, handler: LifecycleHandler) => handlers.set(name, handler),
+        sendUserMessage: vi.fn(),
+        registerTool: vi.fn(),
+        registerCommand: vi.fn(),
+      } as never,
+      {
+        baseUrl: "https://chat.test",
+        token: "child",
+        agentId: "runtime",
+        runtimeRequestId: "request",
+        localHeartbeatPath: heartbeatPath,
+        localHeartbeatIntervalMs: 1000,
+        pollIntervalMs: 2000,
+        heartbeatIntervalMs: 5000,
+        fetch: transport,
+      },
+    );
+    handlers.get("session_start")!(
+      {},
+      {
+        sessionManager: { getSessionFile: () => undefined },
+      },
+    );
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(3);
+    expect(readFileSync(heartbeatPath, "utf8")).toBe("1000");
+    vi.setSystemTime(2000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(readFileSync(heartbeatPath, "utf8")).toBe("3000");
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(transport.mock.calls.length).toBeGreaterThan(2);
+    handlers.get("session_shutdown")!({}, {});
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

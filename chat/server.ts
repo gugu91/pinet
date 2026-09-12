@@ -98,6 +98,17 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     c.set("principal", credential?.principal ?? { kind: "agent", id: runtimeCredential!.agentId });
     await next();
   });
+  app.use("/v1/*", async (c, next) => {
+    const principal = c.get("principal");
+    if (principal.kind === "host" && !c.req.path.startsWith("/v1/runtime/"))
+      return error(
+        c,
+        403,
+        "forbidden",
+        "Host credentials are limited to runtime lifecycle operations",
+      );
+    await next();
+  });
   app.onError((cause, c) => {
     const message = cause instanceof Error ? cause.message : "invalid request";
     const conflict = message.includes("already") || message.includes("reused");
@@ -259,13 +270,16 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       )
     )
       return error(c, 400, "invalid_host", "Target host is not registered");
+    const channelId = text(body.channelId, "channelId", false) ?? null;
+    if (channelId && !options.storage.getChannel(channelId))
+      return error(c, 404, "not_found", "Channel not found");
     const timestamp = now();
     const request: RuntimeRequest = {
       id: id(),
       requestedBy: principal.id,
       hostId,
       prompt: text(body.prompt, "prompt")!,
-      channelId: text(body.channelId, "channelId", false) ?? null,
+      channelId,
       worktree: text(body.worktree, "worktree", false) ?? null,
       adapter,
       status: "pending",
@@ -281,6 +295,7 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       stoppedAt: null,
       agentId: null,
       agentLastSeen: null,
+      heartbeatPath: null,
     };
     options.storage.createRuntimeRequest(request);
     return c.json({ data: request }, 202);
@@ -305,7 +320,6 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
   });
   app.post("/v1/runtime/registrations", async (c) => {
     const principal = c.get("principal");
-    if (principal.kind !== "host") return error(c, 403, "forbidden", "Host credential required");
     const body = bodyObject(await c.req.text());
     if (body.consent !== true)
       return error(
@@ -317,14 +331,26 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     const adapter = text(body.adapter, "adapter")!;
     if (adapter !== "process" && adapter !== "tmux" && adapter !== "herdr")
       return error(c, 400, "invalid_request", "adapter must be process, tmux, or herdr");
+    const hostId = principal.kind === "host" ? principal.id : text(body.hostId, "hostId")!;
+    if (
+      !options.credentials.some(
+        (item) => item.principal.kind === "host" && item.principal.id === hostId,
+      )
+    )
+      return error(c, 400, "invalid_host", "Target host is not registered");
     const timestamp = now();
     const sessionId = text(body.sessionId, "sessionId")!;
+    const requestedBy = `manual:${principal.id}:${sessionId}`;
+    const existing = options.storage
+      .listRuntimeRequests(hostId)
+      .find((request) => request.requestedBy === requestedBy);
+    if (existing) return c.json({ data: existing });
     const requestId = id();
-    const agentId = `runtime-${requestId}`;
+    const agentId = principal.kind === "agent" ? principal.id : `runtime-${requestId}`;
     const request: RuntimeRequest = {
       id: requestId,
-      requestedBy: `manual:${sessionId}`,
-      hostId: principal.id,
+      requestedBy,
+      hostId,
       prompt: "Manual session registration",
       channelId: null,
       worktree: null,
@@ -341,14 +367,14 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       lastSeen: timestamp,
       stoppedAt: null,
       agentId,
-      agentLastSeen: null,
+      agentLastSeen: principal.kind === "agent" ? timestamp : null,
+      heartbeatPath: text(body.heartbeatPath, "heartbeatPath")!,
     };
+    const created = options.storage.createRuntimeRequest(request);
+    if (principal.kind === "agent") return c.json({ data: created }, 201);
     const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
     options.storage.putRuntimeCredential({ requestId, agentId, tokenHash: tokenHash(token) });
-    return c.json(
-      { data: options.storage.createRuntimeRequest(request), launch: { token, agentId } },
-      201,
-    );
+    return c.json({ data: created, launch: { token, agentId } }, 201);
   });
   app.post("/v1/runtime/requests/:id/claim", (c) => {
     const principal = c.get("principal");
@@ -401,7 +427,14 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       lastSeen: now(),
       ...(status === "stopped" || status === "failed" ? { stoppedAt: now() } : {}),
     };
-    for (const field of ["sessionId", "sessionPath", "cwd", "handle", "identity"] as const) {
+    for (const field of [
+      "sessionId",
+      "sessionPath",
+      "cwd",
+      "handle",
+      "identity",
+      "heartbeatPath",
+    ] as const) {
       if (body[field] !== undefined) patch[field] = text(body[field], field)!;
     }
     if (body.startedAt !== undefined) {
@@ -431,12 +464,14 @@ function updateHostRequest(
   if (
     patch.status &&
     ((request.status === "pending" && patch.status !== "claimed") ||
-      ((request.status === "stopped" || request.status === "failed") &&
+      ((request.status === "stopped" ||
+        request.status === "failed" ||
+        request.status === "unknown") &&
         patch.status !== request.status))
   )
     return error(c, 409, "invalid_transition", "Invalid runtime status transition");
   const updated = options.storage.updateRuntimeRequest(request.id, patch);
-  if (patch.status === "stopped" || patch.status === "failed")
+  if (patch.status === "stopped" || patch.status === "failed" || patch.status === "unknown")
     options.storage.deleteRuntimeCredential(request.id);
   return c.json({ data: updated });
 }

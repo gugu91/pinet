@@ -30,9 +30,11 @@ export type ChatExtensionOptions = Partial<ChatClientOptions> & {
   cursorPath?: string;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
+  localHeartbeatIntervalMs?: number;
   runtimeRequestId?: string;
   channelId?: string;
   agentName?: string;
+  localHeartbeatPath?: string;
 };
 type ChatAction = {
   action: string;
@@ -50,6 +52,11 @@ type ChatAction = {
   worktree?: string;
   adapter?: string;
   requestId?: string;
+  handle?: string;
+  identity?: string;
+  cwd?: string;
+  heartbeatPath?: string;
+  sessionPath?: string;
 };
 
 const HELP = {
@@ -82,6 +89,15 @@ const HELP = {
       adapter: "process|tmux|herdr?",
     },
     runtime_status: { requestId: "string" },
+    runtime_adopt: {
+      hostId: "string",
+      adapter: "process|tmux|herdr",
+      handle: "string",
+      identity: "string",
+      cwd: "string",
+      heartbeatPath: "mode-0600 local path",
+      sessionPath: "string?",
+    },
   },
 };
 
@@ -107,9 +123,21 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
   }
   const runtimeRequestId = supplied.runtimeRequestId ?? process.env.PINET_RUNTIME_REQUEST_ID;
   const channelId = supplied.channelId ?? process.env.PINET_CHAT_CHANNEL_ID;
+  const automaticHeartbeatPath =
+    supplied.localHeartbeatPath ?? process.env.PINET_RUNTIME_HEARTBEAT_FILE;
   let mentionPoller: ReturnType<typeof setInterval> | undefined;
   let heartbeatPoller: ReturnType<typeof setInterval> | undefined;
+  let localHeartbeatPoller: ReturnType<typeof setInterval> | undefined;
   let polling = false;
+  let bootstrapped = false;
+  const startLocalHeartbeat = (path: string) => {
+    if (localHeartbeatPoller) clearInterval(localHeartbeatPoller);
+    mkdirSync(dirname(path), { recursive: true });
+    const touch = () => writeFileSync(path, String(Date.now()), { mode: 0o600 });
+    touch();
+    localHeartbeatPoller = setInterval(touch, supplied.localHeartbeatIntervalMs ?? 1000);
+    localHeartbeatPoller.unref();
+  };
   async function pollMentions(): Promise<void> {
     if (!client || polling) return;
     polling = true;
@@ -130,38 +158,43 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
       polling = false;
     }
   }
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
+    if (automaticHeartbeatPath) startLocalHeartbeat(automaticHeartbeatPath);
     if (!client) return;
-    if (runtimeRequestId) {
-      await client.call("POST", "/v1/agents", {
-        name: supplied.agentName ?? process.env.PINET_AGENT_NAME ?? options.agentId,
-        homeChannelId: channelId,
-      });
-      if (channelId) await client.call("POST", `/v1/channels/${channelId}/join`);
-      const heartbeat = () => {
-        const sessionPath = ctx.sessionManager.getSessionFile();
-        return client.call("POST", `/v1/runtime/requests/${runtimeRequestId}/heartbeat`, {
-          sessionId: readSessionId(sessionPath),
-          sessionPath,
-        });
-      };
-      await heartbeat();
-      heartbeatPoller = setInterval(
-        () => void heartbeat().catch(() => {}),
-        supplied.heartbeatIntervalMs ?? 5000,
-      );
-      heartbeatPoller.unref();
-    }
-    await pollMentions();
     mentionPoller = setInterval(
       () => void pollMentions().catch(() => {}),
       supplied.pollIntervalMs ?? 2000,
     );
     mentionPoller.unref();
+    void pollMentions().catch(() => {});
+    if (runtimeRequestId) {
+      const heartbeat = async () => {
+        if (!bootstrapped) {
+          await client.call("POST", "/v1/agents", {
+            name: supplied.agentName ?? process.env.PINET_AGENT_NAME ?? options.agentId,
+            homeChannelId: channelId,
+          });
+          if (channelId) await client.call("POST", `/v1/channels/${channelId}/join`);
+          bootstrapped = true;
+        }
+        const sessionPath = ctx.sessionManager.getSessionFile();
+        await client.call("POST", `/v1/runtime/requests/${runtimeRequestId}/heartbeat`, {
+          sessionId: readSessionId(sessionPath),
+          sessionPath,
+        });
+      };
+      heartbeatPoller = setInterval(
+        () => void heartbeat().catch(() => {}),
+        supplied.heartbeatIntervalMs ?? 5000,
+      );
+      heartbeatPoller.unref();
+      void heartbeat().catch(() => {});
+    }
   });
   pi.on("session_shutdown", () => {
     if (mentionPoller) clearInterval(mentionPoller);
     if (heartbeatPoller) clearInterval(heartbeatPoller);
+    if (localHeartbeatPoller) clearInterval(localHeartbeatPoller);
   });
   pi.registerTool({
     name: "pinet_chat",
@@ -187,6 +220,11 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
         worktree: { type: "string" },
         adapter: { type: "string" },
         requestId: { type: "string" },
+        handle: { type: "string" },
+        identity: { type: "string" },
+        cwd: { type: "string" },
+        heartbeatPath: { type: "string" },
+        sessionPath: { type: "string" },
       },
       required: ["action"],
       additionalProperties: false,
@@ -287,6 +325,23 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
                 adapter: params.adapter,
               }),
             );
+          case "runtime_adopt": {
+            const heartbeatPath = required(params.heartbeatPath, "heartbeatPath");
+            startLocalHeartbeat(heartbeatPath);
+            return result(
+              await client.call("POST", "/v1/runtime/registrations", {
+                consent: true,
+                hostId: required(params.hostId, "hostId"),
+                adapter: required(params.adapter, "adapter"),
+                handle: required(params.handle, "handle"),
+                identity: required(params.identity, "identity"),
+                cwd: required(params.cwd, "cwd"),
+                heartbeatPath,
+                sessionPath: params.sessionPath,
+                sessionId: params.requestId ?? crypto.randomUUID(),
+              }),
+            );
+          }
           case "runtime_status":
             return result(
               await client.call(

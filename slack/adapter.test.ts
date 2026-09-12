@@ -140,6 +140,54 @@ describe("Slack adapter", () => {
     expect(cursors).toEqual([0, 0, 1]);
     expect(slack.postMessage).toHaveBeenCalledTimes(2);
   });
+  it("persists and serially retries inbound roots before replies", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pinet-slack-inbox-"));
+    dirs.push(directory);
+    const path = join(directory, "map.sqlite");
+    const first = new SqliteMappingStore(path);
+    first.bindChannel({ slackChannelId: "C", chatChannelId: "chat" });
+    first.enqueueInbound({
+      channel: "C",
+      ts: "2",
+      threadTs: "1",
+      user: "U",
+      text: "reply",
+      botId: null,
+    });
+    first.enqueueInbound({
+      channel: "C",
+      ts: "1",
+      threadTs: null,
+      user: "U",
+      text: "root",
+      botId: null,
+    });
+    first.close();
+    const second = new SqliteMappingStore(path);
+    const chat = {
+      send: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("temporary Chat failure"))
+        .mockResolvedValueOnce({ id: "chat-root" })
+        .mockResolvedValueOnce({ id: "chat-reply" }),
+    };
+    const adapter = new SlackAdapter({
+      mappings: second,
+      chat,
+      slack: { postMessage: vi.fn() },
+      ownSlackUserId: "BOT",
+    });
+    await expect(adapter.drain()).rejects.toThrow("temporary Chat failure");
+    expect(second.pendingInbound()).toHaveLength(2);
+    await Promise.all([adapter.drain(), adapter.drain()]);
+    expect(chat.send).toHaveBeenNthCalledWith(2, expect.objectContaining({ parentId: null }));
+    expect(chat.send).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ parentId: "chat-root" }),
+    );
+    expect(second.pendingInbound()).toHaveLength(0);
+    second.close();
+  });
   it("persists explicit mappings and relay IDs", () => {
     const directory = mkdtempSync(join(tmpdir(), "pinet-slack-"));
     dirs.push(directory);
@@ -159,6 +207,22 @@ describe("Slack adapter", () => {
       slackThreadTs: "1",
       chatParentId: "m",
     });
+    expect(() =>
+      second.bindThread({
+        slackChannelId: "C",
+        chatChannelId: "chat",
+        slackThreadTs: "1",
+        chatParentId: "different",
+      }),
+    ).toThrow("slack thread is already mapped");
+    expect(() =>
+      second.bindThread({
+        slackChannelId: "missing",
+        chatChannelId: "chat",
+        slackThreadTs: "2",
+        chatParentId: "other",
+      }),
+    ).toThrow("match its channel");
     expect(() => second.bindChannel({ slackChannelId: "C", chatChannelId: "different" })).toThrow(
       "mapped threads",
     );

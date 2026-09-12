@@ -31,8 +31,14 @@ export class MemoryChatStorage implements ChatStorage {
     return next;
   }
   deleteChannel(id: string): boolean {
+    if (!this.channelRows.delete(id)) return false;
     this.membershipRows.delete(id);
-    return this.channelRows.delete(id);
+    for (const [agentId, agent] of this.agentRows)
+      if (agent.homeChannelId === id)
+        this.agentRows.set(agentId, { ...agent, homeChannelId: null });
+    for (let index = this.messageRows.length - 1; index >= 0; index--)
+      if (this.messageRows[index]!.channelId === id) this.messageRows.splice(index, 1);
+    return true;
   }
   getChannel(id: string): Channel | undefined {
     return this.channelRows.get(id);

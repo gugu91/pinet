@@ -1,5 +1,4 @@
-import type { Project, Task } from "./domain.js";
-import { MemoryWorkStorage } from "./memory-storage.js";
+import type { Project, Task, WorkStorage } from "./domain.js";
 import { createWorkApp, parseTokens } from "./server.js";
 type SqlStorage = {
   exec<T extends object>(query: string, ...bindings: Array<string | number | null>): Iterable<T>;
@@ -8,54 +7,145 @@ type State = { storage: { sql: SqlStorage } };
 type Stub = { fetch(request: Request): Promise<Response> };
 type Namespace = { idFromName(name: string): object; get(id: object): Stub };
 export type WorkWorkerEnv = { WORK: Namespace; PINET_WORK_TOKENS: string };
-type StoredRow = { kind: string; id: string; value: string };
-class DurableWorkStorage extends MemoryWorkStorage {
+type ProjectRow = {
+  id: string;
+  markdown: string;
+  external_channel: string | null;
+  created_at: number;
+  updated_at: number;
+};
+type TaskRow = {
+  id: string;
+  project_id: string;
+  markdown: string;
+  created_at: number;
+  updated_at: number;
+};
+class DurableWorkStorage implements WorkStorage {
   private readonly sql: SqlStorage;
   constructor(state: State) {
-    super();
     this.sql = state.storage.sql;
+    this.sql.exec(`
+      PRAGMA foreign_keys=ON;
+      CREATE TABLE IF NOT EXISTS pinet_projects(id TEXT PRIMARY KEY,markdown TEXT NOT NULL,external_channel TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS pinet_tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES pinet_projects(id) ON DELETE CASCADE,markdown TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS pinet_tasks_project_created ON pinet_tasks(project_id,created_at,id);
+    `);
+  }
+  private project(row: ProjectRow): Project {
+    return {
+      id: row.id,
+      markdown: row.markdown,
+      externalChannel: row.external_channel,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+  private task(row: TaskRow): Task {
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      markdown: row.markdown,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+  putProject(value: Project): Project {
     this.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pinet_work(kind TEXT NOT NULL,id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(kind,id))",
+      "INSERT INTO pinet_projects VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET markdown=excluded.markdown,external_channel=excluded.external_channel,created_at=excluded.created_at,updated_at=excluded.updated_at",
+      value.id,
+      value.markdown,
+      value.externalChannel,
+      value.createdAt,
+      value.updatedAt,
     );
-    for (const row of this.sql.exec<StoredRow>("SELECT kind,id,value FROM pinet_work")) {
-      if (row.kind === "project") this.projects.set(row.id, JSON.parse(row.value) as Project);
-      else if (row.kind === "task") this.tasks.set(row.id, JSON.parse(row.value) as Task);
-    }
+    return value;
   }
-  private put(kind: string, id: string, value: object): void {
+  getProject(id: string): Project | undefined {
+    const row = [...this.sql.exec<ProjectRow>("SELECT * FROM pinet_projects WHERE id=?", id)][0];
+    return row && this.project(row);
+  }
+  listProjects(limit: number, offset: number): Project[] {
+    return [
+      ...this.sql.exec<ProjectRow>(
+        "SELECT * FROM pinet_projects ORDER BY created_at,id LIMIT ? OFFSET ?",
+        limit,
+        offset,
+      ),
+    ].map((row) => this.project(row));
+  }
+  deleteProject(id: string): boolean {
+    if (!this.getProject(id)) return false;
+    this.sql.exec("DELETE FROM pinet_projects WHERE id=?", id);
+    return true;
+  }
+  putTask(value: Task): Task {
+    if (!this.getProject(value.projectId)) throw new Error("project not found");
     this.sql.exec(
-      "INSERT INTO pinet_work(kind,id,value) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value",
-      kind,
-      id,
-      JSON.stringify(value),
+      "INSERT INTO pinet_tasks VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,markdown=excluded.markdown,created_at=excluded.created_at,updated_at=excluded.updated_at",
+      value.id,
+      value.projectId,
+      value.markdown,
+      value.createdAt,
+      value.updatedAt,
     );
+    return value;
   }
-  override putProject(value: Project): Project {
-    const result = super.putProject(value);
-    this.put("project", result.id, result);
-    return result;
+  getTask(id: string): Task | undefined {
+    const row = [...this.sql.exec<TaskRow>("SELECT * FROM pinet_tasks WHERE id=?", id)][0];
+    return row && this.task(row);
   }
-  override deleteProject(id: string): boolean {
-    const result = super.deleteProject(id);
-    if (result) {
-      this.sql.exec("DELETE FROM pinet_work WHERE kind='project' AND id=?", id);
-      this.sql.exec(
-        "DELETE FROM pinet_work WHERE kind='task' AND json_extract(value,'$.projectId')=?",
-        id,
-      );
+  listTasks(projectId: string | undefined, limit: number, offset: number): Task[] {
+    const rows = projectId
+      ? this.sql.exec<TaskRow>(
+          "SELECT * FROM pinet_tasks WHERE project_id=? ORDER BY created_at,id LIMIT ? OFFSET ?",
+          projectId,
+          limit,
+          offset,
+        )
+      : this.sql.exec<TaskRow>(
+          "SELECT * FROM pinet_tasks ORDER BY created_at,id LIMIT ? OFFSET ?",
+          limit,
+          offset,
+        );
+    return [...rows].map((row) => this.task(row));
+  }
+  deleteTask(id: string): boolean {
+    if (!this.getTask(id)) return false;
+    this.sql.exec("DELETE FROM pinet_tasks WHERE id=?", id);
+    return true;
+  }
+  search(query: string, limit: number, offset: number): { projects: Project[]; tasks: Task[] } {
+    type SearchRow = {
+      kind: string;
+      id: string;
+      markdown: string;
+      external_channel: string | null;
+      project_id: string | null;
+      created_at: number;
+      updated_at: number;
+    };
+    const rows = this.sql.exec<SearchRow>(
+      `
+      SELECT 'project' AS kind,id,markdown,external_channel,NULL AS project_id,created_at,updated_at FROM pinet_projects WHERE instr(lower(markdown),lower(?))>0
+      UNION ALL
+      SELECT 'task' AS kind,id,markdown,NULL AS external_channel,project_id,created_at,updated_at FROM pinet_tasks WHERE instr(lower(markdown),lower(?))>0
+      ORDER BY created_at,id LIMIT ? OFFSET ?
+    `,
+      query,
+      query,
+      limit,
+      offset,
+    );
+    const projects: Project[] = [],
+      tasks: Task[] = [];
+    for (const row of rows) {
+      if (row.kind === "project") projects.push(this.project(row));
+      else tasks.push(this.task({ ...row, project_id: row.project_id! }));
     }
-    return result;
+    return { projects, tasks };
   }
-  override putTask(value: Task): Task {
-    const result = super.putTask(value);
-    this.put("task", result.id, result);
-    return result;
-  }
-  override deleteTask(id: string): boolean {
-    const result = super.deleteTask(id);
-    if (result) this.sql.exec("DELETE FROM pinet_work WHERE kind='task' AND id=?", id);
-    return result;
-  }
+  close(): void {}
 }
 export class WorkDurableObject {
   private readonly storage: DurableWorkStorage;

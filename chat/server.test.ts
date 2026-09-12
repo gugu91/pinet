@@ -125,6 +125,17 @@ describe("chat API", () => {
     );
     expect(mentions.data).toHaveLength(1);
     expect((mentions.data as Array<{ markdown: string }>)[0]?.markdown).toBe("wake agent B");
+    expect(
+      (await app.request(`/v1/channels/${channelId}`, { method: "DELETE", headers: auth })).status,
+    ).toBe(204);
+    const agents = (await (await app.request("/v1/agents", { headers: auth })).json()) as {
+      data: Array<{ homeChannelId: string | null }>;
+    };
+    expect(agents.data.every((agent) => agent.homeChannelId === null)).toBe(true);
+    const deletedHistory = await json(
+      await app.request(`/v1/channels/${channelId}/messages?after=0`, { headers: auth }),
+    );
+    expect(deletedHistory.data).toHaveLength(0);
   });
 
   it("persists across SQLite restart", async () => {
@@ -133,9 +144,24 @@ describe("chat API", () => {
     const path = join(directory, "chat.sqlite");
     const first = new SqliteChatStorage(path);
     first.createChannel({ id: "channel", name: "persisted", topic: "", createdAt: 1 });
+    first.putAgent({ id: "agent", name: "Agent", homeChannelId: "channel", lastSeen: 1 });
+    first.insertMessage({
+      id: "message",
+      clientId: "client",
+      channelId: "channel",
+      senderId: "agent",
+      markdown: "persisted",
+      mentions: [],
+      parentId: null,
+      createdAt: 1,
+    });
+    expect(first.messages("channel", 0, 1)).toHaveLength(1);
     first.close();
     const second = new SqliteChatStorage(path);
     expect(second.getChannel("channel")?.name).toBe("persisted");
+    expect(second.deleteChannel("channel")).toBe(true);
+    expect(second.getAgent("agent")?.homeChannelId).toBeNull();
+    expect(second.messages("channel", 0, 10)).toHaveLength(0);
     second.close();
   });
 
@@ -146,6 +172,15 @@ describe("chat API", () => {
       id: () => "request",
       now: () => 1,
     });
+    expect(
+      (
+        await app.request("/v1/runtime/requests", {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify({ hostId: "host-a", prompt: "work", channelId: "missing" }),
+        })
+      ).status,
+    ).toBe(404);
     const created = await app.request("/v1/runtime/requests", {
       method: "POST",
       headers: auth,
@@ -240,6 +275,16 @@ describe("chat API", () => {
     });
     expect(
       (
+        await app.request("/v1/runtime/requests/request/report", {
+          method: "POST",
+          headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
+          body: JSON.stringify({ status: "unknown" }),
+        })
+      ).status,
+    ).toBe(200);
+    expect((await app.request("/v1/agents", { headers: childHeaders })).status).toBe(401);
+    expect(
+      (
         await app.request("/v1/runtime/registrations", {
           method: "POST",
           headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
@@ -265,10 +310,87 @@ describe("chat API", () => {
             cwd: "/tmp",
             handle: "42",
             identity: "launch",
+            heartbeatPath: "/tmp/manual.heartbeat",
           }),
         })
       ).status,
     ).toBe(201);
+  });
+
+  it("keeps host tokens lifecycle-only while scoped children retain free coordination", async () => {
+    let sequence = 0;
+    const app = createChatApp({
+      storage: new MemoryChatStorage(),
+      credentials,
+      id: () => `id-${++sequence}`,
+      now: () => 1,
+    });
+    expect(
+      (
+        await app.request("/v1/channels", {
+          method: "POST",
+          headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
+          body: JSON.stringify({ name: "forbidden" }),
+        })
+      ).status,
+    ).toBe(403);
+    const requested = await app.request("/v1/runtime/requests", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ hostId: "host-a", prompt: "child" }),
+    });
+    const requestId = ((await requested.json()) as { data: { id: string } }).data.id;
+    const claim = await app.request(`/v1/runtime/requests/${requestId}/claim`, {
+      method: "POST",
+      headers: { authorization: "Bearer host-secret" },
+    });
+    const launch = (await claim.json()) as { launch: { token: string } };
+    const childHeaders = {
+      authorization: `Bearer ${launch.launch.token}`,
+      "content-type": "application/json",
+    };
+    expect(
+      (
+        await app.request("/v1/channels", {
+          method: "POST",
+          headers: childHeaders,
+          body: JSON.stringify({ name: "child-created" }),
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await app.request("/v1/runtime/requests", {
+          method: "POST",
+          headers: childHeaders,
+          body: JSON.stringify({ hostId: "host-a", prompt: "grandchild" }),
+        })
+      ).status,
+    ).toBe(202);
+    const adoption = {
+      consent: true,
+      hostId: "host-a",
+      sessionId: "manual-session",
+      adapter: "process",
+      cwd: "/tmp",
+      handle: "42",
+      identity: "launch",
+      heartbeatPath: "/tmp/manual.heartbeat",
+    };
+    const first = await app.request("/v1/runtime/registrations", {
+      method: "POST",
+      headers: childHeaders,
+      body: JSON.stringify(adoption),
+    });
+    expect(first.status).toBe(201);
+    const firstId = ((await first.json()) as { data: { id: string } }).data.id;
+    const retry = await app.request("/v1/runtime/registrations", {
+      method: "POST",
+      headers: childHeaders,
+      body: JSON.stringify(adoption),
+    });
+    expect(retry.status).toBe(200);
+    expect(((await retry.json()) as { data: { id: string } }).data.id).toBe(firstId);
   });
 
   it("rejects malformed, empty, and duplicate deployment credentials", () => {
