@@ -20,7 +20,8 @@
     }
   },
   "bin": {
-    "pinet-chat": "./dist/cli.js"
+    "pinet-chat": "./dist/cli.js",
+    "pinet-chat-runtime": "./dist/runtime-cli.js"
   },
   "files": [
     "dist/",

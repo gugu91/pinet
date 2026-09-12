@@ -1,79 +1,91 @@
 import type { Project, Task } from "./domain.js";
-import { createWorkApp } from "./server.js";
-import { MemoryWorkStorage } from "./storage.js";
-type DurableStorage = {
-  get<T>(key: string): Promise<T | undefined>;
-  put(key: string, value: string): Promise<void>;
+import { MemoryWorkStorage } from "./memory-storage.js";
+import { createWorkApp, parseTokens } from "./server.js";
+type SqlStorage = {
+  exec<T extends object>(query: string, ...bindings: Array<string | number | null>): Iterable<T>;
 };
-type State = {
-  storage: DurableStorage;
-  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
-  waitUntil(promise: Promise<void>): void;
-};
+type State = { storage: { sql: SqlStorage } };
 type Stub = { fetch(request: Request): Promise<Response> };
 type Namespace = { idFromName(name: string): object; get(id: object): Stub };
 export type WorkWorkerEnv = { WORK: Namespace; PINET_WORK_TOKENS: string };
-type Snapshot = { projects: Project[]; tasks: Task[] };
+type StoredRow = { kind: string; id: string; value: string };
 class DurableWorkStorage extends MemoryWorkStorage {
-  constructor(private state: State) {
+  private readonly sql: SqlStorage;
+  constructor(state: State) {
     super();
+    this.sql = state.storage.sql;
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pinet_work(kind TEXT NOT NULL,id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(kind,id))",
+    );
+    for (const row of this.sql.exec<StoredRow>("SELECT kind,id,value FROM pinet_work")) {
+      if (row.kind === "project") this.projects.set(row.id, JSON.parse(row.value) as Project);
+      else if (row.kind === "task") this.tasks.set(row.id, JSON.parse(row.value) as Task);
+    }
   }
-  async load() {
-    const encoded = await this.state.storage.get<string>("snapshot");
-    if (!encoded) return;
-    const value = JSON.parse(encoded) as Snapshot;
-    for (const row of value.projects) this.projects.set(row.id, row);
-    for (const row of value.tasks) this.tasks.set(row.id, row);
-  }
-  private save() {
-    this.state.waitUntil(
-      this.state.storage.put(
-        "snapshot",
-        JSON.stringify({ projects: [...this.projects.values()], tasks: [...this.tasks.values()] }),
-      ),
+  private put(kind: string, id: string, value: object): void {
+    this.sql.exec(
+      "INSERT INTO pinet_work(kind,id,value) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value",
+      kind,
+      id,
+      JSON.stringify(value),
     );
   }
-  override putProject(value: Project) {
+  override putProject(value: Project): Project {
     const result = super.putProject(value);
-    this.save();
+    this.put("project", result.id, result);
     return result;
   }
-  override deleteProject(id: string) {
+  override deleteProject(id: string): boolean {
     const result = super.deleteProject(id);
-    if (result) this.save();
+    if (result) {
+      this.sql.exec("DELETE FROM pinet_work WHERE kind='project' AND id=?", id);
+      this.sql.exec(
+        "DELETE FROM pinet_work WHERE kind='task' AND json_extract(value,'$.projectId')=?",
+        id,
+      );
+    }
     return result;
   }
-  override putTask(value: Task) {
+  override putTask(value: Task): Task {
     const result = super.putTask(value);
-    this.save();
+    this.put("task", result.id, result);
     return result;
   }
-  override deleteTask(id: string) {
+  override deleteTask(id: string): boolean {
     const result = super.deleteTask(id);
-    if (result) this.save();
+    if (result) this.sql.exec("DELETE FROM pinet_work WHERE kind='task' AND id=?", id);
     return result;
   }
 }
 export class WorkDurableObject {
-  private storage: DurableWorkStorage;
-  private tokens: string[] = [];
+  private readonly storage: DurableWorkStorage;
+  private tokens: string[] | undefined;
   constructor(state: State) {
     this.storage = new DurableWorkStorage(state);
-    void state.blockConcurrencyWhile(() => this.storage.load());
   }
-  fetch(request: Request) {
-    if (this.tokens.length === 0) {
-      const encoded = request.headers.get("x-pinet-internal-tokens");
-      if (!encoded)
-        return Promise.resolve(
-          Response.json(
-            { error: { code: "misconfigured", message: "Tokens unavailable" } },
-            { status: 500 },
-          ),
-        );
-      this.tokens = JSON.parse(encoded) as string[];
+  fetch(request: Request): Promise<Response> {
+    try {
+      if (!this.tokens) {
+        const encoded = request.headers.get("x-pinet-internal-tokens");
+        if (!encoded) throw new Error("Tokens unavailable");
+        this.tokens = parseTokens(encoded);
+      }
+      return Promise.resolve(
+        createWorkApp({ storage: this.storage, tokens: this.tokens }).fetch(request),
+      );
+    } catch (error) {
+      return Promise.resolve(
+        Response.json(
+          {
+            error: {
+              code: "misconfigured",
+              message: error instanceof Error ? error.message : "Invalid tokens",
+            },
+          },
+          { status: 500 },
+        ),
+      );
     }
-    return createWorkApp({ storage: this.storage, tokens: this.tokens }).fetch(request);
   }
 }
 export default {

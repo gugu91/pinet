@@ -7,6 +7,28 @@ type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string
 type JsonObject = { [key: string]: JsonValue };
 type Variables = { principal: Principal };
 export type Credential = { token: string; principal: Principal };
+
+export function parseCredentials(source: string): Credential[] {
+  const value = JSON.parse(source) as JsonValue;
+  if (!Array.isArray(value) || value.length === 0)
+    throw new Error("credentials must be a non-empty array");
+  const credentials = value.map((item) => {
+    if (!item || Array.isArray(item) || typeof item !== "object")
+      throw new Error("credential must be an object");
+    const principal = item.principal;
+    if (!principal || Array.isArray(principal) || typeof principal !== "object")
+      throw new Error("credential principal must be an object");
+    const token = text(item.token, "token")!;
+    const kind = text(principal.kind, "principal.kind")!;
+    if (kind !== "agent" && kind !== "host" && kind !== "runtime")
+      throw new Error("principal.kind must be agent, host, or runtime");
+    const parsedPrincipal: Principal = { kind, id: text(principal.id, "principal.id")! };
+    return { token, principal: parsedPrincipal };
+  });
+  if (new Set(credentials.map((item) => item.token)).size !== credentials.length)
+    throw new Error("credential tokens must be unique");
+  return credentials;
+}
 export type ChatAppOptions = {
   storage: ChatStorage;
   credentials: Credential[];
@@ -50,6 +72,12 @@ function error(c: Context, status: 400 | 401 | 403 | 404 | 409, code: string, me
 }
 
 export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variables }> {
+  if (
+    options.credentials.length === 0 ||
+    options.credentials.some((item) => !item.token.trim() || !item.principal.id.trim()) ||
+    new Set(options.credentials.map((item) => item.token)).size !== options.credentials.length
+  )
+    throw new Error("credentials must contain unique non-empty tokens and principal IDs");
   const app = new Hono<{ Variables: Variables }>();
   const now = options.now ?? Date.now;
   const id = options.id ?? (() => crypto.randomUUID());
@@ -188,6 +216,17 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       ),
     }),
   );
+  app.get("/v1/mentions", (c) => {
+    const principal = c.get("principal");
+    if (principal.kind !== "agent") return error(c, 403, "forbidden", "Agent credential required");
+    return c.json({
+      data: options.storage.mentions(
+        principal.id,
+        boundedInt(c.req.query("after"), 0, Number.MAX_SAFE_INTEGER),
+        boundedInt(c.req.query("limit"), 50, 100),
+      ),
+    });
+  });
   app.get("/v1/messages/search", (c) => {
     const query = c.req.query("q")?.trim();
     if (!query) return error(c, 400, "invalid_request", "q is required");
@@ -206,11 +245,18 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     const adapter = text(body.adapter, "adapter", false) ?? "process";
     if (adapter !== "process" && adapter !== "tmux" && adapter !== "herdr")
       return error(c, 400, "invalid_request", "adapter must be process, tmux, or herdr");
+    const hostId = text(body.hostId, "hostId")!;
+    if (
+      !options.credentials.some(
+        (item) => item.principal.kind === "host" && item.principal.id === hostId,
+      )
+    )
+      return error(c, 400, "invalid_host", "Target host is not registered");
     const timestamp = now();
     const request: RuntimeRequest = {
       id: id(),
       requestedBy: principal.id,
-      hostId: text(body.hostId, "hostId")!,
+      hostId,
       prompt: text(body.prompt, "prompt")!,
       channelId: text(body.channelId, "channelId", false) ?? null,
       worktree: text(body.worktree, "worktree", false) ?? null,
@@ -286,30 +332,43 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     };
     return c.json({ data: options.storage.createRuntimeRequest(request) }, 201);
   });
-  app.post("/v1/runtime/requests/:id/claim", (c) =>
-    updateHostRequest(c, options, { status: "claimed", updatedAt: now() }),
-  );
+  app.post("/v1/runtime/requests/:id/claim", (c) => {
+    const principal = c.get("principal");
+    if (principal.kind !== "host") return error(c, 403, "forbidden", "Host credential required");
+    const request = options.storage.getRuntimeRequest(c.req.param("id"));
+    if (!request) return error(c, 404, "not_found", "Runtime request not found");
+    if (request.hostId !== principal.id)
+      return error(c, 403, "forbidden", "Host cannot update another host request");
+    const claimed = options.storage.claimRuntimeRequest(request.id, principal.id, now());
+    return claimed
+      ? c.json({ data: claimed })
+      : error(c, 409, "already_claimed", "Runtime request is no longer pending");
+  });
   app.post("/v1/runtime/requests/:id/report", async (c) => {
     const body = bodyObject(await c.req.text());
     const status = text(body.status, "status") as RuntimeRequest["status"];
     if (!["running", "stopped", "failed", "unknown"].includes(status))
       return error(c, 400, "invalid_request", "Invalid runtime status");
-    return updateHostRequest(c, options, {
+    const patch: Partial<RuntimeRequest> = {
       status,
       updatedAt: now(),
-      sessionId: text(body.sessionId, "sessionId", false) ?? null,
-      sessionPath: text(body.sessionPath, "sessionPath", false) ?? null,
-      cwd: text(body.cwd, "cwd", false) ?? null,
-      handle: text(body.handle, "handle", false) ?? null,
-      identity: text(body.identity, "identity", false) ?? null,
-      startedAt: typeof body.startedAt === "number" ? body.startedAt : null,
       lastSeen: now(),
-      stoppedAt: status === "stopped" || status === "failed" ? now() : null,
-    });
+      ...(status === "stopped" || status === "failed" ? { stoppedAt: now() } : {}),
+    };
+    for (const field of ["sessionId", "sessionPath", "cwd", "handle", "identity"] as const) {
+      if (body[field] !== undefined) patch[field] = text(body[field], field)!;
+    }
+    if (body.startedAt !== undefined) {
+      if (typeof body.startedAt !== "number")
+        return error(c, 400, "invalid_request", "startedAt must be a number");
+      patch.startedAt = body.startedAt;
+    }
+    return updateHostRequest(c, options, patch);
   });
   return app;
 }
 
+// agent-standards-ignore prefer-inline-single-use-helper: centralizes host ownership enforcement for runtime state mutation.
 function updateHostRequest(
   c: Context<{ Variables: Variables }>,
   options: ChatAppOptions,
@@ -323,5 +382,12 @@ function updateHostRequest(
   if (!request) return error(c, 404, "not_found", "Runtime request not found");
   if (request.hostId !== principal.id)
     return error(c, 403, "forbidden", "Host cannot update another host request");
+  if (
+    patch.status &&
+    ((request.status === "pending" && patch.status !== "claimed") ||
+      ((request.status === "stopped" || request.status === "failed") &&
+        patch.status !== request.status))
+  )
+    return error(c, 409, "invalid_transition", "Invalid runtime status transition");
   return c.json({ data: options.storage.updateRuntimeRequest(request.id, patch) });
 }

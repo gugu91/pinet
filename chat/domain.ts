@@ -48,10 +48,12 @@ export interface ChatStorage {
   insertMessage(message: Omit<Message, "cursor">): { message: Message; duplicate: boolean };
   messages(channelId: string, after: number, limit: number): Message[];
   searchMessages(query: string, limit: number, after: number): Message[];
+  mentions(agentId: string, after: number, limit: number): Message[];
   createRuntimeRequest(request: RuntimeRequest): RuntimeRequest;
   getRuntimeRequest(id: string): RuntimeRequest | undefined;
   listRuntimeRequests(hostId: string, status?: RuntimeRequest["status"]): RuntimeRequest[];
   updateRuntimeRequest(id: string, patch: Partial<RuntimeRequest>): RuntimeRequest | undefined;
+  claimRuntimeRequest(id: string, hostId: string, updatedAt: number): RuntimeRequest | undefined;
   close(): void;
 }
 

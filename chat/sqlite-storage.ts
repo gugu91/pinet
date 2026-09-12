@@ -99,6 +99,15 @@ export class SqliteChatStorage extends MemoryChatStorage {
     if (value) this.save();
     return value;
   }
+  override claimRuntimeRequest(
+    id: string,
+    hostId: string,
+    updatedAt: number,
+  ): RuntimeRequest | undefined {
+    const value = super.claimRuntimeRequest(id, hostId, updatedAt);
+    if (value) this.save();
+    return value;
+  }
   override close(): void {
     this.database.close();
   }

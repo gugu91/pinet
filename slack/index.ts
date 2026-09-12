@@ -7,7 +7,7 @@ import {
   SlackWebApiTransport,
   type ChatMessage,
 } from "./adapter.js";
-import { SqliteMappingStore } from "./mapping.js";
+import { SqliteMappingStore, type MappingStore } from "./mapping.js";
 import { SlackSocketModeClient } from "./socket.js";
 export * from "./adapter.js";
 export * from "./mapping.js";
@@ -19,6 +19,44 @@ type Params = {
   slackThreadTs?: string;
   chatParentId?: string;
 };
+export class SlackChatPoller {
+  private readonly cursors = new Map<string, number>();
+  private inFlight = false;
+  constructor(
+    private readonly mappings: MappingStore,
+    private readonly adapter: SlackAdapter,
+    private readonly chatUrl: string,
+    private readonly chatToken: string,
+    private readonly transport: typeof fetch,
+  ) {}
+  async poll(): Promise<void> {
+    if (this.inFlight) return;
+    this.inFlight = true;
+    try {
+      for (const mapping of this.mappings.listChannels()) {
+        const after = this.cursors.get(mapping.chatChannelId) ?? 0;
+        const response = await this.transport(
+          new URL(`/v1/channels/${mapping.chatChannelId}/messages?after=${after}`, this.chatUrl),
+          { headers: { authorization: `Bearer ${this.chatToken}` } },
+        );
+        if (!response.ok) continue;
+        const payload = (await response.json()) as {
+          data: ChatMessage[] & Array<{ cursor: number }>;
+        };
+        for (const message of payload.data) {
+          if (!this.mappings.hasChatMessage(message.id)) await this.adapter.send(message);
+          this.cursors.set(
+            mapping.chatChannelId,
+            Math.max(this.cursors.get(mapping.chatChannelId) ?? 0, message.cursor),
+          );
+        }
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+}
+
 export type SlackExtensionOptions = {
   chatUrl?: string;
   chatToken?: string;
@@ -54,34 +92,15 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
   const socket =
     adapter && appToken ? new SlackSocketModeClient(appToken, adapter, transport) : undefined;
   let poller: ReturnType<typeof setInterval> | undefined;
-  const cursors = new Map<string, number>();
-  // agent-standards-ignore prefer-inline-single-use-helper: interval callback is a named lifecycle operation and is testable independently of timer setup.
-  async function pollChat() {
-    if (!adapter || !chatUrl || !chatToken) return;
-    for (const mapping of mappings.listChannels()) {
-      const after = cursors.get(mapping.chatChannelId) ?? 0;
-      const response = await transport(
-        new URL(`/v1/channels/${mapping.chatChannelId}/messages?after=${after}`, chatUrl),
-        { headers: { authorization: `Bearer ${chatToken}` } },
-      );
-      if (!response.ok) continue;
-      const payload = (await response.json()) as {
-        data: ChatMessage[] & Array<{ cursor: number }>;
-      };
-      for (const message of payload.data) {
-        cursors.set(
-          mapping.chatChannelId,
-          Math.max(cursors.get(mapping.chatChannelId) ?? 0, message.cursor),
-        );
-        if (!mappings.hasChatMessage(message.id)) await adapter.send(message);
-      }
-    }
-  }
+  const chatPoller =
+    adapter && chatUrl && chatToken
+      ? new SlackChatPoller(mappings, adapter, chatUrl, chatToken, transport)
+      : undefined;
   pi.on("session_start", async () => {
     if (!socket) return;
     await socket.start();
     poller = setInterval(() => {
-      void pollChat();
+      void chatPoller?.poll().catch(() => {});
     }, 2000);
     poller.unref();
   });

@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryChatStorage } from "./memory-storage.js";
-import { createChatApp } from "./server.js";
+import { createChatApp, parseCredentials } from "./server.js";
 import { SqliteChatStorage } from "./sqlite-storage.js";
 
 const credentials = [
   { token: "agent-secret", principal: { kind: "agent" as const, id: "agent-a" } },
+  { token: "agent-b-secret", principal: { kind: "agent" as const, id: "agent-b" } },
   { token: "host-secret", principal: { kind: "host" as const, id: "host-a" } },
   { token: "other-host", principal: { kind: "host" as const, id: "host-b" } },
 ];
@@ -52,6 +53,14 @@ describe("chat API", () => {
       method: "POST",
       headers: auth,
       body: JSON.stringify({ name: "Agent A", homeChannelId: channelId }),
+    });
+    await app.request("/v1/agents", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer agent-b-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "Agent B", homeChannelId: channelId }),
     });
     const send = () =>
       app.request(`/v1/channels/${channelId}/messages`, {
@@ -100,6 +109,22 @@ describe("chat API", () => {
     expect(history.data).toHaveLength(1);
     const search = await json(await app.request("/v1/messages/search?q=reply", { headers: auth }));
     expect(search.data).toHaveLength(1);
+    await app.request(`/v1/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        clientId: "mention",
+        markdown: "wake agent B",
+        mentions: ["agent-b"],
+      }),
+    });
+    const mentions = await json(
+      await app.request("/v1/mentions?after=0", {
+        headers: { authorization: "Bearer agent-b-secret" },
+      }),
+    );
+    expect(mentions.data).toHaveLength(1);
+    expect((mentions.data as Array<{ markdown: string }>)[0]?.markdown).toBe("wake agent B");
   });
 
   it("persists across SQLite restart", async () => {
@@ -145,6 +170,43 @@ describe("chat API", () => {
     ).toBe(200);
     expect(
       (
+        await app.request("/v1/runtime/requests/request/claim", {
+          method: "POST",
+          headers: { authorization: "Bearer host-secret" },
+        })
+      ).status,
+    ).toBe(409);
+    await app.request("/v1/runtime/requests/request/report", {
+      method: "POST",
+      headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "running",
+        sessionId: "session",
+        sessionPath: "/tmp/session.jsonl",
+        cwd: "/tmp",
+        handle: "42",
+        identity: "launch",
+        startedAt: 1,
+      }),
+    });
+    await app.request("/v1/runtime/requests/request/report", {
+      method: "POST",
+      headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
+      body: JSON.stringify({ status: "running", handle: "42", identity: "launch" }),
+    });
+    const reported = (await (
+      await app.request("/v1/runtime/requests/request", { headers: auth })
+    ).json()) as {
+      data: { sessionId: string; sessionPath: string; cwd: string; startedAt: number };
+    };
+    expect(reported.data).toMatchObject({
+      sessionId: "session",
+      sessionPath: "/tmp/session.jsonl",
+      cwd: "/tmp",
+      startedAt: 1,
+    });
+    expect(
+      (
         await app.request("/v1/runtime/registrations", {
           method: "POST",
           headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
@@ -174,5 +236,20 @@ describe("chat API", () => {
         })
       ).status,
     ).toBe(201);
+  });
+
+  it("rejects malformed, empty, and duplicate deployment credentials", () => {
+    expect(() => parseCredentials("[]")).toThrow("non-empty array");
+    expect(() =>
+      parseCredentials(JSON.stringify([{ token: "", principal: { kind: "agent", id: "agent" } }])),
+    ).toThrow("token must be a non-empty string");
+    expect(() =>
+      parseCredentials(
+        JSON.stringify([
+          { token: "same", principal: { kind: "agent", id: "agent" } },
+          { token: "same", principal: { kind: "host", id: "host" } },
+        ]),
+      ),
+    ).toThrow("unique");
   });
 });

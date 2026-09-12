@@ -1,3 +1,6 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ChatClient, type ChatClientOptions } from "./client.js";
 export * from "./client.js";
@@ -8,7 +11,10 @@ export * from "./runtime-manager.js";
 export * from "./server.js";
 export * from "./sqlite-storage.js";
 
-export type ChatExtensionOptions = Partial<ChatClientOptions>;
+export type ChatExtensionOptions = Partial<ChatClientOptions> & {
+  cursorPath?: string;
+  pollIntervalMs?: number;
+};
 type ChatAction = {
   action: string;
   channelId?: string;
@@ -51,6 +57,7 @@ const HELP = {
     home: { channelId: "string" },
     spawn: {
       hostId: "string",
+      channelId: "string?",
       prompt: "string",
       worktree: "string?",
       adapter: "process|tmux|herdr?",
@@ -69,6 +76,49 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
     options.baseUrl && options.token && options.agentId
       ? new ChatClient(options as ChatClientOptions)
       : undefined;
+  const cursorPath =
+    supplied.cursorPath ??
+    join(homedir(), ".pi", "agent", `pinet-chat-${options.agentId ?? "unconfigured"}.cursor`);
+  let cursor = 0;
+  try {
+    cursor = Number(readFileSync(cursorPath, "utf8")) || 0;
+  } catch {
+    // No persisted cursor on first start.
+  }
+  let mentionPoller: ReturnType<typeof setInterval> | undefined;
+  let polling = false;
+  async function pollMentions(): Promise<void> {
+    if (!client || polling) return;
+    polling = true;
+    try {
+      const envelope = (await client.call("GET", `/v1/mentions?after=${cursor}`)) as {
+        data?: Array<{ cursor: number; senderId: string; channelId: string; markdown: string }>;
+      };
+      for (const message of envelope.data ?? []) {
+        pi.sendUserMessage(
+          `[Pinet Chat mention from ${message.senderId} in ${message.channelId}]\n${message.markdown}`,
+          { deliverAs: "followUp" },
+        );
+        cursor = message.cursor;
+        mkdirSync(dirname(cursorPath), { recursive: true });
+        writeFileSync(cursorPath, String(cursor));
+      }
+    } finally {
+      polling = false;
+    }
+  }
+  pi.on("session_start", async () => {
+    if (!client) return;
+    await pollMentions();
+    mentionPoller = setInterval(
+      () => void pollMentions().catch(() => {}),
+      supplied.pollIntervalMs ?? 2000,
+    );
+    mentionPoller.unref();
+  });
+  pi.on("session_shutdown", () => {
+    if (mentionPoller) clearInterval(mentionPoller);
+  });
   pi.registerTool({
     name: "pinet_chat",
     label: "Pinet chat",
@@ -188,6 +238,7 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
               await client.call("POST", "/v1/runtime/requests", {
                 hostId: required(params.hostId, "hostId"),
                 prompt: required(params.prompt, "prompt"),
+                channelId: params.channelId,
                 worktree: params.worktree,
                 adapter: params.adapter,
               }),

@@ -29,6 +29,13 @@ export class MemoryMappingStore implements MappingStore {
         row.chatChannelId === value.chatChannelId && row.slackChannelId !== value.slackChannelId,
     );
     if (chatConflict) throw new Error("chat channel is already mapped");
+    const current = this.channels.get(value.slackChannelId);
+    if (
+      current &&
+      current.chatChannelId !== value.chatChannelId &&
+      [...this.threads.values()].some((row) => row.slackChannelId === value.slackChannelId)
+    )
+      throw new Error("cannot rebind a channel with mapped threads");
     this.channels.set(value.slackChannelId, value);
   }
   channelBySlack(id: string) {
@@ -80,12 +87,34 @@ export class MemoryMappingStore implements MappingStore {
 type Snapshot = { channels: ChannelMapping[]; threads: ThreadMapping[]; relays: string[] };
 export class SqliteMappingStore extends MemoryMappingStore {
   private db: DatabaseSync;
+  private readonly owner = crypto.randomUUID();
   constructor(path: string) {
     super();
     this.db = new DatabaseSync(path);
     this.db.exec(
-      "CREATE TABLE IF NOT EXISTS pinet_slack_state(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS pinet_slack_state(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pinet_slack_owner(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,pid INTEGER NOT NULL)",
     );
+    const lease = this.db.prepare("SELECT owner,pid FROM pinet_slack_owner WHERE id=1").get() as
+      | { owner: string; pid: number }
+      | undefined;
+    if (lease) {
+      let active = true;
+      try {
+        process.kill(lease.pid, 0);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ESRCH") active = false;
+        else throw error;
+      }
+      if (active) {
+        this.db.close();
+        throw new Error("mapping database is already owned by another Slack bridge");
+      }
+    }
+    this.db
+      .prepare(
+        "INSERT INTO pinet_slack_owner(id,owner,pid) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,pid=excluded.pid",
+      )
+      .run(this.owner, process.pid);
     const row = this.db.prepare("SELECT value FROM pinet_slack_state WHERE id=1").get() as
       | { value: string }
       | undefined;
@@ -128,6 +157,7 @@ export class SqliteMappingStore extends MemoryMappingStore {
     this.save();
   }
   override close() {
+    this.db.prepare("DELETE FROM pinet_slack_owner WHERE owner=?").run(this.owner);
     this.db.close();
   }
 }

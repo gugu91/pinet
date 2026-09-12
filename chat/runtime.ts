@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-export type SpawnSpec = { prompt: string; cwd: string; sessionId: string; sessionPath?: string };
+export type SpawnSpec = { prompt: string; cwd: string; sessionId: string; sessionPath: string };
 export type RuntimeHandle = {
   adapter: "process" | "tmux" | "herdr";
   handle: string;
@@ -14,7 +14,12 @@ export interface RuntimeAdapter {
   isAlive(handle: RuntimeHandle): Promise<boolean>;
 }
 export interface CommandRunner {
-  start(command: string, args: string[], cwd: string): Promise<{ pid: number; identity: string }>;
+  start(
+    command: string,
+    args: string[],
+    cwd: string,
+    input?: string,
+  ): Promise<{ pid: number; identity: string }>;
   exec(command: string, args: string[]): Promise<{ stdout: string }>;
   signal(pid: number, signal: NodeJS.Signals): Promise<void>;
   processIdentity(pid: number): Promise<string | undefined>;
@@ -26,12 +31,21 @@ export class NodeCommandRunner implements CommandRunner {
     command: string,
     args: string[],
     cwd: string,
+    input?: string,
   ): Promise<{ pid: number; identity: string }> {
-    const child = spawn(command, args, { cwd, detached: true, stdio: "ignore" });
-    child.unref();
+    const child = spawn(command, args, {
+      cwd,
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore"],
+    });
     if (!child.pid) throw new Error("runtime process did not return a PID");
+    if (input) child.stdin.write(`${input}\n`);
     const identity = await this.processIdentity(child.pid);
-    if (!identity) throw new Error("runtime process exited before identity verification");
+    if (!identity) {
+      child.kill("SIGTERM");
+      throw new Error("runtime process exited before identity verification");
+    }
+    child.unref();
     return { pid: child.pid, identity };
   }
   async exec(command: string, args: string[]): Promise<{ stdout: string }> {
@@ -59,8 +73,9 @@ export class ProcessRuntimeAdapter implements RuntimeAdapter {
   async spawn(spec: SpawnSpec): Promise<RuntimeHandle> {
     const result = await this.runner.start(
       this.executable,
-      ["--session-id", spec.sessionId, spec.prompt],
+      ["--mode", "rpc", "--session", spec.sessionPath],
       spec.cwd,
+      JSON.stringify({ id: `pinet-${spec.sessionId}`, type: "prompt", message: spec.prompt }),
     );
     return { adapter: "process", handle: String(result.pid), identity: result.identity };
   }
@@ -87,22 +102,28 @@ export class TmuxRuntimeAdapter implements RuntimeAdapter {
       "-c",
       spec.cwd,
       "pi",
-      "--session-id",
-      spec.sessionId,
+      "--session",
+      spec.sessionPath,
       spec.prompt,
     ]);
-    const pane = (
-      await this.runner.exec("tmux", [
-        "list-panes",
-        "-t",
-        name,
-        "-F",
-        "#{pane_id}|#{pane_start_command}",
-      ])
-    ).stdout.trim();
-    if (!pane) throw new Error("tmux did not report the launched pane");
-    const [handle, identity] = pane.split("|", 2);
-    return { adapter: "tmux", handle: handle!, identity: identity! };
+    try {
+      const pane = (
+        await this.runner.exec("tmux", [
+          "list-panes",
+          "-t",
+          name,
+          "-F",
+          "#{pane_id}|#{pane_start_command}",
+        ])
+      ).stdout.trim();
+      if (!pane) throw new Error("tmux did not report the launched pane");
+      const [handle, identity] = pane.split("|", 2);
+      if (!handle || !identity) throw new Error("tmux returned incomplete pane identity");
+      return { adapter: "tmux", handle, identity };
+    } catch (error) {
+      await this.runner.exec("tmux", ["kill-session", "-t", name]);
+      throw error;
+    }
   }
   async isAlive(handle: RuntimeHandle): Promise<boolean> {
     try {
@@ -147,18 +168,24 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
     const payload = JSON.parse(created.stdout) as { result?: { root_pane?: { pane_id?: string } } };
     const pane = payload.result?.root_pane?.pane_id;
     if (!pane) throw new Error("Herdr workspace create returned no pane ID");
-    const identity = await this.paneIdentity(pane);
-    if (!identity) throw new Error("Herdr pane returned no shell PID");
-    const quotedPrompt = `'${spec.prompt.replaceAll("'", "'\\''")}'`;
-    await this.runner.exec("herdr", [
-      "--session",
-      this.session,
-      "pane",
-      "run",
-      pane,
-      `pi --session-id ${spec.sessionId} ${quotedPrompt}`,
-    ]);
-    return { adapter: "herdr", handle: pane, identity };
+    try {
+      const quotedPrompt = `'${spec.prompt.replaceAll("'", "'\\''")}'`;
+      const quotedPath = `'${spec.sessionPath.replaceAll("'", "'\\''")}'`;
+      await this.runner.exec("herdr", [
+        "--session",
+        this.session,
+        "pane",
+        "run",
+        pane,
+        `pi --session ${quotedPath} ${quotedPrompt}`,
+      ]);
+      const identity = await this.paneIdentity(pane);
+      if (!identity) throw new Error("Herdr pane returned no launched process PID");
+      return { adapter: "herdr", handle: pane, identity };
+    } catch (error) {
+      await this.runner.exec("herdr", ["--session", this.session, "pane", "close", pane]);
+      throw error;
+    }
   }
   private async paneIdentity(pane: string): Promise<string | undefined> {
     try {
@@ -171,10 +198,12 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
         pane,
       ]);
       const payload = JSON.parse(output.stdout) as {
-        result?: { process_info?: { shell_pid?: number } };
+        result?: { process_info?: { foreground_pid?: number } };
       };
-      const pid = payload.result?.process_info?.shell_pid;
-      return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? String(pid) : undefined;
+      const pid = payload.result?.process_info?.foreground_pid;
+      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
+      const identity = await this.runner.processIdentity(pid);
+      return identity ? `${pid}|${identity}` : undefined;
     } catch {
       return undefined;
     }

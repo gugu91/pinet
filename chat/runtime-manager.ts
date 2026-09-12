@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { RuntimeAdapter, RuntimeHandle } from "./runtime.js";
 
 type RuntimeRequest = {
@@ -6,6 +7,9 @@ type RuntimeRequest = {
   worktree: string | null;
   adapter: "process" | "tmux" | "herdr";
   status: string;
+  channelId: string | null;
+  handle: string | null;
+  identity: string | null;
 };
 type RuntimeEnvelope = { data: RuntimeRequest[] };
 export type RuntimeManagerOptions = {
@@ -14,6 +18,7 @@ export type RuntimeManagerOptions = {
   hostId: string;
   adapters: Record<RuntimeRequest["adapter"], RuntimeAdapter>;
   cwd?: string;
+  sessionDir: string;
   fetch?: typeof fetch;
 };
 
@@ -38,6 +43,20 @@ export class RuntimeManager {
     if (!response.ok) throw new Error(`runtime poll failed (${response.status})`);
     const envelope = (await response.json()) as RuntimeEnvelope;
     for (const request of envelope.data) await this.claimAndStart(request);
+    const runningResponse = await this.request("/v1/runtime/requests?status=running");
+    if (!runningResponse.ok) throw new Error(`runtime recovery failed (${runningResponse.status})`);
+    const running = (await runningResponse.json()) as RuntimeEnvelope;
+    for (const request of running.data) {
+      if (!this.owned.has(request.id) && request.handle && request.identity) {
+        const handle = {
+          adapter: request.adapter,
+          handle: request.handle,
+          identity: request.identity,
+        };
+        if (await this.options.adapters[request.adapter].isAlive(handle))
+          this.owned.set(request.id, handle);
+      }
+    }
     for (const [requestId, handle] of this.owned) {
       const alive = await this.options.adapters[handle.adapter].isAlive(handle);
       if (alive)
@@ -63,15 +82,19 @@ export class RuntimeManager {
     if (!claim.ok) return;
     try {
       const sessionId = crypto.randomUUID();
+      const sessionPath = join(this.options.sessionDir, `${sessionId}.jsonl`);
       const handle = await this.options.adapters[request.adapter].spawn({
-        prompt: request.prompt,
+        prompt: request.channelId
+          ? `${request.prompt}\n\nPinet Chat channel: ${request.channelId}`
+          : request.prompt,
         cwd: request.worktree ?? this.options.cwd ?? process.cwd(),
         sessionId,
+        sessionPath,
       });
       this.owned.set(request.id, handle);
       await this.report(request.id, {
         status: "running",
-        sessionId,
+        sessionPath,
         cwd: request.worktree ?? this.options.cwd ?? process.cwd(),
         handle: handle.handle,
         identity: handle.identity,
@@ -87,6 +110,7 @@ export class RuntimeManager {
     value: {
       status: string;
       sessionId?: string;
+      sessionPath?: string;
       cwd?: string;
       handle?: string;
       identity?: string;
@@ -101,13 +125,14 @@ export class RuntimeManager {
   }
   async stopOwned(): Promise<void> {
     for (const [requestId, handle] of this.owned) {
-      if (await this.options.adapters[handle.adapter].stop(handle))
+      if (await this.options.adapters[handle.adapter].stop(handle)) {
         await this.report(requestId, {
           status: "stopped",
           handle: handle.handle,
           identity: handle.identity,
         });
+        this.owned.delete(requestId);
+      }
     }
-    this.owned.clear();
   }
 }

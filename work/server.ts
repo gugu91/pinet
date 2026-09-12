@@ -4,6 +4,16 @@ import type { Context } from "hono";
 import type { Project, Task, WorkStorage } from "./domain.js";
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
+export function parseTokens(source: string): string[] {
+  const value = JSON.parse(source) as JsonValue;
+  if (!Array.isArray(value) || value.length === 0)
+    throw new Error("tokens must be a non-empty string array");
+  if (value.some((token) => typeof token !== "string" || !token.trim()))
+    throw new Error("tokens must contain non-empty strings");
+  const tokens = value as string[];
+  if (new Set(tokens).size !== tokens.length) throw new Error("tokens must be unique");
+  return tokens;
+}
 export type WorkAppOptions = {
   storage: WorkStorage;
   tokens: string[];
@@ -42,6 +52,12 @@ function missing(c: Context, message: string) {
   return c.json({ error: { code: "not_found", message } }, 404);
 }
 export function createWorkApp(options: WorkAppOptions) {
+  if (
+    options.tokens.length === 0 ||
+    options.tokens.some((token) => !token.trim()) ||
+    new Set(options.tokens).size !== options.tokens.length
+  )
+    throw new Error("tokens must contain unique non-empty strings");
   const app = new Hono();
   const now = options.now ?? Date.now,
     id = options.id ?? (() => crypto.randomUUID());

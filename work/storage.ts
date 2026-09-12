@@ -1,56 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
-import type { Project, Task, WorkStorage } from "./domain.js";
-export class MemoryWorkStorage implements WorkStorage {
-  protected projects = new Map<string, Project>();
-  protected tasks = new Map<string, Task>();
-  putProject(value: Project): Project {
-    this.projects.set(value.id, value);
-    return value;
-  }
-  getProject(id: string): Project | undefined {
-    return this.projects.get(id);
-  }
-  listProjects(limit: number, offset: number): Project[] {
-    return [...this.projects.values()]
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(offset, offset + limit);
-  }
-  deleteProject(id: string): boolean {
-    const deleted = this.projects.delete(id);
-    if (deleted)
-      for (const [taskId, task] of this.tasks) if (task.projectId === id) this.tasks.delete(taskId);
-    return deleted;
-  }
-  putTask(value: Task): Task {
-    if (!this.projects.has(value.projectId)) throw new Error("project not found");
-    this.tasks.set(value.id, value);
-    return value;
-  }
-  getTask(id: string): Task | undefined {
-    return this.tasks.get(id);
-  }
-  listTasks(projectId: string | undefined, limit: number, offset: number): Task[] {
-    return [...this.tasks.values()]
-      .filter((row) => !projectId || row.projectId === projectId)
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(offset, offset + limit);
-  }
-  deleteTask(id: string): boolean {
-    return this.tasks.delete(id);
-  }
-  search(query: string, limit: number, offset: number) {
-    const needle = query.toLowerCase();
-    return {
-      projects: [...this.projects.values()]
-        .filter((row) => row.markdown.toLowerCase().includes(needle))
-        .slice(offset, offset + limit),
-      tasks: [...this.tasks.values()]
-        .filter((row) => row.markdown.toLowerCase().includes(needle))
-        .slice(offset, offset + limit),
-    };
-  }
-  close(): void {}
-}
+import type { Project, Task } from "./domain.js";
+import { MemoryWorkStorage } from "./memory-storage.js";
+export { MemoryWorkStorage } from "./memory-storage.js";
+
 type Snapshot = { projects: Project[]; tasks: Task[] };
 export class SqliteWorkStorage extends MemoryWorkStorage {
   private database: DatabaseSync;

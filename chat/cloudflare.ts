@@ -1,57 +1,49 @@
 import type { Agent, Channel, Message, RuntimeRequest } from "./domain.js";
 import { MemoryChatStorage } from "./memory-storage.js";
-import { createChatApp, type Credential } from "./server.js";
+import { createChatApp, parseCredentials, type Credential } from "./server.js";
 
-type DurableStorage = {
-  get<T>(key: string): Promise<T | undefined>;
-  put(key: string, value: string): Promise<void>;
+type SqlStorage = {
+  exec<T extends object>(query: string, ...bindings: Array<string | number | null>): Iterable<T>;
 };
-type DurableState = {
-  storage: DurableStorage;
-  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
-  waitUntil(promise: Promise<void>): void;
-};
+type DurableState = { storage: { sql: SqlStorage } };
 type DurableStub = { fetch(request: Request): Promise<Response> };
 type DurableNamespace = { idFromName(name: string): object; get(id: object): DurableStub };
 export type ChatWorkerEnv = { CHAT: DurableNamespace; PINET_CHAT_CREDENTIALS: string };
-type Snapshot = {
-  channels: Channel[];
-  agents: Agent[];
-  memberships: Array<[string, string[]]>;
-  messages: Message[];
-  runtimes: RuntimeRequest[];
-  cursor: number;
-};
+type StoredRow = { kind: string; id: string; value: string };
 
 class DurableChatStorage extends MemoryChatStorage {
-  constructor(private readonly state: DurableState) {
+  private readonly sql: SqlStorage;
+  constructor(state: DurableState) {
     super();
+    this.sql = state.storage.sql;
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pinet_chat(kind TEXT NOT NULL,id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(kind,id))",
+    );
+    for (const row of this.sql.exec<StoredRow>("SELECT kind,id,value FROM pinet_chat")) {
+      if (row.kind === "channel") this.channelRows.set(row.id, JSON.parse(row.value) as Channel);
+      else if (row.kind === "agent") this.agentRows.set(row.id, JSON.parse(row.value) as Agent);
+      else if (row.kind === "membership")
+        this.membershipRows.set(row.id, new Set(JSON.parse(row.value) as string[]));
+      else if (row.kind === "message") {
+        const message = JSON.parse(row.value) as Message;
+        this.messageRows.push(message);
+        this.cursor = Math.max(this.cursor, message.cursor);
+      } else if (row.kind === "runtime")
+        this.runtimeRows.set(row.id, JSON.parse(row.value) as RuntimeRequest);
+    }
+    this.messageRows.sort((left, right) => left.cursor - right.cursor);
   }
-  async load(): Promise<void> {
-    const encoded = await this.state.storage.get<string>("snapshot");
-    if (!encoded) return;
-    const value = JSON.parse(encoded) as Snapshot;
-    for (const row of value.channels) this.channelRows.set(row.id, row);
-    for (const row of value.agents) this.agentRows.set(row.id, row);
-    for (const [id, rows] of value.memberships) this.membershipRows.set(id, new Set(rows));
-    this.messageRows.push(...value.messages);
-    for (const row of value.runtimes) this.runtimeRows.set(row.id, row);
-    this.cursor = value.cursor;
-  }
-  private save(): void {
-    const value: Snapshot = {
-      channels: [...this.channelRows.values()],
-      agents: [...this.agentRows.values()],
-      memberships: [...this.membershipRows].map(([id, rows]) => [id, [...rows]]),
-      messages: this.messageRows,
-      runtimes: [...this.runtimeRows.values()],
-      cursor: this.cursor,
-    };
-    this.state.waitUntil(this.state.storage.put("snapshot", JSON.stringify(value)));
+  private put(kind: string, id: string, value: object): void {
+    this.sql.exec(
+      "INSERT INTO pinet_chat(kind,id,value) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value",
+      kind,
+      id,
+      JSON.stringify(value),
+    );
   }
   override createChannel(value: Channel): Channel {
     const result = super.createChannel(value);
-    this.save();
+    this.put("channel", result.id, result);
     return result;
   }
   override updateChannel(
@@ -59,35 +51,39 @@ class DurableChatStorage extends MemoryChatStorage {
     value: { name?: string; topic?: string },
   ): Channel | undefined {
     const result = super.updateChannel(id, value);
-    if (result) this.save();
+    if (result) this.put("channel", id, result);
     return result;
   }
   override deleteChannel(id: string): boolean {
     const result = super.deleteChannel(id);
-    if (result) this.save();
+    if (result)
+      this.sql.exec(
+        "DELETE FROM pinet_chat WHERE (kind='channel' OR kind='membership') AND id=?",
+        id,
+      );
     return result;
   }
   override join(channelId: string, agentId: string): void {
     super.join(channelId, agentId);
-    this.save();
+    this.put("membership", channelId, [...(this.membershipRows.get(channelId) ?? [])]);
   }
   override leave(channelId: string, agentId: string): void {
     super.leave(channelId, agentId);
-    this.save();
+    this.put("membership", channelId, [...(this.membershipRows.get(channelId) ?? [])]);
   }
   override putAgent(value: Agent): Agent {
     const result = super.putAgent(value);
-    this.save();
+    this.put("agent", result.id, result);
     return result;
   }
   override insertMessage(value: Omit<Message, "cursor">): { message: Message; duplicate: boolean } {
     const result = super.insertMessage(value);
-    if (!result.duplicate) this.save();
+    if (!result.duplicate) this.put("message", result.message.id, result.message);
     return result;
   }
   override createRuntimeRequest(value: RuntimeRequest): RuntimeRequest {
     const result = super.createRuntimeRequest(value);
-    this.save();
+    this.put("runtime", result.id, result);
     return result;
   }
   override updateRuntimeRequest(
@@ -95,29 +91,49 @@ class DurableChatStorage extends MemoryChatStorage {
     value: Partial<RuntimeRequest>,
   ): RuntimeRequest | undefined {
     const result = super.updateRuntimeRequest(id, value);
-    if (result) this.save();
+    if (result) this.put("runtime", id, result);
+    return result;
+  }
+  override claimRuntimeRequest(
+    id: string,
+    hostId: string,
+    updatedAt: number,
+  ): RuntimeRequest | undefined {
+    const result = super.claimRuntimeRequest(id, hostId, updatedAt);
+    if (result) this.put("runtime", id, result);
     return result;
   }
 }
 
 export class ChatDurableObject {
   private readonly storage: DurableChatStorage;
-  private credentials: Credential[] = [];
-  constructor(private readonly state: DurableState) {
+  private credentials: Credential[] | undefined;
+  constructor(state: DurableState) {
     this.storage = new DurableChatStorage(state);
-    void state.blockConcurrencyWhile(() => this.storage.load());
   }
-  async fetch(request: Request): Promise<Response> {
-    if (this.credentials.length === 0) {
-      const encoded = request.headers.get("x-pinet-internal-credentials");
-      if (!encoded)
-        return Response.json(
-          { error: { code: "misconfigured", message: "Credentials unavailable" } },
+  fetch(request: Request): Promise<Response> {
+    try {
+      if (!this.credentials) {
+        const encoded = request.headers.get("x-pinet-internal-credentials");
+        if (!encoded) throw new Error("Credentials unavailable");
+        this.credentials = parseCredentials(encoded);
+      }
+      return Promise.resolve(
+        createChatApp({ storage: this.storage, credentials: this.credentials }).fetch(request),
+      );
+    } catch (error) {
+      return Promise.resolve(
+        Response.json(
+          {
+            error: {
+              code: "misconfigured",
+              message: error instanceof Error ? error.message : "Invalid credentials",
+            },
+          },
           { status: 500 },
-        );
-      this.credentials = JSON.parse(encoded) as Credential[];
+        ),
+      );
     }
-    return createChatApp({ storage: this.storage, credentials: this.credentials }).fetch(request);
   }
 }
 

@@ -4,6 +4,7 @@ type Envelope = { envelope_id?: string; payload?: JsonValue };
 export interface SocketLike {
   send(value: string): void;
   close(): void;
+  addEventListener(name: "open", listener: () => void): void;
   addEventListener(
     name: "message",
     listener: (event: { data: string | ArrayBuffer }) => void,
@@ -16,6 +17,7 @@ export class SlackSocketModeClient {
   private socket: SocketLike | undefined;
   private stopped = true;
   private reconnectMs = 1000;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   constructor(
     private appToken: string,
     private adapter: SlackAdapter,
@@ -24,12 +26,14 @@ export class SlackSocketModeClient {
   ) {}
   async start() {
     this.stopped = false;
-    await this.connect();
+    await this.connect().catch(() => this.scheduleReconnect());
   }
   stop() {
     this.stopped = true;
     this.socket?.close();
     this.socket = undefined;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
   }
   private async connect() {
     const response = await this.transport("https://slack.com/api/apps.connections.open", {
@@ -41,9 +45,11 @@ export class SlackSocketModeClient {
       throw new Error(`Slack Socket Mode connection failed: ${body.error ?? response.status}`);
     const socket = this.socketFactory(body.url);
     this.socket = socket;
-    this.reconnectMs = 1000;
+    socket.addEventListener("open", () => {
+      this.reconnectMs = 1000;
+    });
     socket.addEventListener("message", (event) => {
-      void this.receive(event.data);
+      void this.receive(event.data).catch(() => socket.close());
     });
     socket.addEventListener("close", () => this.scheduleReconnect());
     socket.addEventListener("error", () => socket.close());
@@ -59,10 +65,11 @@ export class SlackSocketModeClient {
     }
   }
   private scheduleReconnect() {
-    if (this.stopped) return;
+    if (this.stopped || this.reconnectTimer) return;
     const delay = this.reconnectMs;
     this.reconnectMs = Math.min(this.reconnectMs * 2, 30000);
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
       if (!this.stopped) void this.connect().catch(() => this.scheduleReconnect());
     }, delay);
   }

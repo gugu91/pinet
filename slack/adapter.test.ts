@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SlackAdapter } from "./adapter.js";
+import { SlackChatPoller } from "./index.js";
 import { MemoryMappingStore, SqliteMappingStore } from "./mapping.js";
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })));
@@ -88,6 +89,57 @@ describe("Slack adapter", () => {
       }),
     ).toEqual({ status: "ignored", reason: "unmapped thread" });
   });
+  it("serializes Chat polling and advances the cursor only after delivery", async () => {
+    const mappings = new MemoryMappingStore();
+    mappings.bindChannel({ slackChannelId: "C", chatChannelId: "chat" });
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slack = {
+      postMessage: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("temporary"))
+        .mockImplementationOnce(async () => {
+          await blocked;
+          return { ts: "1" };
+        }),
+    };
+    const adapter = new SlackAdapter({
+      mappings,
+      slack,
+      chat: { send: vi.fn() },
+      ownSlackUserId: "BOT",
+    });
+    const cursors: number[] = [];
+    const transport = vi.fn(async (input: string | URL | Request) => {
+      cursors.push(Number(new URL(String(input)).searchParams.get("after")));
+      return Response.json({
+        data: [
+          {
+            id: "m",
+            channelId: "chat",
+            parentId: null,
+            markdown: "hello",
+            senderId: "a",
+            clientId: "c",
+            mentions: [],
+            cursor: 1,
+          },
+        ],
+      });
+    });
+    const poller = new SlackChatPoller(mappings, adapter, "https://chat.test", "token", transport);
+    await expect(poller.poll()).rejects.toThrow("temporary");
+    const active = poller.poll();
+    await poller.poll();
+    expect(transport).toHaveBeenCalledTimes(2);
+    release!();
+    await active;
+    await poller.poll();
+    expect(cursors).toEqual([0, 0, 1]);
+    expect(slack.postMessage).toHaveBeenCalledTimes(2);
+  });
   it("persists explicit mappings and relay IDs", () => {
     const directory = mkdtempSync(join(tmpdir(), "pinet-slack-"));
     dirs.push(directory);
@@ -95,11 +147,21 @@ describe("Slack adapter", () => {
     const first = new SqliteMappingStore(path);
     first.bindChannel({ slackChannelId: "C", chatChannelId: "chat" });
     first.recordRelay("chat-to-slack", "C", "1", "m");
+    expect(() => new SqliteMappingStore(path)).toThrow("already owned");
     first.close();
     const second = new SqliteMappingStore(path);
     expect(second.channelBySlack("C")?.chatChannelId).toBe("chat");
     expect(second.hasSlackMessage("C", "1")).toBe(true);
     expect(second.hasChatMessage("m")).toBe(true);
+    second.bindThread({
+      slackChannelId: "C",
+      chatChannelId: "chat",
+      slackThreadTs: "1",
+      chatParentId: "m",
+    });
+    expect(() => second.bindChannel({ slackChannelId: "C", chatChannelId: "different" })).toThrow(
+      "mapped threads",
+    );
     second.close();
   });
 });

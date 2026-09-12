@@ -85,6 +85,11 @@ export class MemoryChatStorage implements ChatStorage {
       .filter((row) => row.cursor > after && row.markdown.toLowerCase().includes(needle))
       .slice(0, limit);
   }
+  mentions(agentId: string, after: number, limit: number): Message[] {
+    return this.messageRows
+      .filter((row) => row.cursor > after && row.mentions.includes(agentId))
+      .slice(0, limit);
+  }
   createRuntimeRequest(request: RuntimeRequest): RuntimeRequest {
     this.runtimeRows.set(request.id, request);
     return request;
@@ -109,6 +114,11 @@ export class MemoryChatStorage implements ChatStorage {
     };
     this.runtimeRows.set(id, next);
     return next;
+  }
+  claimRuntimeRequest(id: string, hostId: string, updatedAt: number): RuntimeRequest | undefined {
+    const current = this.runtimeRows.get(id);
+    if (!current || current.hostId !== hostId || current.status !== "pending") return undefined;
+    return this.updateRuntimeRequest(id, { status: "claimed", updatedAt });
   }
   close(): void {}
 }
