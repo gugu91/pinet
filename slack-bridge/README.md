@@ -238,6 +238,18 @@ This is separate from `allowedUsers`. Authorization decides who can use Pinet. T
 | `meshSecret`             | Shared secret for mesh auth                            | none                 |
 | `meshSecretPath`         | File containing shared secret                          | none                 |
 
+### Start one process as a follower
+
+Use the process-scoped flag when one Pi process, including a headless or launchd process, must follow the existing broker without changing shared settings:
+
+```bash
+pi --pinet-follow
+```
+
+`--pinet-follow` overrides `runtimeMode` and the legacy auto flags for that process only. It does not modify `settings.json`, bypass mesh authentication, or allow local subagent sessions to enter the mesh. Set `PINET_SOCKET_PATH` when the broker uses a non-default Unix socket; startup and the follower client resolve the same path.
+
+The follower registers with the broker before Slack, Pinet, or iMessage communication tools become active. If the socket is missing or broker authentication/registration fails, Pi logs an actionable error and continues with those communication tools off. It never falls back to broker leadership or direct Slack access.
+
 ## Using Pinet
 
 ### In Slack
