@@ -59,7 +59,11 @@
     "neon-psql",
     "openai-execution-shaping",
     "model-aware-compaction",
-    "agent-goal"
+    "agent-goal",
+    "chat",
+    "work",
+    "pm",
+    "slack"
   ],
   "dependencies": {
     "typescript": "^5.7.3"

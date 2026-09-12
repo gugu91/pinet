@@ -1,0 +1,7 @@
+{
+  "name": "pinet-work",
+  "main": "dist/cloudflare.js",
+  "compatibility_date": "2025-04-01",
+  "durable_objects": { "bindings": [{ "name": "WORK", "class_name": "WorkDurableObject" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkDurableObject"] }],
+}

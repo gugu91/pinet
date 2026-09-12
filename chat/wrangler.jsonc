@@ -1,0 +1,7 @@
+{
+  "name": "pinet-chat",
+  "main": "dist/cloudflare.js",
+  "compatibility_date": "2025-04-01",
+  "durable_objects": { "bindings": [{ "name": "CHAT", "class_name": "ChatDurableObject" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatDurableObject"] }],
+}
