@@ -9,6 +9,40 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.15] - 2026-09-12
+
+Pinet v0.2.15 improves goal lifecycle controls, live status, guided setup, and checkpoint navigation.
+
+### Version verification
+
+- `pi-extensions` — `0.2.15` (private repo package)
+- `@pinet/transport-core` — `0.2.15`
+- `@pinet/broker-core` — `0.2.15`
+- `@pinet/pinet-core` — `0.2.15`
+- `@pinet/imessage-bridge` — `0.2.15`
+- `@pinet/slack-bridge` — `0.2.15`
+- `@pinet/model-aware-compaction` — `0.2.15`
+- `@pinet/agent-goal` — `0.2.15`
+
+### Release highlights
+
+- Clears the current goal after verified completion or `/goal close`, and restores `/goal clear`.
+- Refreshes elapsed runtime live and serializes status polling to prevent stale UI restoration.
+- Adds interactive `/goal update`, wrapped objectives, and consistent Escape controls.
+- Makes `/goal <idea>` discuss scope before creation and adds a guided `/goal demo`; both protect existing goals from unrelated discussion turns.
+- Keeps continuation prompts concise and adds Tab/Shift+Tab checkpoint selection, Enter details, and scrollable evidence.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Known issue
+
+- The reported immediate “No goal” result after Enter-save remains unresolved. Requiring a new run after an objective edit is follow-up work and is not included in this release.
+
+### Notable pull requests
+
+- [#1033](https://github.com/gugu91/pinet/pull/1033) — improve goal lifecycle testing, guided setup, and checkpoint navigation
+
+See the [full change set since v0.2.14](https://github.com/gugu91/pinet/compare/v0.2.14...v0.2.15).
+
 ## [0.2.14] - 2026-09-10
 
 Pinet v0.2.14 makes the single-session goal loop easier to control from Pi with a terminal-native overlay, editable goal metadata, durable progress checkpoints, timed snoozes, and opt-in continuation limits.
