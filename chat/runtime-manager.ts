@@ -10,8 +10,13 @@ type RuntimeRequest = {
   channelId: string | null;
   handle: string | null;
   identity: string | null;
+  agentLastSeen: number | null;
+  startedAt: number | null;
 };
 type RuntimeEnvelope = { data: RuntimeRequest[] };
+type ClaimEnvelope = {
+  launch: { token: string; agentId: string };
+};
 export type RuntimeManagerOptions = {
   baseUrl: string;
   token: string;
@@ -19,6 +24,8 @@ export type RuntimeManagerOptions = {
   adapters: Record<RuntimeRequest["adapter"], RuntimeAdapter>;
   cwd?: string;
   sessionDir: string;
+  staleTimeoutMs?: number;
+  now?: () => number;
   fetch?: typeof fetch;
 };
 
@@ -46,6 +53,7 @@ export class RuntimeManager {
     const runningResponse = await this.request("/v1/runtime/requests?status=running");
     if (!runningResponse.ok) throw new Error(`runtime recovery failed (${runningResponse.status})`);
     const running = (await runningResponse.json()) as RuntimeEnvelope;
+    const runningById = new Map(running.data.map((request) => [request.id, request]));
     for (const request of running.data) {
       if (!this.owned.has(request.id) && request.handle && request.identity) {
         const handle = {
@@ -59,7 +67,22 @@ export class RuntimeManager {
     }
     for (const [requestId, handle] of this.owned) {
       const alive = await this.options.adapters[handle.adapter].isAlive(handle);
-      if (alive)
+      const request = runningById.get(requestId);
+      const heartbeatAt = request?.agentLastSeen ?? request?.startedAt;
+      const stale =
+        heartbeatAt !== null &&
+        heartbeatAt !== undefined &&
+        (this.options.now ?? Date.now)() - heartbeatAt > (this.options.staleTimeoutMs ?? 30000);
+      if (alive && stale) {
+        if (await this.options.adapters[handle.adapter].stop(handle)) {
+          await this.report(requestId, {
+            status: "stopped",
+            handle: handle.handle,
+            identity: handle.identity,
+          });
+          this.owned.delete(requestId);
+        }
+      } else if (alive)
         await this.report(requestId, {
           status: "running",
           handle: handle.handle,
@@ -80,6 +103,7 @@ export class RuntimeManager {
       method: "POST",
     });
     if (!claim.ok) return;
+    const launch = (await claim.json()) as ClaimEnvelope;
     try {
       const sessionId = crypto.randomUUID();
       const sessionPath = join(this.options.sessionDir, `${sessionId}.jsonl`);
@@ -90,6 +114,13 @@ export class RuntimeManager {
         cwd: request.worktree ?? this.options.cwd ?? process.cwd(),
         sessionId,
         sessionPath,
+        env: {
+          PINET_CHAT_URL: this.options.baseUrl,
+          PINET_CHAT_TOKEN: launch.launch.token,
+          PINET_AGENT_ID: launch.launch.agentId,
+          PINET_RUNTIME_REQUEST_ID: request.id,
+          ...(request.channelId ? { PINET_CHAT_CHANNEL_ID: request.channelId } : {}),
+        },
       });
       this.owned.set(request.id, handle);
       await this.report(request.id, {
@@ -98,7 +129,7 @@ export class RuntimeManager {
         cwd: request.worktree ?? this.options.cwd ?? process.cwd(),
         handle: handle.handle,
         identity: handle.identity,
-        startedAt: Date.now(),
+        startedAt: (this.options.now ?? Date.now)(),
       });
     } catch {
       // A failed launch is deliberately not retried: process creation may have succeeded before reporting failed.

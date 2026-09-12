@@ -11,9 +11,28 @@ export * from "./runtime-manager.js";
 export * from "./server.js";
 export * from "./sqlite-storage.js";
 
+type SessionHeader = { type?: string; id?: string };
+export function readSessionId(sessionPath: string | undefined): string | undefined {
+  if (!sessionPath) return undefined;
+  try {
+    const firstLine = readFileSync(sessionPath, "utf8").split("\n", 1)[0];
+    if (!firstLine) return undefined;
+    const header = JSON.parse(firstLine) as SessionHeader;
+    return header.type === "session" && typeof header.id === "string" && header.id
+      ? header.id
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type ChatExtensionOptions = Partial<ChatClientOptions> & {
   cursorPath?: string;
   pollIntervalMs?: number;
+  heartbeatIntervalMs?: number;
+  runtimeRequestId?: string;
+  channelId?: string;
+  agentName?: string;
 };
 type ChatAction = {
   action: string;
@@ -71,6 +90,7 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
     baseUrl: supplied.baseUrl ?? process.env.PINET_CHAT_URL,
     token: supplied.token ?? process.env.PINET_CHAT_TOKEN,
     agentId: supplied.agentId ?? process.env.PINET_AGENT_ID,
+    fetch: supplied.fetch,
   };
   const client =
     options.baseUrl && options.token && options.agentId
@@ -85,7 +105,10 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
   } catch {
     // No persisted cursor on first start.
   }
+  const runtimeRequestId = supplied.runtimeRequestId ?? process.env.PINET_RUNTIME_REQUEST_ID;
+  const channelId = supplied.channelId ?? process.env.PINET_CHAT_CHANNEL_ID;
   let mentionPoller: ReturnType<typeof setInterval> | undefined;
+  let heartbeatPoller: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   async function pollMentions(): Promise<void> {
     if (!client || polling) return;
@@ -107,8 +130,28 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
       polling = false;
     }
   }
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_event, ctx) => {
     if (!client) return;
+    if (runtimeRequestId) {
+      await client.call("POST", "/v1/agents", {
+        name: supplied.agentName ?? process.env.PINET_AGENT_NAME ?? options.agentId,
+        homeChannelId: channelId,
+      });
+      if (channelId) await client.call("POST", `/v1/channels/${channelId}/join`);
+      const heartbeat = () => {
+        const sessionPath = ctx.sessionManager.getSessionFile();
+        return client.call("POST", `/v1/runtime/requests/${runtimeRequestId}/heartbeat`, {
+          sessionId: readSessionId(sessionPath),
+          sessionPath,
+        });
+      };
+      await heartbeat();
+      heartbeatPoller = setInterval(
+        () => void heartbeat().catch(() => {}),
+        supplied.heartbeatIntervalMs ?? 5000,
+      );
+      heartbeatPoller.unref();
+    }
     await pollMentions();
     mentionPoller = setInterval(
       () => void pollMentions().catch(() => {}),
@@ -118,6 +161,7 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
   });
   pi.on("session_shutdown", () => {
     if (mentionPoller) clearInterval(mentionPoller);
+    if (heartbeatPoller) clearInterval(heartbeatPoller);
   });
   pi.registerTool({
     name: "pinet_chat",

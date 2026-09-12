@@ -1,4 +1,11 @@
-import type { Agent, Channel, ChatStorage, Message, RuntimeRequest } from "./domain.js";
+import type {
+  Agent,
+  Channel,
+  ChatStorage,
+  Message,
+  RuntimeCredential,
+  RuntimeRequest,
+} from "./domain.js";
 import { sameMessage } from "./domain.js";
 
 export class MemoryChatStorage implements ChatStorage {
@@ -7,6 +14,7 @@ export class MemoryChatStorage implements ChatStorage {
   protected readonly membershipRows = new Map<string, Set<string>>();
   protected readonly messageRows: Message[] = [];
   protected readonly runtimeRows = new Map<string, RuntimeRequest>();
+  protected readonly runtimeCredentialRows = new Map<string, RuntimeCredential>();
   protected cursor = 0;
 
   createChannel(channel: Channel): Channel {
@@ -119,6 +127,15 @@ export class MemoryChatStorage implements ChatStorage {
     const current = this.runtimeRows.get(id);
     if (!current || current.hostId !== hostId || current.status !== "pending") return undefined;
     return this.updateRuntimeRequest(id, { status: "claimed", updatedAt });
+  }
+  putRuntimeCredential(value: RuntimeCredential): void {
+    this.runtimeCredentialRows.set(value.requestId, value);
+  }
+  runtimeCredentialByHash(tokenHash: string): RuntimeCredential | undefined {
+    return [...this.runtimeCredentialRows.values()].find((row) => row.tokenHash === tokenHash);
+  }
+  deleteRuntimeCredential(requestId: string): void {
+    this.runtimeCredentialRows.delete(requestId);
   }
   close(): void {}
 }

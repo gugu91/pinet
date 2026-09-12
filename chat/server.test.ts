@@ -160,14 +160,16 @@ describe("chat API", () => {
         })
       ).status,
     ).toBe(403);
-    expect(
-      (
-        await app.request("/v1/runtime/requests/request/claim", {
-          method: "POST",
-          headers: { authorization: "Bearer host-secret" },
-        })
-      ).status,
-    ).toBe(200);
+    const claim = await app.request("/v1/runtime/requests/request/claim", {
+      method: "POST",
+      headers: { authorization: "Bearer host-secret" },
+    });
+    expect(claim.status).toBe(200);
+    const claimBody = (await claim.json()) as {
+      launch: { token: string; agentId: string };
+    };
+    expect(claimBody.launch.agentId).toBe("runtime-request");
+    expect(claimBody.launch.token).not.toContain("host-secret");
     expect(
       (
         await app.request("/v1/runtime/requests/request/claim", {
@@ -194,14 +196,45 @@ describe("chat API", () => {
       headers: { authorization: "Bearer host-secret", "content-type": "application/json" },
       body: JSON.stringify({ status: "running", handle: "42", identity: "launch" }),
     });
+    const childHeaders = {
+      authorization: `Bearer ${claimBody.launch.token}`,
+      "content-type": "application/json",
+    };
+    expect(
+      (
+        await app.request("/v1/agents", {
+          method: "POST",
+          headers: childHeaders,
+          body: JSON.stringify({ name: "Runtime child" }),
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await app.request("/v1/runtime/requests/request/heartbeat", {
+          method: "POST",
+          headers: childHeaders,
+          body: JSON.stringify({
+            sessionId: "actual-session",
+            sessionPath: "/tmp/actual.jsonl",
+          }),
+        })
+      ).status,
+    ).toBe(200);
     const reported = (await (
       await app.request("/v1/runtime/requests/request", { headers: auth })
     ).json()) as {
-      data: { sessionId: string; sessionPath: string; cwd: string; startedAt: number };
+      data: {
+        sessionId: string;
+        sessionPath: string;
+        cwd: string;
+        startedAt: number;
+        agentLastSeen: number;
+      };
     };
     expect(reported.data).toMatchObject({
-      sessionId: "session",
-      sessionPath: "/tmp/session.jsonl",
+      sessionId: "actual-session",
+      sessionPath: "/tmp/actual.jsonl",
       cwd: "/tmp",
       startedAt: 1,
     });

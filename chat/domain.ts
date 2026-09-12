@@ -12,6 +12,11 @@ export type Message = {
   createdAt: number;
   cursor: number;
 };
+export type RuntimeCredential = {
+  requestId: string;
+  agentId: string;
+  tokenHash: string;
+};
 export type RuntimeRequest = {
   id: string;
   requestedBy: string;
@@ -31,6 +36,8 @@ export type RuntimeRequest = {
   startedAt: number | null;
   lastSeen: number | null;
   stoppedAt: number | null;
+  agentId: string | null;
+  agentLastSeen: number | null;
 };
 
 export interface ChatStorage {
@@ -54,6 +61,9 @@ export interface ChatStorage {
   listRuntimeRequests(hostId: string, status?: RuntimeRequest["status"]): RuntimeRequest[];
   updateRuntimeRequest(id: string, patch: Partial<RuntimeRequest>): RuntimeRequest | undefined;
   claimRuntimeRequest(id: string, hostId: string, updatedAt: number): RuntimeRequest | undefined;
+  putRuntimeCredential(value: RuntimeCredential): void;
+  runtimeCredentialByHash(tokenHash: string): RuntimeCredential | undefined;
+  deleteRuntimeCredential(requestId: string): void;
   close(): void;
 }
 

@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { ChatStorage, Principal, RuntimeRequest } from "./domain.js";
@@ -67,6 +67,9 @@ function secureEqual(left: string, right: string): boolean {
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
 }
+function tokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 function error(c: Context, status: 400 | 401 | 403 | 404 | 409, code: string, message: string) {
   return c.json({ error: { code, message } }, status);
 }
@@ -87,8 +90,12 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       return error(c, 401, "unauthorized", "Bearer credential required");
     const supplied = header.slice(7);
     const credential = options.credentials.find((item) => secureEqual(item.token, supplied));
-    if (!credential) return error(c, 401, "unauthorized", "Invalid credential");
-    c.set("principal", credential.principal);
+    const runtimeCredential = credential
+      ? undefined
+      : options.storage.runtimeCredentialByHash(tokenHash(supplied));
+    if (!credential && !runtimeCredential)
+      return error(c, 401, "unauthorized", "Invalid credential");
+    c.set("principal", credential?.principal ?? { kind: "agent", id: runtimeCredential!.agentId });
     await next();
   });
   app.onError((cause, c) => {
@@ -272,6 +279,8 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       startedAt: null,
       lastSeen: null,
       stoppedAt: null,
+      agentId: null,
+      agentLastSeen: null,
     };
     options.storage.createRuntimeRequest(request);
     return c.json({ data: request }, 202);
@@ -310,8 +319,10 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       return error(c, 400, "invalid_request", "adapter must be process, tmux, or herdr");
     const timestamp = now();
     const sessionId = text(body.sessionId, "sessionId")!;
+    const requestId = id();
+    const agentId = `runtime-${requestId}`;
     const request: RuntimeRequest = {
-      id: id(),
+      id: requestId,
       requestedBy: `manual:${sessionId}`,
       hostId: principal.id,
       prompt: "Manual session registration",
@@ -329,8 +340,15 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       startedAt: timestamp,
       lastSeen: timestamp,
       stoppedAt: null,
+      agentId,
+      agentLastSeen: null,
     };
-    return c.json({ data: options.storage.createRuntimeRequest(request) }, 201);
+    const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+    options.storage.putRuntimeCredential({ requestId, agentId, tokenHash: tokenHash(token) });
+    return c.json(
+      { data: options.storage.createRuntimeRequest(request), launch: { token, agentId } },
+      201,
+    );
   });
   app.post("/v1/runtime/requests/:id/claim", (c) => {
     const principal = c.get("principal");
@@ -340,9 +358,37 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     if (request.hostId !== principal.id)
       return error(c, 403, "forbidden", "Host cannot update another host request");
     const claimed = options.storage.claimRuntimeRequest(request.id, principal.id, now());
-    return claimed
-      ? c.json({ data: claimed })
-      : error(c, 409, "already_claimed", "Runtime request is no longer pending");
+    if (!claimed) return error(c, 409, "already_claimed", "Runtime request is no longer pending");
+    const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const agentId = `runtime-${request.id}`;
+    options.storage.putRuntimeCredential({
+      requestId: request.id,
+      agentId,
+      tokenHash: tokenHash(token),
+    });
+    const updated = options.storage.updateRuntimeRequest(request.id, { agentId });
+    return c.json({ data: updated, launch: { token, agentId } });
+  });
+  app.post("/v1/runtime/requests/:id/heartbeat", async (c) => {
+    const principal = c.get("principal");
+    const request = options.storage.getRuntimeRequest(c.req.param("id"));
+    if (!request) return error(c, 404, "not_found", "Runtime request not found");
+    if (principal.kind !== "agent" || request.agentId !== principal.id)
+      return error(c, 403, "forbidden", "Runtime agent credential required");
+    if (request.status !== "running" && request.status !== "claimed")
+      return error(c, 409, "invalid_transition", "Runtime is not active");
+    const body = bodyObject(await c.req.text());
+    const sessionPath = text(body.sessionPath, "sessionPath", false);
+    const sessionId = text(body.sessionId, "sessionId", false);
+    if (!options.storage.getAgent(principal.id))
+      return error(c, 409, "not_registered", "Runtime agent must register first");
+    return c.json({
+      data: options.storage.updateRuntimeRequest(request.id, {
+        agentLastSeen: now(),
+        ...(sessionPath ? { sessionPath } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      }),
+    });
   });
   app.post("/v1/runtime/requests/:id/report", async (c) => {
     const body = bodyObject(await c.req.text());
@@ -389,5 +435,8 @@ function updateHostRequest(
         patch.status !== request.status))
   )
     return error(c, 409, "invalid_transition", "Invalid runtime status transition");
-  return c.json({ data: options.storage.updateRuntimeRequest(request.id, patch) });
+  const updated = options.storage.updateRuntimeRequest(request.id, patch);
+  if (patch.status === "stopped" || patch.status === "failed")
+    options.storage.deleteRuntimeCredential(request.id);
+  return c.json({ data: updated });
 }

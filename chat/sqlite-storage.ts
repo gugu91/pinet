@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { Agent, Channel, Message, RuntimeRequest } from "./domain.js";
+import type { Agent, Channel, Message, RuntimeCredential, RuntimeRequest } from "./domain.js";
 import { MemoryChatStorage } from "./memory-storage.js";
 
 type Snapshot = {
@@ -8,6 +8,7 @@ type Snapshot = {
   memberships: Array<[string, string[]]>;
   messages: Message[];
   runtimes: RuntimeRequest[];
+  runtimeCredentials?: RuntimeCredential[];
   cursor: number;
 };
 
@@ -30,6 +31,8 @@ export class SqliteChatStorage extends MemoryChatStorage {
       this.membershipRows.set(channelId, new Set(members));
     this.messageRows.push(...snapshot.messages);
     for (const runtime of snapshot.runtimes) this.runtimeRows.set(runtime.id, runtime);
+    for (const credential of snapshot.runtimeCredentials ?? [])
+      this.runtimeCredentialRows.set(credential.requestId, credential);
     this.cursor = snapshot.cursor;
   }
   private save(): void {
@@ -39,6 +42,7 @@ export class SqliteChatStorage extends MemoryChatStorage {
       memberships: [...this.membershipRows].map(([id, members]) => [id, [...members]]),
       messages: this.messageRows,
       runtimes: [...this.runtimeRows.values()],
+      runtimeCredentials: [...this.runtimeCredentialRows.values()],
       cursor: this.cursor,
     };
     this.database
@@ -107,6 +111,14 @@ export class SqliteChatStorage extends MemoryChatStorage {
     const value = super.claimRuntimeRequest(id, hostId, updatedAt);
     if (value) this.save();
     return value;
+  }
+  override putRuntimeCredential(value: RuntimeCredential): void {
+    super.putRuntimeCredential(value);
+    this.save();
+  }
+  override deleteRuntimeCredential(requestId: string): void {
+    super.deleteRuntimeCredential(requestId);
+    this.save();
   }
   override close(): void {
     this.database.close();

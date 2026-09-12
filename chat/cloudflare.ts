@@ -1,4 +1,4 @@
-import type { Agent, Channel, Message, RuntimeRequest } from "./domain.js";
+import type { Agent, Channel, Message, RuntimeCredential, RuntimeRequest } from "./domain.js";
 import { MemoryChatStorage } from "./memory-storage.js";
 import { createChatApp, parseCredentials, type Credential } from "./server.js";
 
@@ -30,6 +30,8 @@ class DurableChatStorage extends MemoryChatStorage {
         this.cursor = Math.max(this.cursor, message.cursor);
       } else if (row.kind === "runtime")
         this.runtimeRows.set(row.id, JSON.parse(row.value) as RuntimeRequest);
+      else if (row.kind === "runtimeCredential")
+        this.runtimeCredentialRows.set(row.id, JSON.parse(row.value) as RuntimeCredential);
     }
     this.messageRows.sort((left, right) => left.cursor - right.cursor);
   }
@@ -93,6 +95,14 @@ class DurableChatStorage extends MemoryChatStorage {
     const result = super.updateRuntimeRequest(id, value);
     if (result) this.put("runtime", id, result);
     return result;
+  }
+  override putRuntimeCredential(value: RuntimeCredential): void {
+    super.putRuntimeCredential(value);
+    this.put("runtimeCredential", value.requestId, value);
+  }
+  override deleteRuntimeCredential(requestId: string): void {
+    super.deleteRuntimeCredential(requestId);
+    this.sql.exec("DELETE FROM pinet_chat WHERE kind='runtimeCredential' AND id=?", requestId);
   }
   override claimRuntimeRequest(
     id: string,

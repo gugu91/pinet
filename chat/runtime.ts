@@ -2,7 +2,13 @@ import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-export type SpawnSpec = { prompt: string; cwd: string; sessionId: string; sessionPath: string };
+export type SpawnSpec = {
+  prompt: string;
+  cwd: string;
+  sessionId: string;
+  sessionPath: string;
+  env: Record<string, string>;
+};
 export type RuntimeHandle = {
   adapter: "process" | "tmux" | "herdr";
   handle: string;
@@ -19,6 +25,7 @@ export interface CommandRunner {
     args: string[],
     cwd: string,
     input?: string,
+    env?: Record<string, string>,
   ): Promise<{ pid: number; identity: string }>;
   exec(command: string, args: string[]): Promise<{ stdout: string }>;
   signal(pid: number, signal: NodeJS.Signals): Promise<void>;
@@ -32,11 +39,13 @@ export class NodeCommandRunner implements CommandRunner {
     args: string[],
     cwd: string,
     input?: string,
+    env?: Record<string, string>,
   ): Promise<{ pid: number; identity: string }> {
     const child = spawn(command, args, {
       cwd,
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
+      env: { ...process.env, ...env },
     });
     if (!child.pid) throw new Error("runtime process did not return a PID");
     if (input) child.stdin.write(`${input}\n`);
@@ -76,6 +85,7 @@ export class ProcessRuntimeAdapter implements RuntimeAdapter {
       ["--mode", "rpc", "--session", spec.sessionPath],
       spec.cwd,
       JSON.stringify({ id: `pinet-${spec.sessionId}`, type: "prompt", message: spec.prompt }),
+      spec.env,
     );
     return { adapter: "process", handle: String(result.pid), identity: result.identity };
   }
@@ -101,6 +111,8 @@ export class TmuxRuntimeAdapter implements RuntimeAdapter {
       name,
       "-c",
       spec.cwd,
+      "env",
+      ...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`),
       "pi",
       "--session",
       spec.sessionPath,
@@ -171,13 +183,16 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
     try {
       const quotedPrompt = `'${spec.prompt.replaceAll("'", "'\\''")}'`;
       const quotedPath = `'${spec.sessionPath.replaceAll("'", "'\\''")}'`;
+      const environment = Object.entries(spec.env)
+        .map(([key, value]) => `${key}='${value.replaceAll("'", "'\\''")}'`)
+        .join(" ");
       await this.runner.exec("herdr", [
         "--session",
         this.session,
         "pane",
         "run",
         pane,
-        `pi --session ${quotedPath} ${quotedPrompt}`,
+        `env ${environment} pi --session ${quotedPath} ${quotedPrompt}`,
       ]);
       const identity = await this.paneIdentity(pane);
       if (!identity) throw new Error("Herdr pane returned no launched process PID");

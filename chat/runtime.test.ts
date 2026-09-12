@@ -36,6 +36,7 @@ describe("runtime adapter safety", () => {
       cwd: "/tmp",
       sessionId: "session",
       sessionPath: "/tmp/session.jsonl",
+      env: { PINET_CHAT_TOKEN: "scoped" },
     });
     expect(runner.startedArgs).toEqual(["--mode", "rpc", "--session", "/tmp/session.jsonl"]);
     expect(JSON.parse(runner.startedInput!)).toMatchObject({ type: "prompt", message: "do work" });
@@ -59,6 +60,7 @@ describe("runtime adapter safety", () => {
       cwd: "/tmp",
       sessionId: "session",
       sessionPath: "/tmp/session.jsonl",
+      env: { PINET_CHAT_TOKEN: "scoped" },
     });
     expect(handle).toEqual({ adapter: "tmux", handle: "%7", identity: "pi launch" });
     expect(await adapter.stop(handle)).toBe(true);
@@ -81,6 +83,7 @@ describe("runtime adapter safety", () => {
         cwd: "/tmp",
         sessionId: "session",
         sessionPath: "/tmp/session.jsonl",
+        env: { PINET_CHAT_TOKEN: "scoped" },
       }),
     ).rejects.toThrow("launch failed");
     expect(calls.at(-1)).toEqual(["--session", "workers", "pane", "close", "w1:p2"]);
@@ -102,6 +105,7 @@ describe("runtime adapter safety", () => {
       cwd: "/tmp",
       sessionId: "session",
       sessionPath: "/tmp/session.jsonl",
+      env: { PINET_CHAT_TOKEN: "scoped" },
     });
     expect(handle).toEqual({ adapter: "herdr", handle: "w1:p2", identity: "77|start pi" });
     expect(await adapter.stop(handle)).toBe(true);

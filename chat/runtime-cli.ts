@@ -11,12 +11,16 @@ const hostId = process.env.PINET_HOST_ID;
 if (!baseUrl || !token || !hostId)
   throw new Error("PINET_CHAT_URL, PINET_HOST_TOKEN, and PINET_HOST_ID are required");
 const sessionDir = process.env.PINET_SESSION_DIR ?? join(homedir(), ".pi", "agent", "sessions");
+const staleTimeoutMs = Number(process.env.PINET_RUNTIME_STALE_MS ?? 30000);
+if (!Number.isFinite(staleTimeoutMs) || staleTimeoutMs <= 0)
+  throw new Error("PINET_RUNTIME_STALE_MS must be a positive number");
 mkdirSync(sessionDir, { recursive: true });
 const manager = new RuntimeManager({
   baseUrl,
   token,
   hostId,
   sessionDir,
+  staleTimeoutMs,
   adapters: {
     process: new ProcessRuntimeAdapter(),
     tmux: new TmuxRuntimeAdapter(),
