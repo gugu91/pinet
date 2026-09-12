@@ -18,9 +18,9 @@ type Params = {
   chatChannelId?: string;
   slackThreadTs?: string;
   chatParentId?: string;
+  messageId?: string;
 };
 export class SlackChatPoller {
-  private readonly cursors = new Map<string, number>();
   private inFlight = false;
   constructor(
     private readonly mappings: MappingStore,
@@ -34,7 +34,7 @@ export class SlackChatPoller {
     this.inFlight = true;
     try {
       for (const mapping of this.mappings.listChannels()) {
-        const after = this.cursors.get(mapping.chatChannelId) ?? 0;
+        const after = this.mappings.getCursor(mapping.chatChannelId);
         const response = await this.transport(
           new URL(`/v1/channels/${mapping.chatChannelId}/messages?after=${after}`, this.chatUrl),
           { headers: { authorization: `Bearer ${this.chatToken}` } },
@@ -44,11 +44,11 @@ export class SlackChatPoller {
           data: ChatMessage[] & Array<{ cursor: number }>;
         };
         for (const message of payload.data) {
-          if (!this.mappings.hasChatMessage(message.id)) await this.adapter.send(message);
-          this.cursors.set(
-            mapping.chatChannelId,
-            Math.max(this.cursors.get(mapping.chatChannelId) ?? 0, message.cursor),
-          );
+          if (!this.mappings.hasChatMessage(message.id)) {
+            const outcome = await this.adapter.send(message);
+            if (outcome.status === "ignored")
+              this.mappings.advanceCursor(mapping.chatChannelId, message.cursor);
+          } else this.mappings.advanceCursor(mapping.chatChannelId, message.cursor);
         }
       }
     } finally {
@@ -123,6 +123,7 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
         chatChannelId: { type: "string" },
         slackThreadTs: { type: "string" },
         chatParentId: { type: "string" },
+        messageId: { type: "string" },
       },
       required: ["action"],
       additionalProperties: false,
@@ -143,6 +144,8 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
                 slackThreadTs: "string",
                 chatParentId: "string",
               },
+              outbound_ambiguous: {},
+              outbound_retry: { messageId: "string" },
             },
           };
         else if (p.action === "status") value = { configured, mappings: mappings.listChannels() };
@@ -162,7 +165,11 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
           };
           mappings.bindThread(mapping);
           value = mapping;
-        } else throw new Error("Unknown action; call help");
+        } else if (p.action === "outbound_ambiguous")
+          value = { messageIds: mappings.listAmbiguousOutbound() };
+        else if (p.action === "outbound_retry")
+          value = { retried: mappings.retryOutbound(need(p.messageId, "messageId")) };
+        else throw new Error("Unknown action; call help");
         return {
           content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
           details: value,

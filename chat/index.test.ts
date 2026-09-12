@@ -13,6 +13,81 @@ afterEach(() => {
 });
 
 describe("Chat extension lifecycle", () => {
+  it("adopts the canonical current session idempotently and preserves a managed heartbeat on failure", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const directory = mkdtempSync(join(tmpdir(), "pinet-chat-adopt-"));
+    directories.push(directory);
+    const sessionPath = join(directory, "current.jsonl");
+    const managedHeartbeat = join(directory, "managed.heartbeat");
+    const adoptedHeartbeat = join(directory, "adopted.heartbeat");
+    writeFileSync(sessionPath, '{"type":"session","id":"stable-session"}\n');
+    const registrations: string[] = [];
+    let failAdoption = false;
+    const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/runtime/registrations") {
+        registrations.push(init!.body!.toString());
+        if (failAdoption) throw new Error("registration unavailable");
+        return Response.json({ data: { id: "same-runtime" } });
+      }
+      if (url.pathname === "/v1/mentions") return Response.json({ data: [] });
+      return Response.json({ data: {} });
+    });
+    const handlers = new Map<string, LifecycleHandler>();
+    let tool: { execute(id: string, raw: object): Promise<{ details: object; isError?: boolean }> };
+    registerChat(
+      {
+        on: (name: string, handler: LifecycleHandler) => handlers.set(name, handler),
+        sendUserMessage: vi.fn(),
+        registerTool: (value: typeof tool) => {
+          tool = value;
+        },
+        registerCommand: vi.fn(),
+      } as never,
+      {
+        baseUrl: "https://chat.test",
+        token: "child",
+        agentId: "runtime",
+        runtimeRequestId: "managed",
+        localHeartbeatPath: managedHeartbeat,
+        localHeartbeatIntervalMs: 1000,
+        fetch: transport,
+      },
+    );
+    handlers.get("session_start")!({}, { sessionManager: { getSessionFile: () => sessionPath } });
+    await Promise.resolve();
+    const adoption = {
+      action: "runtime_adopt",
+      hostId: "host",
+      adapter: "process",
+      handle: "42",
+      identity: "generation",
+      cwd: directory,
+      heartbeatPath: adoptedHeartbeat,
+    };
+    failAdoption = true;
+    const failedPath = join(directory, "failed.heartbeat");
+    const failed = await tool!.execute("failed", { ...adoption, heartbeatPath: failedPath });
+    expect(failed.isError).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(readFileSync(managedHeartbeat, "utf8")).toBe("2000");
+    expect(() => readFileSync(failedPath, "utf8")).toThrow();
+
+    failAdoption = false;
+    const first = await tool!.execute("one", adoption);
+    const second = await tool!.execute("two", adoption);
+    expect(first.details).toEqual(second.details);
+    expect(registrations.map((body) => JSON.parse(body))).toEqual([
+      expect.objectContaining({ sessionId: "stable-session", sessionPath }),
+      expect.objectContaining({ sessionId: "stable-session", sessionPath }),
+      expect.objectContaining({ sessionId: "stable-session", sessionPath }),
+    ]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(readFileSync(adoptedHeartbeat, "utf8")).toBe("3000");
+    expect(readFileSync(managedHeartbeat, "utf8")).toBe("2000");
+    handlers.get("session_shutdown")!({}, {});
+  });
   it("registers a scoped child, joins its channel, reports the real session, and recovers mention cursor", async () => {
     vi.useFakeTimers();
     const directory = mkdtempSync(join(tmpdir(), "pinet-chat-extension-"));
@@ -94,7 +169,12 @@ describe("Chat extension lifecycle", () => {
         fetch: transport,
       },
     );
-    await restartedHandlers.get("session_start")!({}, {});
+    await restartedHandlers.get("session_start")!(
+      {},
+      {
+        sessionManager: { getSessionFile: () => sessionPath },
+      },
+    );
     expect(requests.at(-1)?.path).toBe("/v1/mentions?after=7");
     restartedHandlers.get("session_shutdown")!({}, {});
   });

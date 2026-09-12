@@ -131,13 +131,17 @@ describe("Slack adapter", () => {
     });
     const poller = new SlackChatPoller(mappings, adapter, "https://chat.test", "token", transport);
     await expect(poller.poll()).rejects.toThrow("temporary");
+    await expect(poller.poll()).rejects.toThrow("ambiguous");
+    expect(slack.postMessage).toHaveBeenCalledTimes(1);
+    expect(mappings.listAmbiguousOutbound()).toEqual(["m"]);
+    expect(mappings.retryOutbound("m")).toBe(true);
     const active = poller.poll();
     await poller.poll();
-    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport).toHaveBeenCalledTimes(3);
     release!();
     await active;
     await poller.poll();
-    expect(cursors).toEqual([0, 0, 1]);
+    expect(cursors).toEqual([0, 0, 0, 1]);
     expect(slack.postMessage).toHaveBeenCalledTimes(2);
   });
   it("persists and serially retries inbound roots before replies", async () => {
@@ -154,6 +158,16 @@ describe("Slack adapter", () => {
       text: "reply",
       botId: null,
     });
+    const earlyChat = { send: vi.fn(async () => ({ id: "unexpected" })) };
+    const earlyAdapter = new SlackAdapter({
+      mappings: first,
+      chat: earlyChat,
+      slack: { postMessage: vi.fn() },
+      ownSlackUserId: "BOT",
+    });
+    await earlyAdapter.drain();
+    expect(earlyChat.send).not.toHaveBeenCalled();
+    expect(first.pendingInbound()).toHaveLength(1);
     first.enqueueInbound({
       channel: "C",
       ts: "1",
@@ -188,6 +202,94 @@ describe("Slack adapter", () => {
     expect(second.pendingInbound()).toHaveLength(0);
     second.close();
   });
+  it("rolls back inbound completion checkpoints and retries the idempotent Chat send", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pinet-slack-checkpoint-"));
+    dirs.push(directory);
+    let fail = true;
+    const mappings = new SqliteMappingStore(join(directory, "map.sqlite"), () => {
+      if (fail) {
+        fail = false;
+        throw new Error("checkpoint failure");
+      }
+    });
+    mappings.bindChannel({ slackChannelId: "C", chatChannelId: "chat" });
+    mappings.enqueueInbound({
+      channel: "C",
+      ts: "1",
+      threadTs: null,
+      user: "U",
+      text: "root",
+      botId: null,
+    });
+    const chat = { send: vi.fn(async () => ({ id: "stable-chat-id" })) };
+    const adapter = new SlackAdapter({
+      mappings,
+      chat,
+      slack: { postMessage: vi.fn() },
+      ownSlackUserId: "BOT",
+    });
+    await expect(adapter.drain()).rejects.toThrow("checkpoint failure");
+    expect(mappings.pendingInbound()).toHaveLength(1);
+    expect(mappings.hasChatMessage("stable-chat-id")).toBe(false);
+    expect(mappings.threadBySlack("C", "1")).toBeUndefined();
+    await adapter.drain();
+    expect(chat.send).toHaveBeenCalledTimes(2);
+    expect(mappings.pendingInbound()).toHaveLength(0);
+    expect(mappings.hasChatMessage("stable-chat-id")).toBe(true);
+    expect(mappings.threadBySlack("C", "1")?.chatParentId).toBe("stable-chat-id");
+    mappings.close();
+  });
+
+  it("persists outbound cursors and requires operator retry after ambiguous completion", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pinet-slack-outbound-"));
+    dirs.push(directory);
+    const path = join(directory, "map.sqlite");
+    let fail = true;
+    const first = new SqliteMappingStore(
+      path,
+      () => {
+        if (fail) {
+          fail = false;
+          throw new Error("checkpoint failure");
+        }
+      },
+      3,
+    );
+    first.bindChannel({ slackChannelId: "C", chatChannelId: "chat" });
+    const slack = { postMessage: vi.fn(async () => ({ ts: "10" })) };
+    const configured = new SlackAdapter({
+      mappings: first,
+      chat: { send: vi.fn() },
+      slack,
+      ownSlackUserId: "BOT",
+    });
+    const message = {
+      id: "out",
+      channelId: "chat",
+      parentId: null,
+      markdown: "hello",
+      senderId: "agent",
+      clientId: "client",
+      mentions: [],
+      cursor: 9,
+    };
+    await expect(configured.send(message)).rejects.toThrow("checkpoint failure");
+    await expect(configured.send(message)).rejects.toThrow("ambiguous");
+    expect(slack.postMessage).toHaveBeenCalledTimes(1);
+    expect(first.listAmbiguousOutbound()).toEqual(["out"]);
+    expect(first.retryOutbound("out")).toBe(true);
+    await configured.send(message);
+    expect(slack.postMessage).toHaveBeenCalledTimes(2);
+    expect(first.getCursor("chat")).toBe(9);
+    first.recordRelay("slack-to-chat", "other", "1", "newer");
+    expect(first.hasChatMessage("out")).toBe(false);
+    first.close();
+    const second = new SqliteMappingStore(path);
+    expect(second.getCursor("chat")).toBe(9);
+    expect(second.beginOutbound("out")).toBe("complete");
+    second.close();
+  });
+
   it("persists explicit mappings and relay IDs", () => {
     const directory = mkdtempSync(join(tmpdir(), "pinet-slack-"));
     dirs.push(directory);

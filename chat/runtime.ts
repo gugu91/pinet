@@ -31,6 +31,7 @@ export interface CommandRunner {
   exec(command: string, args: string[]): Promise<{ stdout: string }>;
   signal(pid: number, signal: NodeJS.Signals): Promise<void>;
   processIdentity(pid: number): Promise<string | undefined>;
+  processCommand(pid: number): Promise<string | undefined>;
 }
 
 const exec = promisify(execFile);
@@ -80,7 +81,15 @@ export class NodeCommandRunner implements CommandRunner {
   }
   async processIdentity(pid: number): Promise<string | undefined> {
     try {
-      const result = await exec("ps", ["-o", "lstart=,command=", "-p", String(pid)]);
+      const result = await exec("ps", ["-o", "lstart=", "-p", String(pid)]);
+      return result.stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  async processCommand(pid: number): Promise<string | undefined> {
+    try {
+      const result = await exec("ps", ["-o", "command=", "-p", String(pid)]);
       return result.stdout.trim() || undefined;
     } catch {
       return undefined;
@@ -114,6 +123,25 @@ export class ProcessRuntimeAdapter implements RuntimeAdapter {
   }
 }
 
+async function waitForPiIdentity(
+  runner: CommandRunner,
+  readPid: () => Promise<number | undefined>,
+  sessionPath: string,
+): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const pid = await readPid();
+    if (pid) {
+      const [generation, command] = await Promise.all([
+        runner.processIdentity(pid),
+        runner.processCommand(pid),
+      ]);
+      if (generation && command?.includes(sessionPath)) return `${pid}|${generation}`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return undefined;
+}
+
 async function createLauncher(spec: SpawnSpec): Promise<string> {
   const path = join(spec.sessionPath.replace(/\.jsonl$/, ""), "..", `${spec.sessionId}.launch.sh`);
   const environment = Object.entries(spec.env)
@@ -140,12 +168,21 @@ export class TmuxRuntimeAdapter implements RuntimeAdapter {
         await this.runner.exec("tmux", ["list-panes", "-t", name, "-F", "#{pane_id}|#{pane_pid}"])
       ).stdout.trim();
       if (!pane) throw new Error("tmux did not report the launched pane");
-      const [handle, identity] = pane.split("|", 2);
-      if (!handle || !identity) throw new Error("tmux returned incomplete pane identity");
-      const processIdentity = await this.runner.processIdentity(Number(identity));
-      if (!processIdentity) throw new Error("tmux pane process identity unavailable");
+      const [handle] = pane.split("|", 1);
+      if (!handle) throw new Error("tmux returned incomplete pane identity");
+      const identity = await waitForPiIdentity(
+        this.runner,
+        async () => {
+          const value = (
+            await this.runner.exec("tmux", ["display-message", "-p", "-t", handle, "#{pane_pid}"])
+          ).stdout.trim();
+          return /^\d+$/.test(value) ? Number(value) : undefined;
+        },
+        spec.sessionPath,
+      );
+      if (!identity) throw new Error("tmux Pi process did not become ready");
       await unlink(launcher);
-      return { adapter: "tmux", handle, identity: `${identity}|${processIdentity}` };
+      return { adapter: "tmux", handle, identity };
     } catch (error) {
       await this.runner.exec("tmux", ["kill-session", "-t", name]).catch(() => ({ stdout: "" }));
       await unlink(launcher).catch(() => {});
@@ -201,8 +238,12 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
     const launcher = await createLauncher(spec);
     try {
       await this.runner.exec("herdr", ["--session", this.session, "pane", "run", pane, launcher]);
-      const identity = await this.paneIdentity(pane);
-      if (!identity) throw new Error("Herdr pane returned no launched process PID");
+      const identity = await waitForPiIdentity(
+        this.runner,
+        () => this.panePid(pane),
+        spec.sessionPath,
+      );
+      if (!identity) throw new Error("Herdr Pi process did not become ready");
       await unlink(launcher);
       return { adapter: "herdr", handle: pane, identity };
     } catch (error) {
@@ -213,29 +254,33 @@ export class HerdrRuntimeAdapter implements RuntimeAdapter {
       throw error;
     }
   }
-  private async paneIdentity(pane: string): Promise<string | undefined> {
-    try {
-      const output = await this.runner.exec("herdr", [
-        "--session",
-        this.session,
-        "pane",
-        "process-info",
-        "--pane",
-        pane,
-      ]);
-      const payload = JSON.parse(output.stdout) as {
-        result?: { process_info?: { foreground_pid?: number } };
-      };
-      const pid = payload.result?.process_info?.foreground_pid;
-      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
-      const identity = await this.runner.processIdentity(pid);
-      return identity ? `${pid}|${identity}` : undefined;
-    } catch {
-      return undefined;
-    }
+  private async panePid(pane: string): Promise<number | undefined> {
+    const output = await this.runner.exec("herdr", [
+      "--session",
+      this.session,
+      "pane",
+      "process-info",
+      "--pane",
+      pane,
+    ]);
+    const payload = JSON.parse(output.stdout) as {
+      result?: { process_info?: { foreground_pid?: number } };
+    };
+    const pid = payload.result?.process_info?.foreground_pid;
+    return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : undefined;
   }
   async isAlive(handle: RuntimeHandle): Promise<boolean> {
-    return (await this.paneIdentity(handle.handle)) === handle.identity;
+    try {
+      const pid = await this.panePid(handle.handle);
+      const [expectedPid, generation] = handle.identity.split("|", 2);
+      return Boolean(
+        pid &&
+        String(pid) === expectedPid &&
+        (await this.runner.processIdentity(pid)) === generation,
+      );
+    } catch {
+      return false;
+    }
   }
   async stop(handle: RuntimeHandle): Promise<boolean> {
     if (!(await this.isAlive(handle))) return false;

@@ -95,8 +95,8 @@ const HELP = {
       handle: "string",
       identity: "string",
       cwd: "string",
-      heartbeatPath: "mode-0600 local path",
-      sessionPath: "string?",
+      heartbeatPath: "mode-0600 local path (activated only after successful adoption)",
+      sessionPath: "derived from the current Pi session",
     },
   },
 };
@@ -130,6 +130,9 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
   let localHeartbeatPoller: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   let bootstrapped = false;
+  let currentSessionPath: string | undefined;
+  let currentSessionId: string | undefined;
+  let getCurrentSessionFile: (() => string | undefined) | undefined;
   const startLocalHeartbeat = (path: string) => {
     if (localHeartbeatPoller) clearInterval(localHeartbeatPoller);
     mkdirSync(dirname(path), { recursive: true });
@@ -159,6 +162,9 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
     }
   }
   pi.on("session_start", (_event, ctx) => {
+    getCurrentSessionFile = () => ctx.sessionManager.getSessionFile();
+    currentSessionPath = getCurrentSessionFile();
+    currentSessionId = readSessionId(currentSessionPath);
     if (automaticHeartbeatPath) startLocalHeartbeat(automaticHeartbeatPath);
     if (!client) return;
     mentionPoller = setInterval(
@@ -177,10 +183,11 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
           if (channelId) await client.call("POST", `/v1/channels/${channelId}/join`);
           bootstrapped = true;
         }
-        const sessionPath = ctx.sessionManager.getSessionFile();
+        currentSessionPath = getCurrentSessionFile?.();
+        currentSessionId = readSessionId(currentSessionPath);
         await client.call("POST", `/v1/runtime/requests/${runtimeRequestId}/heartbeat`, {
-          sessionId: readSessionId(sessionPath),
-          sessionPath,
+          sessionId: currentSessionId,
+          sessionPath: currentSessionPath,
         });
       };
       heartbeatPoller = setInterval(
@@ -327,20 +334,23 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
             );
           case "runtime_adopt": {
             const heartbeatPath = required(params.heartbeatPath, "heartbeatPath");
+            currentSessionPath = getCurrentSessionFile?.();
+            currentSessionId = readSessionId(currentSessionPath);
+            if (!currentSessionPath || !currentSessionId)
+              throw new Error("Current Pi session identity is unavailable");
+            const adopted = await client.call("POST", "/v1/runtime/registrations", {
+              consent: true,
+              hostId: required(params.hostId, "hostId"),
+              adapter: required(params.adapter, "adapter"),
+              handle: required(params.handle, "handle"),
+              identity: required(params.identity, "identity"),
+              cwd: required(params.cwd, "cwd"),
+              heartbeatPath,
+              sessionPath: currentSessionPath,
+              sessionId: currentSessionId,
+            });
             startLocalHeartbeat(heartbeatPath);
-            return result(
-              await client.call("POST", "/v1/runtime/registrations", {
-                consent: true,
-                hostId: required(params.hostId, "hostId"),
-                adapter: required(params.adapter, "adapter"),
-                handle: required(params.handle, "handle"),
-                identity: required(params.identity, "identity"),
-                cwd: required(params.cwd, "cwd"),
-                heartbeatPath,
-                sessionPath: params.sessionPath,
-                sessionId: params.requestId ?? crypto.randomUUID(),
-              }),
-            );
+            return result(adopted);
           }
           case "runtime_status":
             return result(

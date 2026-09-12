@@ -31,12 +31,43 @@ function createMiniflare(persist: string): Miniflare {
     bindings: {
       PINET_CHAT_CREDENTIALS: JSON.stringify([
         { token: "agent-secret", principal: { kind: "agent", id: "agent" } },
+        { token: "host-secret", principal: { kind: "host", id: "host" } },
       ]),
     },
   });
 }
 
 describe("Chat Durable Object parity", () => {
+  it("atomically allows exactly one concurrent runtime claim", async () => {
+    const persist = mkdtempSync(join(tmpdir(), "pinet-chat-claim-do-"));
+    directories.push(persist);
+    const mf = createMiniflare(persist);
+    const agentHeaders = {
+      authorization: "Bearer agent-secret",
+      "content-type": "application/json",
+      "x-pinet-workspace": "claims",
+    };
+    const created = await mf.dispatchFetch("http://local/v1/runtime/requests", {
+      method: "POST",
+      headers: agentHeaders,
+      body: JSON.stringify({ hostId: "host", prompt: "run" }),
+    });
+    expect(created.status).toBe(202);
+    const requestId = ((await created.json()) as { data: { id: string } }).data.id;
+    const claim = () =>
+      mf.dispatchFetch(`http://local/v1/runtime/requests/${requestId}/claim`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer host-secret",
+          "content-type": "application/json",
+          "x-pinet-workspace": "claims",
+        },
+      });
+    const responses = await Promise.all([claim(), claim()]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    await mf.dispose();
+  });
+
   it("persists authenticated channels and messages across emulator restart", async () => {
     const persist = mkdtempSync(join(tmpdir(), "pinet-chat-do-"));
     directories.push(persist);

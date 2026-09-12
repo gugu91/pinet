@@ -59,13 +59,11 @@ export class SlackSocketModeClient {
   private async receive(data: string | ArrayBuffer) {
     const encoded = typeof data === "string" ? data : new TextDecoder().decode(data);
     const envelope = JSON.parse(encoded) as Envelope;
-    if (!envelope.payload) return;
+    if (!envelope.envelope_id || !envelope.payload) return;
     const message = parseSlackMessage(envelope.payload);
-    if (!message) return;
-    this.adapter.enqueue(message);
-    if (envelope.envelope_id)
-      this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
-    await this.adapter.drain();
+    if (message) this.adapter.enqueue(message);
+    this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+    if (message) await this.adapter.drain();
   }
   private scheduleReconnect() {
     if (this.stopped || this.reconnectTimer) return;

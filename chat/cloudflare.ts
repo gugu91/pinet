@@ -11,7 +11,9 @@ import { createChatApp, parseCredentials, type Credential } from "./server.js";
 type SqlStorage = {
   exec<T extends object>(query: string, ...bindings: Array<string | number | null>): Iterable<T>;
 };
-type DurableState = { storage: { sql: SqlStorage } };
+type DurableState = {
+  storage: { sql: SqlStorage; transactionSync<T>(callback: () => T): T };
+};
 type DurableStub = { fetch(request: Request): Promise<Response> };
 type DurableNamespace = { idFromName(name: string): object; get(id: object): DurableStub };
 export type ChatWorkerEnv = { CHAT: DurableNamespace; PINET_CHAT_CREDENTIALS: string };
@@ -31,8 +33,10 @@ type MessageRow = {
 type ValueRow = { value: string };
 class DurableChatStorage implements ChatStorage {
   private readonly sql: SqlStorage;
+  private readonly durableStorage: DurableState["storage"];
   constructor(state: DurableState) {
     this.sql = state.storage.sql;
+    this.durableStorage = state.storage;
     this.sql.exec(`
       PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS pinet_channels(id TEXT PRIMARY KEY,name TEXT UNIQUE NOT NULL,topic TEXT NOT NULL,created_at INTEGER NOT NULL);
@@ -271,20 +275,11 @@ class DurableChatStorage implements ChatStorage {
     return next;
   }
   claimRuntimeRequest(id: string, hostId: string, updatedAt: number): RuntimeRequest | undefined {
-    this.sql.exec("BEGIN IMMEDIATE");
-    try {
+    return this.durableStorage.transactionSync(() => {
       const current = this.getRuntimeRequest(id);
-      if (!current || current.hostId !== hostId || current.status !== "pending") {
-        this.sql.exec("ROLLBACK");
-        return undefined;
-      }
-      const next = this.updateRuntimeRequest(id, { status: "claimed", updatedAt })!;
-      this.sql.exec("COMMIT");
-      return next;
-    } catch (error) {
-      this.sql.exec("ROLLBACK");
-      throw error;
-    }
+      if (!current || current.hostId !== hostId || current.status !== "pending") return undefined;
+      return this.updateRuntimeRequest(id, { status: "claimed", updatedAt });
+    });
   }
   putRuntimeCredential(value: RuntimeCredential): void {
     this.sql.exec(

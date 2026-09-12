@@ -51,6 +51,15 @@ describe("Slack Socket Mode lifecycle", () => {
     socket.emit("open");
     socket.emit("message", {
       data: JSON.stringify({
+        envelope_id: "unsupported",
+        payload: { event: { type: "app_mention", channel: "C", ts: "0", user: "U" } },
+      }),
+    });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    expect(queue).toHaveLength(0);
+    expect(receive).not.toHaveBeenCalled();
+    socket.emit("message", {
+      data: JSON.stringify({
         envelope_id: "envelope",
         payload: {
           event: { type: "message", channel: "C", ts: "1", text: "hello", user: "U" },
@@ -58,7 +67,10 @@ describe("Slack Socket Mode lifecycle", () => {
       }),
     });
     await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1));
-    expect(socket.sent).toEqual([JSON.stringify({ envelope_id: "envelope" })]);
+    expect(socket.sent).toEqual([
+      JSON.stringify({ envelope_id: "unsupported" }),
+      JSON.stringify({ envelope_id: "envelope" }),
+    ]);
     socket.emit("close");
     await vi.advanceTimersByTimeAsync(999);
     expect(transport).toHaveBeenCalledTimes(2);

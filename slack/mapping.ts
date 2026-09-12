@@ -3,6 +3,7 @@ import type { SlackInboundMessage } from "./adapter.js";
 export type ChannelMapping = { slackChannelId: string; chatChannelId: string };
 export type ThreadMapping = ChannelMapping & { slackThreadTs: string; chatParentId: string };
 export type InboundRow = { id: string; message: SlackInboundMessage };
+export type OutboundState = "new" | "sending" | "complete";
 export interface MappingStore {
   bindChannel(value: ChannelMapping): void;
   channelBySlack(id: string): ChannelMapping | undefined;
@@ -22,6 +23,20 @@ export interface MappingStore {
   enqueueInbound(message: SlackInboundMessage): void;
   pendingInbound(): InboundRow[];
   removeInbound(id: string): void;
+  completeInbound(id: string, message: SlackInboundMessage, chatMessageId: string): void;
+  getCursor(channelId: string): number;
+  advanceCursor(channelId: string, cursor: number): void;
+  beginOutbound(messageId: string): OutboundState;
+  completeOutbound(value: {
+    messageId: string;
+    chatChannelId: string;
+    cursor: number;
+    slackChannelId: string;
+    slackTs: string;
+    thread?: ThreadMapping;
+  }): void;
+  listAmbiguousOutbound(): string[];
+  retryOutbound(messageId: string): boolean;
   close(): void;
 }
 export class MemoryMappingStore implements MappingStore {
@@ -29,6 +44,8 @@ export class MemoryMappingStore implements MappingStore {
   protected threads = new Map<string, ThreadMapping>();
   protected relays = new Set<string>();
   protected inbox = new Map<string, SlackInboundMessage>();
+  protected cursors = new Map<string, number>();
+  protected outbound = new Map<string, "sending" | "complete">();
   bindChannel(value: ChannelMapping) {
     const chatConflict = [...this.channels.values()].find(
       (row) =>
@@ -103,6 +120,45 @@ export class MemoryMappingStore implements MappingStore {
   removeInbound(id: string): void {
     this.inbox.delete(id);
   }
+  completeInbound(id: string, message: SlackInboundMessage, chatMessageId: string): void {
+    this.recordRelay("slack-to-chat", message.channel, message.ts, chatMessageId);
+    if (!message.threadTs || message.threadTs === message.ts) {
+      const channel = this.channelBySlack(message.channel)!;
+      this.bindThread({ ...channel, slackThreadTs: message.ts, chatParentId: chatMessageId });
+    }
+    this.removeInbound(id);
+  }
+  getCursor(channelId: string): number {
+    return this.cursors.get(channelId) ?? 0;
+  }
+  advanceCursor(channelId: string, cursor: number): void {
+    this.cursors.set(channelId, Math.max(cursor, this.getCursor(channelId)));
+  }
+  beginOutbound(messageId: string): OutboundState {
+    const current = this.outbound.get(messageId);
+    if (current) return current;
+    this.outbound.set(messageId, "sending");
+    return "new";
+  }
+  completeOutbound(value: {
+    messageId: string;
+    chatChannelId: string;
+    cursor: number;
+    slackChannelId: string;
+    slackTs: string;
+    thread?: ThreadMapping;
+  }): void {
+    this.recordRelay("chat-to-slack", value.slackChannelId, value.slackTs, value.messageId);
+    if (value.thread) this.bindThread(value.thread);
+    this.outbound.set(value.messageId, "complete");
+    this.advanceCursor(value.chatChannelId, value.cursor);
+  }
+  listAmbiguousOutbound(): string[] {
+    return [...this.outbound].filter(([, status]) => status === "sending").map(([id]) => id);
+  }
+  retryOutbound(messageId: string): boolean {
+    return this.outbound.delete(messageId);
+  }
   close() {}
 }
 
@@ -113,7 +169,11 @@ type InboxRow = { id: string; value: string };
 export class SqliteMappingStore implements MappingStore {
   private readonly db: DatabaseSync;
   private readonly owner = crypto.randomUUID();
-  constructor(path: string) {
+  constructor(
+    path: string,
+    private readonly beforeCompletionCommit?: () => void,
+    private readonly relayRetention = 30000,
+  ) {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pinet_slack_owner(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,pid INTEGER NOT NULL);
@@ -121,6 +181,8 @@ export class SqliteMappingStore implements MappingStore {
       CREATE TABLE IF NOT EXISTS pinet_slack_threads(slack_channel_id TEXT NOT NULL,slack_thread_ts TEXT NOT NULL,chat_channel_id TEXT NOT NULL,chat_parent_id TEXT NOT NULL,PRIMARY KEY(slack_channel_id,slack_thread_ts),UNIQUE(chat_channel_id,chat_parent_id));
       CREATE TABLE IF NOT EXISTS pinet_slack_relays(id INTEGER PRIMARY KEY AUTOINCREMENT,relay_key TEXT UNIQUE NOT NULL);
       CREATE TABLE IF NOT EXISTS pinet_slack_inbox(id TEXT PRIMARY KEY,value TEXT NOT NULL,sequence INTEGER UNIQUE NOT NULL);
+      CREATE TABLE IF NOT EXISTS pinet_slack_cursors(chat_channel_id TEXT PRIMARY KEY,cursor INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS pinet_slack_outbound(message_id TEXT PRIMARY KEY,status TEXT NOT NULL CHECK(status IN ('sending','complete')),chat_channel_id TEXT);
     `);
     const lease = this.db.prepare("SELECT owner,pid FROM pinet_slack_owner WHERE id=1").get() as
       | { owner: string; pid: number }
@@ -229,14 +291,19 @@ export class SqliteMappingStore implements MappingStore {
       insert.run(`${channelId}:${ts}`);
       insert.run(`chat:${direction}:${messageId}`);
       insert.run(`chat:${messageId}`);
-      this.db.exec(
-        "DELETE FROM pinet_slack_relays WHERE id NOT IN (SELECT id FROM pinet_slack_relays ORDER BY id DESC LIMIT 30000)",
-      );
+      this.pruneRelays();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  private pruneRelays(): void {
+    this.db
+      .prepare(
+        "DELETE FROM pinet_slack_relays WHERE id NOT IN (SELECT id FROM pinet_slack_relays ORDER BY id DESC LIMIT ?)",
+      )
+      .run(this.relayRetention);
   }
   hasSlackMessage(channelId: string, ts: string): boolean {
     return Boolean(
@@ -271,6 +338,120 @@ export class SqliteMappingStore implements MappingStore {
   }
   removeInbound(id: string): void {
     this.db.prepare("DELETE FROM pinet_slack_inbox WHERE id=?").run(id);
+  }
+  completeInbound(id: string, message: SlackInboundMessage, chatMessageId: string): void {
+    this.db.exec("BEGIN");
+    try {
+      const insert = this.db.prepare(
+        "INSERT OR IGNORE INTO pinet_slack_relays(relay_key) VALUES(?)",
+      );
+      insert.run(`${message.channel}:${message.ts}`);
+      insert.run(`chat:slack-to-chat:${chatMessageId}`);
+      insert.run(`chat:${chatMessageId}`);
+      this.pruneRelays();
+      if (!message.threadTs || message.threadTs === message.ts) {
+        const channel = this.channelBySlack(message.channel);
+        if (!channel) throw new Error("inbound channel mapping disappeared");
+        this.db
+          .prepare("INSERT INTO pinet_slack_threads VALUES(?,?,?,?)")
+          .run(message.channel, message.ts, channel.chatChannelId, chatMessageId);
+      }
+      this.db.prepare("DELETE FROM pinet_slack_inbox WHERE id=?").run(id);
+      this.beforeCompletionCommit?.();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  getCursor(channelId: string): number {
+    return (
+      (
+        this.db
+          .prepare("SELECT cursor FROM pinet_slack_cursors WHERE chat_channel_id=?")
+          .get(channelId) as { cursor: number } | undefined
+      )?.cursor ?? 0
+    );
+  }
+  advanceCursor(channelId: string, cursor: number): void {
+    this.db
+      .prepare(
+        "INSERT INTO pinet_slack_cursors VALUES(?,?) ON CONFLICT(chat_channel_id) DO UPDATE SET cursor=max(cursor,excluded.cursor)",
+      )
+      .run(channelId, cursor);
+  }
+  beginOutbound(messageId: string): OutboundState {
+    const inserted = this.db
+      .prepare("INSERT OR IGNORE INTO pinet_slack_outbound VALUES(?,'sending',NULL)")
+      .run(messageId).changes;
+    if (inserted) return "new";
+    return (
+      this.db
+        .prepare("SELECT status FROM pinet_slack_outbound WHERE message_id=?")
+        .get(messageId) as {
+        status: "sending" | "complete";
+      }
+    ).status;
+  }
+  completeOutbound(value: {
+    messageId: string;
+    chatChannelId: string;
+    cursor: number;
+    slackChannelId: string;
+    slackTs: string;
+    thread?: ThreadMapping;
+  }): void {
+    this.db.exec("BEGIN");
+    try {
+      const insert = this.db.prepare(
+        "INSERT OR IGNORE INTO pinet_slack_relays(relay_key) VALUES(?)",
+      );
+      insert.run(`${value.slackChannelId}:${value.slackTs}`);
+      insert.run(`chat:chat-to-slack:${value.messageId}`);
+      insert.run(`chat:${value.messageId}`);
+      this.pruneRelays();
+      if (value.thread)
+        this.db
+          .prepare("INSERT INTO pinet_slack_threads VALUES(?,?,?,?)")
+          .run(
+            value.thread.slackChannelId,
+            value.thread.slackThreadTs,
+            value.thread.chatChannelId,
+            value.thread.chatParentId,
+          );
+      this.db
+        .prepare(
+          "UPDATE pinet_slack_outbound SET status='complete',chat_channel_id=? WHERE message_id=?",
+        )
+        .run(value.chatChannelId, value.messageId);
+      this.advanceCursor(value.chatChannelId, value.cursor);
+      this.db
+        .prepare(
+          "DELETE FROM pinet_slack_outbound WHERE status='complete' AND chat_channel_id=? AND message_id<>?",
+        )
+        .run(value.chatChannelId, value.messageId);
+      this.beforeCompletionCommit?.();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  listAmbiguousOutbound(): string[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT message_id AS value FROM pinet_slack_outbound WHERE status='sending' ORDER BY message_id",
+        )
+        .all() as ValueRow[]
+    ).map((row) => row.value);
+  }
+  retryOutbound(messageId: string): boolean {
+    return (
+      this.db
+        .prepare("DELETE FROM pinet_slack_outbound WHERE message_id=? AND status='sending'")
+        .run(messageId).changes > 0
+    );
   }
   close(): void {
     this.db.prepare("DELETE FROM pinet_slack_owner WHERE owner=?").run(this.owner);

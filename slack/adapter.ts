@@ -17,6 +17,7 @@ export type ChatMessage = {
   senderId: string;
   clientId: string;
   mentions: string[];
+  cursor?: number;
 };
 export interface SlackTransport {
   postMessage(value: { channel: string; text: string; threadTs?: string }): Promise<{ ts: string }>;
@@ -61,14 +62,16 @@ export class SlackAdapter {
             message.threadTs === message.ts ||
             Boolean(this.options.mappings.threadBySlack(message.channel, message.threadTs)),
         );
-        const [row] = rows.splice(ready < 0 ? 0 : ready, 1);
-        await this.receive(row!.message);
-        this.options.mappings.removeInbound(row!.id);
+        if (ready < 0) return;
+        const [row] = rows.splice(ready, 1);
+        const outcome = await this.receive(row!.message, row!.id);
+        if (outcome.status === "ignored") this.options.mappings.removeInbound(row!.id);
       }
     }
   }
   async receive(
     message: SlackInboundMessage,
+    inboxId?: string,
   ): Promise<{ status: "relayed" | "ignored"; reason?: string; chatMessageId?: string }> {
     if (
       message.botId ||
@@ -94,13 +97,11 @@ export class SlackAdapter {
       mentions,
       clientId: `slack:${message.channel}:${message.ts}`,
     });
-    this.options.mappings.recordRelay("slack-to-chat", message.channel, message.ts, sent.id);
-    if (!message.threadTs || message.threadTs === message.ts)
-      this.options.mappings.bindThread({
-        ...channel,
-        slackThreadTs: message.ts,
-        chatParentId: sent.id,
-      });
+    this.options.mappings.completeInbound(
+      inboxId ?? `${message.channel}:${message.ts}`,
+      message,
+      sent.id,
+    );
     return { status: "relayed", chatMessageId: sent.id };
   }
   async send(
@@ -114,18 +115,33 @@ export class SlackAdapter {
       if (!thread) return { status: "ignored", reason: "unmapped thread" };
       threadTs = thread.slackThreadTs;
     }
+    const outbound = this.options.mappings.beginOutbound(message.id);
+    if (outbound === "complete") return { status: "ignored", reason: "already delivered" };
+    if (outbound === "sending")
+      throw new Error(
+        `outbound delivery for ${message.id} is ambiguous; reconcile Slack and use outbound_retry`,
+      );
     const sent = await this.options.slack.postMessage({
       channel: channel.slackChannelId,
       text: message.markdown,
       ...(threadTs ? { threadTs } : {}),
     });
-    this.options.mappings.recordRelay("chat-to-slack", channel.slackChannelId, sent.ts, message.id);
-    if (!message.parentId)
-      this.options.mappings.bindThread({
-        ...channel,
-        slackThreadTs: sent.ts,
-        chatParentId: message.id,
-      });
+    this.options.mappings.completeOutbound({
+      messageId: message.id,
+      chatChannelId: message.channelId,
+      cursor: message.cursor ?? 0,
+      slackChannelId: channel.slackChannelId,
+      slackTs: sent.ts,
+      ...(!message.parentId
+        ? {
+            thread: {
+              ...channel,
+              slackThreadTs: sent.ts,
+              chatParentId: message.id,
+            },
+          }
+        : {}),
+    });
     return { status: "relayed", slackTs: sent.ts };
   }
 }
