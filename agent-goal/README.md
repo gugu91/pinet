@@ -15,23 +15,29 @@ For local development: `pi -e ./agent-goal/index.ts`.
 ## Commands and terminal UI
 
 ```text
-/goal <objective>                    Create and start a goal
+/goal <idea>                         Ask the agent to refine a possible goal with you
+/goal demo                           Start an agent-guided walkthrough
 /goal                                Open the create/details overlay
+/goal update                         Open the edit form
+/goal update <objective>             Apply a new objective to the next continuation
 /goal update name <name>             Rename immediately
 /goal update objective <objective>   Apply a new objective to the next continuation
 /goal update budget turns <n>        Set an optional total-turn limit
 /goal update budget runtime <2h>     Set an optional total-runtime limit
 /goal update budget off              Disable continuation limits
 /goal snooze <30m|2h|1d>             Snooze, then continue automatically
-/goal close                          Close the goal in any lifecycle state
+/goal close                          Complete and clear the current goal
+/goal clear                          Clear the current goal immediately
 /goal hide | /goal show              Hide or show compact status
 ```
 
-The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form, while `q`, Escape, or Ctrl+C closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
+`/goal <idea>` starts a normal agent turn to clarify the outcome, scope, constraints, completion evidence, and optional limits; it does not create anything until you confirm the resulting goal. The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form or closes the details overlay; Ctrl+C also closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
+
+`/goal demo` asks the agent to walk through a small example, checkpointing, inspection, and verified completion. Demo and idea discussions require a session without an existing goal; otherwise the command reports an error without starting a turn. The walkthrough asks for consent before creating its example goal.
 
 Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
 
-Only one goal may exist per Pi session. Closed goals remain durable history rather than being silently deleted.
+Only one current goal may exist per Pi session. A verified completion clears that current goal so another can be created; `/goal close` records completion before clearing, while `/goal clear` removes it immediately. Clearing removes its persisted checkpoints as well.
 
 ## Agent tools and checkpoints
 
@@ -43,7 +49,7 @@ The extension registers five model-visible tools:
 - `get_goal` — inspect current durable state
 - `update_goal` — attach a `complete` or `blocked` candidate for independent evaluation
 
-Checkpoints are agent-reported progress records, not recovery snapshots. They persist with the goal. The overlay and headless dashboard show the newest three and `… and X more`; `h` expands/collapses full history in the overlay.
+Checkpoints are agent-reported progress records, not recovery snapshots. They persist with the goal. The overlay initially shows the newest three checkpoints. Tab/Shift+Tab selects across the full history; Enter opens the selected checkpoint's full summary, evidence, next step, and blocker. Use ↑/↓ to scroll and Escape to return. The headless dashboard shows the newest three and `… and X more`.
 
 ## Optional continuation limits
 

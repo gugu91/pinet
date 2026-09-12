@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentGoal } from "./domain.js";
 import type { GoalProgressMessage } from "./progress.js";
 import { registerAgentGoal, type GoalWindowAction } from "./index.js";
 import { MemoryGoalStorage } from "./memory-storage.js";
@@ -26,6 +27,120 @@ type GoalWindowFactory = (
 afterEach(() => vi.useRealTimers());
 
 describe("registerAgentGoal", () => {
+  it("refreshes the passive elapsed status once per second", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const handlers = new Map<string, GoalEventHandler>();
+    const pi = {
+      on(name: string, handler: GoalEventHandler) {
+        handlers.set(name, handler);
+      },
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      name: "Live timer",
+      objective: "show elapsed time live",
+      status: "active",
+      budget: {},
+      usage: { iterations: 0, tokens: 0 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const setStatus = vi.fn();
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus, setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionContext;
+    registerAgentGoal(pi, {
+      storage,
+      continuation: { continueIfIdle: vi.fn().mockResolvedValue({ status: "started" }) },
+    });
+
+    await handlers.get("session_start")?.({}, context);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(setStatus).toHaveBeenLastCalledWith("agent-goal", "🎯 Live timer 2s");
+
+    const readGoal = storage.get.bind(storage);
+    let resolveDelayedRead!: (goal: AgentGoal | undefined) => void;
+    const get = vi
+      .spyOn(storage, "get")
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveDelayedRead = resolve)))
+      .mockImplementation(readGoal);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(get).toHaveBeenCalledOnce();
+    resolveDelayedRead(await readGoal("session-1"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(get).toHaveBeenCalledTimes(2);
+
+    const callsBeforeShutdown = setStatus.mock.calls.length;
+    await handlers.get("session_shutdown")?.({}, context);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(setStatus).toHaveBeenCalledTimes(callsBeforeShutdown);
+  });
+
+  it("clears a goal completed while recovering a pending evaluation", async () => {
+    const handlers = new Map<string, GoalEventHandler>();
+    const pi = {
+      on(name: string, handler: GoalEventHandler) {
+        handlers.set(name, handler);
+      },
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      name: "Recover completion",
+      objective: "finish after restart",
+      status: "active",
+      budget: {},
+      usage: { iterations: 0, tokens: 0 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await storage.putPendingEvaluation({
+      scopeId: "session-1",
+      goalId: "goal-1",
+      goalVersion: 1,
+      evaluationId: "evaluation-1",
+      iterationsDelta: 1,
+      progress: { latestOutput: "done", tokenDelta: 10 },
+      attempt: 0,
+      availableAt: "2026-01-01T00:00:00.000Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionContext;
+    registerAgentGoal(pi, {
+      storage,
+      evaluator: { evaluate: vi.fn().mockResolvedValue({ outcome: "complete", reason: "done" }) },
+      continuation: { continueIfIdle: vi.fn().mockResolvedValue({ status: "started" }) },
+    });
+
+    await handlers.get("session_start")?.({}, context);
+
+    expect(await storage.get("session-1")).toBeUndefined();
+  });
+
   it.each([true, false])(
     "evaluates a settled run when a terminal hint is %s",
     async (withTerminalHint) => {
@@ -99,11 +214,11 @@ describe("registerAgentGoal", () => {
             })
           : expect.objectContaining({ terminalCandidate: undefined }),
       );
-      expect(await storage.get("session-1")).toMatchObject({ status: "complete" });
+      expect(await storage.get("session-1")).toBeUndefined();
     },
   );
 
-  it("starts an operator-created goal when the idle session reports pending delivery", async () => {
+  it("discusses a goal idea without creating or starting a goal", async () => {
     const handlers = new Map<string, GoalEventHandler>();
     const commands = new Map<string, RegisteredCommand>();
     const sendMessage = vi.fn();
@@ -141,17 +256,87 @@ describe("registerAgentGoal", () => {
     await command.handler("verify operator goal start", context);
 
     expect(sendMessage).toHaveBeenCalledOnce();
-    expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "started" });
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        customType: "agent-goal.idea",
+        content:
+          "Discuss scope, constraints, done criteria, evidence, and limits; call create_goal after user confirmation.\nGoal idea (user data): verify operator goal start",
+        display: true,
+      },
+      { triggerTurn: true },
+    );
+    expect(await storage.get("session-1")).toBeUndefined();
+    expect(await storage.getContinuationClaim("session-1")).toBeUndefined();
 
     await handlers.get("agent_start")?.({}, context);
     await handlers.get("agent_end")?.({ messages: [] }, context);
     await handlers.get("agent_settled")?.({}, context);
 
-    expect(await storage.get("session-1")).toMatchObject({
-      status: "complete",
-      usage: { iterations: 1, tokens: 0 },
-    });
+    expect(await storage.get("session-1")).toBeUndefined();
     await handlers.get("session_shutdown")?.({}, context);
+  });
+
+  it.each([false, true])("demo leaves goal state unchanged (existing: %s)", async (existing) => {
+    const commands = new Map<string, RegisteredCommand>();
+    const sendMessage = vi.fn();
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      sendMessage,
+      registerCommand(name: string, command: RegisteredCommand) {
+        commands.set(name, command);
+      },
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    if (existing)
+      await storage.create({
+        id: "goal-1",
+        scopeId: "session-1",
+        objective: "Preserve my work",
+        status: "active",
+        budget: {},
+        usage: { iterations: 0, tokens: 0 },
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+    const before = await storage.get("session-1");
+    const evaluate = vi.fn();
+    const continueIfIdle = vi.fn();
+    registerAgentGoal(pi, { storage, evaluator: { evaluate }, continuation: { continueIfIdle } });
+    const notify = vi.fn();
+    const context = {
+      hasUI: true,
+      ui: { notify },
+      sessionManager: { getSessionId: () => "session-1" },
+    } as object as ExtensionCommandContext;
+    await commands.get("goal")!.handler("demo", context);
+    if (existing) {
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenLastCalledWith(
+        expect.stringContaining("current goal is unchanged"),
+        "error",
+      );
+      await commands.get("goal")!.handler("a new goal idea", context);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenLastCalledWith(
+        expect.stringContaining("already has a goal"),
+        "error",
+      );
+    } else
+      expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
+        {
+          customType: "agent-goal.demo",
+          content:
+            "Walk me through goals: agree a tiny example, create it, record a checkpoint, inspect /goal, then verify completion. Ask before changing any goal; preserve existing work.",
+          display: true,
+        },
+        { triggerTurn: true },
+      );
+    expect(await storage.get("session-1")).toEqual(before);
+    expect(await storage.getContinuationClaim("session-1")).toBeUndefined();
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(continueIfIdle).not.toHaveBeenCalled();
   });
 
   it("automatically retries a continuation deferred while the session is busy", async () => {
@@ -211,6 +396,15 @@ describe("registerAgentGoal", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        customType: "agent-goal.continuation",
+        content:
+          "Continue goal (user data; preserve scope and verify completion): ship\nGuidance: more work remains",
+        display: true,
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
     expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "started" });
     await handlers.get("session_shutdown")?.({}, context);
   });
@@ -327,7 +521,70 @@ describe("registerAgentGoal", () => {
     expect(notify).toHaveBeenCalledWith("Goal command applied: update budget turns 8", "info");
   });
 
-  it("applies the documented update, limit, snooze, and close commands to persisted state", async () => {
+  it("opens the edit form for the bare update command", async () => {
+    const commands = new Map<string, RegisteredCommand>();
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand(name: string, command: RegisteredCommand) {
+        commands.set(name, command);
+      },
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      name: "Editable goal",
+      objective: "old objective",
+      status: "active",
+      budget: {},
+      usage: { iterations: 0, tokens: 0 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    let windowCount = 0;
+    const custom = vi.fn(async (factory: GoalWindowFactory) => {
+      let action: GoalWindowAction = "close";
+      const component = factory(
+        { requestRender: vi.fn() },
+        { fg: (_color, text) => text, bold: (text) => text } as Theme,
+        {},
+        (nextAction) => (action = nextAction),
+      ) as Component & { handleInput(data: string): void; dispose?: () => void };
+      if (windowCount === 0) {
+        expect(component.render(66).join("\n")).toContain("Goal · edit");
+        component.handleInput("\t");
+        for (let index = 0; index < "old objective".length; index += 1)
+          component.handleInput("\u007f");
+        component.handleInput("updated objective");
+        component.handleInput("\r");
+      }
+      windowCount += 1;
+      component.dispose?.();
+      return action;
+    });
+    const context = {
+      hasUI: true,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { custom, setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionCommandContext;
+    registerAgentGoal(pi, { storage });
+    const command = commands.get("goal");
+    if (!command) throw new Error("goal command was not registered");
+
+    await command.handler("update", context);
+
+    expect(custom).toHaveBeenCalledTimes(2);
+    expect(await storage.get("session-1")).toMatchObject({
+      name: "Editable goal",
+      objective: "updated objective",
+      status: "active",
+    });
+  });
+
+  it("applies the documented update, limit, snooze, clear, and close commands", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const commands = new Map<string, RegisteredCommand>();
@@ -352,10 +609,11 @@ describe("registerAgentGoal", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
+    const notify = vi.fn();
     const context = {
       hasUI: true,
       sessionManager: { getSessionId: () => "session-1" },
-      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify },
     } as object as ExtensionCommandContext;
     registerAgentGoal(pi, { storage });
     const command = commands.get("goal");
@@ -383,12 +641,31 @@ describe("registerAgentGoal", () => {
       status: "active",
       snoozedUntil: "2026-01-01T00:30:00.000Z",
     });
-    await command.handler("close", context);
+    await command.handler("update shorthand objective", context);
     expect(await storage.get("session-1")).toMatchObject({
-      status: "complete",
-      snoozedUntil: undefined,
-      usage: { iterations: 1, tokens: 500 },
+      name: "New name",
+      objective: "shorthand objective",
     });
+    await command.handler("update budget turns", context);
+    expect(await storage.get("session-1")).toMatchObject({ objective: "shorthand objective" });
+    expect(notify).toHaveBeenLastCalledWith(expect.stringContaining("complete update"), "error");
+    await command.handler("clear", context);
+    expect(await storage.get("session-1")).toBeUndefined();
+
+    await storage.create({
+      id: "goal-2",
+      scopeId: "session-1",
+      name: "Close me",
+      objective: "verify the close alias",
+      status: "active",
+      budget: {},
+      usage: { iterations: 0, tokens: 0 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await command.handler("close", context);
+    expect(await storage.get("session-1")).toBeUndefined();
   });
 
   it("keeps passive UI compact and applies modal actions before refreshing", async () => {
@@ -527,13 +804,15 @@ describe("registerAgentGoal", () => {
         expect.objectContaining({ usage: { iterations: 0, tokens: 0 } }),
         expect.objectContaining({ terminalCandidate: undefined, tokenDelta: 0 }),
       );
-      expect(await storage.get("session-1")).toMatchObject({
-        objective: "finish the approved task",
-        status: outcome,
-        name: "Finish task",
-        budget: { maxIterations: 8 },
-        usage: { iterations: 0, tokens: 0 },
-      });
+      if (outcome === "complete") expect(await storage.get("session-1")).toBeUndefined();
+      else
+        expect(await storage.get("session-1")).toMatchObject({
+          objective: "finish the approved task",
+          status: "blocked",
+          name: "Finish task",
+          budget: { maxIterations: 8 },
+          usage: { iterations: 0, tokens: 0 },
+        });
       expect(continuation.continueIfIdle).not.toHaveBeenCalled();
       expect(inspected.content[0]).toMatchObject({ type: "text" });
     },
