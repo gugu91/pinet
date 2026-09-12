@@ -341,10 +341,43 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     const timestamp = now();
     const sessionId = text(body.sessionId, "sessionId")!;
     const requestedBy = `manual:${principal.id}:${sessionId}`;
-    const existing = options.storage
-      .listRuntimeRequests(hostId)
-      .find((request) => request.requestedBy === requestedBy);
-    if (existing) return c.json({ data: existing });
+    const sessionPath = text(body.sessionPath, "sessionPath", false) ?? null;
+    const cwd = text(body.cwd, "cwd")!;
+    const handle = text(body.handle, "handle")!;
+    const identity = text(body.identity, "identity")!;
+    const heartbeatPath = text(body.heartbeatPath, "heartbeatPath")!;
+    const registrations = options.storage.listRuntimeRequests(hostId);
+    const existing = registrations.find((request) => request.requestedBy === requestedBy);
+    if (existing) {
+      if (
+        existing.status !== "running" ||
+        existing.adapter !== adapter ||
+        existing.sessionPath !== sessionPath ||
+        existing.cwd !== cwd ||
+        existing.handle !== handle ||
+        existing.identity !== identity ||
+        existing.heartbeatPath !== heartbeatPath
+      )
+        return error(
+          c,
+          409,
+          "ownership_conflict",
+          "Registration retry must match its active owner",
+        );
+      return c.json({ data: existing });
+    }
+    if (
+      registrations.some(
+        (request) =>
+          request.status !== "stopped" &&
+          request.status !== "failed" &&
+          (request.sessionId === sessionId ||
+            (sessionPath !== null && request.sessionPath === sessionPath) ||
+            (request.adapter === adapter && request.handle === handle) ||
+            (principal.kind === "agent" && request.agentId === principal.id)),
+      )
+    )
+      return error(c, 409, "already_owned", "Session or process already has a runtime owner");
     const requestId = id();
     const agentId = principal.kind === "agent" ? principal.id : `runtime-${requestId}`;
     const request: RuntimeRequest = {
@@ -359,16 +392,16 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       createdAt: timestamp,
       updatedAt: timestamp,
       sessionId,
-      sessionPath: text(body.sessionPath, "sessionPath", false) ?? null,
-      cwd: text(body.cwd, "cwd")!,
-      handle: text(body.handle, "handle")!,
-      identity: text(body.identity, "identity")!,
+      sessionPath,
+      cwd,
+      handle,
+      identity,
       startedAt: timestamp,
       lastSeen: timestamp,
       stoppedAt: null,
       agentId,
       agentLastSeen: principal.kind === "agent" ? timestamp : null,
-      heartbeatPath: text(body.heartbeatPath, "heartbeatPath")!,
+      heartbeatPath,
     };
     const created = options.storage.createRuntimeRequest(request);
     if (principal.kind === "agent") return c.json({ data: created }, 201);

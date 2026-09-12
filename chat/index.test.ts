@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("Chat extension lifecycle", () => {
-  it("adopts the canonical current session idempotently and preserves a managed heartbeat on failure", async () => {
+  it("adopts the canonical current session idempotently and preserves an existing heartbeat on failure", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1000);
     const directory = mkdtempSync(join(tmpdir(), "pinet-chat-adopt-"));
@@ -29,7 +29,7 @@ describe("Chat extension lifecycle", () => {
       if (url.pathname === "/v1/runtime/registrations") {
         registrations.push(init!.body!.toString());
         if (failAdoption) throw new Error("registration unavailable");
-        return Response.json({ data: { id: "same-runtime" } });
+        return Response.json({ data: { id: "same-runtime", heartbeatPath: adoptedHeartbeat } });
       }
       if (url.pathname === "/v1/mentions") return Response.json({ data: [] });
       return Response.json({ data: {} });
@@ -49,7 +49,6 @@ describe("Chat extension lifecycle", () => {
         baseUrl: "https://chat.test",
         token: "child",
         agentId: "runtime",
-        runtimeRequestId: "managed",
         localHeartbeatPath: managedHeartbeat,
         localHeartbeatIntervalMs: 1000,
         fetch: transport,

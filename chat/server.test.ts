@@ -314,7 +314,7 @@ describe("chat API", () => {
           }),
         })
       ).status,
-    ).toBe(201);
+    ).toBe(409);
   });
 
   it("keeps host tokens lifecycle-only while scoped children retain free coordination", async () => {
@@ -377,16 +377,22 @@ describe("chat API", () => {
       identity: "launch",
       heartbeatPath: "/tmp/manual.heartbeat",
     };
-    const first = await app.request("/v1/runtime/registrations", {
+    const managedAdoption = await app.request("/v1/runtime/registrations", {
       method: "POST",
       headers: childHeaders,
+      body: JSON.stringify(adoption),
+    });
+    expect(managedAdoption.status).toBe(409);
+    const first = await app.request("/v1/runtime/registrations", {
+      method: "POST",
+      headers: auth,
       body: JSON.stringify(adoption),
     });
     expect(first.status).toBe(201);
     const firstId = ((await first.json()) as { data: { id: string } }).data.id;
     const retry = await app.request("/v1/runtime/registrations", {
       method: "POST",
-      headers: childHeaders,
+      headers: auth,
       body: JSON.stringify(adoption),
     });
     expect(retry.status).toBe(200);

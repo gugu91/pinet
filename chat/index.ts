@@ -333,6 +333,10 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
               }),
             );
           case "runtime_adopt": {
+            if (runtimeRequestId)
+              throw new Error(
+                "This session is already managed; adoption cannot transfer ownership",
+              );
             const heartbeatPath = required(params.heartbeatPath, "heartbeatPath");
             currentSessionPath = getCurrentSessionFile?.();
             currentSessionId = readSessionId(currentSessionPath);
@@ -349,7 +353,10 @@ export function registerChat(pi: ExtensionAPI, supplied: ChatExtensionOptions = 
               sessionPath: currentSessionPath,
               sessionId: currentSessionId,
             });
-            startLocalHeartbeat(heartbeatPath);
+            const registration = adopted as { data: { heartbeatPath: string } };
+            startLocalHeartbeat(
+              required(registration.data.heartbeatPath, "registered heartbeatPath"),
+            );
             return result(adopted);
           }
           case "runtime_status":
