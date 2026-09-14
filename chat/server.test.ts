@@ -31,6 +31,51 @@ async function json(response: Response) {
 }
 
 describe("chat API", () => {
+  it.each(["memory", "sqlite"])(
+    "rejects duplicate renames atomically in %s storage",
+    async (backend) => {
+      const storage =
+        backend === "memory" ? new MemoryChatStorage() : new SqliteChatStorage(":memory:");
+      let sequence = 0;
+      const app = createChatApp({ storage, credentials, id: () => `channel-${++sequence}` });
+      try {
+        for (const name of ["first", "second"])
+          expect(
+            (
+              await app.request("/v1/channels", {
+                method: "POST",
+                headers: auth,
+                body: JSON.stringify({ name, topic: "original" }),
+              })
+            ).status,
+          ).toBe(201);
+        const conflict = await app.request("/v1/channels/channel-2", {
+          method: "PUT",
+          headers: auth,
+          body: JSON.stringify({ name: "first", topic: "changed" }),
+        });
+        expect(conflict.status).toBe(409);
+        expect((await json(conflict)).error?.code).toBe("conflict");
+        expect(storage.getChannel("channel-2")).toMatchObject({
+          name: "second",
+          topic: "original",
+        });
+        expect(storage.getChannel("channel-1")).toMatchObject({ name: "first", topic: "original" });
+        expect(
+          (
+            await app.request("/v1/channels/channel-2", {
+              method: "PUT",
+              headers: auth,
+              body: JSON.stringify({ name: "second", topic: "updated" }),
+            })
+          ).status,
+        ).toBe(200);
+        expect(storage.getChannel("channel-2")).toMatchObject({ name: "second", topic: "updated" });
+      } finally {
+        if (storage instanceof SqliteChatStorage) storage.close();
+      }
+    },
+  );
   it("authenticates, performs channel/message CRUD, deduplicates, and enforces mention/thread/cursor boundaries", async () => {
     let sequence = 0;
     const app = createChatApp({

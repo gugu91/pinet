@@ -27,6 +27,8 @@ export class MemoryChatStorage implements ChatStorage {
     const current = this.channelRows.get(id);
     if (!current) return undefined;
     const next = { ...current, ...patch };
+    if ([...this.channelRows.values()].some((row) => row.id !== id && row.name === next.name))
+      throw new ChatConflictError("channel name already exists");
     this.channelRows.set(id, next);
     return next;
   }

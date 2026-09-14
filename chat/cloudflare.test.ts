@@ -43,6 +43,45 @@ function createMiniflare(persist: string, credentials: object[] = defaultCredent
 }
 
 describe("Chat Durable Object parity", () => {
+  it("returns 409 and preserves both channels on a duplicate rename", async () => {
+    const persist = mkdtempSync(join(tmpdir(), "chat-rename-"));
+    directories.push(persist);
+    const mf = createMiniflare(persist);
+    const headers = { authorization: "Bearer agent-secret", "content-type": "application/json" };
+    try {
+      const ids: string[] = [];
+      for (const name of ["first", "second"]) {
+        const response = await mf.dispatchFetch("http://local/v1/channels", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name, topic: "original" }),
+        });
+        expect(response.status).toBe(201);
+        ids.push(((await response.json()) as { data: { id: string } }).data.id);
+      }
+      const conflict = await mf.dispatchFetch(`http://local/v1/channels/${ids[1]}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ name: "first", topic: "changed" }),
+      });
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ error: { code: "conflict" } });
+      for (const [index, name] of ["first", "second"].entries()) {
+        const response = await mf.dispatchFetch(`http://local/v1/channels/${ids[index]}`, {
+          headers,
+        });
+        expect(await response.json()).toMatchObject({ data: { name, topic: "original" } });
+      }
+      const unchangedName = await mf.dispatchFetch(`http://local/v1/channels/${ids[1]}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ name: "second", topic: "updated" }),
+      });
+      expect(unchangedName.status).toBe(200);
+    } finally {
+      await mf.dispose();
+    }
+  });
   it("authenticates and authorizes configured workspace claims before selecting a Durable Object", async () => {
     const selected: string[] = [];
     let forwarded: Request | undefined;

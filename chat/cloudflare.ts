@@ -98,12 +98,18 @@ class DurableChatStorage implements ChatStorage {
     const current = this.getChannel(id);
     if (!current) return undefined;
     const value = { ...current, ...patch };
-    this.sql.exec(
-      "UPDATE pinet_channels SET name=?,topic=? WHERE id=?",
-      value.name,
-      value.topic,
-      id,
-    );
+    try {
+      this.sql.exec(
+        "UPDATE pinet_channels SET name=?,topic=? WHERE id=?",
+        value.name,
+        value.topic,
+        id,
+      );
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes("UNIQUE constraint failed"))
+        throw new ChatConflictError("channel name already exists");
+      throw cause;
+    }
     return value;
   }
   deleteChannel(id: string): boolean {
