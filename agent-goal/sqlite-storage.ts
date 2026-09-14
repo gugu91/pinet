@@ -5,6 +5,7 @@ import type {
   AgentGoal,
   GoalCheckpoint,
   GoalContinuationClaim,
+  GoalDeleteResult,
   GoalEvaluation,
   GoalPendingEvaluation,
   GoalStatus,
@@ -30,6 +31,7 @@ interface GoalRow {
   last_evaluation_outcome: GoalEvaluation["outcome"] | null;
   last_evaluation_reason: string | null;
   last_evaluation_at: string | null;
+  next_continuation_kind: Extract<GoalContinuationClaim["kind"], "started" | "updated"> | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -68,6 +70,7 @@ interface ClaimRow {
   goal_version: number;
   claim_id: string;
   state: GoalContinuationClaim["state"];
+  kind: GoalContinuationClaim["kind"];
   reason: string;
   attempt: number;
   available_at: string;
@@ -101,6 +104,7 @@ export class SqliteGoalStorage implements GoalStorage {
       last_evaluation_outcome TEXT,
       last_evaluation_reason TEXT,
       last_evaluation_at TEXT,
+      next_continuation_kind TEXT CHECK (next_continuation_kind IN ('started', 'updated')),
       version INTEGER NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -123,6 +127,7 @@ export class SqliteGoalStorage implements GoalStorage {
       ["last_evaluation_id", "TEXT"],
       ["last_evaluation_outcome", "TEXT"],
       ["last_evaluation_reason", "TEXT"],
+      ["next_continuation_kind", "TEXT CHECK (next_continuation_kind IN ('started', 'updated'))"],
       ["last_evaluation_at", "TEXT"],
     ] as const) {
       if (!columns.has(name))
@@ -202,6 +207,7 @@ export class SqliteGoalStorage implements GoalStorage {
         goal_version INTEGER NOT NULL,
         claim_id TEXT UNIQUE NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('claimed', 'deferred', 'started')),
+        kind TEXT NOT NULL DEFAULT 'continuation' CHECK (kind IN ('started', 'updated', 'continuation')),
         reason TEXT NOT NULL,
         attempt INTEGER NOT NULL,
         available_at TEXT NOT NULL,
@@ -232,6 +238,18 @@ export class SqliteGoalStorage implements GoalStorage {
     if (!pendingColumns.has("candidate_reason")) {
       this.db.exec("ALTER TABLE agent_goal_pending_evaluations ADD COLUMN candidate_reason TEXT");
     }
+    const claimColumns = new Set(
+      (
+        this.db.prepare("PRAGMA table_info(agent_goal_continuations)").all() as Array<{
+          name: string;
+        }>
+      ).map(({ name }) => name),
+    );
+    if (!claimColumns.has("kind")) {
+      this.db.exec(
+        "ALTER TABLE agent_goal_continuations ADD COLUMN kind TEXT NOT NULL DEFAULT 'continuation' CHECK (kind IN ('started', 'updated', 'continuation'))",
+      );
+    }
   }
 
   async get(scopeId: string): Promise<AgentGoal | undefined> {
@@ -254,6 +272,7 @@ export class SqliteGoalStorage implements GoalStorage {
       },
       usage: { iterations: row.iterations_used, tokens: row.tokens_used },
       lastSettledAt: row.last_settled_at ?? undefined,
+      nextContinuationKind: row.next_continuation_kind ?? undefined,
       lastEvaluation:
         row.last_evaluation_id &&
         row.last_evaluation_outcome &&
@@ -279,8 +298,9 @@ export class SqliteGoalStorage implements GoalStorage {
           (scope_id, id, name, objective, status, blocked_reason, snoozed_until,
            max_iterations, max_tokens, max_runtime_ms, iterations_used, tokens_used,
            last_settled_at, last_evaluation_id, last_evaluation_outcome,
-           last_evaluation_reason, last_evaluation_at, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           last_evaluation_reason, last_evaluation_at, next_continuation_kind,
+           version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         goal.scopeId,
@@ -300,6 +320,7 @@ export class SqliteGoalStorage implements GoalStorage {
         goal.lastEvaluation?.outcome ?? null,
         goal.lastEvaluation?.reason ?? null,
         goal.lastEvaluation?.at ?? null,
+        goal.nextContinuationKind ?? null,
         goal.version,
         goal.createdAt,
         goal.updatedAt,
@@ -313,7 +334,7 @@ export class SqliteGoalStorage implements GoalStorage {
          snoozed_until = ?, max_iterations = ?, max_tokens = ?, max_runtime_ms = ?,
          iterations_used = ?, tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
          last_evaluation_outcome = ?, last_evaluation_reason = ?, last_evaluation_at = ?,
-         version = ?, updated_at = ?
+         next_continuation_kind = ?, version = ?, updated_at = ?
          WHERE scope_id = ? AND id = ? AND version = ?`,
       )
       .run(
@@ -332,6 +353,7 @@ export class SqliteGoalStorage implements GoalStorage {
         goal.lastEvaluation?.outcome ?? null,
         goal.lastEvaluation?.reason ?? null,
         goal.lastEvaluation?.at ?? null,
+        goal.nextContinuationKind ?? null,
         goal.version,
         goal.updatedAt,
         goal.scopeId,
@@ -350,7 +372,7 @@ export class SqliteGoalStorage implements GoalStorage {
            snoozed_until = ?, max_iterations = ?, max_tokens = ?, max_runtime_ms = ?,
            iterations_used = ?, tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
            last_evaluation_outcome = ?, last_evaluation_reason = ?, last_evaluation_at = ?,
-           version = ?, updated_at = ?
+           next_continuation_kind = ?, version = ?, updated_at = ?
            WHERE scope_id = ? AND id = ? AND version = ?`,
         )
         .run(
@@ -369,6 +391,7 @@ export class SqliteGoalStorage implements GoalStorage {
           goal.lastEvaluation?.outcome ?? null,
           goal.lastEvaluation?.reason ?? null,
           goal.lastEvaluation?.at ?? null,
+          goal.nextContinuationKind ?? null,
           goal.version,
           goal.updatedAt,
           goal.scopeId,
@@ -458,11 +481,33 @@ export class SqliteGoalStorage implements GoalStorage {
     });
   }
 
-  async delete(scopeId: string, expectedVersion: number): Promise<boolean> {
-    const result = this.db
-      .prepare("DELETE FROM agent_goals WHERE scope_id = ? AND version = ?")
-      .run(scopeId, expectedVersion);
-    return result.changes === 1;
+  async delete(
+    scopeId: string,
+    expectedGoalId: string,
+    expectedVersion: number,
+  ): Promise<GoalDeleteResult> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.db
+        .prepare("SELECT id, version FROM agent_goals WHERE scope_id = ?")
+        .get(scopeId) as Pick<GoalRow, "id" | "version"> | undefined;
+      if (!current) {
+        this.db.exec("COMMIT");
+        return "missing";
+      }
+      if (current.id !== expectedGoalId || current.version !== expectedVersion) {
+        this.db.exec("COMMIT");
+        return "conflict";
+      }
+      const result = this.db
+        .prepare("DELETE FROM agent_goals WHERE scope_id = ? AND id = ? AND version = ?")
+        .run(scopeId, expectedGoalId, expectedVersion);
+      this.db.exec("COMMIT");
+      return result.changes === 1 ? "deleted" : "conflict";
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   async getPendingEvaluation(scopeId: string): Promise<GoalPendingEvaluation | undefined> {
@@ -685,6 +730,12 @@ export class SqliteGoalStorage implements GoalStorage {
         this.db.exec("ROLLBACK");
         return false;
       }
+      this.db
+        .prepare(
+          `UPDATE agent_goal_continuations SET goal_version = ?
+           WHERE scope_id = ? AND goal_id = ? AND goal_version = ?`,
+        )
+        .run(goal.version, goal.scopeId, goal.id, expectedGoalVersion);
       const deleted = this.db
         .prepare(
           "DELETE FROM agent_goal_pending_evaluations WHERE scope_id = ? AND evaluation_id = ?",
@@ -766,6 +817,7 @@ export class SqliteGoalStorage implements GoalStorage {
           goalVersion: row.goal_version,
           claimId: row.claim_id,
           state: row.state,
+          kind: row.kind,
           reason: row.reason,
           attempt: row.attempt,
           availableAt: row.available_at,
@@ -781,9 +833,9 @@ export class SqliteGoalStorage implements GoalStorage {
     const result = this.db
       .prepare(
         `INSERT OR IGNORE INTO agent_goal_continuations
-         (scope_id, goal_id, goal_version, claim_id, state, reason, attempt,
+         (scope_id, goal_id, goal_version, claim_id, state, kind, reason, attempt,
           available_at, expires_at, last_error, created_at, updated_at)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (
            SELECT 1 FROM agent_goals
            WHERE scope_id = ? AND id = ? AND version = ? AND status = 'active'
@@ -795,6 +847,7 @@ export class SqliteGoalStorage implements GoalStorage {
         claim.goalVersion,
         claim.claimId,
         claim.state,
+        claim.kind,
         claim.reason,
         claim.attempt,
         claim.availableAt,
@@ -817,7 +870,7 @@ export class SqliteGoalStorage implements GoalStorage {
       .prepare(
         `UPDATE agent_goal_continuations SET goal_id = ?,
          goal_version = (SELECT version FROM agent_goals WHERE scope_id = ? AND id = ?),
-         claim_id = ?, state = ?, reason = ?, attempt = ?, available_at = ?, expires_at = ?,
+         claim_id = ?, state = ?, kind = ?, reason = ?, attempt = ?, available_at = ?, expires_at = ?,
          last_error = ?, updated_at = ? WHERE scope_id = ? AND claim_id = ?
          AND goal_id = ? AND EXISTS (
            SELECT 1 FROM agent_goals WHERE scope_id = ? AND id = ? AND status = 'active'
@@ -829,6 +882,7 @@ export class SqliteGoalStorage implements GoalStorage {
         claim.goalId,
         claim.claimId,
         claim.state,
+        claim.kind,
         claim.reason,
         claim.attempt,
         claim.availableAt,
@@ -842,6 +896,48 @@ export class SqliteGoalStorage implements GoalStorage {
         claim.goalId,
       );
     return result.changes === 1;
+  }
+
+  async acknowledgeContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const claim = this.db
+        .prepare(
+          `SELECT claim.goal_id, claim.goal_version, claim.kind
+           FROM agent_goal_continuations AS claim
+           JOIN agent_goals AS goal ON goal.scope_id = claim.scope_id
+            AND goal.id = claim.goal_id AND goal.version = claim.goal_version
+           WHERE claim.scope_id = ? AND claim.claim_id = ? AND claim.state = 'started'`,
+        )
+        .get(scopeId, expectedClaimId) as
+        | { goal_id: string; goal_version: number; kind: GoalContinuationClaim["kind"] }
+        | undefined;
+      if (!claim) {
+        this.db.exec("ROLLBACK");
+        return false;
+      }
+      this.db
+        .prepare(
+          `UPDATE agent_goals SET next_continuation_kind = NULL
+           WHERE scope_id = ? AND id = ? AND version = ? AND next_continuation_kind = ?`,
+        )
+        .run(scopeId, claim.goal_id, claim.goal_version, claim.kind);
+      const deleted = this.db
+        .prepare(
+          `DELETE FROM agent_goal_continuations
+           WHERE scope_id = ? AND claim_id = ? AND goal_id = ? AND goal_version = ?`,
+        )
+        .run(scopeId, expectedClaimId, claim.goal_id, claim.goal_version);
+      if (deleted.changes !== 1) {
+        this.db.exec("ROLLBACK");
+        return false;
+      }
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   async deleteContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean> {

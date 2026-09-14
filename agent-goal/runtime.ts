@@ -6,6 +6,7 @@ import type {
   GoalBudgetUpdate,
   GoalContinuation,
   GoalContinuationClaim,
+  GoalContinuationKind,
   GoalEvaluation,
   GoalEvaluator,
   GoalEvent,
@@ -162,6 +163,7 @@ export class GoalRuntime {
       status: "active",
       budget: { ...budget },
       usage: { iterations: 0, tokens: 0 },
+      nextContinuationKind: "started",
       version: 1,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -288,10 +290,12 @@ export class GoalRuntime {
       throw new Error("Goal objective cannot be empty");
     if (name === undefined && objective === undefined)
       throw new Error("A goal update requires name or objective");
+    const objectiveChanged = objective !== undefined && objective !== current.objective;
     const next: AgentGoal = {
       ...current,
       ...(name === undefined ? {} : { name }),
       ...(objective === undefined ? {} : { objective }),
+      ...(objectiveChanged ? { nextContinuationKind: "updated" as const } : {}),
       version: current.version + 1,
       updatedAt: this.now().toISOString(),
     };
@@ -299,7 +303,14 @@ export class GoalRuntime {
       throw new Error("Goal changed while it was being edited; retry the command");
     }
     await this.record({ type: "goal.updated", goal: next });
-    if (await this.storage.getPendingEvaluation(scopeId)) {
+    if (objectiveChanged) {
+      const claim = await this.storage.getContinuationClaim(scopeId);
+      if (claim) await this.storage.deleteContinuationClaim(scopeId, claim.claimId);
+      const latest = await this.storage.get(scopeId);
+      if (latest?.id === next.id && latest.status === "active") {
+        await this.continueWithClaim(latest, "Begin work on the updated objective.");
+      }
+    } else if (await this.storage.getPendingEvaluation(scopeId)) {
       await this.processPendingEvaluation(scopeId);
     }
     return (await this.storage.get(scopeId)) ?? next;
@@ -395,12 +406,14 @@ export class GoalRuntime {
   async clear(scopeId: string): Promise<boolean> {
     const current = await this.storage.get(scopeId);
     if (!current) return false;
-    const deleted = await this.storage.delete(scopeId, current.version);
-    if (deleted) {
-      this.wakeScheduler.cancel(scopeId);
-      await this.record({ type: "goal.cleared", goal: current });
+    const result = await this.storage.delete(scopeId, current.id, current.version);
+    if (result === "missing") return false;
+    if (result === "conflict") {
+      throw new Error("Goal changed while it was being cleared; retry the command");
     }
-    return deleted;
+    this.wakeScheduler.cancel(scopeId);
+    await this.record({ type: "goal.cleared", goal: current });
+    return true;
   }
 
   async requestTerminalCandidate(
@@ -429,20 +442,25 @@ export class GoalRuntime {
     return record;
   }
 
-  async start(scopeId: string, reason = "Begin working toward the new goal."): Promise<void> {
+  async start(
+    scopeId: string,
+    reason = "Begin working toward the new goal.",
+    kind: GoalContinuationKind = "continuation",
+  ): Promise<void> {
     const goal = await this.requireGoal(scopeId);
     if (goal.status !== "active") throw new Error(`Cannot start a ${goal.status} goal`);
     if (this.budgetExhausted(goal)) {
       await this.markBudgetLimited(goal);
       return;
     }
-    await this.continueWithClaim(goal, reason);
+    await this.continueWithClaim(goal, reason, kind);
   }
 
   async acknowledgeContinuation(scopeId: string): Promise<void> {
     const claim = await this.storage.getContinuationClaim(scopeId);
-    if (claim) await this.storage.deleteContinuationClaim(scopeId, claim.claimId);
-    this.wakeScheduler.cancel(scopeId);
+    if (claim && (await this.storage.acknowledgeContinuationClaim(scopeId, claim.claimId))) {
+      this.wakeScheduler.cancel(scopeId);
+    }
   }
 
   async recover(scopeId: string): Promise<void> {
@@ -702,8 +720,9 @@ export class GoalRuntime {
         ) {
           await this.record({ type: "goal.auto_continued", goal: next });
         }
-        if (next.status === "active") await this.continueWithClaim(next, evaluation.reason);
-        else
+        if (next.status === "active") {
+          await this.continueWithClaim(next, evaluation.reason);
+        } else
           await this.record({
             type: "goal.status_changed",
             goal: next,
@@ -720,14 +739,25 @@ export class GoalRuntime {
     }
   }
 
-  private async continueWithClaim(goal: AgentGoal, reason: string): Promise<void> {
+  private async continueWithClaim(
+    goal: AgentGoal,
+    reason: string,
+    kind: GoalContinuationKind = "continuation",
+  ): Promise<void> {
     if (goal.snoozedUntil && Date.parse(goal.snoozedUntil) > this.now().getTime()) {
       this.scheduleRecovery(goal.scopeId, goal.snoozedUntil);
       return;
     }
+    const lifecycleKind = goal.nextContinuationKind ?? kind;
     const existingClaim = await this.storage.getContinuationClaim(goal.scopeId);
     if (existingClaim) {
-      if (existingClaim.goalId === goal.id && existingClaim.goalVersion === goal.version) return;
+      if (
+        existingClaim.goalId === goal.id &&
+        existingClaim.goalVersion === goal.version &&
+        existingClaim.kind === lifecycleKind
+      ) {
+        return;
+      }
       await this.storage.deleteContinuationClaim(goal.scopeId, existingClaim.claimId);
     }
     const timestamp = this.now().toISOString();
@@ -737,6 +767,7 @@ export class GoalRuntime {
       goalVersion: goal.version,
       claimId: randomUUID(),
       state: "claimed",
+      kind: lifecycleKind,
       reason,
       attempt: 0,
       availableAt: timestamp,
@@ -789,6 +820,7 @@ export class GoalRuntime {
       try {
         result = await this.continuation.continueIfIdle(goal, {
           claimId: claim.claimId,
+          kind: claim.kind,
           idempotencyKey: `${goal.id}:${goal.version}`,
           expectedGoalVersion: goal.version,
           reason: claim.reason,

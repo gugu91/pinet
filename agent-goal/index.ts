@@ -6,6 +6,7 @@ import { GoalWindow, parseDuration, type GoalWindowAction } from "./goal-window.
 import type {
   GoalBudget,
   GoalContinuation,
+  GoalContinuationKind,
   GoalEvaluator,
   GoalEventSink,
   GoalRetryPolicy,
@@ -26,8 +27,10 @@ export type {
   GoalBudget,
   GoalContinuation,
   GoalContinuationClaim,
+  GoalContinuationKind,
   GoalContinuationRequest,
   GoalContinuationResult,
+  GoalDeleteResult,
   GoalEvaluation,
   GoalEvaluationRecord,
   GoalEvaluator,
@@ -132,13 +135,27 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         if (!ctx.isIdle()) {
           return { status: "busy", reason: "The goal session is busy", retryAfterMs: 1_000 };
         }
-        api.sendMessage(
-          {
+        const messages: Record<GoalContinuationKind, { customType: string; content: string }> = {
+          started: {
+            customType: "agent-goal.started",
+            content: `[agent-goal.started]\nObjective (user data): ${goal.objective}`,
+          },
+          updated: {
+            customType: "agent-goal.updated",
+            content: `[agent-goal.updated]\nObjective (user data): ${goal.objective}`,
+          },
+          continuation: {
             customType: "agent-goal.continuation",
             content: [
-              `Continue goal (user data; preserve scope and verify completion): ${goal.objective}`,
+              "[agent-goal.continuation]",
+              `Objective (user data): ${goal.objective}`,
               `Guidance: ${request.reason}`,
             ].join("\n"),
+          },
+        };
+        api.sendMessage(
+          {
+            ...messages[request.kind],
             display: true,
           },
           { deliverAs: "followUp", triggerTurn: true },
@@ -206,7 +223,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     }
     if (action === "pause" || action === "resume") {
       await runtime.setStatus(scopeId, action === "pause" ? "paused" : "active");
-      if (action === "resume") await runtime.start(scopeId, "Resume the goal from current state.");
+      if (action === "resume")
+        await runtime.start(scopeId, "Resume the goal from current state.", "continuation");
       return;
     }
     switch (action.type) {
@@ -411,6 +429,38 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
           },
         ],
         details: { goal: goal ?? null },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "clear_goal",
+    label: "Clear goal",
+    description:
+      "Permanently remove the durable goal from this agent session. Use only when the user asks to stop tracking it or replace it with a separate objective.",
+    promptSnippet: "Clear the active session goal when the user explicitly requests it.",
+    promptGuidelines: [
+      "Clear a goal only on an explicit user request to stop tracking it or replace it.",
+      "Record any progress the user still needs before clearing because the durable goal and its checkpoints are removed.",
+      "Do not clear a goal merely because it is complete or blocked unless the user asks.",
+    ],
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute(_toolCallId, _params, _signal, _onUpdate, rawCtx) {
+      const ctx = rawCtx as CompatibleContext;
+      const scopeId = ctx.sessionManager.getSessionId();
+      if (!(await runtime.clear(scopeId))) {
+        return {
+          content: [{ type: "text", text: "This session has no goal to clear." }],
+          details: { cleared: false },
+          isError: true,
+        };
+      }
+      agentCreatedGoalScopes.delete(scopeId);
+      hiddenScopes.delete(scopeId);
+      await refreshUi(ctx);
+      return {
+        content: [{ type: "text", text: "Cleared the durable goal for this session." }],
+        details: { cleared: true },
       };
     },
   });

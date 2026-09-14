@@ -2,6 +2,7 @@ import type {
   AgentGoal,
   GoalCheckpoint,
   GoalContinuationClaim,
+  GoalDeleteResult,
   GoalPendingEvaluation,
   GoalStorage,
   GoalTerminalCandidateRecord,
@@ -72,14 +73,20 @@ export class MemoryGoalStorage implements GoalStorage {
     return (this.checkpoints.get(scopeId) ?? []).map((checkpoint) => ({ ...checkpoint })).reverse();
   }
 
-  async delete(scopeId: string, expectedVersion: number): Promise<boolean> {
+  async delete(
+    scopeId: string,
+    expectedGoalId: string,
+    expectedVersion: number,
+  ): Promise<GoalDeleteResult> {
     const current = this.goals.get(scopeId);
-    if (!current || current.version !== expectedVersion) return false;
+    if (!current) return "missing";
+    if (current.id !== expectedGoalId || current.version !== expectedVersion) return "conflict";
     this.pendingEvaluations.delete(scopeId);
     this.terminalCandidates.delete(scopeId);
     this.claims.delete(scopeId);
     this.checkpoints.delete(scopeId);
-    return this.goals.delete(scopeId);
+    this.goals.delete(scopeId);
+    return "deleted";
   }
 
   async getPendingEvaluation(scopeId: string): Promise<GoalPendingEvaluation | undefined> {
@@ -169,7 +176,12 @@ export class MemoryGoalStorage implements GoalStorage {
       objective: current.objective,
       budget: { ...current.budget },
       snoozedUntil: current.snoozedUntil,
+      nextContinuationKind: current.nextContinuationKind,
     });
+    const claim = this.claims.get(goal.scopeId);
+    if (claim?.goalId === goal.id && claim.goalVersion === expectedGoalVersion) {
+      this.claims.set(goal.scopeId, { ...claim, goalVersion: goal.version });
+    }
     this.pendingEvaluations.delete(goal.scopeId);
     return true;
   }
@@ -236,6 +248,26 @@ export class MemoryGoalStorage implements GoalStorage {
       return false;
     }
     this.claims.set(claim.scopeId, { ...claim, goalVersion: goal.version });
+    return true;
+  }
+
+  async acknowledgeContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean> {
+    const claim = this.claims.get(scopeId);
+    const goal = this.goals.get(scopeId);
+    if (
+      !claim ||
+      claim.claimId !== expectedClaimId ||
+      claim.state !== "started" ||
+      !goal ||
+      goal.id !== claim.goalId ||
+      goal.version !== claim.goalVersion
+    ) {
+      return false;
+    }
+    if (goal.nextContinuationKind === claim.kind) {
+      this.goals.set(scopeId, cloneGoal({ ...goal, nextContinuationKind: undefined }));
+    }
+    this.claims.delete(scopeId);
     return true;
   }
 
