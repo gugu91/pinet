@@ -85,6 +85,7 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
   let mappings: MappingStore | undefined;
   let socket: SlackSocketModeClient | undefined;
   let poller: ReturnType<typeof setInterval> | undefined;
+  let generation = 0;
   const getMappings = () => {
     if (!enabled) throw new Error("Set PINET_SLACK_ENABLED=true to activate the Slack adapter");
     mappings ??= supplied.mappingStoreFactory
@@ -93,7 +94,8 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
     return mappings;
   };
   pi.on("session_start", async () => {
-    if (!configured) return;
+    if (!configured || socket) return;
+    const activeGeneration = ++generation;
     const activeMappings = getMappings();
     const adapter = new SlackAdapter({
       mappings: activeMappings,
@@ -102,7 +104,8 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
       ownSlackUserId: userId!,
       mentionMap: supplied.mentionMap,
     });
-    socket = new SlackSocketModeClient(appToken!, adapter, transport);
+    const activeSocket = new SlackSocketModeClient(appToken!, adapter, transport);
+    socket = activeSocket;
     const chatPoller = new SlackChatPoller(
       activeMappings,
       adapter,
@@ -110,15 +113,20 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
       chatToken!,
       transport,
     );
-    await socket.start();
+    await activeSocket.start();
+    if (generation !== activeGeneration || socket !== activeSocket) return;
     poller = setInterval(() => {
       void chatPoller.poll().catch(() => {});
     }, 2000);
     poller.unref();
   });
   pi.on("session_shutdown", () => {
-    socket?.stop();
+    ++generation;
+    const activeSocket = socket;
+    socket = undefined;
+    activeSocket?.stop();
     if (poller) clearInterval(poller);
+    poller = undefined;
     mappings?.close();
     mappings = undefined;
   });
