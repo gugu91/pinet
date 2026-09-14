@@ -111,6 +111,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  pm: {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   slack: {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
