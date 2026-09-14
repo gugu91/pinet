@@ -57,6 +57,18 @@ importers:
         specifier: file:../transport-core
         version: link:../transport-core
 
+  chat:
+    dependencies:
+      "@earendil-works/pi-coding-agent":
+        specifier: ">=0.74.0"
+        version: 0.74.0
+      "@hono/node-server":
+        specifier: ^1.19.9
+        version: 1.19.17(hono@4.13.7)
+      hono:
+        specifier: ^4.10.8
+        version: 4.13.7
+
   imessage-bridge:
     dependencies:
       "@pinet/transport-core":

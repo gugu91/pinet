@@ -12,4 +12,5 @@ packages:
   - openai-execution-shaping
   - model-aware-compaction
   - agent-goal
+  - chat
   - work

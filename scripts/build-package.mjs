@@ -95,6 +95,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  chat: {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   work: {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
