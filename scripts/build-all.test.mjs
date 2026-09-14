@@ -3,19 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { buildTiers, flattenBuildTiers, testDependencyTiers } from "./build-all.mjs";
 
-const expectedBuildPackages = [
-  "transport-core",
-  "broker-core",
-  "pinet-core",
-  "imessage-bridge",
-  "slack-api",
-  "nvim-bridge",
-  "neon-psql",
-  "openai-execution-shaping",
-  "model-aware-compaction",
-  "agent-goal",
-  "slack-bridge",
-];
+const workspaceConfig = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+);
+const expectedBuildPackages = [];
+for (const workspace of workspaceConfig.workspaces) {
+  const manifest = JSON.parse(
+    await readFile(new URL(`../${workspace}/package.json`, import.meta.url), "utf8"),
+  );
+  if (manifest.scripts?.build) expectedBuildPackages.push(workspace);
+}
 
 const distExportDependencies = {
   "broker-core": ["transport-core"],
