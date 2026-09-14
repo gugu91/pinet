@@ -113,6 +113,12 @@ importers:
         specifier: file:../transport-core
         version: link:../transport-core
 
+  pm:
+    dependencies:
+      "@earendil-works/pi-coding-agent":
+        specifier: ">=0.74.0"
+        version: 0.74.0
+
   slack:
     dependencies:
       "@earendil-works/pi-coding-agent":
