@@ -104,6 +104,16 @@ function requiredString(value: JsonValue | undefined, name: string, maxLength: n
   return normalized;
 }
 
+function requiredMarkdown(value: JsonValue | undefined): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new RequestError("markdown must be a non-empty string");
+  }
+  if (value.length > MAX_MARKDOWN_LENGTH) {
+    throw new RequestError(`markdown must not exceed ${MAX_MARKDOWN_LENGTH} characters`);
+  }
+  return value;
+}
+
 function parseProjectRequest(body: JsonObject): ProjectRequest {
   const externalChannel = body.externalChannel;
   if (externalChannel !== undefined && externalChannel !== null) {
@@ -117,7 +127,7 @@ function parseProjectRequest(body: JsonObject): ProjectRequest {
     }
   }
   return {
-    markdown: requiredString(body.markdown, "markdown", MAX_MARKDOWN_LENGTH),
+    markdown: requiredMarkdown(body.markdown),
     externalChannel,
   };
 }
@@ -128,7 +138,7 @@ function parseTaskRequest(body: JsonObject): TaskRequest {
       body.projectId === undefined
         ? undefined
         : requiredString(body.projectId, "projectId", MAX_IDENTIFIER_LENGTH),
-    markdown: requiredString(body.markdown, "markdown", MAX_MARKDOWN_LENGTH),
+    markdown: requiredMarkdown(body.markdown),
   };
 }
 

@@ -104,16 +104,47 @@ describe("independent work API", () => {
     ).toBe(400);
   });
 
-  it("bounds Markdown independently of the byte limit", async () => {
-    const app = createWorkApp({ storage: new MemoryWorkStorage(), tokens: ["secret"] });
-    for (const [length, status] of [
-      [32_768, 201],
-      [32_769, 400],
-    ]) {
+  it("preserves original Markdown bytes while validating non-emptiness and original length", async () => {
+    let id = 0;
+    const app = createWorkApp({
+      storage: new MemoryWorkStorage(),
+      tokens: ["secret"],
+      id: () => String(++id),
+    });
+    const markdown = "    indented code\n\n";
+    const projectResponse = await app.request("/v1/projects", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ markdown }),
+    });
+    expect(((await projectResponse.json()) as { data: { markdown: string } }).data.markdown).toBe(
+      markdown,
+    );
+    const taskResponse = await app.request("/v1/tasks", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ projectId: "1", markdown: "task" }),
+    });
+    const task = ((await taskResponse.json()) as { data: { id: string } }).data;
+    const updatedMarkdown = "\n  updated task  \n";
+    const updateResponse = await app.request(`/v1/tasks/${task.id}`, {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ markdown: updatedMarkdown }),
+    });
+    expect(((await updateResponse.json()) as { data: { markdown: string } }).data.markdown).toBe(
+      updatedMarkdown,
+    );
+
+    for (const [markdownValue, status] of [
+      [" ".repeat(32_768), 400],
+      [`${"x".repeat(32_768)} `, 400],
+      ["x".repeat(32_768), 201],
+    ] as const) {
       const response = await app.request("/v1/projects", {
         method: "POST",
         headers: auth,
-        body: JSON.stringify({ markdown: "x".repeat(length) }),
+        body: JSON.stringify({ markdown: markdownValue }),
       });
       expect(response.status).toBe(status);
     }

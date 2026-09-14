@@ -7,28 +7,34 @@ type Params = {
   id?: string;
   projectId?: string;
   markdown?: string;
-  externalChannel?: string;
+  externalChannel?: string | null;
   query?: string;
+  limit?: number;
+  offset?: number;
 };
 export type WorkExtensionOptions = { baseUrl?: string; token?: string; fetch?: typeof fetch };
 const help = {
   actions: {
     help: {},
-    projects: {},
+    projects: { limit: "integer? (0..100)", offset: "integer? (0..100000)" },
     project_get: { id: "string" },
     project_create: { markdown: "string", externalChannel: "string?" },
     project_update: {
       id: "string",
       markdown: "complete replacement Markdown",
-      externalChannel: "string?",
+      externalChannel: "string|null? (null clears the channel)",
     },
     project_delete: { id: "string" },
-    tasks: { projectId: "string?" },
+    tasks: {
+      projectId: "string?",
+      limit: "integer? (0..100)",
+      offset: "integer? (0..100000)",
+    },
     task_get: { id: "string" },
     task_create: { projectId: "string", markdown: "string" },
     task_update: { id: "string", markdown: "complete replacement Markdown", projectId: "string?" },
     task_delete: { id: "string" },
-    search: { query: "string" },
+    search: { query: "string", limit: "integer? (0..100)", offset: "integer? (0..100000)" },
   },
 };
 export function registerWork(pi: ExtensionAPI, supplied: WorkExtensionOptions = {}) {
@@ -66,8 +72,10 @@ export function registerWork(pi: ExtensionAPI, supplied: WorkExtensionOptions = 
         id: { type: "string" },
         projectId: { type: "string" },
         markdown: { type: "string" },
-        externalChannel: { type: "string" },
+        externalChannel: { type: ["string", "null"] },
         query: { type: "string" },
+        limit: { type: "integer", minimum: 0, maximum: 100 },
+        offset: { type: "integer", minimum: 0, maximum: 100000 },
       },
       required: ["action"],
       additionalProperties: false,
@@ -81,7 +89,7 @@ export function registerWork(pi: ExtensionAPI, supplied: WorkExtensionOptions = 
             value = help;
             break;
           case "projects":
-            value = await call("GET", "/v1/projects");
+            value = await call("GET", `/v1/projects?${pagination(p).toString()}`);
             break;
           case "project_get":
             value = await call("GET", `/v1/projects/${need(p.id, "id")}`);
@@ -101,12 +109,12 @@ export function registerWork(pi: ExtensionAPI, supplied: WorkExtensionOptions = 
           case "project_delete":
             value = await call("DELETE", `/v1/projects/${need(p.id, "id")}`);
             break;
-          case "tasks":
-            value = await call(
-              "GET",
-              `/v1/tasks${p.projectId ? `?projectId=${encodeURIComponent(p.projectId)}` : ""}`,
-            );
+          case "tasks": {
+            const query = pagination(p);
+            if (p.projectId) query.set("projectId", p.projectId);
+            value = await call("GET", `/v1/tasks?${query.toString()}`);
             break;
+          }
           case "task_get":
             value = await call("GET", `/v1/tasks/${need(p.id, "id")}`);
             break;
@@ -125,9 +133,12 @@ export function registerWork(pi: ExtensionAPI, supplied: WorkExtensionOptions = 
           case "task_delete":
             value = await call("DELETE", `/v1/tasks/${need(p.id, "id")}`);
             break;
-          case "search":
-            value = await call("GET", `/v1/search?q=${encodeURIComponent(need(p.query, "query"))}`);
+          case "search": {
+            const query = pagination(p);
+            query.set("q", need(p.query, "query"));
+            value = await call("GET", `/v1/search?${query.toString()}`);
             break;
+          }
           default:
             throw new Error("Unknown action; call help");
         }
@@ -157,6 +168,20 @@ export function registerWork(pi: ExtensionAPI, supplied: WorkExtensionOptions = 
 function need(value: string | undefined, name: string) {
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+function pagination(value: Params): URLSearchParams {
+  const query = new URLSearchParams();
+  for (const [name, candidate, maximum] of [
+    ["limit", value.limit, 100],
+    ["offset", value.offset, 100000],
+  ] as const) {
+    if (candidate === undefined) continue;
+    if (!Number.isInteger(candidate) || candidate < 0 || candidate > maximum) {
+      throw new Error(`${name} must be an integer between 0 and ${maximum}`);
+    }
+    query.set(name, String(candidate));
+  }
+  return query;
 }
 export default function work(pi: ExtensionAPI) {
   registerWork(pi);
