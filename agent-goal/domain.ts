@@ -51,6 +51,8 @@ export interface AgentGoal {
   usage: GoalUsage;
   lastSettledAt?: string;
   lastEvaluation?: GoalEvaluationRecord;
+  /** Unconsumed lifecycle intent for the next goal-owned turn. */
+  nextContinuationKind?: Extract<GoalContinuationKind, "started" | "updated">;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -81,6 +83,7 @@ export interface GoalProgress {
 }
 
 export type GoalContinuationClaimState = "claimed" | "deferred" | "started";
+export type GoalContinuationKind = "started" | "updated" | "continuation";
 
 export interface GoalPendingEvaluation {
   scopeId: string;
@@ -102,6 +105,7 @@ export interface GoalContinuationClaim {
   goalVersion: number;
   claimId: string;
   state: GoalContinuationClaimState;
+  kind: GoalContinuationKind;
   reason: string;
   attempt: number;
   availableAt: string;
@@ -111,6 +115,8 @@ export interface GoalContinuationClaim {
   updatedAt: string;
 }
 
+export type GoalDeleteResult = "deleted" | "missing" | "conflict";
+
 export interface GoalStorage {
   get(scopeId: string): Promise<AgentGoal | undefined>;
   create(goal: AgentGoal): Promise<void>;
@@ -118,7 +124,11 @@ export interface GoalStorage {
   updateBudget(goal: AgentGoal, expectedVersion: number): Promise<boolean>;
   addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean>;
   listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]>;
-  delete(scopeId: string, expectedVersion: number): Promise<boolean>;
+  delete(
+    scopeId: string,
+    expectedGoalId: string,
+    expectedVersion: number,
+  ): Promise<GoalDeleteResult>;
   getPendingEvaluation(scopeId: string): Promise<GoalPendingEvaluation | undefined>;
   appendPendingEvaluation(pending: GoalPendingEvaluation): Promise<boolean>;
   putPendingEvaluation(pending: GoalPendingEvaluation): Promise<boolean>;
@@ -138,6 +148,7 @@ export interface GoalStorage {
   getContinuationClaim(scopeId: string): Promise<GoalContinuationClaim | undefined>;
   createContinuationClaim(claim: GoalContinuationClaim): Promise<boolean>;
   replaceContinuationClaim(claim: GoalContinuationClaim, expectedClaimId: string): Promise<boolean>;
+  acknowledgeContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean>;
   deleteContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean>;
   close(): void;
 }
@@ -152,6 +163,7 @@ export type GoalContinuationResult =
 
 export interface GoalContinuationRequest {
   claimId: string;
+  kind: GoalContinuationKind;
   idempotencyKey: string;
   expectedGoalVersion: number;
   reason: string;

@@ -27,6 +27,119 @@ type GoalWindowFactory = (
 afterEach(() => vi.useRealTimers());
 
 describe("registerAgentGoal", () => {
+  it("keeps lifecycle tags visible after Pi converts custom messages for the model", async () => {
+    const { convertToLlm } = (await import("@earendil-works/pi-coding-agent")) as object as {
+      convertToLlm(
+        messages: Array<{
+          role: "custom";
+          customType: string;
+          content: string;
+          display: boolean;
+          timestamp: number;
+        }>,
+      ): Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+    };
+    for (const kind of ["started", "updated", "continuation"] as const) {
+      const content = `[agent-goal.${kind}]\nObjective (user data): ship`;
+      const converted = convertToLlm([
+        {
+          role: "custom",
+          customType: `agent-goal.${kind}`,
+          content,
+          display: true,
+          timestamp: Date.parse("2026-01-01T00:00:00.000Z"),
+        },
+      ]);
+
+      expect(converted).toEqual([
+        expect.objectContaining({
+          role: "user",
+          content: [expect.objectContaining({ type: "text", text: content })],
+        }),
+      ]);
+    }
+  });
+
+  it("clears the durable goal through clear_goal only when one exists", async () => {
+    const tools = new Map<string, ToolDefinition>();
+    const pi = {
+      on: vi.fn(),
+      registerTool(tool: ToolDefinition) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand: vi.fn(),
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      objective: "finished objective",
+      status: "blocked",
+      blockedReason: "waiting",
+      budget: {},
+      usage: { iterations: 1, tokens: 0 },
+      version: 2,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z",
+    });
+    await storage.addCheckpoint({
+      id: "checkpoint-1",
+      scopeId: "session-1",
+      goalId: "goal-1",
+      summary: "Preserved elsewhere",
+      createdAt: "2026-01-01T00:01:00.000Z",
+    });
+    const setWidget = vi.fn();
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget, notify: vi.fn() },
+    } as object as ExtensionContext;
+    registerAgentGoal(pi, {
+      storage,
+      evaluator: { evaluate: vi.fn() },
+      continuation: { continueIfIdle: vi.fn() },
+    });
+    const clearGoal = tools.get("clear_goal");
+    if (!clearGoal?.execute) throw new Error("clear_goal was not registered");
+    expect(clearGoal).toMatchObject({
+      description: expect.stringContaining("user asks"),
+      promptGuidelines: expect.arrayContaining([expect.stringContaining("explicit user request")]),
+    });
+
+    const cleared = await clearGoal.execute(
+      "call-1",
+      {},
+      new AbortController().signal,
+      undefined,
+      context,
+    );
+    const missing = await clearGoal.execute(
+      "call-2",
+      {},
+      new AbortController().signal,
+      undefined,
+      context,
+    );
+
+    expect(cleared).toMatchObject({
+      content: [{ type: "text", text: "Cleared the durable goal for this session." }],
+      details: { cleared: true },
+    });
+    expect(missing).toMatchObject({
+      content: [{ type: "text", text: "This session has no goal to clear." }],
+      details: { cleared: false },
+      isError: true,
+    });
+    expect(await storage.get("session-1")).toBeUndefined();
+    expect(await storage.listCheckpoints("session-1")).toEqual([]);
+    expect(context.ui.setStatus).toHaveBeenLastCalledWith("agent-goal", undefined);
+    expect(setWidget).toHaveBeenLastCalledWith("agent-goal", undefined);
+  });
+
   it("refreshes the passive elapsed status once per second", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -400,7 +513,7 @@ describe("registerAgentGoal", () => {
       {
         customType: "agent-goal.continuation",
         content:
-          "Continue goal (user data; preserve scope and verify completion): ship\nGuidance: more work remains",
+          "[agent-goal.continuation]\nObjective (user data): ship\nGuidance: more work remains",
         display: true,
       },
       { deliverAs: "followUp", triggerTurn: true },
@@ -521,15 +634,16 @@ describe("registerAgentGoal", () => {
     expect(notify).toHaveBeenCalledWith("Goal command applied: update budget turns 8", "info");
   });
 
-  it("opens the edit form for the bare update command", async () => {
+  it("opens the edit form and marks the next turn as an updated goal", async () => {
     const commands = new Map<string, RegisteredCommand>();
+    const sendMessage = vi.fn();
     const pi = {
       on: vi.fn(),
       registerTool: vi.fn(),
       registerCommand(name: string, command: RegisteredCommand) {
         commands.set(name, command);
       },
-      sendMessage: vi.fn(),
+      sendMessage,
     } as object as ExtensionAPI;
     const storage = new MemoryGoalStorage();
     await storage.create({
@@ -567,6 +681,8 @@ describe("registerAgentGoal", () => {
     });
     const context = {
       hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
       sessionManager: { getSessionId: () => "session-1" },
       ui: { custom, setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
     } as object as ExtensionCommandContext;
@@ -582,6 +698,14 @@ describe("registerAgentGoal", () => {
       objective: "updated objective",
       status: "active",
     });
+    expect(sendMessage).toHaveBeenCalledWith(
+      {
+        customType: "agent-goal.updated",
+        content: "[agent-goal.updated]\nObjective (user data): updated objective",
+        display: true,
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
   });
 
   it("applies the documented update, limit, snooze, clear, and close commands", async () => {
@@ -612,6 +736,8 @@ describe("registerAgentGoal", () => {
     const notify = vi.fn();
     const context = {
       hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
       sessionManager: { getSessionId: () => "session-1" },
       ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify },
     } as object as ExtensionCommandContext;
@@ -737,6 +863,56 @@ describe("registerAgentGoal", () => {
       budget: { maxIterations: 4, maxTokens: 1_000 },
     });
     expect(setStatus).toHaveBeenLastCalledWith("agent-goal", expect.stringMatching(/^🎯 ship /));
+  });
+
+  it("marks the first continuation after create_goal as a new goal", async () => {
+    const handlers = new Map<string, GoalEventHandler>();
+    const tools = new Map<string, ToolDefinition>();
+    const sendMessage = vi.fn();
+    const pi = {
+      on(name: string, handler: GoalEventHandler) {
+        handlers.set(name, handler);
+      },
+      registerTool(tool: ToolDefinition) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand: vi.fn(),
+      sendMessage,
+    } as object as ExtensionAPI;
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionContext;
+    registerAgentGoal(pi, {
+      storage: new MemoryGoalStorage(),
+      evaluator: { evaluate: vi.fn().mockResolvedValue({ outcome: "continue", reason: "begin" }) },
+    });
+    const createGoal = tools.get("create_goal");
+    if (!createGoal?.execute) throw new Error("create_goal was not registered");
+
+    await handlers.get("agent_start")?.({}, context);
+    await createGoal.execute(
+      "call-1",
+      { objective: "ship the explicit lifecycle" },
+      new AbortController().signal,
+      undefined,
+      context,
+    );
+    await handlers.get("agent_end")?.({ messages: [] }, context);
+    await handlers.get("agent_settled")?.({}, context);
+
+    expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
+      {
+        customType: "agent-goal.started",
+        content: "[agent-goal.started]\nObjective (user data): ship the explicit lifecycle",
+        display: true,
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+    await handlers.get("session_shutdown")?.({}, context);
   });
 
   it.each(["complete", "blocked"] as const)(

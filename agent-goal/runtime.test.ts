@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   AgentGoal,
   GoalContinuation,
+  GoalDeleteResult,
   GoalEvaluator,
   GoalEvent,
   GoalWakeScheduler,
@@ -46,6 +47,97 @@ describe("GoalRuntime", () => {
         maxRuntimeMs: -1,
       }),
     ).rejects.toThrow("maxRuntimeMs");
+  });
+
+  it.each(["active", "blocked", "complete"] as const)(
+    "clears %s goals when explicitly requested",
+    async (status) => {
+      const storage = new MemoryGoalStorage();
+      await storage.create({
+        id: "goal-1",
+        scopeId: "session-1",
+        objective: "ship",
+        status,
+        ...(status === "blocked" ? { blockedReason: "waiting" } : {}),
+        budget: {},
+        usage: { iterations: 1, tokens: 0 },
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      const runtime = new GoalRuntime(storage, { evaluate: vi.fn() }, startedContinuation());
+
+      expect(await runtime.clear("session-1")).toBe(true);
+      expect(await runtime.get("session-1")).toBeUndefined();
+    },
+  );
+
+  it("reports a concurrent goal update as a clear conflict instead of absence", async () => {
+    class AdvancingStorage extends MemoryGoalStorage {
+      override async delete(
+        scopeId: string,
+        expectedGoalId: string,
+        expectedVersion: number,
+      ): Promise<GoalDeleteResult> {
+        const current = await this.get(scopeId);
+        if (!current) return "missing";
+        await this.replace(
+          {
+            ...current,
+            name: "concurrently updated",
+            version: current.version + 1,
+            updatedAt: "2026-01-01T00:01:00.000Z",
+          },
+          current.version,
+        );
+        return super.delete(scopeId, expectedGoalId, expectedVersion);
+      }
+    }
+    const storage = new AdvancingStorage();
+    const runtime = new GoalRuntime(storage, { evaluate: vi.fn() }, startedContinuation());
+    const goal = await runtime.create("session-1", "ship");
+
+    await expect(runtime.clear("session-1")).rejects.toThrow(
+      "Goal changed while it was being cleared; retry the command",
+    );
+    expect(await runtime.get("session-1")).toMatchObject({
+      id: goal.id,
+      name: "concurrently updated",
+      version: 2,
+    });
+  });
+
+  it("does not clear a replacement goal with the original version", async () => {
+    class ReplacingStorage extends MemoryGoalStorage {
+      override async delete(
+        scopeId: string,
+        expectedGoalId: string,
+        expectedVersion: number,
+      ): Promise<GoalDeleteResult> {
+        const current = await this.get(scopeId);
+        if (!current) return "missing";
+        await super.delete(scopeId, current.id, current.version);
+        await this.create({
+          ...current,
+          id: "replacement-goal",
+          objective: "deploy separately",
+          version: expectedVersion,
+        });
+        return super.delete(scopeId, expectedGoalId, expectedVersion);
+      }
+    }
+    const storage = new ReplacingStorage();
+    const runtime = new GoalRuntime(storage, { evaluate: vi.fn() }, startedContinuation());
+    await runtime.create("session-1", "ship");
+
+    await expect(runtime.clear("session-1")).rejects.toThrow(
+      "Goal changed while it was being cleared; retry the command",
+    );
+    expect(await runtime.get("session-1")).toMatchObject({
+      id: "replacement-goal",
+      objective: "deploy separately",
+      version: 1,
+    });
   });
 
   it("updates turn and token budgets atomically within configured ceilings", async () => {
@@ -649,6 +741,7 @@ describe("GoalRuntime", () => {
         goalVersion: goal.version,
         claimId: "stale-claim",
         state: "started",
+        kind: "continuation",
         reason: "old version",
         attempt: 1,
         availableAt: goal.createdAt,
@@ -818,6 +911,122 @@ describe("GoalRuntime", () => {
 
     expect(wakeScheduler.close).toHaveBeenCalledOnce();
     expect(wakeScheduler.schedule).not.toHaveBeenCalled();
+  });
+
+  it("recovers started intent after restart before the first turn is claimed", async () => {
+    const storage = new MemoryGoalStorage();
+    const first = new GoalRuntime(storage, { evaluate: vi.fn() }, startedContinuation());
+    await first.create("session-1", "ship");
+    first.close(false);
+    const continuation = startedContinuation();
+    const restarted = new GoalRuntime(storage, { evaluate: vi.fn() }, continuation);
+
+    await restarted.recover("session-1");
+
+    expect(continuation.continueIfIdle).toHaveBeenCalledWith(
+      expect.objectContaining({ nextContinuationKind: "started" }),
+      expect.objectContaining({ kind: "started" }),
+    );
+    restarted.close(false);
+  });
+
+  it("keeps updated intent while a concurrent evaluation advances the goal version", async () => {
+    const storage = new MemoryGoalStorage();
+    let releaseFirst!: (value: { outcome: "continue"; reason: string }) => void;
+    const firstEvaluation = new Promise<{ outcome: "continue"; reason: string }>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const evaluator: GoalEvaluator = {
+      evaluate: vi
+        .fn()
+        .mockReturnValueOnce(firstEvaluation)
+        .mockResolvedValueOnce({ outcome: "continue", reason: "updated work remains" }),
+    };
+    const continuation: GoalContinuation = {
+      continueIfIdle: vi.fn().mockResolvedValue({
+        status: "busy",
+        reason: "current turn is settling",
+        retryAfterMs: 60_000,
+      }),
+    };
+    const runtime = new GoalRuntime(storage, evaluator, continuation);
+    await runtime.create("session-1", "old objective");
+    const settling = runtime.settle("session-1", { latestOutput: "old work" });
+    await vi.waitFor(() => expect(evaluator.evaluate).toHaveBeenCalledOnce());
+
+    await runtime.updateDetails("session-1", { objective: "new objective" });
+    releaseFirst({ outcome: "continue", reason: "stale result" });
+    await settling;
+
+    expect(continuation.continueIfIdle).toHaveBeenCalledTimes(1);
+    expect(continuation.continueIfIdle).toHaveBeenCalledWith(
+      expect.objectContaining({ objective: "new objective" }),
+      expect.objectContaining({ kind: "updated" }),
+    );
+    expect(await storage.getContinuationClaim("session-1")).toMatchObject({
+      goalVersion: 3,
+      state: "deferred",
+      kind: "updated",
+    });
+    expect(await runtime.get("session-1")).toMatchObject({ nextContinuationKind: "updated" });
+    runtime.close(false);
+  });
+
+  it("preserves updated intent while paused and consumes it only after that turn starts", async () => {
+    const storage = new MemoryGoalStorage();
+    const continuation = startedContinuation();
+    const runtime = new GoalRuntime(storage, { evaluate: vi.fn() }, continuation);
+    await runtime.create("session-1", "old objective");
+    await runtime.setStatus("session-1", "paused");
+
+    await runtime.updateDetails("session-1", { objective: "new objective" });
+    expect(continuation.continueIfIdle).not.toHaveBeenCalled();
+    expect(await runtime.get("session-1")).toMatchObject({
+      status: "paused",
+      nextContinuationKind: "updated",
+    });
+
+    await runtime.setStatus("session-1", "active");
+    await runtime.start("session-1", "Resume the goal from current state.");
+    expect(continuation.continueIfIdle).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ kind: "updated" }),
+    );
+    await runtime.acknowledgeContinuation("session-1");
+    expect((await runtime.get("session-1"))?.nextContinuationKind).toBeUndefined();
+    expect(await storage.getContinuationClaim("session-1")).toBeUndefined();
+  });
+
+  it("preserves updated intent through snooze and emits it when the goal wakes", async () => {
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    let wake: (() => void) | undefined;
+    const wakeScheduler: GoalWakeScheduler = {
+      schedule: vi.fn((_scopeId, _wakeAt, callback) => {
+        wake = callback;
+      }),
+      cancel: vi.fn(),
+      close: vi.fn(),
+    };
+    const continuation = startedContinuation();
+    const runtime = new GoalRuntime(
+      new MemoryGoalStorage(),
+      { evaluate: vi.fn() },
+      continuation,
+      () => now,
+      { wakeScheduler },
+    );
+    await runtime.create("session-1", "old objective");
+    await runtime.snooze("session-1", 60_000);
+    await runtime.updateDetails("session-1", { objective: "new objective" });
+    expect(continuation.continueIfIdle).not.toHaveBeenCalled();
+
+    now = new Date("2026-01-01T00:01:00.000Z");
+    wake?.();
+    await vi.waitFor(() => expect(continuation.continueIfIdle).toHaveBeenCalledOnce());
+    expect(continuation.continueIfIdle).toHaveBeenCalledWith(
+      expect.objectContaining({ objective: "new objective" }),
+      expect.objectContaining({ kind: "updated" }),
+    );
   });
 
   it("persists editable details and fences an evaluation using the old objective", async () => {

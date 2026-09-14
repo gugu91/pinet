@@ -41,12 +41,13 @@ Only one current goal may exist per Pi session. A verified completion clears tha
 
 ## Agent tools and checkpoints
 
-The extension registers five model-visible tools:
+The extension registers six model-visible tools:
 
 - `create_goal` — create a user-aligned goal with a short name and objective
 - `checkpoint_goal` — append progress with optional evidence, next step, or blocker
 - `update_goal_budget` — set optional turn/runtime continuation limits or turn them off
 - `get_goal` — inspect current durable state
+- `clear_goal` — permanently remove the session goal when the user explicitly asks
 - `update_goal` — attach a `complete` or `blocked` candidate for independent evaluation
 
 Checkpoints are agent-reported progress records, not recovery snapshots. They persist with the goal. The overlay initially shows the newest three checkpoints. Tab/Shift+Tab selects across the full history; Enter opens the selected checkpoint's full summary, evidence, next step, and blocker. Use ↑/↓ to scroll and Escape to return. The headless dashboard shows the newest three and `… and X more`.
@@ -70,7 +71,7 @@ SQLite storage defaults to `~/.pi/agent/agent-goals.sqlite`; set `PI_AGENT_GOAL_
 
 Optimistic versions reject stale mutations. Metadata/limit edits atomically advance pending evaluation, candidate, and continuation-claim versions. Evaluation commit updates lifecycle and usage fields only, so an old result cannot overwrite a newer name, objective, limit, or snooze. Settlements arriving during evaluation are aggregated and charged exactly once.
 
-Every continuation acquires a durable per-session claim. Busy sessions defer with an in-process wake. Timed snooze uses the same scheduler; expiry clears the snooze with compare-and-swap before continuation, so duplicate timer callbacks cannot produce duplicate wakes. Failures use bounded retries and eventually block with a diagnostic reason.
+Every continuation acquires a durable per-session claim. New-goal and objective-update intent is persisted independently of that delivery claim, survives pause, snooze, restart, and concurrent evaluation commits, and is consumed only when its corresponding turn starts. Busy sessions defer with an in-process wake. Timed snooze uses the same scheduler; expiry clears the snooze with compare-and-swap before continuation, so duplicate timer callbacks cannot produce duplicate wakes. Failures use bounded retries and eventually block with a diagnostic reason.
 
 ## Architecture
 
@@ -90,4 +91,4 @@ registerAgentGoal(pi, {
 
 Pi's current API does not expose Codex's exact `start_turn_if_idle` primitive. The default adapter rechecks session identity, idle state, and pending messages immediately before follow-up submission. A Pinet adapter can replace these ports without changing `GoalRuntime`.
 
-Continuation prompts treat the objective as user-provided task data, never as higher-priority instructions.
+Lifecycle prompts treat the objective as user-provided task data, never as higher-priority instructions. The first turn is labeled `[agent-goal.started]`, an objective edit is labeled `[agent-goal.updated]`, and only unchanged follow-up work uses `[agent-goal.continuation]`. The lifecycle tag is included in model-visible content and carries the transition semantics; started and updated messages otherwise contain only the current objective, while continuations add evaluator guidance.

@@ -67,6 +67,7 @@ const claim: GoalContinuationClaim = {
   goalVersion: 3,
   claimId: "claim-1",
   state: "deferred",
+  kind: "updated",
   reason: "busy",
   attempt: 1,
   availableAt: "2026-01-01T00:02:00.000Z",
@@ -92,6 +93,7 @@ describe("SqliteGoalStorage", () => {
       ...goal,
       name: "Ship goal UX",
       snoozedUntil: "2026-01-01T01:00:00.000Z",
+      nextContinuationKind: "updated" as const,
     };
     await first.create(persistedGoal);
     expect(
@@ -118,7 +120,12 @@ describe("SqliteGoalStorage", () => {
     expect(await second.getPendingEvaluation("session-1")).toEqual(pending);
     expect(await second.getTerminalCandidate("session-1")).toEqual(candidate);
     expect(await second.getContinuationClaim("session-1")).toEqual(claim);
-    expect(await second.deleteContinuationClaim("session-1", claim.claimId)).toBe(true);
+    expect(
+      await second.replaceContinuationClaim({ ...claim, state: "started" }, claim.claimId),
+    ).toBe(true);
+    expect(await second.acknowledgeContinuationClaim("session-1", claim.claimId)).toBe(true);
+    expect(await second.getContinuationClaim("session-1")).toBeUndefined();
+    expect((await second.get("session-1"))?.nextContinuationKind).toBeUndefined();
     expect(
       await second.createContinuationClaim({
         ...claim,
@@ -262,7 +269,9 @@ describe("SqliteGoalStorage", () => {
     const directory = mkdtempSync(join(tmpdir(), "agent-goal-"));
     tempDirectories.push(directory);
     const storage = new SqliteGoalStorage(join(directory, "goals.sqlite"));
-    await storage.create(goal);
+    const lifecycleGoal = { ...goal, nextContinuationKind: "updated" as const };
+    await storage.create(lifecycleGoal);
+    expect(await storage.createContinuationClaim(claim)).toBe(true);
 
     expect(await storage.appendPendingEvaluation(pending)).toBe(true);
     expect(
@@ -287,7 +296,7 @@ describe("SqliteGoalStorage", () => {
       attempt: 0,
     });
     const evaluated = {
-      ...goal,
+      ...lifecycleGoal,
       status: "complete" as const,
       usage: { iterations: 4, tokens: 1_700 },
       version: 4,
@@ -295,6 +304,10 @@ describe("SqliteGoalStorage", () => {
     expect(await storage.commitEvaluation(evaluated, 3, "evaluation-2")).toBe(false);
     expect(await storage.commitEvaluation(evaluated, 3, "evaluation-3")).toBe(true);
     expect(await storage.get("session-1")).toEqual(evaluated);
+    expect(await storage.getContinuationClaim("session-1")).toMatchObject({
+      goalVersion: 4,
+      kind: "updated",
+    });
     expect(await storage.getPendingEvaluation("session-1")).toBeUndefined();
     storage.close();
   });
@@ -336,15 +349,76 @@ describe("SqliteGoalStorage", () => {
     storage.close();
   });
 
+  it("migrates pre-kind continuation claims as ordinary continuations", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agent-goal-pre-kind-"));
+    tempDirectories.push(directory);
+    const path = join(directory, "goals.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE agent_goals (
+        scope_id TEXT PRIMARY KEY NOT NULL,
+        id TEXT UNIQUE NOT NULL,
+        objective TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'blocked', 'budget_limited', 'complete')),
+        blocked_reason TEXT,
+        version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO agent_goals VALUES
+        ('session-1', 'goal-1', 'ship', 'active', NULL, 1,
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      CREATE TABLE agent_goal_continuations (
+        scope_id TEXT PRIMARY KEY NOT NULL,
+        goal_id TEXT NOT NULL,
+        goal_version INTEGER NOT NULL,
+        claim_id TEXT UNIQUE NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('claimed', 'deferred', 'started')),
+        reason TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        available_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (scope_id) REFERENCES agent_goals(scope_id) ON DELETE CASCADE
+      );
+      INSERT INTO agent_goal_continuations VALUES
+        ('session-1', 'goal-1', 1, 'claim-1', 'deferred', 'keep going', 1,
+         '2026-01-01T00:01:00.000Z', '2026-01-01T00:06:00.000Z', NULL,
+         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const storage = new SqliteGoalStorage(path);
+    expect((await storage.get("session-1"))?.nextContinuationKind).toBeUndefined();
+    expect(await storage.getContinuationClaim("session-1")).toMatchObject({
+      claimId: "claim-1",
+      kind: "continuation",
+    });
+    storage.close();
+  });
+
   it("uses versions and claim ids to reject stale mutations", async () => {
     const directory = mkdtempSync(join(tmpdir(), "agent-goal-"));
     tempDirectories.push(directory);
     const storage = new SqliteGoalStorage(join(directory, "goals.sqlite"));
     await storage.create(goal);
     await storage.createContinuationClaim(claim);
+    await storage.putPendingEvaluation(pending);
+    await storage.putTerminalCandidate(candidate);
+    await storage.addCheckpoint({
+      id: "checkpoint-1",
+      scopeId: "session-1",
+      goalId: "goal-1",
+      summary: "preserve progress",
+      createdAt: "2026-01-01T00:01:00.000Z",
+    });
 
     expect(await storage.replace({ ...goal, status: "paused", version: 4 }, 99)).toBe(false);
-    expect(await storage.delete("session-1", 99)).toBe(false);
+    expect(await storage.delete("session-1", "replacement-goal", 3)).toBe("conflict");
+    expect(await storage.delete("session-1", "goal-1", 99)).toBe("conflict");
     expect(await storage.deleteContinuationClaim("session-1", "stale")).toBe(false);
     expect(await storage.replaceContinuationClaim({ ...claim, state: "started" }, "stale")).toBe(
       false,
@@ -353,8 +427,13 @@ describe("SqliteGoalStorage", () => {
       true,
     );
     expect(await storage.replace({ ...goal, status: "paused", version: 4 }, 3)).toBe(true);
-    expect(await storage.delete("session-1", 4)).toBe(true);
+    expect(await storage.delete("session-1", "goal-1", 4)).toBe("deleted");
+    expect(await storage.delete("session-1", "goal-1", 4)).toBe("missing");
     expect(await storage.get("session-1")).toBeUndefined();
+    expect(await storage.getPendingEvaluation("session-1")).toBeUndefined();
+    expect(await storage.getTerminalCandidate("session-1")).toBeUndefined();
+    expect(await storage.getContinuationClaim("session-1")).toBeUndefined();
+    expect(await storage.listCheckpoints("session-1")).toEqual([]);
     storage.close();
   });
 });
