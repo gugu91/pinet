@@ -1,124 +1,145 @@
 import { DatabaseSync } from "node:sqlite";
 import type { Project, Task, WorkStorage } from "./domain.js";
+import { migrations } from "./sql/migrations/index.js";
+import { migrationQueries, projectQueries, searchQuery, taskQueries } from "./sql/queries.js";
+
 export { MemoryWorkStorage } from "./memory-storage.js";
+
+type ProjectRow = {
+  id: string;
+  markdown: string;
+  external_channel: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+type TaskRow = {
+  id: string;
+  project_id: string;
+  markdown: string;
+  created_at: number;
+  updated_at: number;
+};
+
+type SearchRow = ProjectRow & {
+  kind: "project" | "task";
+  project_id: string | null;
+};
+
+type MigrationRow = { version: number };
 
 export class SqliteWorkStorage implements WorkStorage {
   private readonly database: DatabaseSync;
+
   constructor(path: string) {
     this.database = new DatabaseSync(path);
-    this.database.exec(`
-      PRAGMA foreign_keys=ON;
-      CREATE TABLE IF NOT EXISTS pinet_projects(id TEXT PRIMARY KEY,markdown TEXT NOT NULL,external_channel TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS pinet_tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES pinet_projects(id) ON DELETE CASCADE,markdown TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS pinet_tasks_project_created ON pinet_tasks(project_id,created_at,id);
-    `);
+    this.database.exec("PRAGMA foreign_keys = ON");
+    this.applyMigrations();
   }
-  private project(row: object | undefined): Project | undefined {
-    if (!row) return undefined;
-    const value = row as {
-      id: string;
-      markdown: string;
-      external_channel: string | null;
-      created_at: number;
-      updated_at: number;
-    };
+
+  private applyMigrations(): void {
+    this.database.exec(migrationQueries.createTable);
+    const applied = new Set(
+      (this.database.prepare(migrationQueries.listVersions).all() as MigrationRow[]).map(
+        ({ version }) => version,
+      ),
+    );
+
+    for (const migration of migrations) {
+      if (applied.has(migration.version)) continue;
+      this.database.exec(migration.sql);
+      this.database.prepare(migrationQueries.record).run(migration.version, Date.now());
+    }
+  }
+
+  private project(row: ProjectRow): Project {
     return {
-      id: value.id,
-      markdown: value.markdown,
-      externalChannel: value.external_channel,
-      createdAt: value.created_at,
-      updatedAt: value.updated_at,
+      id: row.id,
+      markdown: row.markdown,
+      externalChannel: row.external_channel,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
-  private task(row: object | undefined): Task | undefined {
-    if (!row) return undefined;
-    const value = row as {
-      id: string;
-      project_id: string;
-      markdown: string;
-      created_at: number;
-      updated_at: number;
-    };
+
+  private task(row: TaskRow): Task {
     return {
-      id: value.id,
-      projectId: value.project_id,
-      markdown: value.markdown,
-      createdAt: value.created_at,
-      updatedAt: value.updated_at,
+      id: row.id,
+      projectId: row.project_id,
+      markdown: row.markdown,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
+
   putProject(value: Project): Project {
     this.database
-      .prepare(
-        "INSERT INTO pinet_projects VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET markdown=excluded.markdown,external_channel=excluded.external_channel,created_at=excluded.created_at,updated_at=excluded.updated_at",
-      )
+      .prepare(projectQueries.put)
       .run(value.id, value.markdown, value.externalChannel, value.createdAt, value.updatedAt);
     return value;
   }
+
   getProject(id: string): Project | undefined {
-    return this.project(this.database.prepare("SELECT * FROM pinet_projects WHERE id=?").get(id));
+    const row = this.database.prepare(projectQueries.get).get(id) as ProjectRow | undefined;
+    return row && this.project(row);
   }
+
   listProjects(limit: number, offset: number): Project[] {
-    return (
-      this.database
-        .prepare("SELECT * FROM pinet_projects ORDER BY created_at,id LIMIT ? OFFSET ?")
-        .all(limit, offset) as object[]
-    ).map((row) => this.project(row)!);
+    const rows = this.database.prepare(projectQueries.list).all(limit, offset) as ProjectRow[];
+    return rows.map((row) => this.project(row));
   }
+
   deleteProject(id: string): boolean {
-    return this.database.prepare("DELETE FROM pinet_projects WHERE id=?").run(id).changes > 0;
+    return this.database.prepare(projectQueries.delete).run(id).changes > 0;
   }
+
   putTask(value: Task): Task {
     try {
       this.database
-        .prepare(
-          "INSERT INTO pinet_tasks VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,markdown=excluded.markdown,created_at=excluded.created_at,updated_at=excluded.updated_at",
-        )
+        .prepare(taskQueries.put)
         .run(value.id, value.projectId, value.markdown, value.createdAt, value.updatedAt);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("FOREIGN KEY"))
+      if (error instanceof Error && error.message.includes("FOREIGN KEY")) {
         throw new Error("project not found");
+      }
       throw error;
     }
     return value;
   }
+
   getTask(id: string): Task | undefined {
-    return this.task(this.database.prepare("SELECT * FROM pinet_tasks WHERE id=?").get(id));
+    const row = this.database.prepare(taskQueries.get).get(id) as TaskRow | undefined;
+    return row && this.task(row);
   }
+
   listTasks(projectId: string | undefined, limit: number, offset: number): Task[] {
     const rows = projectId
-      ? this.database
-          .prepare(
-            "SELECT * FROM pinet_tasks WHERE project_id=? ORDER BY created_at,id LIMIT ? OFFSET ?",
-          )
-          .all(projectId, limit, offset)
-      : this.database
-          .prepare("SELECT * FROM pinet_tasks ORDER BY created_at,id LIMIT ? OFFSET ?")
-          .all(limit, offset);
-    return (rows as object[]).map((row) => this.task(row)!);
+      ? (this.database
+          .prepare(taskQueries.listByProject)
+          .all(projectId, limit, offset) as TaskRow[])
+      : (this.database.prepare(taskQueries.list).all(limit, offset) as TaskRow[]);
+    return rows.map((row) => this.task(row));
   }
+
   deleteTask(id: string): boolean {
-    return this.database.prepare("DELETE FROM pinet_tasks WHERE id=?").run(id).changes > 0;
+    return this.database.prepare(taskQueries.delete).run(id).changes > 0;
   }
+
   search(query: string, limit: number, offset: number): { projects: Project[]; tasks: Task[] } {
-    const rows = this.database
-      .prepare(
-        `
-      SELECT 'project' AS kind,id,markdown,external_channel,NULL AS project_id,created_at,updated_at FROM pinet_projects WHERE instr(lower(markdown),lower(?))>0
-      UNION ALL
-      SELECT 'task' AS kind,id,markdown,NULL AS external_channel,project_id,created_at,updated_at FROM pinet_tasks WHERE instr(lower(markdown),lower(?))>0
-      ORDER BY created_at,id LIMIT ? OFFSET ?
-    `,
-      )
-      .all(query, query, limit, offset) as Array<Record<string, string | number | null>>;
+    const rows = this.database.prepare(searchQuery).all(query, query, limit, offset) as SearchRow[];
     const projects: Project[] = [];
     const tasks: Task[] = [];
+
     for (const row of rows) {
-      if (row.kind === "project") projects.push(this.project(row)!);
-      else tasks.push(this.task(row)!);
+      if (row.kind === "project") {
+        projects.push(this.project(row));
+      } else {
+        tasks.push(this.task({ ...row, project_id: row.project_id! }));
+      }
     }
     return { projects, tasks };
   }
+
   close(): void {
     this.database.close();
   }

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildSync } from "esbuild";
 import { Miniflare } from "miniflare";
+import worker from "./cloudflare.js";
+import type { WorkWorkerEnv } from "./cloudflare.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -33,6 +35,68 @@ function createMiniflare(persist: string): Miniflare {
 }
 
 describe("Work Durable Object parity", () => {
+  it("rejects authentication before Durable Object allocation and uses current token config", async () => {
+    let allocations = 0;
+    let forwarded = 0;
+    const env: WorkWorkerEnv = {
+      PINET_WORK_TOKENS: JSON.stringify(["first"]),
+      PINET_WORKSPACE: "configured",
+      WORK: {
+        idFromName(name) {
+          allocations += 1;
+          expect(name).toBe("configured");
+          return { name };
+        },
+        get() {
+          return {
+            fetch(request) {
+              forwarded += 1;
+              expect(request.headers.get("authorization")).toBeNull();
+              expect(request.headers.get("x-pinet-workspace")).toBeNull();
+              return Promise.resolve(Response.json({ status: "ok" }));
+            },
+          };
+        },
+      },
+    };
+
+    const rejected = await worker.fetch(
+      new Request("https://work.example/v1/projects", {
+        headers: { authorization: "Bearer wrong", "x-pinet-workspace": "attacker" },
+      }),
+      env,
+    );
+    expect(rejected.status).toBe(401);
+    expect(allocations).toBe(0);
+    expect(forwarded).toBe(0);
+
+    env.PINET_WORK_TOKENS = JSON.stringify(["second"]);
+    expect(
+      (
+        await worker.fetch(
+          new Request("https://work.example/v1/projects", {
+            headers: { authorization: "Bearer first" },
+          }),
+          env,
+        )
+      ).status,
+    ).toBe(401);
+    expect(allocations).toBe(0);
+
+    expect(
+      (
+        await worker.fetch(
+          new Request("https://work.example/v1/projects", {
+            headers: { authorization: "Bearer second", "x-pinet-workspace": "attacker" },
+          }),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+    expect(allocations).toBe(1);
+    expect(forwarded).toBe(1);
+  });
+
   it("persists CRUD and cascading deletion across emulator restarts", async () => {
     const persist = mkdtempSync(join(tmpdir(), "pinet-work-do-"));
     directories.push(persist);
@@ -51,7 +115,7 @@ describe("Work Durable Object parity", () => {
     const project = (await projectResponse.json()) as { data: { id: string } };
     const taskResponse = await mf.dispatchFetch("http://local/v1/tasks", {
       method: "POST",
-      headers,
+      headers: { ...headers, "x-pinet-workspace": "a-different-caller-value" },
       body: JSON.stringify({ projectId: project.data.id, markdown: "task" }),
     });
     const task = (await taskResponse.json()) as { data: { id: string } };

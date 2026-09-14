@@ -8,9 +8,10 @@ const storage = new SqliteWorkStorage(process.env.PINET_WORK_DB ?? "pinet-work.s
 serve(
   {
     fetch: createWorkApp({ storage, tokens: parseTokens(encoded) }).fetch,
+    hostname: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 8788),
   },
-  (info) => console.log(`Pinet work listening on http://127.0.0.1:${info.port}`),
+  (info) => console.log(`Pinet work listening on http://${info.address}:${info.port}`),
 );
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.on(signal, () => {
