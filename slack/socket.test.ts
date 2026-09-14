@@ -80,6 +80,53 @@ describe("Slack Socket Mode lifecycle", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("ignores stale socket callbacks and acknowledges only on the source generation", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const adapter = { enqueue: vi.fn(), drain: vi.fn(async () => {}) };
+    const client = new SlackSocketModeClient(
+      "app-token",
+      adapter as never,
+      vi.fn(async () => Response.json({ ok: true, url: "wss://socket.test" })),
+      (() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      }) as never,
+    );
+    await client.start();
+    const oldSocket = sockets[0]!;
+    oldSocket.emit("open");
+    oldSocket.emit("close");
+    await vi.advanceTimersByTimeAsync(1000);
+    const currentSocket = sockets[1]!;
+    currentSocket.emit("open");
+    const envelope = {
+      data: JSON.stringify({
+        envelope_id: "envelope",
+        payload: {
+          event: { type: "message", channel: "C", ts: "1", text: "hello", user: "U" },
+        },
+      }),
+    };
+
+    oldSocket.emit("message", envelope);
+    oldSocket.emit("error");
+    oldSocket.emit("close");
+    await Promise.resolve();
+    expect(oldSocket.sent).toEqual([]);
+    expect(currentSocket.sent).toEqual([]);
+    expect(adapter.enqueue).not.toHaveBeenCalled();
+    expect(currentSocket.closed).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+
+    currentSocket.emit("message", envelope);
+    await vi.waitFor(() => expect(adapter.enqueue).toHaveBeenCalledTimes(1));
+    expect(oldSocket.sent).toEqual([]);
+    expect(currentSocket.sent).toEqual([JSON.stringify({ envelope_id: "envelope" })]);
+    client.stop();
+  });
+
   it("closes and reconnects when message delivery rejects", async () => {
     vi.useFakeTimers();
     const socket = new FakeSocket();

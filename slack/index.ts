@@ -66,6 +66,8 @@ export type SlackExtensionOptions = {
   databasePath?: string;
   mentionMap?: Record<string, string>;
   fetch?: typeof fetch;
+  enabled?: boolean;
+  mappingStoreFactory?: (path: string) => MappingStore;
 };
 export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions = {}) {
   const chatUrl = supplied.chatUrl ?? process.env.PINET_CHAT_URL,
@@ -73,41 +75,52 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
     botToken = supplied.slackBotToken ?? process.env.SLACK_BOT_TOKEN,
     appToken = supplied.slackAppToken ?? process.env.SLACK_APP_TOKEN,
     userId = supplied.slackUserId ?? process.env.SLACK_BOT_USER_ID;
-  const mappings = new SqliteMappingStore(
+  const enabled = supplied.enabled ?? process.env.PINET_SLACK_ENABLED === "true";
+  const configured = Boolean(enabled && chatUrl && chatToken && botToken && appToken && userId);
+  const databasePath =
     supplied.databasePath ??
-      process.env.PINET_SLACK_DB ??
-      join(homedir(), ".pi", "agent", "pinet-slack.sqlite"),
-  );
+    process.env.PINET_SLACK_DB ??
+    join(homedir(), ".pi", "agent", "pinet-slack.sqlite");
   const transport = supplied.fetch ?? fetch;
-  const configured = Boolean(chatUrl && chatToken && botToken && appToken && userId);
-  const adapter = configured
-    ? new SlackAdapter({
-        mappings,
-        slack: new SlackWebApiTransport(botToken!, transport),
-        chat: new ChatHttpTransport(chatUrl!, chatToken!, transport),
-        ownSlackUserId: userId!,
-        mentionMap: supplied.mentionMap,
-      })
-    : undefined;
-  const socket =
-    adapter && appToken ? new SlackSocketModeClient(appToken, adapter, transport) : undefined;
+  let mappings: MappingStore | undefined;
+  let socket: SlackSocketModeClient | undefined;
   let poller: ReturnType<typeof setInterval> | undefined;
-  const chatPoller =
-    adapter && chatUrl && chatToken
-      ? new SlackChatPoller(mappings, adapter, chatUrl, chatToken, transport)
-      : undefined;
+  const getMappings = () => {
+    if (!enabled) throw new Error("Set PINET_SLACK_ENABLED=true to activate the Slack adapter");
+    mappings ??= supplied.mappingStoreFactory
+      ? supplied.mappingStoreFactory(databasePath)
+      : new SqliteMappingStore(databasePath);
+    return mappings;
+  };
   pi.on("session_start", async () => {
-    if (!socket) return;
+    if (!configured) return;
+    const activeMappings = getMappings();
+    const adapter = new SlackAdapter({
+      mappings: activeMappings,
+      slack: new SlackWebApiTransport(botToken!, transport),
+      chat: new ChatHttpTransport(chatUrl!, chatToken!, transport),
+      ownSlackUserId: userId!,
+      mentionMap: supplied.mentionMap,
+    });
+    socket = new SlackSocketModeClient(appToken!, adapter, transport);
+    const chatPoller = new SlackChatPoller(
+      activeMappings,
+      adapter,
+      chatUrl!,
+      chatToken!,
+      transport,
+    );
     await socket.start();
     poller = setInterval(() => {
-      void chatPoller?.poll().catch(() => {});
+      void chatPoller.poll().catch(() => {});
     }, 2000);
     poller.unref();
   });
   pi.on("session_shutdown", () => {
     socket?.stop();
     if (poller) clearInterval(poller);
-    mappings.close();
+    mappings?.close();
+    mappings = undefined;
   });
   pi.registerTool({
     name: "pinet_slack",
@@ -148,13 +161,14 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
               outbound_retry: { messageId: "string" },
             },
           };
-        else if (p.action === "status") value = { configured, mappings: mappings.listChannels() };
+        else if (p.action === "status")
+          value = { enabled, configured, mappings: mappings?.listChannels() ?? [] };
         else if (p.action === "bind_channel") {
           const mapping = {
             slackChannelId: need(p.slackChannelId, "slackChannelId"),
             chatChannelId: need(p.chatChannelId, "chatChannelId"),
           };
-          mappings.bindChannel(mapping);
+          getMappings().bindChannel(mapping);
           value = mapping;
         } else if (p.action === "bind_thread") {
           const mapping = {
@@ -163,12 +177,12 @@ export function registerSlack(pi: ExtensionAPI, supplied: SlackExtensionOptions 
             slackThreadTs: need(p.slackThreadTs, "slackThreadTs"),
             chatParentId: need(p.chatParentId, "chatParentId"),
           };
-          mappings.bindThread(mapping);
+          getMappings().bindThread(mapping);
           value = mapping;
         } else if (p.action === "outbound_ambiguous")
-          value = { messageIds: mappings.listAmbiguousOutbound() };
+          value = { messageIds: getMappings().listAmbiguousOutbound() };
         else if (p.action === "outbound_retry")
-          value = { retried: mappings.retryOutbound(need(p.messageId, "messageId")) };
+          value = { retried: getMappings().retryOutbound(need(p.messageId, "messageId")) };
         else throw new Error("Unknown action; call help");
         return {
           content: [{ type: "text", text: JSON.stringify(value, null, 2) }],

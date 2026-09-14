@@ -31,8 +31,9 @@ export class SlackSocketModeClient {
   }
   stop() {
     this.stopped = true;
-    this.socket?.close();
+    const socket = this.socket;
     this.socket = undefined;
+    socket?.close();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
   }
@@ -47,22 +48,34 @@ export class SlackSocketModeClient {
     const socket = this.socketFactory(body.url);
     this.socket = socket;
     socket.addEventListener("open", () => {
+      if (this.socket !== socket) return;
       this.reconnectMs = 1000;
-      void this.adapter.drain().catch(() => socket.close());
+      void this.adapter.drain().catch(() => {
+        if (this.socket === socket) socket.close();
+      });
     });
     socket.addEventListener("message", (event) => {
-      void this.receive(event.data).catch(() => socket.close());
+      void this.receive(socket, event.data).catch(() => {
+        if (this.socket === socket) socket.close();
+      });
     });
-    socket.addEventListener("close", () => this.scheduleReconnect());
-    socket.addEventListener("error", () => socket.close());
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
+      this.socket = undefined;
+      this.scheduleReconnect();
+    });
+    socket.addEventListener("error", () => {
+      if (this.socket === socket) socket.close();
+    });
   }
-  private async receive(data: string | ArrayBuffer) {
+  private async receive(source: SocketLike, data: string | ArrayBuffer) {
+    if (this.socket !== source) return;
     const encoded = typeof data === "string" ? data : new TextDecoder().decode(data);
     const envelope = JSON.parse(encoded) as Envelope;
     if (!envelope.envelope_id || !envelope.payload) return;
     const message = parseSlackMessage(envelope.payload);
     if (message) this.adapter.enqueue(message);
-    this.socket?.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+    source.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
     if (message) await this.adapter.drain();
   }
   private scheduleReconnect() {

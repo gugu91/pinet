@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import type { SlackInboundMessage } from "./adapter.js";
 export type ChannelMapping = { slackChannelId: string; chatChannelId: string };
@@ -166,6 +167,19 @@ type ChannelRow = { slack_channel_id: string; chat_channel_id: string };
 type ThreadRow = ChannelRow & { slack_thread_ts: string; chat_parent_id: string };
 type ValueRow = { value: string };
 type InboxRow = { id: string; value: string };
+type LeaseRow = { owner: string; pid: number; process_identity: string };
+
+function processIdentity(pid: number): string | undefined {
+  try {
+    const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+    }).trim();
+    return started || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class SqliteMappingStore implements MappingStore {
   private readonly db: DatabaseSync;
   private readonly owner = crypto.randomUUID();
@@ -175,8 +189,9 @@ export class SqliteMappingStore implements MappingStore {
     private readonly relayRetention = 30000,
   ) {
     this.db = new DatabaseSync(path);
+    this.db.exec("PRAGMA busy_timeout=5000");
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS pinet_slack_owner(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,pid INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS pinet_slack_owner(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,pid INTEGER NOT NULL,process_identity TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS pinet_slack_channels(slack_channel_id TEXT PRIMARY KEY,chat_channel_id TEXT UNIQUE NOT NULL);
       CREATE TABLE IF NOT EXISTS pinet_slack_threads(slack_channel_id TEXT NOT NULL,slack_thread_ts TEXT NOT NULL,chat_channel_id TEXT NOT NULL,chat_parent_id TEXT NOT NULL,PRIMARY KEY(slack_channel_id,slack_thread_ts),UNIQUE(chat_channel_id,chat_parent_id));
       CREATE TABLE IF NOT EXISTS pinet_slack_relays(id INTEGER PRIMARY KEY AUTOINCREMENT,relay_key TEXT UNIQUE NOT NULL);
@@ -184,21 +199,40 @@ export class SqliteMappingStore implements MappingStore {
       CREATE TABLE IF NOT EXISTS pinet_slack_cursors(chat_channel_id TEXT PRIMARY KEY,cursor INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS pinet_slack_outbound(message_id TEXT PRIMARY KEY,status TEXT NOT NULL CHECK(status IN ('sending','complete')),chat_channel_id TEXT);
     `);
-    const lease = this.db.prepare("SELECT owner,pid FROM pinet_slack_owner WHERE id=1").get() as
-      | { owner: string; pid: number }
-      | undefined;
-    if (lease) {
-      try {
-        process.kill(lease.pid, 0);
-        this.db.close();
-        throw new Error("mapping database is already owned by another Slack bridge");
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
-      }
+    const ownerColumns = this.db.prepare("PRAGMA table_info(pinet_slack_owner)").all() as Array<{
+      name: string;
+    }>;
+    if (!ownerColumns.some((column) => column.name === "process_identity"))
+      this.db.exec(
+        "ALTER TABLE pinet_slack_owner ADD COLUMN process_identity TEXT NOT NULL DEFAULT ''",
+      );
+    const identity = processIdentity(process.pid);
+    if (!identity) {
+      this.db.close();
+      throw new Error("cannot determine Slack bridge process identity");
     }
-    this.db
-      .prepare("INSERT OR REPLACE INTO pinet_slack_owner(id,owner,pid) VALUES(1,?,?)")
-      .run(this.owner, process.pid);
+    let transaction = false;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      transaction = true;
+      const lease = this.db
+        .prepare("SELECT owner,pid,process_identity FROM pinet_slack_owner WHERE id=1")
+        .get() as LeaseRow | undefined;
+      if (lease && processIdentity(lease.pid) === lease.process_identity) {
+        throw new Error("mapping database is already owned by another Slack bridge");
+      }
+      this.db
+        .prepare(
+          "INSERT INTO pinet_slack_owner(id,owner,pid,process_identity) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,pid=excluded.pid,process_identity=excluded.process_identity",
+        )
+        .run(this.owner, process.pid, identity);
+      this.db.exec("COMMIT");
+      transaction = false;
+    } catch (error) {
+      if (transaction) this.db.exec("ROLLBACK");
+      this.db.close();
+      throw error;
+    }
   }
   bindChannel(value: ChannelMapping): void {
     const current = this.channelBySlack(value.slackChannelId);

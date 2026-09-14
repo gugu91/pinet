@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -288,6 +289,23 @@ describe("Slack adapter", () => {
     expect(second.getCursor("chat")).toBe(9);
     expect(second.beginOutbound("out")).toBe("complete");
     second.close();
+  });
+
+  it("reclaims a stale lease when a PID has been reused by another process generation", () => {
+    const directory = mkdtempSync(join(tmpdir(), "pinet-slack-stale-owner-"));
+    dirs.push(directory);
+    const path = join(directory, "map.sqlite");
+    const database = new DatabaseSync(path);
+    database.exec(
+      "CREATE TABLE pinet_slack_owner(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,pid INTEGER NOT NULL,process_identity TEXT NOT NULL DEFAULT '')",
+    );
+    database
+      .prepare("INSERT INTO pinet_slack_owner VALUES(1,'old-generation',?,'not-this-process')")
+      .run(process.pid);
+    database.close();
+
+    const reclaimed = new SqliteMappingStore(path);
+    reclaimed.close();
   });
 
   it("persists explicit mappings and relay IDs", () => {
