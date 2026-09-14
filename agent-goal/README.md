@@ -31,7 +31,7 @@ For local development: `pi -e ./agent-goal/index.ts`.
 /goal hide | /goal show              Hide or show compact status
 ```
 
-`/goal <idea>` starts a normal agent turn to clarify the outcome, scope, constraints, completion evidence, and optional limits; it does not create anything until you confirm the resulting goal. The persistent row is deliberately compact: `🎯 name elapsed`. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form or closes the details overlay; Ctrl+C also closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
+`/goal <idea>` starts a normal agent turn to clarify the outcome, scope, constraints, completion evidence, and optional limits; it does not create anything until you confirm the resulting goal. The persistent row truncates long goal text and shows status with an emoji: `🎯` active, `⏸️` paused or snoozed, `⛔` blocked, `⏱️` budget-limited, and `✅` complete. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form or closes the details overlay; Ctrl+C also closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
 
 `/goal demo` asks the agent to walk through a small example, checkpointing, inspection, and verified completion. Demo and idea discussions require a session without an existing goal; otherwise the command reports an error without starting a turn. The walkthrough asks for consent before creating its example goal.
 
@@ -46,11 +46,11 @@ The extension registers six model-visible tools:
 - `create_goal` — create a user-aligned goal with a short name and objective
 - `checkpoint_goal` — append progress with optional evidence, next step, or blocker
 - `update_goal_budget` — set optional turn/runtime continuation limits or turn them off
-- `get_goal` — inspect current durable state
+- `get_goal` — inspect current durable state and checkpoint history
 - `clear_goal` — permanently remove the session goal when the user explicitly asks
 - `update_goal` — attach a `complete` or `blocked` candidate for independent evaluation
 
-Checkpoints are agent-reported progress records, not recovery snapshots. They persist with the goal. The overlay initially shows the newest three checkpoints. Tab/Shift+Tab selects across the full history; Enter opens the selected checkpoint's full summary, evidence, next step, and blocker. Use ↑/↓ to scroll and Escape to return. The headless dashboard shows the newest three and `… and X more`.
+After a goal starts, the agent receives one concise hint: `Use checkpoint_goal after meaningful progress to keep users in the loop.` Checkpoints are agent-reported progress records, not recovery snapshots. They persist with the goal and are returned by `get_goal`. Checkpoint output and UI label the summary as `DONE`, the next step as `TODO`, supporting results as `EVIDENCE`, and an optional blocker as `BLOCKED`. The overlay initially shows the newest three checkpoints. Tab/Shift+Tab selects across the full history; Enter opens the selected checkpoint's full detail. Use ↑/↓ to scroll and Escape to return. The headless dashboard shows the newest three and `… and X more`.
 
 ## Optional continuation limits
 

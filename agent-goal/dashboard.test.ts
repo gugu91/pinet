@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatGoalDashboard, formatGoalStatus } from "./dashboard.js";
+import { formatGoalDashboard, formatGoalStatus, goalStatusEmoji } from "./dashboard.js";
 import type { AgentGoal, GoalCheckpoint } from "./domain.js";
 
 const goal: AgentGoal = {
@@ -31,7 +31,39 @@ describe("goal dashboard", () => {
     const dashboard = formatGoalDashboard(goal, undefined, checkpoints);
     expect(dashboard).toContain("Limits: Turns 3/8 · Runtime 60m");
     expect(dashboard.filter((line) => line.startsWith("Checkpoint "))).toHaveLength(3);
+    expect(dashboard).toContain("DONE: Progress 1");
     expect(dashboard).toContain("… and 1 more checkpoints");
     expect(dashboard.join("\n")).not.toContain("token");
+  });
+
+  it("labels checkpoint progress and remaining work", () => {
+    const dashboard = formatGoalDashboard(goal, undefined, [
+      {
+        ...checkpoints[0]!,
+        nextStep: "Open the pull request",
+        evidence: "Tests passed",
+        blocker: "Waiting for review",
+      },
+    ]);
+    expect(dashboard).toContain("DONE: Progress 1");
+    expect(dashboard).toContain("TODO: Open the pull request");
+    expect(dashboard).toContain("EVIDENCE: Tests passed");
+    expect(dashboard).toContain("BLOCKED: Waiting for review");
+  });
+
+  it.each([
+    ["active", "🎯"],
+    ["paused", "⏸️"],
+    ["blocked", "⛔"],
+    ["budget_limited", "⏱️"],
+    ["complete", "✅"],
+  ] as const)("shows %s status as %s", (status, emoji) => {
+    expect(goalStatusEmoji({ ...goal, status })).toBe(emoji);
+  });
+
+  it("truncates the compact goal text", () => {
+    const compact = formatGoalStatus({ ...goal, name: undefined, objective: "x".repeat(80) });
+    expect(compact).toMatch(/^🎯 x{37}\.\.\. /);
+    expect(compact).not.toContain("x".repeat(41));
   });
 });

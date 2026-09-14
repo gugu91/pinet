@@ -12,8 +12,16 @@ export function displayGoalText(value: string, maxLength: number): string {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
 }
 
-export function goalDisplayName(goal: AgentGoal): string {
-  return displayGoalText(goal.name ?? goal.objective, 72);
+export function goalDisplayName(goal: AgentGoal, maxLength = 72): string {
+  return displayGoalText(goal.name ?? goal.objective, maxLength);
+}
+
+export function goalStatusEmoji(goal: AgentGoal): string {
+  if (goal.snoozedUntil || goal.status === "paused") return "⏸️";
+  if (goal.status === "complete") return "✅";
+  if (goal.status === "blocked") return "⛔";
+  if (goal.status === "budget_limited") return "⏱️";
+  return "🎯";
 }
 
 export function formatElapsed(milliseconds: number): string {
@@ -27,7 +35,7 @@ export function formatElapsed(milliseconds: number): string {
 
 export function formatGoalStatus(goal: AgentGoal, now = Date.now()): string {
   const end = goal.status === "active" ? now : Date.parse(goal.updatedAt);
-  return `🎯 ${goalDisplayName(goal)} ${formatElapsed(end - Date.parse(goal.createdAt))}`;
+  return `${goalStatusEmoji(goal)} ${goalDisplayName(goal, 40)} ${formatElapsed(end - Date.parse(goal.createdAt))}`;
 }
 
 export function formatGoalDashboard(
@@ -58,7 +66,11 @@ export function formatGoalDashboard(
   if (goal.blockedReason) lines.push(`Reason: ${displayGoalText(goal.blockedReason, 100)}`);
   if (claim) lines.push(`Continuation: ${claim.state} · attempt ${claim.attempt}`);
   for (const checkpoint of checkpoints.slice(0, 3)) {
-    lines.push(`Checkpoint ${checkpoint.createdAt}: ${displayGoalText(checkpoint.summary, 90)}`);
+    lines.push(`Checkpoint ${checkpoint.createdAt}`);
+    lines.push(`DONE: ${displayGoalText(checkpoint.summary, 90)}`);
+    if (checkpoint.nextStep) lines.push(`TODO: ${displayGoalText(checkpoint.nextStep, 90)}`);
+    if (checkpoint.evidence) lines.push(`EVIDENCE: ${displayGoalText(checkpoint.evidence, 90)}`);
+    if (checkpoint.blocker) lines.push(`BLOCKED: ${displayGoalText(checkpoint.blocker, 90)}`);
   }
   if (checkpoints.length > 3) lines.push(`… and ${checkpoints.length - 3} more checkpoints`);
   lines.push("/goal update · snooze <duration> · close · hide");

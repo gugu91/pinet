@@ -100,7 +100,9 @@ describe("GoalWindow", () => {
       checkpoints,
     ).render(60);
 
+    expect(lines.join("\n")).toContain("🎯 ACTIVE");
     expect(lines.join("\n")).toContain("Ship goal UX");
+    expect(lines.join("\n")).toContain("DONE Checkpoint");
     expect(lines.join("\n")).toContain("Elapsed 15m 0s");
     expect(lines.join("\n")).toContain("3/8 turns");
     expect(lines.join("\n")).toContain("tab/shift+tab select · enter open");
@@ -235,12 +237,15 @@ describe("GoalWindow", () => {
     const window = new GoalWindow(goal, undefined, theme, vi.fn(), vi.fn(), Date.now, undefined, [
       { ...checkpoints[0]!, evidence: "Tests passed", nextStep: "Review the diff" },
     ]);
+    expect(window.render(70).join("\n")).toContain("DONE Checkpoint 1");
+    expect(window.render(70).join("\n")).toContain("TODO Review the diff");
     expect(window.render(70).join("\n")).toContain("tab/shift+tab select · enter open");
     expect(window.render(70).join("\n")).not.toContain("Tests passed");
     window.handleInput("\t");
     window.handleInput("\r");
-    expect(window.render(70).join("\n")).toContain("Tests passed");
-    expect(window.render(70).join("\n")).toContain("Review the diff");
+    expect(window.render(70).join("\n")).toContain("DONE: Checkpoint 1");
+    expect(window.render(70).join("\n")).toContain("EVIDENCE: Tests passed");
+    expect(window.render(70).join("\n")).toContain("TODO: Review the diff");
     expect(window.render(70).join("\n")).toContain("esc back");
     window.handleInput("\u001b");
     expect(window.render(70).join("\n")).not.toContain("Tests passed");
@@ -267,7 +272,7 @@ describe("GoalWindow", () => {
     expect(bottom.join("\n")).toContain("External blocker");
     expect(bottom.every((line) => visibleWidth(line) <= 50)).toBe(true);
     for (let index = 0; index < 100; index += 1) window.handleInput("\u001b[A");
-    expect(window.render(50).join("\n")).toContain("Summary:");
+    expect(window.render(50).join("\n")).toContain("DONE:");
     window.dispose();
   });
 
@@ -288,6 +293,18 @@ describe("GoalWindow", () => {
     window.handleInput("\r");
     expect(onAction).toHaveBeenCalledWith({ type: "snooze", durationMs: 7_200_000 });
     expect(window.render(60).join("\n")).not.toContain("resume");
+  });
+
+  it.each([
+    ["active", "🎯 ACTIVE"],
+    ["paused", "⏸️ PAUSED"],
+    ["blocked", "⛔ BLOCKED"],
+    ["budget_limited", "⏱️ BUDGET_LIMITED"],
+    ["complete", "✅ COMPLETE"],
+  ] as const)("renders %s status with its emoji", (status, expected) => {
+    const window = new GoalWindow({ ...goal, status }, undefined, theme, vi.fn());
+    expect(window.render(60).join("\n")).toContain(expected);
+    window.dispose();
   });
 
   it("makes close available for budget-limited goals", () => {
