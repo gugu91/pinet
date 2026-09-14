@@ -13,10 +13,13 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
-function createMiniflare(persist: string): Miniflare {
+function createMiniflare(persist: string, legacy = false): Miniflare {
   const scriptPath = join(persist, "work-worker.mjs");
   buildSync({
-    entryPoints: [new URL("./cloudflare.ts", import.meta.url).pathname],
+    entryPoints: [
+      new URL(legacy ? "./fixtures/legacy-worker.mjs" : "./cloudflare.ts", import.meta.url)
+        .pathname,
+    ],
     outfile: scriptPath,
     bundle: true,
     format: "esm",
@@ -70,6 +73,17 @@ describe("Work Durable Object parity", () => {
     expect(allocations).toBe(0);
     expect(forwarded).toBe(0);
 
+    for (const path of ["/v%31/projects", "/%76%31/projects", "/v1%2fprojects", "/other"]) {
+      for (const method of ["GET", "POST", "PUT", "DELETE"]) {
+        expect(
+          (await worker.fetch(new Request(`https://work.example${path}`, { method }), env)).status,
+        ).toBe(401);
+      }
+    }
+    expect((await worker.fetch(new Request("https://work.example/health"), env)).status).toBe(200);
+    expect(allocations).toBe(0);
+    expect(forwarded).toBe(0);
+
     env.PINET_WORK_TOKENS = JSON.stringify(["second"]);
     expect(
       (
@@ -95,6 +109,81 @@ describe("Work Durable Object parity", () => {
     ).toBe(200);
     expect(allocations).toBe(1);
     expect(forwarded).toBe(1);
+  });
+
+  it("preserves populated legacy Worker storage through migration and restart", async () => {
+    const persist = mkdtempSync(join(tmpdir(), "pinet-work-legacy-do-"));
+    directories.push(persist);
+    let mf = createMiniflare(persist, true);
+    try {
+      expect((await mf.dispatchFetch("http://local/seed")).status).toBe(200);
+    } finally {
+      await mf.dispose();
+    }
+    const headers = { authorization: "Bearer secret" };
+    for (let boot = 0; boot < 2; boot += 1) {
+      mf = createMiniflare(persist);
+      try {
+        const project = await mf.dispatchFetch("http://local/v1/projects/legacy-project", {
+          headers,
+        });
+        expect(project.status).toBe(200);
+        expect(await project.json()).toEqual({
+          data: {
+            id: "legacy-project",
+            markdown: "legacy project",
+            externalChannel: "channel",
+            createdAt: 1,
+            updatedAt: 2,
+          },
+        });
+        const task = await mf.dispatchFetch("http://local/v1/tasks/legacy-task", { headers });
+        expect(task.status).toBe(200);
+        expect(await task.json()).toEqual({
+          data: {
+            id: "legacy-task",
+            projectId: "legacy-project",
+            markdown: "legacy task",
+            createdAt: 3,
+            updatedAt: 4,
+          },
+        });
+        if (boot === 1) {
+          expect(
+            (
+              await mf.dispatchFetch("http://local/v1/projects/legacy-project", {
+                method: "DELETE",
+                headers,
+              })
+            ).status,
+          ).toBe(204);
+          expect(
+            (await mf.dispatchFetch("http://local/v1/tasks/legacy-task", { headers })).status,
+          ).toBe(404);
+        }
+      } finally {
+        await mf.dispose();
+      }
+    }
+  });
+
+  it("rejects encoded unauthenticated routes in the bundled Worker", async () => {
+    const persist = mkdtempSync(join(tmpdir(), "pinet-work-auth-do-"));
+    directories.push(persist);
+    const mf = createMiniflare(persist);
+    try {
+      for (const method of ["GET", "POST", "PUT", "DELETE"]) {
+        expect((await mf.dispatchFetch("http://local/v%31/projects", { method })).status).toBe(401);
+      }
+      const response = await mf.dispatchFetch("http://local/v%31/projects", {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({ markdown: "authenticated" }),
+      });
+      expect(response.status).toBe(201);
+    } finally {
+      await mf.dispose();
+    }
   });
 
   it("persists CRUD and cascading deletion across emulator restarts", async () => {

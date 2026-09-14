@@ -179,6 +179,8 @@ export function createWorkApp(options: WorkAppOptions) {
     if (cause instanceof RequestError) {
       return c.json({ error: { code: "invalid_request", message: cause.message } }, 400);
     }
+    // Signal failures without logging SQL, credentials or user-provided content.
+    console.error("Work request failed", { code: "internal_error", method: c.req.method });
     return c.json(
       { error: { code: "internal_error", message: "The request could not be completed" } },
       500,

@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "./domain.js";
 import { MemoryWorkStorage } from "./memory-storage.js";
 import { createWorkApp, parseTokens } from "./server.js";
@@ -12,6 +12,7 @@ const auth = { authorization: "Bearer secret", "content-type": "application/json
 const directories: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -88,7 +89,7 @@ describe("independent work API", () => {
         await app.request("/v1/projects", {
           method: "POST",
           headers: auth,
-          body: JSON.stringify({ markdown: "x".repeat(70_000) }),
+          body: JSON.stringify({ markdown: "valid", ignored: "x".repeat(70_000) }),
         })
       ).status,
     ).toBe(400);
@@ -103,7 +104,23 @@ describe("independent work API", () => {
     ).toBe(400);
   });
 
+  it("bounds Markdown independently of the byte limit", async () => {
+    const app = createWorkApp({ storage: new MemoryWorkStorage(), tokens: ["secret"] });
+    for (const [length, status] of [
+      [32_768, 201],
+      [32_769, 400],
+    ]) {
+      const response = await app.request("/v1/projects", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ markdown: "x".repeat(length) }),
+      });
+      expect(response.status).toBe(status);
+    }
+  });
+
   it("does not disclose storage failures", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     class FailingStorage extends MemoryWorkStorage {
       override listProjects(): Project[] {
         throw new Error("sqlite failed with secret=do-not-disclose");
@@ -117,6 +134,10 @@ describe("independent work API", () => {
     expect(body).toContain("The request could not be completed");
     expect(body).not.toContain("sqlite");
     expect(body).not.toContain("do-not-disclose");
+    expect(log).toHaveBeenCalledWith("Work request failed", {
+      code: "internal_error",
+      method: "GET",
+    });
   });
 
   it("rejects empty, duplicate, and malformed token configuration", () => {
@@ -147,15 +168,28 @@ describe("independent work API", () => {
         updated_at INTEGER NOT NULL
       );
     `);
+    legacy
+      .prepare("INSERT INTO pinet_projects VALUES (?, ?, ?, ?, ?)")
+      .run("p", "saved", "channel", 1, 2);
+    legacy
+      .prepare("INSERT INTO pinet_tasks VALUES (?, ?, ?, ?, ?)")
+      .run("t", "p", "legacy task", 3, 4);
     legacy.close();
 
     const first = new SqliteWorkStorage(path);
-    first.putProject({
+    expect(first.getProject("p")).toEqual({
       id: "p",
       markdown: "saved",
-      externalChannel: null,
+      externalChannel: "channel",
       createdAt: 1,
-      updatedAt: 1,
+      updatedAt: 2,
+    });
+    expect(first.getTask("t")).toEqual({
+      id: "t",
+      projectId: "p",
+      markdown: "legacy task",
+      createdAt: 3,
+      updatedAt: 4,
     });
     first.close();
 
@@ -168,6 +202,9 @@ describe("independent work API", () => {
 
     const second = new SqliteWorkStorage(path);
     expect(second.getProject("p")?.markdown).toBe("saved");
+    expect(second.getTask("t")?.markdown).toBe("legacy task");
+    expect(second.deleteProject("p")).toBe(true);
+    expect(second.getTask("t")).toBeUndefined();
     second.close();
   });
 });

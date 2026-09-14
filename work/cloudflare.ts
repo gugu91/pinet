@@ -181,6 +181,10 @@ export class WorkDurableObject {
 
 export default {
   fetch(request: Request, env: WorkWorkerEnv): Promise<Response> {
+    if (request.method === "GET" && new URL(request.url).pathname === "/health") {
+      return Promise.resolve(Response.json({ status: "ok" }));
+    }
+
     let tokens: string[];
     try {
       tokens = parseTokens(env.PINET_WORK_TOKENS);
@@ -193,10 +197,8 @@ export default {
       );
     }
 
-    if (
-      new URL(request.url).pathname.startsWith("/v1/") &&
-      !hasValidBearerToken(request.headers.get("authorization"), tokens)
-    ) {
+    // Authenticate every forwarded request, independent of how Hono decodes its path.
+    if (!hasValidBearerToken(request.headers.get("authorization"), tokens)) {
       return Promise.resolve(
         Response.json(
           { error: { code: "unauthorized", message: "Valid Bearer credential required" } },
