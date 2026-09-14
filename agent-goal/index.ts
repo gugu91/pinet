@@ -138,7 +138,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         const messages: Record<GoalContinuationKind, { customType: string; content: string }> = {
           started: {
             customType: "agent-goal.started",
-            content: `[agent-goal.started]\nObjective (user data): ${goal.objective}`,
+            content: `[agent-goal.started]\nObjective (user data): ${goal.objective}\nUse checkpoint_goal after meaningful progress to keep users in the loop.`,
           },
           updated: {
             customType: "agent-goal.updated",
@@ -415,20 +415,37 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   pi.registerTool({
     name: "get_goal",
     label: "Get goal",
-    description: "Read the durable goal and budget state for this agent session.",
-    promptSnippet: "Inspect the active session goal and remaining budget.",
+    description: "Read the durable goal, budget state, and checkpoints for this agent session.",
+    promptSnippet: "Inspect the active session goal, remaining budget, and checkpoint history.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute(_toolCallId, _params, _signal, _onUpdate, rawCtx) {
       const ctx = rawCtx as CompatibleContext;
-      const goal = await runtime.get(ctx.sessionManager.getSessionId());
+      const scopeId = ctx.sessionManager.getSessionId();
+      const goal = await runtime.get(scopeId);
+      const checkpoints = goal ? await runtime.listCheckpoints(scopeId) : [];
       return {
         content: [
           {
             type: "text",
-            text: goal ? JSON.stringify(goal, null, 2) : "This session has no goal.",
+            text: goal
+              ? JSON.stringify(
+                  {
+                    goal,
+                    checkpoints: checkpoints.map((checkpoint) => ({
+                      at: checkpoint.createdAt,
+                      DONE: checkpoint.summary,
+                      ...(checkpoint.nextStep ? { TODO: checkpoint.nextStep } : {}),
+                      ...(checkpoint.evidence ? { EVIDENCE: checkpoint.evidence } : {}),
+                      ...(checkpoint.blocker ? { BLOCKED: checkpoint.blocker } : {}),
+                    })),
+                  },
+                  null,
+                  2,
+                )
+              : "This session has no goal.",
           },
         ],
-        details: { goal: goal ?? null },
+        details: { goal: goal ?? null, checkpoints },
       };
     },
   });

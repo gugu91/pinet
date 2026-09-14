@@ -6,7 +6,7 @@ import {
   wrapTextWithAnsi,
   type Component,
 } from "@earendil-works/pi-tui";
-import { displayGoalText, formatElapsed, goalDisplayName } from "./dashboard.js";
+import { displayGoalText, formatElapsed, goalDisplayName, goalStatusEmoji } from "./dashboard.js";
 import type { AgentGoal, GoalCheckpoint, GoalContinuationClaim } from "./domain.js";
 
 export type GoalWindowAction =
@@ -298,9 +298,13 @@ export class GoalWindow implements Component {
       const truncated = truncateToWidth(content, innerWidth, "", true);
       return `${border("│")}${truncated}${" ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)))}${border("│")}`;
     };
-    const title = this.theme.fg(
-      "accent",
-      this.theme.bold(` Goal${this.mode === "details" ? "" : ` · ${this.mode}`} `),
+    const title = truncateToWidth(
+      this.theme.fg(
+        "accent",
+        this.theme.bold(` Goal${this.mode === "details" ? "" : ` · ${this.mode}`} `),
+      ),
+      innerWidth,
+      "",
     );
     const lines = [
       `${border("╭")}${title}${border(`${"─".repeat(Math.max(0, innerWidth - visibleWidth(title)))}╮`)}`,
@@ -350,10 +354,10 @@ export class GoalWindow implements Component {
       const checkpoint = this.checkpoints[this.selectedCheckpoint]!;
       const details: string[] = [];
       for (const [label, value] of [
-        ["Summary", checkpoint.summary],
-        ["Evidence", checkpoint.evidence],
-        ["Next", checkpoint.nextStep],
-        ["Blocker", checkpoint.blocker],
+        ["DONE", checkpoint.summary],
+        ["TODO", checkpoint.nextStep],
+        ["EVIDENCE", checkpoint.evidence],
+        ["BLOCKED", checkpoint.blocker],
       ]) {
         if (value)
           details.push(
@@ -400,7 +404,9 @@ export class GoalWindow implements Component {
       ? `SNOOZED UNTIL ${goal.snoozedUntil}`
       : goal.status.toUpperCase();
     lines.push(
-      row(` ${this.theme.fg(goal.status === "complete" ? "success" : "accent", `● ${status}`)}`),
+      row(
+        ` ${this.theme.fg(goal.status === "complete" ? "success" : "accent", `${goalStatusEmoji(goal)} ${status}`)}`,
+      ),
     );
     lines.push(row(` ${this.theme.bold(goalDisplayName(goal))}`));
     for (const objectiveLine of wrapTextWithAnsi(
@@ -432,11 +438,14 @@ export class GoalWindow implements Component {
       const start = Math.max(0, this.selectedCheckpoint - 2);
       const shown = this.checkpoints.slice(start, start + 3);
       for (const checkpoint of shown) {
+        const selected = checkpoint === this.checkpoints[this.selectedCheckpoint];
         lines.push(
           row(
-            ` ${checkpoint === this.checkpoints[this.selectedCheckpoint] ? "›" : " "} ${checkpoint.createdAt.slice(11, 16)} · ${displayGoalText(checkpoint.summary, contentWidth - 12)}`,
+            ` ${selected ? "›" : " "} DONE ${displayGoalText(checkpoint.summary, contentWidth - 8)}`,
           ),
         );
+        if (checkpoint.nextStep)
+          lines.push(row(`   TODO ${displayGoalText(checkpoint.nextStep, contentWidth - 8)}`));
       }
       lines.push(row(` ${this.theme.fg("dim", "tab/shift+tab select · enter open")}`));
     }

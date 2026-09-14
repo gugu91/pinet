@@ -40,7 +40,13 @@ describe("registerAgentGoal", () => {
       ): Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
     };
     for (const kind of ["started", "updated", "continuation"] as const) {
-      const content = `[agent-goal.${kind}]\nObjective (user data): ship`;
+      const content = [
+        `[agent-goal.${kind}]`,
+        "Objective (user data): ship",
+        ...(kind === "started"
+          ? ["Use checkpoint_goal after meaningful progress to keep users in the loop."]
+          : []),
+      ].join("\n");
       const converted = convertToLlm([
         {
           role: "custom",
@@ -88,6 +94,9 @@ describe("registerAgentGoal", () => {
       scopeId: "session-1",
       goalId: "goal-1",
       summary: "Preserved elsewhere",
+      evidence: "Tests passed",
+      nextStep: "Open the pull request",
+      blocker: "Waiting for review",
       createdAt: "2026-01-01T00:01:00.000Z",
     });
     const setWidget = vi.fn();
@@ -104,12 +113,20 @@ describe("registerAgentGoal", () => {
       continuation: { continueIfIdle: vi.fn() },
     });
     const clearGoal = tools.get("clear_goal");
-    if (!clearGoal?.execute) throw new Error("clear_goal was not registered");
+    const getGoal = tools.get("get_goal");
+    if (!clearGoal?.execute || !getGoal?.execute) throw new Error("goal tools were not registered");
     expect(clearGoal).toMatchObject({
       description: expect.stringContaining("user asks"),
       promptGuidelines: expect.arrayContaining([expect.stringContaining("explicit user request")]),
     });
 
+    const inspected = await getGoal.execute(
+      "call-0",
+      {},
+      new AbortController().signal,
+      undefined,
+      context,
+    );
     const cleared = await clearGoal.execute(
       "call-1",
       {},
@@ -125,6 +142,25 @@ describe("registerAgentGoal", () => {
       context,
     );
 
+    expect(inspected).toMatchObject({
+      details: {
+        goal: expect.objectContaining({ id: "goal-1" }),
+        checkpoints: [expect.objectContaining({ id: "checkpoint-1" })],
+      },
+    });
+    expect(inspected.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining('"DONE": "Preserved elsewhere"'),
+    });
+    expect(inspected.content[0]).toMatchObject({
+      text: expect.stringContaining('"TODO": "Open the pull request"'),
+    });
+    expect(inspected.content[0]).toMatchObject({
+      text: expect.stringContaining('"EVIDENCE": "Tests passed"'),
+    });
+    expect(inspected.content[0]).toMatchObject({
+      text: expect.stringContaining('"BLOCKED": "Waiting for review"'),
+    });
     expect(cleared).toMatchObject({
       content: [{ type: "text", text: "Cleared the durable goal for this session." }],
       details: { cleared: true },
@@ -862,7 +898,7 @@ describe("registerAgentGoal", () => {
       status: "paused",
       budget: { maxIterations: 4, maxTokens: 1_000 },
     });
-    expect(setStatus).toHaveBeenLastCalledWith("agent-goal", expect.stringMatching(/^🎯 ship /));
+    expect(setStatus).toHaveBeenLastCalledWith("agent-goal", expect.stringMatching(/^⏸️ ship /));
   });
 
   it("marks the first continuation after create_goal as a new goal", async () => {
@@ -907,7 +943,8 @@ describe("registerAgentGoal", () => {
     expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
       {
         customType: "agent-goal.started",
-        content: "[agent-goal.started]\nObjective (user data): ship the explicit lifecycle",
+        content:
+          "[agent-goal.started]\nObjective (user data): ship the explicit lifecycle\nUse checkpoint_goal after meaningful progress to keep users in the loop.",
         display: true,
       },
       { deliverAs: "followUp", triggerTurn: true },
