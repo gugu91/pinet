@@ -9,6 +9,35 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.16] - 2026-09-14
+
+Pinet v0.2.16 makes durable goal lifecycle transitions explicit to agents and adds safe agent-driven goal clearing.
+
+### Version verification
+
+- `pi-extensions` — `0.2.16` (private repo package)
+- `@pinet/transport-core` — `0.2.16`
+- `@pinet/broker-core` — `0.2.16`
+- `@pinet/pinet-core` — `0.2.16`
+- `@pinet/imessage-bridge` — `0.2.16`
+- `@pinet/slack-bridge` — `0.2.16`
+- `@pinet/model-aware-compaction` — `0.2.16`
+- `@pinet/agent-goal` — `0.2.16`
+
+### Release highlights
+
+- Distinguishes newly started, updated, and continuing goals with concise model-visible lifecycle tags so agents stop superseded work and interpret ongoing work correctly.
+- Persists unconsumed lifecycle intent across retries, restarts, pauses, snoozes, and concurrent evaluation commits, consuming it only after the matching continuation is acknowledged.
+- Adds the explicit `clear_goal` tool for user-requested goal removal, with identity-and-version-fenced deletion that distinguishes missing goals from conflicts and protects replacement goals from ABA races.
+- Cascades successful goal clearing through pending evaluations, terminal candidates, continuation claims, and checkpoints while refreshing the session UI.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1042](https://github.com/gugu91/pinet/pull/1042) — distinguish durable goal lifecycle prompts and add safe explicit clearing
+
+See the [full change set since v0.2.15](https://github.com/gugu91/pinet/compare/v0.2.15...v0.2.16).
+
 ## [0.2.15] - 2026-09-12
 
 Pinet v0.2.15 improves goal lifecycle controls, live status, guided setup, and checkpoint navigation.

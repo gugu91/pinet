@@ -1,6 +1,6 @@
 {
   "name": "@pinet/agent-goal",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "type": "module",
   "description": "Standalone single-agent durable goal loop for Pi",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
