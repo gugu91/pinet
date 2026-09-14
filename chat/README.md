@@ -10,13 +10,13 @@ PINET_CHAT_CREDENTIALS='[{"token":"replace-me","principal":{"kind":"agent","id":
 PINET_CHAT_DB="$HOME/.pi/agent/pinet-chat.sqlite" node chat/dist/cli.js
 ```
 
-Install the built Pi package, then set `PINET_CHAT_URL`, `PINET_CHAT_TOKEN`, and `PINET_AGENT_ID`. Use `pinet_chat` with `action: "help"` to discover actions. Tokens must be distinct high-entropy secrets. The server derives agent and host identity from the token, never request JSON.
+Install the built Pi package, then set `PINET_CHAT_URL`, `PINET_CHAT_TOKEN`, and `PINET_AGENT_ID`. Use `pinet_chat` with `action: "help"` to discover actions. Tokens must be distinct high-entropy secrets. The server derives agent and host identity from the token, never request JSON. It binds `127.0.0.1` by default; set `PINET_CHAT_HOST` only when intentionally exposing the authenticated API through a trusted network or reverse proxy.
 
 `GET /v1/channels/:id/messages?after=<cursor>` is the reconnect path. Messages are stored before responses and notifications. A stable `clientId` makes retries idempotent; reuse with another payload returns 409. Mentions are registered agent IDs. Broadcast text does not wake all members.
 
 ## Cloudflare
 
-`cloudflare.ts` exports a Worker and `ChatDurableObject`; bind `CHAT` and set the encrypted `PINET_CHAT_CREDENTIALS` secret to the same JSON credential array. Send `x-pinet-workspace` to choose one DO per workspace. The implementation uses standard Request/Response and Durable Object SQLite rows; mutations complete synchronously before the response is returned.
+`cloudflare.ts` exports a Worker and `ChatDurableObject`; bind `CHAT` and set the encrypted `PINET_CHAT_CREDENTIALS` secret to the same JSON credential array. Each configured credential may include a server-owned `workspace` claim using 1–128 letters, numbers, dots, underscores, or hyphens; credentials without a claim use `default` for backward compatibility. The outer Worker authenticates the Bearer credential before selecting a Durable Object, derives routing only from that configured claim or a signed request-scoped runtime token, and strips caller-supplied workspace/internal headers. Credential changes are parsed for every request so revocation and rotation apply to warm objects; rotating the credential secret also revokes previously issued request-scoped runtime tokens. Configured credentials without `workspace` remain compatible with the `default` workspace, but opaque cloud runtime tokens issued before signed routing was introduced must be reclaimed after upgrade. The implementation uses standard Request/Response and Durable Object SQLite rows; mutations complete synchronously before the response is returned.
 
 ## Runtime manager
 
@@ -31,4 +31,4 @@ PINET_CHAT_URL=http://127.0.0.1:8787 PINET_HOST_TOKEN=host-secret PINET_HOST_ID=
 
 ## Limits
 
-HTTP cursor polling is the portable notification path in this first private version; there is no Chat WebSocket endpoint yet. Durable Object code is covered by local Miniflare restart/persistence tests, typecheck, and Wrangler dry-run validation but was not deployed. Credential rotation and multi-replica local SQLite coordination are operator tasks.
+HTTP cursor polling is the portable notification path in this first private version; there is no Chat WebSocket endpoint yet. Durable Object code is covered by local Miniflare restart/persistence tests, typecheck, and Wrangler dry-run validation but was not deployed. Multi-replica local SQLite coordination remains an operator task. Validation errors retain actionable 4xx messages; unexpected storage/runtime failures are logged server-side and return a generic 500 response.

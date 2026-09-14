@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type {
   Agent,
   Channel,
@@ -6,7 +7,7 @@ import type {
   RuntimeCredential,
   RuntimeRequest,
 } from "./domain.js";
-import { sameMessage } from "./domain.js";
+import { ChatConflictError, ChatNotFoundError, sameMessage } from "./domain.js";
 import { createChatApp, parseCredentials, type Credential } from "./server.js";
 type SqlStorage = {
   exec<T extends object>(query: string, ...bindings: Array<string | number | null>): Iterable<T>;
@@ -17,6 +18,8 @@ type DurableState = {
 type DurableStub = { fetch(request: Request): Promise<Response> };
 type DurableNamespace = { idFromName(name: string): object; get(id: object): DurableStub };
 export type ChatWorkerEnv = { CHAT: DurableNamespace; PINET_CHAT_CREDENTIALS: string };
+const INTERNAL_CREDENTIALS = "x-pinet-internal-credentials";
+const INTERNAL_WORKSPACE = "x-pinet-internal-workspace";
 type ChannelRow = { id: string; name: string; topic: string; created_at: number };
 type AgentRow = { id: string; name: string; home_channel_id: string | null; last_seen: number };
 type MessageRow = {
@@ -84,8 +87,10 @@ class DurableChatStorage implements ChatStorage {
         value.topic,
         value.createdAt,
       );
-    } catch {
-      throw new Error("channel name already exists");
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes("UNIQUE constraint failed"))
+        throw new ChatConflictError("channel name already exists");
+      throw cause;
     }
     return value;
   }
@@ -121,7 +126,7 @@ class DurableChatStorage implements ChatStorage {
     ].map((row) => this.channel(row)!);
   }
   join(channelId: string, agentId: string): void {
-    if (!this.getChannel(channelId)) throw new Error("channel not found");
+    if (!this.getChannel(channelId)) throw new ChatNotFoundError("channel not found");
     this.sql.exec("INSERT OR IGNORE INTO pinet_memberships VALUES(?,?)", channelId, agentId);
   }
   leave(channelId: string, agentId: string): void {
@@ -167,10 +172,11 @@ class DurableChatStorage implements ChatStorage {
     ][0];
     if (existingRow) {
       const existing = this.message(existingRow);
-      if (!sameMessage(input, existing)) throw new Error("client id reused with different payload");
+      if (!sameMessage(input, existing))
+        throw new ChatConflictError("client id reused with different payload");
       return { message: existing, duplicate: true };
     }
-    if (!this.getChannel(input.channelId)) throw new Error("channel not found");
+    if (!this.getChannel(input.channelId)) throw new ChatNotFoundError("channel not found");
     if (input.parentId) {
       const parent = [
         ...this.sql.exec<ValueRow>(
@@ -179,7 +185,7 @@ class DurableChatStorage implements ChatStorage {
         ),
       ][0];
       if (!parent || parent.value !== input.channelId)
-        throw new Error("thread parent not found in channel");
+        throw new ChatNotFoundError("thread parent not found in channel");
     }
     this.sql.exec(
       "INSERT INTO pinet_messages(id,client_id,channel_id,sender_id,markdown,mentions,parent_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -304,31 +310,58 @@ class DurableChatStorage implements ChatStorage {
   }
   close(): void {}
 }
+function secureEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function runtimeSignature(workspace: string, nonce: string, secret: string): string {
+  return createHmac("sha256", secret).update(`${workspace}.${nonce}`).digest("base64url");
+}
+
+// agent-standards-ignore prefer-inline-single-use-helper: signed runtime credential issuance is a security boundary paired with validation below.
+function issueRuntimeToken(workspace: string, secret: string): string {
+  const nonce = crypto.randomUUID();
+  return `rt.${Buffer.from(workspace).toString("base64url")}.${nonce}.${runtimeSignature(workspace, nonce, secret)}`;
+}
+
+// agent-standards-ignore prefer-inline-single-use-helper: signed runtime credential parsing authorizes routing before Durable Object selection.
+function signedRuntimeWorkspace(token: string, secret: string): string | undefined {
+  const [prefix, encodedWorkspace, nonce, signature, extra] = token.split(".");
+  if (prefix !== "rt" || !encodedWorkspace || !nonce || !signature || extra !== undefined)
+    return undefined;
+  const workspace = Buffer.from(encodedWorkspace, "base64url").toString();
+  if (!workspace || Buffer.from(workspace).toString("base64url") !== encodedWorkspace)
+    return undefined;
+  return secureEqual(signature, runtimeSignature(workspace, nonce, secret)) ? workspace : undefined;
+}
+
 export class ChatDurableObject {
   private readonly storage: DurableChatStorage;
-  private credentials: Credential[] | undefined;
   constructor(state: DurableState) {
     this.storage = new DurableChatStorage(state);
   }
   fetch(request: Request): Promise<Response> {
     try {
-      if (!this.credentials) {
-        const encoded = request.headers.get("x-pinet-internal-credentials");
-        if (!encoded) throw new Error("Credentials unavailable");
-        this.credentials = parseCredentials(encoded);
-      }
-      return Promise.resolve(
-        createChatApp({ storage: this.storage, credentials: this.credentials }).fetch(request),
+      const encoded = request.headers.get(INTERNAL_CREDENTIALS);
+      const workspace = request.headers.get(INTERNAL_WORKSPACE);
+      if (!encoded || !workspace) throw new Error("Internal authentication context unavailable");
+      const credentials = parseCredentials(encoded).filter(
+        (credential) => (credential.workspace ?? "default") === workspace,
       );
-    } catch (error) {
+      return Promise.resolve(
+        createChatApp({
+          storage: this.storage,
+          credentials,
+          runtimeToken: () => issueRuntimeToken(workspace, encoded),
+        }).fetch(request),
+      );
+    } catch (cause) {
+      console.error("Chat Durable Object configuration failed", cause);
       return Promise.resolve(
         Response.json(
-          {
-            error: {
-              code: "misconfigured",
-              message: error instanceof Error ? error.message : "Invalid credentials",
-            },
-          },
+          { error: { code: "misconfigured", message: "Chat service is misconfigured" } },
           { status: 500 },
         ),
       );
@@ -337,9 +370,42 @@ export class ChatDurableObject {
 }
 export default {
   fetch(request: Request, env: ChatWorkerEnv): Promise<Response> {
-    const workspace = request.headers.get("x-pinet-workspace") ?? "default";
+    let credentials: Credential[];
+    try {
+      credentials = parseCredentials(env.PINET_CHAT_CREDENTIALS);
+    } catch (cause) {
+      console.error("Chat Worker credential configuration failed", cause);
+      return Promise.resolve(
+        Response.json(
+          { error: { code: "misconfigured", message: "Chat service is misconfigured" } },
+          { status: 500 },
+        ),
+      );
+    }
+    const authorization = request.headers.get("authorization");
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+    const configured = token
+      ? credentials.find((credential) => secureEqual(credential.token, token))
+      : undefined;
+    const workspace = configured
+      ? (configured.workspace ?? "default")
+      : token
+        ? signedRuntimeWorkspace(token, env.PINET_CHAT_CREDENTIALS)
+        : undefined;
+    if (!workspace) {
+      return Promise.resolve(
+        Response.json(
+          { error: { code: "unauthorized", message: "Valid Bearer credential required" } },
+          { status: 401 },
+        ),
+      );
+    }
     const forwarded = new Request(request);
-    forwarded.headers.set("x-pinet-internal-credentials", env.PINET_CHAT_CREDENTIALS);
+    forwarded.headers.delete("x-pinet-workspace");
+    forwarded.headers.delete(INTERNAL_CREDENTIALS);
+    forwarded.headers.delete(INTERNAL_WORKSPACE);
+    forwarded.headers.set(INTERNAL_CREDENTIALS, env.PINET_CHAT_CREDENTIALS);
+    forwarded.headers.set(INTERNAL_WORKSPACE, workspace);
     return env.CHAT.get(env.CHAT.idFromName(workspace)).fetch(forwarded);
   },
 };

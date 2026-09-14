@@ -6,7 +6,7 @@ import type {
   RuntimeCredential,
   RuntimeRequest,
 } from "./domain.js";
-import { sameMessage } from "./domain.js";
+import { ChatConflictError, ChatNotFoundError, sameMessage } from "./domain.js";
 
 export class MemoryChatStorage implements ChatStorage {
   protected readonly channelRows = new Map<string, Channel>();
@@ -19,7 +19,7 @@ export class MemoryChatStorage implements ChatStorage {
 
   createChannel(channel: Channel): Channel {
     if ([...this.channelRows.values()].some((row) => row.name === channel.name))
-      throw new Error("channel name already exists");
+      throw new ChatConflictError("channel name already exists");
     this.channelRows.set(channel.id, channel);
     return channel;
   }
@@ -49,7 +49,7 @@ export class MemoryChatStorage implements ChatStorage {
       .slice(offset, offset + limit);
   }
   join(channelId: string, agentId: string): void {
-    if (!this.channelRows.has(channelId)) throw new Error("channel not found");
+    if (!this.channelRows.has(channelId)) throw new ChatNotFoundError("channel not found");
     const members = this.membershipRows.get(channelId) ?? new Set<string>();
     members.add(agentId);
     this.membershipRows.set(channelId, members);
@@ -75,14 +75,15 @@ export class MemoryChatStorage implements ChatStorage {
       (row) => row.senderId === input.senderId && row.clientId === input.clientId,
     );
     if (existing) {
-      if (!sameMessage(input, existing)) throw new Error("client id reused with different payload");
+      if (!sameMessage(input, existing))
+        throw new ChatConflictError("client id reused with different payload");
       return { message: existing, duplicate: true };
     }
-    if (!this.channelRows.has(input.channelId)) throw new Error("channel not found");
+    if (!this.channelRows.has(input.channelId)) throw new ChatNotFoundError("channel not found");
     if (input.parentId) {
       const parent = this.messageRows.find((row) => row.id === input.parentId);
       if (!parent || parent.channelId !== input.channelId)
-        throw new Error("thread parent not found in channel");
+        throw new ChatNotFoundError("thread parent not found in channel");
     }
     const message = { ...input, cursor: ++this.cursor };
     this.messageRows.push(message);

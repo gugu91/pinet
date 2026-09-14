@@ -7,7 +7,7 @@ import type {
   RuntimeCredential,
   RuntimeRequest,
 } from "./domain.js";
-import { sameMessage } from "./domain.js";
+import { ChatConflictError, ChatNotFoundError, sameMessage } from "./domain.js";
 
 type ChannelRow = { id: string; name: string; topic: string; created_at: number };
 type AgentRow = { id: string; name: string; home_channel_id: string | null; last_seen: number };
@@ -70,8 +70,10 @@ export class SqliteChatStorage implements ChatStorage {
       this.database
         .prepare("INSERT INTO pinet_channels VALUES(?,?,?,?)")
         .run(value.id, value.name, value.topic, value.createdAt);
-    } catch {
-      throw new Error("channel name already exists");
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes("UNIQUE constraint failed"))
+        throw new ChatConflictError("channel name already exists");
+      throw cause;
     }
     return value;
   }
@@ -102,7 +104,7 @@ export class SqliteChatStorage implements ChatStorage {
     ).map((row) => this.channel(row)!);
   }
   join(channelId: string, agentId: string): void {
-    if (!this.getChannel(channelId)) throw new Error("channel not found");
+    if (!this.getChannel(channelId)) throw new ChatNotFoundError("channel not found");
     this.database
       .prepare("INSERT OR IGNORE INTO pinet_memberships VALUES(?,?)")
       .run(channelId, agentId);
@@ -147,16 +149,17 @@ export class SqliteChatStorage implements ChatStorage {
       .get(input.senderId, input.clientId) as MessageRow | undefined;
     if (existingRow) {
       const existing = this.message(existingRow);
-      if (!sameMessage(input, existing)) throw new Error("client id reused with different payload");
+      if (!sameMessage(input, existing))
+        throw new ChatConflictError("client id reused with different payload");
       return { message: existing, duplicate: true };
     }
-    if (!this.getChannel(input.channelId)) throw new Error("channel not found");
+    if (!this.getChannel(input.channelId)) throw new ChatNotFoundError("channel not found");
     if (input.parentId) {
       const parent = this.database
         .prepare("SELECT channel_id AS value FROM pinet_messages WHERE id=?")
         .get(input.parentId) as ValueRow | undefined;
       if (!parent || parent.value !== input.channelId)
-        throw new Error("thread parent not found in channel");
+        throw new ChatNotFoundError("thread parent not found in channel");
     }
     this.database
       .prepare(

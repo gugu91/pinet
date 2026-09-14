@@ -162,9 +162,10 @@ it("accepts exact manual retries but rejects changed ownership fields and a seco
       });
     const first = await post(registration);
     expect(first.status).toBe(201);
+    const firstBody = (await first.json()) as { data: { id: string } };
     const retry = await post(registration);
     expect(retry.status).toBe(200);
-    expect(await retry.json()).toEqual(await first.json());
+    expect(await retry.json()).toEqual(firstBody);
     for (const field of [
       "heartbeatPath",
       "handle",
@@ -181,6 +182,25 @@ it("accepts exact manual retries but rejects changed ownership fields and a seco
       (await post({ ...registration, sessionId: "different-session" }, "other-token")).status,
     ).toBe(409);
     expect(storage.listRuntimeRequests("host")).toHaveLength(1);
+
+    const firstId = firstBody.data.id;
+    expect(
+      (
+        await app.request(`/v1/runtime/requests/${firstId}/report`, {
+          method: "POST",
+          headers: { authorization: "Bearer host-token", "content-type": "application/json" },
+          body: JSON.stringify({ status: "stopped" }),
+        })
+      ).status,
+    ).toBe(200);
+    const resumed = await post(registration);
+    expect(resumed.status).toBe(201);
+    const resumedId = ((await resumed.json()) as { data: { id: string } }).data.id;
+    expect(resumedId).not.toBe(firstId);
+    const resumedRetry = await post(registration);
+    expect(resumedRetry.status).toBe(200);
+    expect(((await resumedRetry.json()) as { data: { id: string } }).data.id).toBe(resumedId);
+    expect(storage.listRuntimeRequests("host")).toHaveLength(2);
   } finally {
     storage.close();
   }

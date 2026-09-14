@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryChatStorage } from "./memory-storage.js";
 import { createChatApp, parseCredentials } from "./server.js";
 import { SqliteChatStorage } from "./sqlite-storage.js";
@@ -15,6 +15,7 @@ const credentials = [
 const auth = { authorization: "Bearer agent-secret", "content-type": "application/json" };
 const directories: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
@@ -136,6 +137,31 @@ describe("chat API", () => {
       await app.request(`/v1/channels/${channelId}/messages?after=0`, { headers: auth }),
     );
     expect(deletedHistory.data).toHaveLength(0);
+  });
+
+  it("returns validation details but keeps unexpected internal failures server-side", async () => {
+    class FailingStorage extends MemoryChatStorage {
+      override listChannels(): never {
+        throw new Error("database unavailable at /secret/internal/chat.sqlite");
+      }
+    }
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const app = createChatApp({ storage: new FailingStorage(), credentials });
+
+    const invalid = await app.request("/v1/channels", {
+      method: "POST",
+      headers: auth,
+      body: "not-json",
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.text()).toContain("valid JSON");
+
+    const failed = await app.request("/v1/channels", { headers: auth });
+    const responseBody = await failed.text();
+    expect(failed.status).toBe(500);
+    expect(responseBody).toContain("The request could not be completed");
+    expect(responseBody).not.toContain("/secret/internal");
+    expect(log).toHaveBeenCalledWith("Chat request failed", expect.any(Error));
   });
 
   it("persists across SQLite restart", async () => {

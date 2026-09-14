@@ -1,3 +1,7 @@
+export class ChatValidationError extends Error {}
+export class ChatConflictError extends Error {}
+export class ChatNotFoundError extends Error {}
+
 export type Principal = { kind: "agent" | "host" | "runtime"; id: string };
 export type Channel = { id: string; name: string; topic: string; createdAt: number };
 export type Agent = { id: string; name: string; homeChannelId: string | null; lastSeen: number };

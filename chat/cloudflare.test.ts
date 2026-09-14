@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildSync } from "esbuild";
 import { Miniflare } from "miniflare";
+import chatWorker, { ChatDurableObject, type ChatWorkerEnv } from "./cloudflare.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -11,7 +12,12 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
-function createMiniflare(persist: string): Miniflare {
+const defaultCredentials = [
+  { token: "agent-secret", principal: { kind: "agent", id: "agent" } },
+  { token: "host-secret", principal: { kind: "host", id: "host" } },
+];
+
+function miniflareOptions(persist: string, credentials: object[] = defaultCredentials) {
   const scriptPath = join(persist, "chat-worker.mjs");
   buildSync({
     entryPoints: [new URL("./cloudflare.ts", import.meta.url).pathname],
@@ -21,23 +27,111 @@ function createMiniflare(persist: string): Miniflare {
     platform: "neutral",
     external: ["node:*"],
   });
-  return new Miniflare({
-    modules: true,
+  return {
+    modules: true as const,
     script: readFileSync(scriptPath, "utf8"),
     compatibilityDate: "2025-04-01",
     compatibilityFlags: ["nodejs_compat"],
     durableObjects: { CHAT: { className: "ChatDurableObject", useSQLite: true } },
     durableObjectsPersist: persist,
-    bindings: {
-      PINET_CHAT_CREDENTIALS: JSON.stringify([
-        { token: "agent-secret", principal: { kind: "agent", id: "agent" } },
-        { token: "host-secret", principal: { kind: "host", id: "host" } },
-      ]),
-    },
-  });
+    bindings: { PINET_CHAT_CREDENTIALS: JSON.stringify(credentials) },
+  };
+}
+
+function createMiniflare(persist: string, credentials: object[] = defaultCredentials): Miniflare {
+  return new Miniflare(miniflareOptions(persist, credentials));
 }
 
 describe("Chat Durable Object parity", () => {
+  it("authenticates and authorizes configured workspace claims before selecting a Durable Object", async () => {
+    const selected: string[] = [];
+    let forwarded: Request | undefined;
+    const env = {
+      PINET_CHAT_CREDENTIALS: JSON.stringify([
+        {
+          token: "workspace-secret",
+          principal: { kind: "agent", id: "agent" },
+          workspace: "authorized-team",
+        },
+      ]),
+      CHAT: {
+        idFromName(name: string) {
+          selected.push(name);
+          return { name };
+        },
+        get() {
+          return {
+            fetch(request: Request) {
+              forwarded = request;
+              return Promise.resolve(Response.json({ ok: true }));
+            },
+          };
+        },
+      },
+    } as object as ChatWorkerEnv;
+
+    const unauthorized = await chatWorker.fetch(
+      new Request("https://chat.test/v1/channels", {
+        headers: { authorization: "Bearer invalid", "x-pinet-workspace": "attacker" },
+      }),
+      env,
+    );
+    expect(unauthorized.status).toBe(401);
+    expect(selected).toEqual([]);
+
+    const authorized = await chatWorker.fetch(
+      new Request("https://chat.test/v1/channels", {
+        headers: {
+          authorization: "Bearer workspace-secret",
+          "x-pinet-workspace": "attacker",
+          "x-pinet-internal-workspace": "attacker",
+          "x-pinet-internal-credentials": "attacker-secret",
+        },
+      }),
+      env,
+    );
+    expect(authorized.status).toBe(200);
+    expect(selected).toEqual(["authorized-team"]);
+    expect(forwarded?.headers.get("x-pinet-workspace")).toBeNull();
+    expect(forwarded?.headers.get("x-pinet-internal-workspace")).toBe("authorized-team");
+    expect(forwarded?.headers.get("x-pinet-internal-credentials")).toBe(env.PINET_CHAT_CREDENTIALS);
+  });
+
+  it("applies configured credential rotation to the same warm Durable Object instance", async () => {
+    const durableObject = new ChatDurableObject({
+      storage: {
+        sql: {
+          exec<T extends object>(): Iterable<T> {
+            return [];
+          },
+        },
+        transactionSync<T>(callback: () => T): T {
+          return callback();
+        },
+      },
+    });
+    const request = (token: string, credentials: object[]) =>
+      durableObject.fetch(
+        new Request("http://internal/v1/channels", {
+          headers: {
+            authorization: `Bearer ${token}`,
+            "x-pinet-internal-workspace": "team",
+            "x-pinet-internal-credentials": JSON.stringify(credentials),
+          },
+        }),
+      );
+    const oldCredentials = [
+      { token: "old-secret", principal: { kind: "agent", id: "agent" }, workspace: "team" },
+    ];
+    const newCredentials = [
+      { token: "new-secret", principal: { kind: "agent", id: "agent" }, workspace: "team" },
+    ];
+
+    expect((await request("old-secret", oldCredentials)).status).toBe(200);
+    expect((await request("old-secret", newCredentials)).status).toBe(401);
+    expect((await request("new-secret", newCredentials)).status).toBe(200);
+  });
+
   it("atomically allows exactly one concurrent runtime claim", async () => {
     const persist = mkdtempSync(join(tmpdir(), "pinet-chat-claim-do-"));
     directories.push(persist);
@@ -65,6 +159,15 @@ describe("Chat Durable Object parity", () => {
       });
     const responses = await Promise.all([claim(), claim()]);
     expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    const claimed = responses.find((response) => response.status === 200)!;
+    const launch = (await claimed.json()) as { launch: { token: string } };
+    expect(
+      (
+        await mf.dispatchFetch("http://local/v1/channels", {
+          headers: { authorization: `Bearer ${launch.launch.token}` },
+        })
+      ).status,
+    ).toBe(200);
     await mf.dispose();
   });
 

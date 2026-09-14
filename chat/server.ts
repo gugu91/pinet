@@ -1,12 +1,19 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { ChatStorage, Principal, RuntimeRequest } from "./domain.js";
+import {
+  ChatConflictError,
+  ChatNotFoundError,
+  ChatValidationError,
+  type ChatStorage,
+  type Principal,
+  type RuntimeRequest,
+} from "./domain.js";
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
 type Variables = { principal: Principal };
-export type Credential = { token: string; principal: Principal };
+export type Credential = { token: string; principal: Principal; workspace?: string };
 
 export function parseCredentials(source: string): Credential[] {
   const value = JSON.parse(source) as JsonValue;
@@ -23,7 +30,10 @@ export function parseCredentials(source: string): Credential[] {
     if (kind !== "agent" && kind !== "host" && kind !== "runtime")
       throw new Error("principal.kind must be agent, host, or runtime");
     const parsedPrincipal: Principal = { kind, id: text(principal.id, "principal.id")! };
-    return { token, principal: parsedPrincipal };
+    const workspace = text(item.workspace, "workspace", false);
+    if (workspace && !/^[A-Za-z0-9._-]{1,128}$/.test(workspace))
+      throw new Error("workspace must use 1-128 letters, numbers, dots, underscores, or hyphens");
+    return { token, principal: parsedPrincipal, ...(workspace ? { workspace } : {}) };
   });
   if (new Set(credentials.map((item) => item.token)).size !== credentials.length)
     throw new Error("credential tokens must be unique");
@@ -34,31 +44,37 @@ export type ChatAppOptions = {
   credentials: Credential[];
   now?: () => number;
   id?: () => string;
+  runtimeToken?: () => string;
 };
 
 function text(value: JsonValue | undefined, field: string, required = true): string | undefined {
   if (value === undefined && !required) return undefined;
   if (typeof value !== "string" || !value.trim())
-    throw new Error(`${field} must be a non-empty string`);
+    throw new ChatValidationError(`${field} must be a non-empty string`);
   return value.trim();
 }
 // agent-standards-ignore prefer-inline-single-use-helper: named boundary parser keeps mention-array validation explicit.
 function list(value: JsonValue | undefined, field: string): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item))
-    throw new Error(`${field} must be a string array`);
+    throw new ChatValidationError(`${field} must be a string array`);
   return value as string[];
 }
 function bodyObject(source: string): JsonObject {
-  const value = JSON.parse(source) as JsonValue;
+  let value: JsonValue;
+  try {
+    value = JSON.parse(source) as JsonValue;
+  } catch {
+    throw new ChatValidationError("body must contain valid JSON");
+  }
   if (!value || Array.isArray(value) || typeof value !== "object")
-    throw new Error("body must be a JSON object");
+    throw new ChatValidationError("body must be a JSON object");
   return value;
 }
 function boundedInt(raw: string | undefined, fallback: number, maximum: number): number {
   const value = raw === undefined ? fallback : Number(raw);
   if (!Number.isInteger(value) || value < 0)
-    throw new Error("pagination value must be a non-negative integer");
+    throw new ChatValidationError("pagination value must be a non-negative integer");
   return Math.min(value, maximum);
 }
 // agent-standards-ignore prefer-inline-single-use-helper: authentication comparison must remain visibly constant-time.
@@ -84,6 +100,8 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
   const app = new Hono<{ Variables: Variables }>();
   const now = options.now ?? Date.now;
   const id = options.id ?? (() => crypto.randomUUID());
+  const runtimeToken =
+    options.runtimeToken ?? (() => `${crypto.randomUUID()}${crypto.randomUUID()}`);
   app.use("/v1/*", async (c, next) => {
     const header = c.req.header("authorization");
     if (!header?.startsWith("Bearer "))
@@ -110,14 +128,14 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     await next();
   });
   app.onError((cause, c) => {
-    const message = cause instanceof Error ? cause.message : "invalid request";
-    const conflict = message.includes("already") || message.includes("reused");
-    const missing = message.includes("not found");
-    return error(
-      c,
-      conflict ? 409 : missing ? 404 : 400,
-      conflict ? "conflict" : missing ? "not_found" : "invalid_request",
-      message,
+    if (cause instanceof ChatValidationError)
+      return error(c, 400, "invalid_request", cause.message);
+    if (cause instanceof ChatConflictError) return error(c, 409, "conflict", cause.message);
+    if (cause instanceof ChatNotFoundError) return error(c, 404, "not_found", cause.message);
+    console.error("Chat request failed", cause);
+    return c.json(
+      { error: { code: "internal_error", message: "The request could not be completed" } },
+      500,
     );
   });
   app.get("/health", (c) => c.json({ status: "ok" }));
@@ -347,7 +365,12 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     const identity = text(body.identity, "identity")!;
     const heartbeatPath = text(body.heartbeatPath, "heartbeatPath")!;
     const registrations = options.storage.listRuntimeRequests(hostId);
-    const existing = registrations.find((request) => request.requestedBy === requestedBy);
+    const existing = registrations.find(
+      (request) =>
+        request.requestedBy === requestedBy &&
+        request.status !== "stopped" &&
+        request.status !== "failed",
+    );
     if (existing) {
       if (
         existing.status !== "running" ||
@@ -405,7 +428,7 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
     };
     const created = options.storage.createRuntimeRequest(request);
     if (principal.kind === "agent") return c.json({ data: created }, 201);
-    const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const token = runtimeToken();
     options.storage.putRuntimeCredential({ requestId, agentId, tokenHash: tokenHash(token) });
     return c.json({ data: created, launch: { token, agentId } }, 201);
   });
@@ -418,7 +441,7 @@ export function createChatApp(options: ChatAppOptions): Hono<{ Variables: Variab
       return error(c, 403, "forbidden", "Host cannot update another host request");
     const claimed = options.storage.claimRuntimeRequest(request.id, principal.id, now());
     if (!claimed) return error(c, 409, "already_claimed", "Runtime request is no longer pending");
-    const token = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const token = runtimeToken();
     const agentId = `runtime-${request.id}`;
     options.storage.putRuntimeCredential({
       requestId: request.id,
