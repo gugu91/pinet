@@ -14,3 +14,4 @@ packages:
   - agent-goal
   - chat
   - work
+  - slack

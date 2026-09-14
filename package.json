@@ -63,7 +63,8 @@
     "model-aware-compaction",
     "agent-goal",
     "chat",
-    "work"
+    "work",
+    "slack"
   ],
   "dependencies": {
     "typescript": "^5.7.3"

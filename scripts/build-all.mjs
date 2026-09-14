@@ -21,6 +21,7 @@ export const buildTiers = [
     "agent-goal",
     "chat",
     "work",
+    "slack",
   ],
   ["broker-core", "imessage-bridge"],
   ["pinet-core"],
