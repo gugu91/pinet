@@ -19,6 +19,7 @@ export const buildTiers = [
     "openai-execution-shaping",
     "model-aware-compaction",
     "agent-goal",
+    "chat",
     "work",
   ],
   ["broker-core", "imessage-bridge"],

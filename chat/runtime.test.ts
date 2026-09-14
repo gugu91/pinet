@@ -1,0 +1,160 @@
+import { describe, expect, it } from "vitest";
+import {
+  HerdrRuntimeAdapter,
+  NodeCommandRunner,
+  ProcessRuntimeAdapter,
+  TmuxRuntimeAdapter,
+  type CommandRunner,
+} from "./runtime.js";
+
+class FakeRunner implements CommandRunner {
+  identity: string | undefined = "generation";
+  command: string | undefined = "/usr/bin/pi --session /tmp/session.jsonl";
+  signalled = false;
+  startedArgs: string[] = [];
+  startedInput: string | undefined;
+  async start(_command: string, args: string[], _cwd: string, input?: string) {
+    this.startedArgs = args;
+    this.startedInput = input;
+    return { pid: 42, identity: "generation" };
+  }
+  async exec(_command: string, _args: string[]) {
+    return { stdout: "" };
+  }
+  async signal(pid: number) {
+    expect(pid).toBe(42);
+    this.signalled = true;
+  }
+  async processIdentity() {
+    return this.identity;
+  }
+  async processCommand() {
+    return this.command;
+  }
+}
+describe("runtime adapter safety", () => {
+  it("turns executable spawn errors into rejected launches", async () => {
+    await expect(
+      new NodeCommandRunner().start("/definitely-missing-pinet-runtime", [], "/tmp"),
+    ).rejects.toThrow();
+  });
+  it("only terminates a process whose recorded launch identity still matches", async () => {
+    const runner = new FakeRunner();
+    const adapter = new ProcessRuntimeAdapter(runner);
+    const handle = await adapter.spawn({
+      prompt: "do work",
+      cwd: "/tmp",
+      sessionId: "session",
+      sessionPath: "/tmp/session.jsonl",
+      env: { PINET_CHAT_TOKEN: "scoped" },
+    });
+    expect(runner.startedArgs).toEqual(["--mode", "rpc", "--session", "/tmp/session.jsonl"]);
+    expect(JSON.parse(runner.startedInput!)).toMatchObject({ type: "prompt", message: "do work" });
+    runner.identity = "reused pid";
+    expect(await adapter.stop(handle)).toBe(false);
+    expect(runner.signalled).toBe(false);
+    runner.identity = "generation";
+    expect(await adapter.stop(handle)).toBe(true);
+    expect(runner.signalled).toBe(true);
+  });
+  it("uses verified tmux pane identity for cleanup", async () => {
+    const calls: string[][] = [];
+    const runner = new FakeRunner();
+    runner.exec = async (_command, args) => {
+      calls.push(args);
+      return { stdout: args[0] === "list-panes" ? "%7|77" : "77" };
+    };
+    const adapter = new TmuxRuntimeAdapter(runner);
+    const handle = await adapter.spawn({
+      prompt: "work",
+      cwd: "/tmp",
+      sessionId: "session",
+      sessionPath: "/tmp/session.jsonl",
+      env: { PINET_CHAT_TOKEN: "scoped" },
+    });
+    expect(handle).toEqual({ adapter: "tmux", handle: "%7", identity: "77|generation" });
+    expect(calls.flat().join(" ")).not.toContain("scoped");
+    expect(await adapter.stop(handle)).toBe(true);
+    expect(calls.at(-1)).toEqual(["kill-pane", "-t", "%7"]);
+  });
+  it.each(["tmux", "herdr"] as const)(
+    "waits for the %s shell-to-Pi exec transition before capturing stable generation",
+    async (kind) => {
+      const runner = new FakeRunner();
+      let commandChecks = 0;
+      runner.processCommand = async () =>
+        commandChecks++ === 0
+          ? "/bin/sh /tmp/session.launch.sh"
+          : "/usr/bin/pi --session /tmp/session.jsonl";
+      runner.exec = async (_command, args) => {
+        if (args.includes("create"))
+          return { stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2" } } }) };
+        if (args.includes("process-info"))
+          return { stdout: JSON.stringify({ result: { process_info: { foreground_pid: 77 } } }) };
+        if (args[0] === "list-panes") return { stdout: "%7|77" };
+        if (args[0] === "display-message") return { stdout: "77" };
+        return { stdout: "{}" };
+      };
+      const adapter =
+        kind === "tmux"
+          ? new TmuxRuntimeAdapter(runner)
+          : new HerdrRuntimeAdapter(runner, "workers");
+      const handle = await adapter.spawn({
+        prompt: "work",
+        cwd: "/tmp",
+        sessionId: "session",
+        sessionPath: "/tmp/session.jsonl",
+        env: { PINET_CHAT_TOKEN: "scoped" },
+      });
+      expect(commandChecks).toBeGreaterThan(1);
+      expect(handle.identity).toBe("77|generation");
+      expect(await adapter.isAlive(handle)).toBe(true);
+    },
+  );
+
+  it("rolls back a Herdr pane when launch verification fails", async () => {
+    const calls: string[][] = [];
+    const runner = new FakeRunner();
+    runner.exec = async (_command, args) => {
+      calls.push(args);
+      if (args.includes("create"))
+        return { stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2" } } }) };
+      if (args.includes("run")) throw new Error("launch failed");
+      return { stdout: "{}" };
+    };
+    const adapter = new HerdrRuntimeAdapter(runner, "workers");
+    await expect(
+      adapter.spawn({
+        prompt: "work",
+        cwd: "/tmp",
+        sessionId: "session",
+        sessionPath: "/tmp/session.jsonl",
+        env: { PINET_CHAT_TOKEN: "scoped" },
+      }),
+    ).rejects.toThrow("launch failed");
+    expect(calls.at(-1)).toEqual(["--session", "workers", "pane", "close", "w1:p2"]);
+  });
+  it("uses Herdr pane and launched PID as its safe handle generation", async () => {
+    const calls: string[][] = [];
+    const runner = new FakeRunner();
+    runner.exec = async (_command, args) => {
+      calls.push(args);
+      if (args.includes("create"))
+        return { stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p2" } } }) };
+      if (args.includes("process-info"))
+        return { stdout: JSON.stringify({ result: { process_info: { foreground_pid: 77 } } }) };
+      return { stdout: "{}" };
+    };
+    const adapter = new HerdrRuntimeAdapter(runner, "workers");
+    const handle = await adapter.spawn({
+      prompt: "don't stop",
+      cwd: "/tmp",
+      sessionId: "session",
+      sessionPath: "/tmp/session.jsonl",
+      env: { PINET_CHAT_TOKEN: "scoped" },
+    });
+    expect(handle).toEqual({ adapter: "herdr", handle: "w1:p2", identity: "77|generation" });
+    expect(await adapter.stop(handle)).toBe(true);
+    expect(calls.at(-1)).toEqual(["--session", "workers", "pane", "close", "w1:p2"]);
+  });
+});
