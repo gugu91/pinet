@@ -23,6 +23,49 @@ class FakeSocket {
 afterEach(() => vi.useRealTimers());
 
 describe("Slack Socket Mode lifecycle", () => {
+  it.each(["stop", "restart", "restart-rejection"])(
+    "fences pending connections after %s",
+    async (mode) => {
+      vi.useFakeTimers();
+      let resolve!: (response: Response) => void;
+      let reject!: (cause: Error) => void;
+      const pending = new Promise<Response>((onResolve, onReject) => {
+        resolve = onResolve;
+        reject = onReject;
+      });
+      const transport = vi
+        .fn()
+        .mockReturnValueOnce(pending)
+        .mockImplementation(async () => Response.json({ ok: true, url: "wss://current.test" }));
+      const sockets: FakeSocket[] = [];
+      const factory = vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const adapter = { enqueue: vi.fn(), drain: vi.fn(async () => {}) };
+      const client = new SlackSocketModeClient(
+        "app-token",
+        adapter as never,
+        transport,
+        factory as never,
+      );
+      const starting = client.start();
+      client.stop();
+      if (mode !== "stop") await client.start();
+      if (mode === "restart-rejection") reject(new Error("stale connection failure"));
+      else resolve(Response.json({ ok: true, url: "wss://stale.test" }));
+      await starting;
+      expect(factory).toHaveBeenCalledTimes(mode === "stop" ? 0 : 1);
+      if (mode !== "stop") {
+        expect(factory).toHaveBeenCalledWith("wss://current.test");
+        expect(sockets[0]!.closed).toBe(false);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      client.stop();
+      expect(sockets.every((socket) => socket.closed)).toBe(true);
+    },
+  );
   it("retries initial failure, acknowledges messages, resets after open, and reconnects", async () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];

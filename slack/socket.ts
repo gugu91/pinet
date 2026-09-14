@@ -16,6 +16,7 @@ export type SocketFactory = (url: string) => SocketLike;
 export class SlackSocketModeClient {
   private socket: SocketLike | undefined;
   private stopped = true;
+  private generation = 0;
   private reconnectMs = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   constructor(
@@ -25,27 +26,35 @@ export class SlackSocketModeClient {
     private socketFactory: SocketFactory = (url) => new WebSocket(url) as SocketLike,
   ) {}
   async start() {
+    if (!this.stopped) return;
     this.stopped = false;
+    const generation = ++this.generation;
     void this.adapter.drain().catch(() => {});
-    await this.connect().catch(() => this.scheduleReconnect());
+    await this.connect(generation).catch(() => this.scheduleReconnect(generation));
   }
   stop() {
     this.stopped = true;
+    ++this.generation;
     const socket = this.socket;
     this.socket = undefined;
     socket?.close();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
   }
-  private async connect() {
+  private async connect(generation: number) {
     const response = await this.transport("https://slack.com/api/apps.connections.open", {
       method: "POST",
       headers: { authorization: `Bearer ${this.appToken}` },
     });
     const body = (await response.json()) as { ok: boolean; url?: string; error?: string };
+    if (this.stopped || generation !== this.generation) return;
     if (!response.ok || !body.ok || !body.url)
       throw new Error(`Slack Socket Mode connection failed: ${body.error ?? response.status}`);
     const socket = this.socketFactory(body.url);
+    if (this.stopped || generation !== this.generation) {
+      socket.close();
+      return;
+    }
     this.socket = socket;
     socket.addEventListener("open", () => {
       if (this.socket !== socket) return;
@@ -62,7 +71,7 @@ export class SlackSocketModeClient {
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
       this.socket = undefined;
-      this.scheduleReconnect();
+      this.scheduleReconnect(generation);
     });
     socket.addEventListener("error", () => {
       if (this.socket === socket) socket.close();
@@ -78,13 +87,14 @@ export class SlackSocketModeClient {
     source.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
     if (message) await this.adapter.drain();
   }
-  private scheduleReconnect() {
-    if (this.stopped || this.reconnectTimer) return;
+  private scheduleReconnect(generation: number) {
+    if (this.stopped || generation !== this.generation || this.reconnectTimer) return;
     const delay = this.reconnectMs;
     this.reconnectMs = Math.min(this.reconnectMs * 2, 30000);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      if (!this.stopped) void this.connect().catch(() => this.scheduleReconnect());
+      if (!this.stopped && generation === this.generation)
+        void this.connect(generation).catch(() => this.scheduleReconnect(generation));
     }, delay);
   }
 }
