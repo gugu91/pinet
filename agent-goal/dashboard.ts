@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { AgentGoal, GoalCheckpoint, GoalContinuationClaim } from "./domain.js";
 
 export function displayGoalText(value: string, maxLength: number): string {
@@ -9,7 +10,7 @@ export function displayGoalText(value: string, maxLength: number): string {
     })
     .join("")
     .trim();
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
+  return stripVTControlCharacters(truncateToWidth(normalized, Math.max(0, maxLength)));
 }
 
 export function goalDisplayName(goal: AgentGoal, maxLength = 72): string {

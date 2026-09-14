@@ -327,6 +327,34 @@ describe("GoalWindow", () => {
         .every((line) => visibleWidth(line) <= width),
     ).toBe(true);
   });
+
+  it.each([8, 9, 10, 12, 16])("keeps every mode within narrow width %i", (width) => {
+    const create = new GoalWindow(undefined, undefined, theme, vi.fn());
+    create.handleInput("n");
+    const edit = new GoalWindow(goal, undefined, theme, vi.fn());
+    edit.handleInput("e");
+    const budget = new GoalWindow(goal, undefined, theme, vi.fn());
+    budget.handleInput("b");
+    const snooze = new GoalWindow(goal, undefined, theme, vi.fn());
+    snooze.handleInput("s");
+    const checkpoint = new GoalWindow(
+      goal,
+      undefined,
+      theme,
+      vi.fn(),
+      vi.fn(),
+      Date.now,
+      undefined,
+      checkpoints,
+    );
+    checkpoint.handleInput("\t");
+    checkpoint.handleInput("\r");
+
+    for (const window of [create, edit, budget, snooze, checkpoint]) {
+      expect(window.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+      window.dispose();
+    }
+  });
 });
 
 describe("parseDuration", () => {

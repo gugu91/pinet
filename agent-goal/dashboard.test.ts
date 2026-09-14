@@ -1,5 +1,11 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { formatGoalDashboard, formatGoalStatus, goalStatusEmoji } from "./dashboard.js";
+import {
+  displayGoalText,
+  formatGoalDashboard,
+  formatGoalStatus,
+  goalStatusEmoji,
+} from "./dashboard.js";
 import type { AgentGoal, GoalCheckpoint } from "./domain.js";
 
 const goal: AgentGoal = {
@@ -66,4 +72,18 @@ describe("goal dashboard", () => {
     expect(compact).toMatch(/^🎯 x{37}\.\.\. /);
     expect(compact).not.toContain("x".repeat(41));
   });
+
+  it.each(["界".repeat(40), "😀".repeat(40)])(
+    "truncates Unicode text without exceeding terminal width",
+    (value) => {
+      const displayed = displayGoalText(value, 12);
+      expect(visibleWidth(displayed)).toBeLessThanOrEqual(12);
+      const sourceCharacter = Array.from(value)[0];
+      expect(
+        Array.from(displayed).every(
+          (character) => character === sourceCharacter || character === ".",
+        ),
+      ).toBe(true);
+    },
+  );
 });

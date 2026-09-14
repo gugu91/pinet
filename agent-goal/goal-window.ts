@@ -298,9 +298,13 @@ export class GoalWindow implements Component {
       const truncated = truncateToWidth(content, innerWidth, "", true);
       return `${border("│")}${truncated}${" ".repeat(Math.max(0, innerWidth - visibleWidth(truncated)))}${border("│")}`;
     };
-    const title = this.theme.fg(
-      "accent",
-      this.theme.bold(` Goal${this.mode === "details" ? "" : ` · ${this.mode}`} `),
+    const title = truncateToWidth(
+      this.theme.fg(
+        "accent",
+        this.theme.bold(` Goal${this.mode === "details" ? "" : ` · ${this.mode}`} `),
+      ),
+      innerWidth,
+      "",
     );
     const lines = [
       `${border("╭")}${title}${border(`${"─".repeat(Math.max(0, innerWidth - visibleWidth(title)))}╮`)}`,
