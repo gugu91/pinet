@@ -9,6 +9,35 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.17] - 2026-09-14
+
+Pinet v0.2.17 keeps users informed during durable goal work and makes goal progress immediately readable in both model and terminal interfaces.
+
+### Version verification
+
+- `pi-extensions` — `0.2.17` (private repo package)
+- `@pinet/transport-core` — `0.2.17`
+- `@pinet/broker-core` — `0.2.17`
+- `@pinet/pinet-core` — `0.2.17`
+- `@pinet/imessage-bridge` — `0.2.17`
+- `@pinet/slack-bridge` — `0.2.17`
+- `@pinet/model-aware-compaction` — `0.2.17`
+- `@pinet/agent-goal` — `0.2.17`
+
+### Release highlights
+
+- Prompts agents to use `checkpoint_goal` after meaningful progress so users stay in the loop.
+- Returns durable checkpoint history from `get_goal` and labels completed work, remaining work, evidence, and blockers as `DONE`, `TODO`, `EVIDENCE`, and `BLOCKED` in model-visible and terminal presentations.
+- Adds status-specific emoji and safely truncates compact goal text for ASCII, CJK, and emoji content.
+- Keeps every interactive goal UI mode within narrow terminal widths.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1045](https://github.com/gugu91/pinet/pull/1045) — improve agent-goal checkpoint visibility and compact status
+
+See the [full change set since v0.2.16](https://github.com/gugu91/pinet/compare/v0.2.16...v0.2.17).
+
 ## [0.2.16] - 2026-09-14
 
 Pinet v0.2.16 makes durable goal lifecycle transitions explicit to agents and adds safe agent-driven goal clearing.
