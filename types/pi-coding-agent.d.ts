@@ -27,6 +27,7 @@ declare module "@earendil-works/pi-coding-agent" {
     theme: any;
     notify(message: string, level?: string): void;
     setStatus(id: string, value?: any): void;
+    select(title: string, options: string[]): Promise<string | undefined>;
     custom<T>(
       factory: (
         tui: { requestRender(): void },
@@ -60,6 +61,73 @@ declare module "@earendil-works/pi-coding-agent" {
     getLeafId(): string | undefined;
     getSessionFile(): string | undefined;
   }
+
+  export interface RegistryModel {
+    provider: string;
+    id: string;
+    name?: string;
+    reasoning?: boolean;
+    thinkingLevelMap?: Partial<
+      Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>
+    >;
+    contextWindow: number;
+    maxTokens: number;
+  }
+
+  export interface ResolvedRequestAuth {
+    ok: boolean;
+    apiKey?: string;
+    headers?: Record<string, string>;
+    env?: Record<string, string>;
+    error?: string;
+  }
+
+  export interface ModelRegistry {
+    find(provider: string, modelId: string): RegistryModel | undefined;
+    getAvailable(): RegistryModel[];
+    getApiKeyAndHeaders(model: RegistryModel): Promise<ResolvedRequestAuth>;
+  }
+
+  export interface AgentMessage {
+    role: string;
+  }
+
+  export interface CompactionPreparation {
+    firstKeptEntryId: string;
+    messagesToSummarize: AgentMessage[];
+    turnPrefixMessages: AgentMessage[];
+    isSplitTurn: boolean;
+    tokensBefore: number;
+    previousSummary?: string;
+    fileOps: { read: Set<string>; edited: Set<string> };
+    settings: { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
+  }
+
+  export interface SessionBeforeCompactEvent {
+    preparation: CompactionPreparation;
+    customInstructions?: string;
+    signal: AbortSignal;
+  }
+
+  export function convertToLlm(messages: AgentMessage[]): AgentMessage[];
+  export function serializeConversation(messages: AgentMessage[]): string;
+  export function compact(
+    preparation: CompactionPreparation,
+    model: RegistryModel,
+    apiKey?: string,
+    headers?: Record<string, string>,
+    customInstructions?: string,
+    signal?: AbortSignal,
+    thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+    streamFn?: undefined,
+    env?: Record<string, string>,
+  ): Promise<{
+    summary: string;
+    firstKeptEntryId: string;
+    tokensBefore: number;
+    usage?: object;
+    details?: object;
+  }>;
 
   export interface ExtensionContext {
     cwd: string;

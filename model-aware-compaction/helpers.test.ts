@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { decideCompaction, limitForModel, matchesModel, modelKey } from "./helpers.js";
+import {
+  compactionInputError,
+  decideCompaction,
+  limitForModel,
+  matchesModel,
+  modelKey,
+  parseCompactionSelector,
+  selectorForModel,
+  thinkingLevelError,
+} from "./helpers.js";
 
 const rules = [
   { model: "openai/gpt-5-mini", activeContextTokens: 100_000 },
@@ -15,6 +24,62 @@ describe("model matching", () => {
     expect(matchesModel("example-proxy/*", "example-proxy/frontier-model")).toBe(true);
     expect(limitForModel(rules, "openai/gpt-5-mini")).toBe(100_000);
     expect(limitForModel(rules, "example-proxy/frontier-model")).toBe(136_000);
+  });
+});
+
+describe("compaction model selection", () => {
+  it("parses provider/model:thinking while preserving colons in model ids", () => {
+    expect(parseCompactionSelector("anthropic/claude-sonnet:high")).toEqual({
+      provider: "anthropic",
+      modelId: "claude-sonnet",
+      thinkingLevel: "high",
+    });
+    expect(parseCompactionSelector("bedrock/arn:aws:model:off")).toEqual({
+      provider: "bedrock",
+      modelId: "arn:aws:model",
+      thinkingLevel: "off",
+    });
+    expect(parseCompactionSelector("missing-provider")).toBeNull();
+  });
+
+  it("uses a matching rule selector before the global selector", () => {
+    expect(
+      selectorForModel(
+        [{ ...rules[0], compactionModel: "anthropic/rule-model:low" }],
+        "openai/gpt-5-mini",
+        "google/global-model",
+      ),
+    ).toBe("anthropic/rule-model:low");
+    expect(selectorForModel(rules, "openai/gpt-5-mini", "google/global-model")).toBe(
+      "google/global-model",
+    );
+  });
+
+  it("validates thinking support", () => {
+    expect(thinkingLevelError({ reasoning: false }, "low")).toContain("requires a reasoning model");
+    expect(
+      thinkingLevelError({ reasoning: true, thinkingLevelMap: { high: null } }, "high"),
+    ).toContain("unsupported");
+    expect(thinkingLevelError({ reasoning: true }, "high")).toBeNull();
+  });
+
+  it("rejects serialized requests that do not leave the output reserve", () => {
+    expect(
+      compactionInputError({
+        serializedHistory: "x".repeat(4_000),
+        serializedTurnPrefix: "",
+        contextWindow: 3_000,
+        outputReserve: 1_000,
+      }),
+    ).toContain("exceeds selected model context window");
+    expect(
+      compactionInputError({
+        serializedHistory: "short",
+        serializedTurnPrefix: "",
+        contextWindow: 20_000,
+        outputReserve: 1_000,
+      }),
+    ).toBeNull();
   });
 });
 

@@ -17,13 +17,60 @@ describe("resolveConfig", () => {
   it("keeps valid configured rules and drops malformed entries", () => {
     const config = resolveConfig({
       enabled: true,
+      compactionModel: "google/gemini-2.5-flash:low",
       rules: [
-        { model: "anthropic/*", activeContextTokens: 90_000 },
+        {
+          model: "anthropic/*",
+          activeContextTokens: 90_000,
+          compactionModel: "anthropic/claude-haiku:off",
+        },
         { model: "", activeContextTokens: 1 },
         { model: "openai/*", activeContextTokens: -1 },
       ],
     });
-    expect(config.rules).toEqual([{ model: "anthropic/*", activeContextTokens: 90_000 }]);
+    expect(config.compactionModel).toBe("google/gemini-2.5-flash:low");
+    expect(config.rules).toEqual([
+      {
+        model: "anthropic/*",
+        activeContextTokens: 90_000,
+        compactionModel: "anthropic/claude-haiku:off",
+      },
+    ]);
+  });
+
+  it("gives the project extension object precedence over the global object", () => {
+    const root = mkdtempSync(join(tmpdir(), "model-aware-compaction-"));
+    const agentDir = join(root, "agent");
+    try {
+      mkdirSync(join(root, ".pi"));
+      mkdirSync(agentDir);
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({
+          "model-aware-compaction": {
+            enabled: true,
+            compactionModel: "global/model",
+            rules: [{ model: "global/*", activeContextTokens: 10_000 }],
+          },
+        }),
+      );
+      writeFileSync(
+        join(root, ".pi", "settings.json"),
+        JSON.stringify({
+          "model-aware-compaction": {
+            enabled: false,
+            compactionModel: "project/model:low",
+            rules: [{ model: "project/*", activeContextTokens: 20_000 }],
+          },
+        }),
+      );
+      const loaded = loadConfig(root, agentDir);
+      expect(loaded.enabled).toBe(false);
+      expect(loaded.compactionModel).toBe("project/model:low");
+      expect(loaded.rules).toEqual([{ model: "project/*", activeContextTokens: 20_000 }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("loads object settings and ignores malformed settings shapes", () => {
