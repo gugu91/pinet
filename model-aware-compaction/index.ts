@@ -150,6 +150,10 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         Math.floor(preparation.settings.reserveTokens * 0.8),
         model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
       );
+      const prefixOutputReserve = Math.min(
+        Math.floor(preparation.settings.reserveTokens * 0.5),
+        model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+      );
       const budgetError = compactionInputError({
         serializedHistory: history,
         serializedTurnPrefix: turnPrefix,
@@ -157,6 +161,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         customInstructions,
         contextWindow: model.contextWindow,
         outputReserve,
+        prefixOutputReserve,
       });
       if (budgetError) return failClosed(budgetError);
 

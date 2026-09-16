@@ -1,3 +1,9 @@
+import {
+  buildHistoryPrompt,
+  buildTurnPrefixPrompt,
+  SUMMARIZATION_SYSTEM_PROMPT,
+} from "./prompts.js";
+
 export interface ModelIdentity {
   provider?: string;
   id?: string;
@@ -105,23 +111,40 @@ export function compactionInputError(input: {
   customInstructions?: string;
   contextWindow: number;
   outputReserve: number;
+  prefixOutputReserve?: number;
 }): string | null {
-  // Includes conservative room for Pi's system prompt, structured summary prompt,
-  // conversation tags, and provider serialization around each request.
-  const fixedPromptReserve = 2_048;
-  const sharedChars =
-    (input.previousSummary?.length ?? 0) + (input.customInstructions?.length ?? 0);
-  const requestTokens = (serialized: string, includeShared: boolean) => {
-    const shared = includeShared ? sharedChars : 0;
-    return serialized || shared
-      ? Math.ceil((serialized.length + shared) / 4) + fixedPromptReserve
-      : 0;
-  };
-  const historyTokens = requestTokens(input.serializedHistory, true);
-  const prefixTokens = requestTokens(input.serializedTurnPrefix, false);
-  const largestInput = Math.max(historyTokens, prefixTokens);
-  return largestInput + input.outputReserve > input.contextWindow
-    ? `summarization input (${largestInput} estimated tokens) plus output reserve (${input.outputReserve}) exceeds selected model context window (${input.contextWindow})`
+  // Pi does not expose tokenizer accounting for standalone summary requests. Count the exact
+  // 0.85.1 system/user prompts and retain conservative room for provider message serialization.
+  const providerSerializationReserve = 512;
+  const requestTokens = (promptText: string) =>
+    Math.ceil((SUMMARIZATION_SYSTEM_PROMPT.length + promptText.length) / 4) +
+    providerSerializationReserve;
+  const requests: Array<{ inputTokens: number; outputReserve: number }> = [];
+  const hasHistoryRequest =
+    !input.serializedTurnPrefix || Boolean(input.serializedHistory || input.previousSummary);
+  if (hasHistoryRequest) {
+    requests.push({
+      inputTokens: requestTokens(
+        buildHistoryPrompt(
+          input.serializedHistory,
+          input.customInstructions,
+          input.previousSummary,
+        ),
+      ),
+      outputReserve: input.outputReserve,
+    });
+  }
+  if (input.serializedTurnPrefix) {
+    requests.push({
+      inputTokens: requestTokens(buildTurnPrefixPrompt(input.serializedTurnPrefix)),
+      outputReserve: input.prefixOutputReserve ?? input.outputReserve,
+    });
+  }
+  const oversized = requests.find(
+    (request) => request.inputTokens + request.outputReserve > input.contextWindow,
+  );
+  return oversized
+    ? `summarization input (${oversized.inputTokens} estimated tokens) plus output reserve (${oversized.outputReserve}) exceeds selected model context window (${input.contextWindow})`
     : null;
 }
 

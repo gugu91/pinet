@@ -64,7 +64,22 @@ A configured selector intercepts `session_before_compact`, so it covers manual `
 - compaction usage accounting
 - cancellation via Pi's abort signal
 
-Before sending anything, the extension estimates each serialized summarization request and verifies that it plus the output reserve fits the selected model's context window. It does not truncate history.
+Before sending anything, the extension estimates each summarization request — system prompt, conversation tags, previous summary, custom focus, and the full Pi prompt body — and verifies that it plus that request's output reserve fits the selected model's context window. It does not truncate history.
+
+### Pi prompt parity
+
+Summarization requests reproduce Pi 0.85.1 exactly: the same system prompt, the same `<conversation>` / `<previous-summary>` ordering, the same initial, update, and turn-prefix prompt bodies, the same `\n\nAdditional focus: ` custom-instruction suffix, the same `0.8 * reserveTokens` and `0.5 * reserveTokens` output budgets, `cacheRetention: "none"`, a fresh routing session ID per request, and the same `"**Turn Context (split turn):**"` split-turn wrapper.
+
+Pi's package `exports` map publishes only its root entry, so the prompt constants in `dist/core/compaction/compaction.js` (`SUMMARIZATION_PROMPT`, `UPDATE_SUMMARIZATION_INSTRUCTIONS`, `UPDATE_SUMMARIZATION_PROMPT`, `TURN_PREFIX_SUMMARIZATION_PROMPT`) and `dist/core/compaction/utils.js` (`SUMMARIZATION_SYSTEM_PROMPT`) cannot be imported. They are copied verbatim into `prompts.ts` with source-file attribution and a pinned version anchor, and `prompts.test.ts` re-reads the installed SDK files so any upstream prompt change fails the test suite. Genuinely exported helpers are used directly: `convertToLlm` and `serializeConversation` from `@earendil-works/pi-coding-agent`, `contentText` and `uuidv7` from `@earendil-works/pi-ai`.
+
+Remaining deviations from Pi's own compaction, all deliberate:
+
+- **No retry wrapper.** Pi wraps each summarization in `retryAssistantCall` with the user's retry settings, which extensions cannot read. A failed request cancels the compaction instead of being retried.
+- **Empty sections are rejected.** Pi persists whatever text a provider returns; this extension fails closed rather than checkpointing an empty summary.
+- **Split turn with no new history.** Pi writes the literal `No prior history.` even when a previous summary exists; this extension re-summarizes that previous checkpoint through the update prompt so an earlier checkpoint is never dropped.
+- **File metadata.** Pi's `computeFileLists` and `formatFileOperations` are not exported, so they are reimplemented with identical sorting and `<read-files>` / `<modified-files>` output, plus an extension-owned `details` payload that carries file lists across repeated extension compactions.
+- **Thinking level.** Pi forwards the session thinking level; this release always uses the selected provider's default.
+- **Pre-send budget check and failure wording** are extension-owned and have no Pi equivalent.
 
 `enabled` only controls the proactive threshold trigger. It does not disable a configured model for manual or Pi-automatic compaction.
 
@@ -86,7 +101,7 @@ The commands add no LLM tool schema or always-present prompt content.
 
 Pi's `ctx.compact()` remains fire-and-forget, so the proactive trigger is best effort rather than an atomic barrier. Pi owns the manual/automatic compaction barrier and awaits `session_before_compact` there.
 
-Selected-model summaries and marked file metadata use extension-owned contracts because Pi 0.85.1 does not expose its registry-backed simple stream to extensions or automatically carry `fromHook` compaction details forward. Tests pin the external compaction contract, but future Pi prompt/assembly changes may require this extension to update in parallel.
+Selected-model summaries and marked file metadata use extension-owned contracts because Pi 0.85.1 does not expose its registry-backed simple stream to extensions or automatically carry `fromHook` compaction details forward. Tests pin the prompts and the external compaction contract against the installed SDK, but a future Pi prompt or assembly change requires a matching update here.
 
 ## Development
 

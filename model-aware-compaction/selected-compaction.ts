@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { contentText, uuidv7 } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Context, Model, Usage } from "@earendil-works/pi-ai/compat";
 import {
   convertToLlm,
@@ -6,10 +6,11 @@ import {
   type CompactionPreparation,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-
-const SYSTEM_PROMPT = `You are a context summarization assistant. Summarize the supplied conversation so another LLM can continue the work. Do not continue the conversation or answer its questions.`;
-const SUMMARY_PROMPT = `Create a structured context checkpoint with these sections: Goal, Constraints & Preferences, Progress (Done, In Progress, Blocked), Key Decisions, Next Steps, and Critical Context. Be concise and preserve exact paths, names, errors, decisions, and validation results.`;
-const TURN_PREFIX_PROMPT = `This is the prefix of a turn whose suffix is retained. Summarize the original request, early progress, and context needed to understand the retained suffix. Be concise.`;
+import {
+  buildHistoryPrompt,
+  buildTurnPrefixPrompt,
+  SUMMARIZATION_SYSTEM_PROMPT,
+} from "./prompts.js";
 
 export type RegistryComplete = (
   model: Model<Api>,
@@ -90,33 +91,29 @@ export function mergePriorModelAwareFiles(
 async function summarize(
   complete: RegistryComplete,
   model: Model<Api>,
-  serializedConversation: string,
-  instructions: string,
+  promptText: string,
   maxTokens: number,
   signal: AbortSignal,
-  previousSummary?: string,
 ): Promise<{ text: string; usage: Usage }> {
-  const previous = previousSummary
-    ? `\n\n<previous-summary>\n${previousSummary}\n</previous-summary>\nUpdate and preserve the previous summary.`
-    : "";
   const response = await complete(
     model,
     {
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: `<conversation>\n${serializedConversation}\n</conversation>${previous}\n\n${instructions}`,
+              text: promptText,
             },
           ],
           timestamp: Date.now(),
         },
       ],
     },
-    { maxTokens, signal, cacheRetention: "none", sessionId: randomUUID() },
+    // Pi passes no session ID for compaction, so each summary gets a fresh routing ID.
+    { maxTokens, signal, cacheRetention: "none", sessionId: uuidv7() },
   );
   if (signal.aborted) throw new Error("Compaction cancelled");
   if (response.stopReason === "error")
@@ -125,11 +122,7 @@ async function summarize(
     throw new Error("generation hit the token cap and the summary is incomplete");
   if (response.content.some((block) => block.type === "toolCall"))
     throw new Error("Compaction model attempted to call a tool");
-  const text = response.content
-    .filter((block): block is { type: "text"; text: string } => block.type === "text")
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
+  const text = contentText(response.content).trim();
   if (!text) throw new Error("Compaction model returned an empty summary section");
   return { text, usage: response.usage };
 }
@@ -141,13 +134,14 @@ export async function runSelectedModelCompaction({
   signal,
   customInstructions,
 }: SelectedCompactionOptions) {
-  const maxTokens = Math.min(
+  const historyMaxTokens = Math.min(
     Math.floor(preparation.settings.reserveTokens * 0.8),
     model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
   );
-  const historyInstructions = customInstructions
-    ? `${SUMMARY_PROMPT}\n\nAdditional focus: ${customInstructions}`
-    : SUMMARY_PROMPT;
+  const prefixMaxTokens = Math.min(
+    Math.floor(preparation.settings.reserveTokens * 0.5),
+    model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+  );
   let summary: string;
   let usage: Usage;
 
@@ -157,19 +151,20 @@ export async function runSelectedModelCompaction({
         ? await summarize(
             complete,
             model,
-            serializeConversation(convertToLlm(preparation.messagesToSummarize)),
-            historyInstructions,
-            maxTokens,
+            buildHistoryPrompt(
+              serializeConversation(convertToLlm(preparation.messagesToSummarize)),
+              customInstructions,
+              preparation.previousSummary,
+            ),
+            historyMaxTokens,
             signal,
-            preparation.previousSummary,
           )
         : undefined;
     const prefix = await summarize(
       complete,
       model,
-      serializeConversation(convertToLlm(preparation.turnPrefixMessages)),
-      TURN_PREFIX_PROMPT,
-      maxTokens,
+      buildTurnPrefixPrompt(serializeConversation(convertToLlm(preparation.turnPrefixMessages))),
+      prefixMaxTokens,
       signal,
     );
     summary = `${history?.text ?? "No prior history."}\n\n---\n\n**Turn Context (split turn):**\n\n${prefix.text}`;
@@ -201,11 +196,13 @@ export async function runSelectedModelCompaction({
     const history = await summarize(
       complete,
       model,
-      serializeConversation(convertToLlm(preparation.messagesToSummarize)),
-      historyInstructions,
-      maxTokens,
+      buildHistoryPrompt(
+        serializeConversation(convertToLlm(preparation.messagesToSummarize)),
+        customInstructions,
+        preparation.previousSummary,
+      ),
+      historyMaxTokens,
       signal,
-      preparation.previousSummary,
     );
     summary = history.text;
     usage = history.usage;

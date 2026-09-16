@@ -8,6 +8,11 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildHistoryPrompt,
+  buildTurnPrefixPrompt,
+  SUMMARIZATION_SYSTEM_PROMPT,
+} from "./prompts.js";
+import {
   mergePriorModelAwareFiles,
   runSelectedModelCompaction,
   type RegistryComplete,
@@ -62,10 +67,29 @@ describe("selected-model compaction", () => {
     expect(faux.state.callCount).toBe(2);
     expect(complete).toHaveBeenCalledTimes(2);
     const firstContext = complete.mock.calls[0][1];
-    const firstPrompt = firstContext.messages[0].content;
-    expect(JSON.stringify(firstPrompt)).toContain("previous checkpoint");
-    expect(JSON.stringify(firstPrompt)).toContain("Preserve validation evidence.");
-    expect(JSON.stringify(complete.mock.calls[1][1].messages[0].content)).toContain("prefix");
+    expect(firstContext.systemPrompt).toBe(SUMMARIZATION_SYSTEM_PROMPT);
+    expect(firstContext.messages[0].content).toEqual([
+      {
+        type: "text",
+        text: buildHistoryPrompt(
+          "[User]: history",
+          "Preserve validation evidence.",
+          "previous checkpoint",
+        ),
+      },
+    ]);
+    expect(complete.mock.calls[0][2]).toMatchObject({
+      maxTokens: 1_600,
+      cacheRetention: "none",
+    });
+    expect(complete.mock.calls[1][1].systemPrompt).toBe(SUMMARIZATION_SYSTEM_PROMPT);
+    expect(complete.mock.calls[1][1].messages[0].content).toEqual([
+      { type: "text", text: buildTurnPrefixPrompt("[User]: prefix") },
+    ]);
+    expect(complete.mock.calls[1][2]).toMatchObject({
+      maxTokens: 1_000,
+      cacheRetention: "none",
+    });
     expect(result).toMatchObject({
       firstKeptEntryId: "kept",
       tokensBefore: 1_000,
@@ -182,6 +206,30 @@ describe("selected-model compaction", () => {
       unrelatedBranch,
     );
     expect([...isolated.fileOps.read]).toEqual(["local.ts"]);
+  });
+
+  it("routes a first compaction with Pi's token, cache, and session semantics", async () => {
+    const complete = vi.fn<RegistryComplete>(async () => fauxAssistantMessage("initial summary"));
+    await runSelectedModelCompaction({
+      preparation: {
+        ...preparation,
+        isSplitTurn: false,
+        turnPrefixMessages: [],
+        previousSummary: undefined,
+      },
+      model: fauxProvider().getModel(),
+      complete,
+      signal: new AbortController().signal,
+      customInstructions: "Keep exact validation output.",
+    });
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0][1].systemPrompt).toBe(SUMMARIZATION_SYSTEM_PROMPT);
+    expect(complete.mock.calls[0][2]).toMatchObject({
+      maxTokens: 1_600,
+      cacheRetention: "none",
+    });
+    expect(complete.mock.calls[0][2].sessionId).toEqual(expect.any(String));
   });
 
   it("uses a prior checkpoint as history when a split turn has no new history", async () => {

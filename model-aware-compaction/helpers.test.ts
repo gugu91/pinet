@@ -61,11 +61,13 @@ describe("compaction model selection", () => {
   });
 
   it("rejects serialized requests that do not leave the output reserve", () => {
+    // 4_000 serialized chars fit a 2_600 window on their own; the verbatim Pi 0.85.1
+    // system and summarization prompts are what push the request over the limit.
     expect(
       compactionInputError({
         serializedHistory: "x".repeat(4_000),
         serializedTurnPrefix: "",
-        contextWindow: 3_000,
+        contextWindow: 2_600,
         outputReserve: 1_000,
       }),
     ).toContain("exceeds selected model context window");
@@ -77,6 +79,17 @@ describe("compaction model selection", () => {
         customInstructions: "Preserve the prior checkpoint.",
         contextWindow: 10_000,
         outputReserve: 1_000,
+      }),
+    ).toContain("exceeds selected model context window");
+    // A split turn with no new history sends only the turn-prefix request, which uses
+    // Pi's smaller 0.5 * reserveTokens output budget.
+    expect(
+      compactionInputError({
+        serializedHistory: "",
+        serializedTurnPrefix: "x".repeat(4_000),
+        contextWindow: 2_200,
+        outputReserve: 400,
+        prefixOutputReserve: 600,
       }),
     ).toContain("exceeds selected model context window");
     expect(
