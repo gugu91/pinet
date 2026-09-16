@@ -28,9 +28,12 @@ const DEFAULT_RETRY_POLICY: GoalRetryPolicy = {
   baseDelayMs: 250,
   maxDelayMs: 2_000,
 };
-/** Evaluator calls hit a remote model; rate limits and auth refreshes need seconds, not milliseconds. */
-const DEFAULT_EVALUATOR_RETRY_POLICY: GoalRetryPolicy = {
-  maxAttempts: 4,
+/**
+ * Evaluator calls hit a remote model; rate limits and auth refreshes need seconds, not
+ * milliseconds. Waits of 2s, 4s, 8s, 16s, 30s give about a minute of resilience.
+ */
+export const DEFAULT_EVALUATOR_RETRY_POLICY: GoalRetryPolicy = {
+  maxAttempts: 6,
   baseDelayMs: 2_000,
   maxDelayMs: 30_000,
 };
@@ -640,12 +643,10 @@ export class GoalRuntime {
             const reason = `${EVALUATION_UNAVAILABLE_PREFIX} after ${attempt} attempts: ${failure.message}`;
             const previouslyUnavailable =
               goal.lastEvaluation?.reason.startsWith(EVALUATION_UNAVAILABLE_PREFIX) ?? false;
-            const next: AgentGoal = {
+            const unevaluated: AgentGoal = {
               ...goal,
-              status: previouslyUnavailable ? "paused" : "active",
-              blockedReason: previouslyUnavailable
-                ? `${reason}. Paused after consecutive unavailable evaluations; resume when the model is reachable.`
-                : undefined,
+              status: "active",
+              blockedReason: undefined,
               usage: accountedUsage,
               lastSettledAt: unavailableAt,
               lastEvaluation: {
@@ -657,6 +658,20 @@ export class GoalRuntime {
               version: goal.version + 1,
               updatedAt: unavailableAt,
             };
+            // User-configured ceilings hold regardless of whether the evaluator answered.
+            const next: AgentGoal = this.budgetExhausted(unevaluated)
+              ? {
+                  ...unevaluated,
+                  status: "budget_limited",
+                  blockedReason: "Goal continuation budget exhausted",
+                }
+              : previouslyUnavailable
+                ? {
+                    ...unevaluated,
+                    status: "paused",
+                    blockedReason: `${reason}. Paused after consecutive unavailable evaluations; resume when the model is reachable.`,
+                  }
+                : unevaluated;
             if (!(await this.storage.commitEvaluation(next, goal.version, pending.evaluationId))) {
               continue;
             }
