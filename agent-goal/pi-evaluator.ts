@@ -19,8 +19,17 @@ interface CompatibleContext extends ExtensionContext {
   };
 }
 
+/**
+ * Raised when the evaluator could not obtain a verdict because of the provider or transport,
+ * as opposed to a verdict that was returned but could not be parsed.
+ */
+export class GoalEvaluatorUnavailableError extends Error {
+  override readonly name = "GoalEvaluatorUnavailableError";
+}
+
 export function parseGoalEvaluation(text: string): GoalEvaluation {
-  const match = text.trim().match(/^(CONTINUE|COMPLETE|BLOCKED)\s*:\s*(.+)$/is);
+  // Reasoning models may prefix a short preamble; take the first verdict line and everything after it.
+  const match = text.match(/^\s*(CONTINUE|COMPLETE|BLOCKED)\s*:\s*([^\n]*(?:\n[\s\S]*)?)$/im);
   if (!match) {
     throw new Error("Goal evaluator returned an invalid response");
   }
@@ -43,10 +52,12 @@ export class PiGoalEvaluator implements GoalEvaluator {
 
   async evaluate(goal: AgentGoal, progress: GoalProgress): Promise<GoalEvaluation> {
     const ctx = this.getContext() as CompatibleContext | undefined;
-    if (!ctx?.model) throw new Error("No active model is available to evaluate the goal");
+    if (!ctx?.model) {
+      throw new GoalEvaluatorUnavailableError("No active model is available to evaluate the goal");
+    }
     const model = ctx.model as EvaluatorModel;
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok) throw new Error(auth.error);
+    if (!auth.ok) throw new GoalEvaluatorUnavailableError(auth.error);
 
     const response = await completeSimple(
       model,
@@ -89,6 +100,11 @@ export class PiGoalEvaluator implements GoalEvaluator {
       },
     );
 
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      throw new GoalEvaluatorUnavailableError(
+        response.errorMessage ?? `Goal evaluator request ended with ${response.stopReason}`,
+      );
+    }
     return parseGoalEvaluation(
       response.content
         .filter(

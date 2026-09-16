@@ -29,6 +29,13 @@ export class MemoryGoalStorage implements GoalStorage {
     return goal ? cloneGoal(goal) : undefined;
   }
 
+  async listUnfinished(): Promise<AgentGoal[]> {
+    return [...this.goals.values()]
+      .filter((goal) => goal.status !== "complete")
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map(cloneGoal);
+  }
+
   async create(goal: AgentGoal): Promise<void> {
     if (this.goals.has(goal.scopeId)) throw new Error("Goal already exists for this scope");
     this.goals.set(goal.scopeId, cloneGoal(goal));

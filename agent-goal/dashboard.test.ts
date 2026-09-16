@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   displayGoalText,
   formatGoalDashboard,
+  formatGoalList,
   formatGoalStatus,
+  formatOrphanGoalNotice,
   goalStatusEmoji,
 } from "./dashboard.js";
 import type { AgentGoal, GoalCheckpoint } from "./domain.js";
@@ -86,4 +88,36 @@ describe("goal dashboard", () => {
       ).toBe(true);
     },
   );
+
+  it("lists unfinished goals with a resume hint for other sessions", () => {
+    const other: AgentGoal = {
+      ...goal,
+      id: "goal-2",
+      scopeId: "session-2",
+      name: "Orphaned",
+      status: "blocked",
+      lastSettledAt: "2026-01-01T00:20:00.000Z",
+    };
+    expect(formatGoalList([goal, other], "session-1")).toEqual([
+      "🎯 active · Ship goal UX · 3 turns · last 2026-01-01T00:10:00.000Z · this session",
+      "⛔ blocked · Orphaned · 3 turns · last 2026-01-01T00:20:00.000Z · pi --session session-2",
+    ]);
+    expect(formatGoalList([], "session-1")).toEqual(["No unfinished goals in any session."]);
+  });
+
+  it("notices unfinished goals only in other sessions", () => {
+    expect(formatOrphanGoalNotice([goal], "session-1")).toBeUndefined();
+    expect(formatOrphanGoalNotice([goal, { ...goal, scopeId: "session-2" }], "session-1")).toBe(
+      "1 unfinished goal in other sessions; /goal list shows how to resume them",
+    );
+    expect(
+      formatOrphanGoalNotice(
+        [
+          { ...goal, scopeId: "s2" },
+          { ...goal, scopeId: "s3" },
+        ],
+        "session-1",
+      ),
+    ).toBe("2 unfinished goals in other sessions; /goal list shows how to resume them");
+  });
 });

@@ -1,7 +1,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { formatGoalDashboard, formatGoalStatus } from "./dashboard.js";
+import {
+  formatGoalDashboard,
+  formatGoalList,
+  formatGoalStatus,
+  formatOrphanGoalNotice,
+} from "./dashboard.js";
+import { JsonlGoalEventSink } from "./event-log.js";
 import { GoalWindow, parseDuration, type GoalWindowAction } from "./goal-window.js";
 import type {
   GoalBudget,
@@ -46,7 +52,14 @@ export type {
   GoalUsage,
   GoalWakeScheduler,
 } from "./domain.js";
-export { displayGoalText, formatGoalDashboard, formatGoalStatus } from "./dashboard.js";
+export {
+  displayGoalText,
+  formatGoalDashboard,
+  formatGoalList,
+  formatGoalStatus,
+  formatOrphanGoalNotice,
+} from "./dashboard.js";
+export { JsonlGoalEventSink } from "./event-log.js";
 export { GoalWindow, parseDuration, type GoalWindowAction } from "./goal-window.js";
 export { MemoryGoalStorage } from "./memory-storage.js";
 export { parseGoalEvaluation, PiGoalEvaluator } from "./pi-evaluator.js";
@@ -166,7 +179,11 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   const runtime = new GoalRuntime(storage, evaluator, continuation, undefined, {
     defaultBudget,
     retryPolicy: options.retryPolicy,
-    eventSink: options.eventSink,
+    eventSink:
+      options.eventSink ??
+      (process.env.PI_AGENT_GOAL_EVENT_LOG
+        ? new JsonlGoalEventSink(process.env.PI_AGENT_GOAL_EVENT_LOG)
+        : undefined),
     evaluationInterval:
       options.evaluationInterval ?? Number(process.env.PI_AGENT_GOAL_EVALUATION_INTERVAL ?? 0),
     wakeScheduler: options.wakeScheduler,
@@ -265,6 +282,10 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     const recoveredGoal = await runtime.get(scopeId);
     if (recoveredGoal?.status === "complete") await runtime.clear(scopeId);
     await refreshUi(ctx);
+    if (ctx.hasUI) {
+      const notice = formatOrphanGoalNotice(await runtime.listUnfinished(), scopeId);
+      if (notice) ctx.ui.notify(notice, "info");
+    }
   });
 
   pi.on("agent_start", async (_event, rawCtx) => {
@@ -569,7 +590,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
 
   pi.registerCommand("goal", {
     description:
-      "Discuss or inspect a goal; update its name, objective, or limits; snooze, close, show, or hide it",
+      "Discuss or inspect a goal; list unfinished goals across sessions; update its name, objective, or limits; snooze, close, show, or hide it",
     handler: async (args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
       activeContext = ctx;
@@ -654,6 +675,17 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
           }
         }
 
+        if (command === "list") {
+          api.sendMessage(
+            {
+              customType: "agent-goal.list",
+              content: formatGoalList(await runtime.listUnfinished(), scopeId).join("\n"),
+              display: true,
+            },
+            { triggerTurn: false },
+          );
+          return;
+        }
         if (command.startsWith("update name ")) {
           await runtime.updateDetails(scopeId, { name: input.slice("update name ".length) });
         } else if (command.startsWith("update objective ")) {

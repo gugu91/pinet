@@ -136,6 +136,33 @@ describe("SqliteGoalStorage", () => {
     second.close();
   });
 
+  it("lists unfinished goals across scopes, newest activity first, excluding complete ones", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agent-goal-list-"));
+    tempDirectories.push(directory);
+    const storage = new SqliteGoalStorage(join(directory, "goals.sqlite"));
+    await storage.create(goal);
+    await storage.create({
+      ...goal,
+      id: "goal-2",
+      scopeId: "session-2",
+      status: "paused",
+      updatedAt: "2026-01-01T00:05:00.000Z",
+    });
+    await storage.create({
+      ...goal,
+      id: "goal-3",
+      scopeId: "session-3",
+      status: "complete",
+      updatedAt: "2026-01-01T00:09:00.000Z",
+    });
+
+    expect((await storage.listUnfinished()).map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: "goal-2", status: "paused" },
+      { id: "goal-1", status: "active" },
+    ]);
+    storage.close();
+  });
+
   it("updates a budget and dependent goal versions in one transaction", async () => {
     const directory = mkdtempSync(join(tmpdir(), "agent-goal-budget-"));
     tempDirectories.push(directory);

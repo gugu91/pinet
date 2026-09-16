@@ -16,8 +16,23 @@ describe("parseGoalEvaluation", () => {
     expect(parseGoalEvaluation(response)).toEqual(expected);
   });
 
+  it("tolerates reasoning preamble and multi-line reasons", () => {
+    expect(
+      parseGoalEvaluation(
+        "Let me check the evidence.\n\nCONTINUE: review is still open\nThe PR needs approval.",
+      ),
+    ).toEqual({ outcome: "continue", reason: "review is still open\nThe PR needs approval." });
+    expect(parseGoalEvaluation("  complete: verified by tests  ")).toEqual({
+      outcome: "complete",
+      reason: "verified by tests",
+    });
+  });
+
   it("rejects malformed evaluator output", () => {
     expect(() => parseGoalEvaluation("probably done")).toThrow("invalid response");
-    expect(() => parseGoalEvaluation("COMPLETE:")).toThrow("invalid response");
+    expect(() => parseGoalEvaluation("COMPLETE:")).toThrow("did not provide a reason");
+    expect(() => parseGoalEvaluation("Not COMPLETE: inline verdicts are ignored")).toThrow(
+      "invalid response",
+    );
   });
 });

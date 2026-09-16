@@ -119,6 +119,8 @@ export type GoalDeleteResult = "deleted" | "missing" | "conflict";
 
 export interface GoalStorage {
   get(scopeId: string): Promise<AgentGoal | undefined>;
+  /** Unfinished goals across every scope, newest activity first. */
+  listUnfinished(): Promise<AgentGoal[]>;
   create(goal: AgentGoal): Promise<void>;
   replace(goal: AgentGoal, expectedVersion: number): Promise<boolean>;
   updateBudget(goal: AgentGoal, expectedVersion: number): Promise<boolean>;

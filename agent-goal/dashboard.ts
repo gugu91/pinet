@@ -77,3 +77,22 @@ export function formatGoalDashboard(
   lines.push("/goal update · snooze <duration> · close · hide");
   return lines;
 }
+
+/** One line per unfinished goal, marking the current session and how to reach the others. */
+export function formatGoalList(goals: AgentGoal[], currentScopeId: string): string[] {
+  if (goals.length === 0) return ["No unfinished goals in any session."];
+  return goals.map((goal) => {
+    const where = goal.scopeId === currentScopeId ? "this session" : `pi --session ${goal.scopeId}`;
+    const settled = goal.lastSettledAt ?? goal.updatedAt;
+    return `${goalStatusEmoji(goal)} ${goal.status} · ${goalDisplayName(goal, 48)} · ${goal.usage.iterations} turns · last ${settled} · ${where}`;
+  });
+}
+
+export function formatOrphanGoalNotice(
+  goals: AgentGoal[],
+  currentScopeId: string,
+): string | undefined {
+  const others = goals.filter((goal) => goal.scopeId !== currentScopeId);
+  if (others.length === 0) return undefined;
+  return `${others.length} unfinished goal${others.length === 1 ? "" : "s"} in other sessions; /goal list shows how to resume them`;
+}

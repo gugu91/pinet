@@ -29,6 +29,7 @@ For local development: `pi -e ./agent-goal/index.ts`.
 /goal close                          Complete and clear the current goal
 /goal clear                          Clear the current goal immediately
 /goal hide | /goal show              Hide or show compact status
+/goal list                           List unfinished goals across sessions with resume hints
 ```
 
 `/goal <idea>` starts a normal agent turn to clarify the outcome, scope, constraints, completion evidence, and optional limits; it does not create anything until you confirm the resulting goal. The persistent row truncates long goal text and shows status with an emoji: `🎯` active, `⏸️` paused or snoozed, `⛔` blocked, `⏱️` budget-limited, and `✅` complete. `/goal` opens a terminal-native overlay. An empty session gets a create form; an existing goal gets details and `e` edit, `b` limits, `s` timed snooze, and `x` close controls. Escape cancels a form or closes the details overlay; Ctrl+C also closes the overlay. Closing a goal requires confirmation and remains available for blocked and budget-limited goals.
@@ -36,6 +37,8 @@ For local development: `pi -e ./agent-goal/index.ts`.
 `/goal demo` asks the agent to walk through a small example, checkpointing, inspection, and verified completion. Demo and idea discussions require a session without an existing goal; otherwise the command reports an error without starting a turn. The walkthrough asks for consent before creating its example goal.
 
 Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
+
+Goals are session-scoped: a goal only continues while its own Pi session is running. When another session still holds an unfinished goal, session start shows a short notice and `/goal list` prints each unfinished goal with its status, accounted turns, last settle time, and the `pi --session <id>` command that resumes it.
 
 Only one current goal may exist per Pi session. A verified completion clears that current goal so another can be created; `/goal close` records completion before clearing, while `/goal clear` removes it immediately. Clearing removes its persisted checkpoints as well.
 
@@ -71,7 +74,11 @@ SQLite storage defaults to `~/.pi/agent/agent-goals.sqlite`; set `PI_AGENT_GOAL_
 
 Optimistic versions reject stale mutations. Metadata/limit edits atomically advance pending evaluation, candidate, and continuation-claim versions. Evaluation commit updates lifecycle and usage fields only, so an old result cannot overwrite a newer name, objective, limit, or snooze. Settlements arriving during evaluation are aggregated and charged exactly once.
 
-Every continuation acquires a durable per-session claim. New-goal and objective-update intent is persisted independently of that delivery claim, survives pause, snooze, restart, and concurrent evaluation commits, and is consumed only when its corresponding turn starts. Busy sessions defer with an in-process wake. Timed snooze uses the same scheduler; expiry clears the snooze with compare-and-swap before continuation, so duplicate timer callbacks cannot produce duplicate wakes. Failures use bounded retries and eventually block with a diagnostic reason.
+Every continuation acquires a durable per-session claim. New-goal and objective-update intent is persisted independently of that delivery claim, survives pause, snooze, restart, and concurrent evaluation commits, and is consumed only when its corresponding turn starts. Busy sessions defer with an in-process wake. Timed snooze uses the same scheduler; expiry clears the snooze with compare-and-swap before continuation, so duplicate timer callbacks cannot produce duplicate wakes.
+
+Evaluation calls the current session model and tolerates a short preamble before the `CONTINUE|COMPLETE|BLOCKED:` verdict line. Provider errors, missing auth, and malformed verdicts retry with a longer backoff (four attempts, 2s to 30s). If evaluation is still unavailable, the goal is **not** marked blocked: it stays active with a `Goal evaluation unavailable` note and continues, so the next settle re-evaluates. Only when evaluation is unavailable on consecutive settlements does the goal pause with that reason; resume it once the model is reachable. Continuation delivery failures still use bounded retries and block with a diagnostic reason.
+
+Set `PI_AGENT_GOAL_EVENT_LOG=<path>` to append every goal lifecycle event (claims, evaluations, retries, status changes) as JSONL for diagnosing stalls.
 
 ## Architecture
 

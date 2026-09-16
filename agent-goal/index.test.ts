@@ -6,6 +6,9 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentGoal } from "./domain.js";
 import type { GoalProgressMessage } from "./progress.js";
@@ -24,7 +27,10 @@ type GoalWindowFactory = (
   done: (value: GoalWindowAction) => void,
 ) => Component;
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 describe("registerAgentGoal", () => {
   it("keeps lifecycle tags visible after Pi converts custom messages for the model", async () => {
@@ -366,6 +372,149 @@ describe("registerAgentGoal", () => {
       expect(await storage.get("session-1")).toBeUndefined();
     },
   );
+
+  it("notices unfinished goals in other sessions and lists them on /goal list", async () => {
+    const handlers = new Map<string, GoalEventHandler>();
+    const commands = new Map<string, RegisteredCommand>();
+    const sendMessage = vi.fn();
+    const notify = vi.fn();
+    const pi = {
+      on(name: string, handler: GoalEventHandler) {
+        handlers.set(name, handler);
+      },
+      registerTool: vi.fn(),
+      registerCommand(name: string, command: RegisteredCommand) {
+        commands.set(name, command);
+      },
+      sendMessage,
+    } as object as ExtensionAPI;
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify },
+    } as object as ExtensionCommandContext;
+    const storage = new MemoryGoalStorage();
+    const orphan: AgentGoal = {
+      id: "goal-2",
+      scopeId: "session-2",
+      name: "Orphaned",
+      objective: "finish elsewhere",
+      status: "active",
+      budget: {},
+      usage: { iterations: 4, tokens: 0 },
+      version: 5,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:10:00.000Z",
+    };
+    await storage.create(orphan);
+    registerAgentGoal(pi, { storage, evaluator: { evaluate: vi.fn() } });
+
+    await handlers.get("session_start")?.({}, context);
+
+    expect(notify).toHaveBeenCalledWith(
+      "1 unfinished goal in other sessions; /goal list shows how to resume them",
+      "info",
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    await commands.get("goal")?.handler("list", context);
+
+    expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
+      {
+        customType: "agent-goal.list",
+        content:
+          "🎯 active · Orphaned · 4 turns · last 2026-01-01T00:10:00.000Z · pi --session session-2",
+        display: true,
+      },
+      { triggerTurn: false },
+    );
+    await handlers.get("session_shutdown")?.({}, context);
+  });
+
+  it("stays quiet on session start when every unfinished goal belongs to this session", async () => {
+    const handlers = new Map<string, GoalEventHandler>();
+    const notify = vi.fn();
+    const pi = {
+      on(name: string, handler: GoalEventHandler) {
+        handlers.set(name, handler);
+      },
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify },
+    } as object as ExtensionContext;
+    const storage = new MemoryGoalStorage();
+    await storage.create({
+      id: "goal-1",
+      scopeId: "session-1",
+      objective: "here",
+      status: "paused",
+      budget: {},
+      usage: { iterations: 0, tokens: 0 },
+      version: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    registerAgentGoal(pi, { storage, evaluator: { evaluate: vi.fn() } });
+
+    await handlers.get("session_start")?.({}, context);
+
+    expect(notify).not.toHaveBeenCalled();
+    await handlers.get("session_shutdown")?.({}, context);
+  });
+
+  it("logs goal events as JSONL when PI_AGENT_GOAL_EVENT_LOG is set", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agent-goal-env-log-"));
+    const path = join(directory, "events.jsonl");
+    vi.stubEnv("PI_AGENT_GOAL_EVENT_LOG", path);
+    const tools = new Map<string, ToolDefinition>();
+    const handlers = new Map<string, GoalEventHandler>();
+    const pi = {
+      on(name: string, handler: GoalEventHandler) {
+        handlers.set(name, handler);
+      },
+      registerTool(tool: ToolDefinition) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand: vi.fn(),
+      sendMessage: vi.fn(),
+    } as object as ExtensionAPI;
+    const context = {
+      hasUI: false,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "session-1" },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
+    } as object as ExtensionContext;
+    registerAgentGoal(pi, { storage: new MemoryGoalStorage(), evaluator: { evaluate: vi.fn() } });
+    const createGoal = tools.get("create_goal");
+    if (!createGoal?.execute) throw new Error("create_goal was not registered");
+
+    await createGoal.execute(
+      "call-0",
+      { objective: "log me" },
+      new AbortController().signal,
+      undefined,
+      context,
+    );
+
+    const events = readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; at: string });
+    expect(events.map(({ type }) => type)).toContain("goal.created");
+    expect(events[0]?.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    await handlers.get("session_shutdown")?.({}, context);
+    rmSync(directory, { recursive: true, force: true });
+  });
 
   it("discusses a goal idea without creating or starting a goal", async () => {
     const handlers = new Map<string, GoalEventHandler>();
