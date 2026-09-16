@@ -11,6 +11,8 @@ declare module "@earendil-works/pi-ai" {
 
   export interface GoalEvaluatorResponse {
     content: Array<{ type: string; text?: string }>;
+    stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
+    errorMessage?: string;
   }
 
   export function completeSimple(

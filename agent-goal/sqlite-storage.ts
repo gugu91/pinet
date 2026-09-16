@@ -256,7 +256,22 @@ export class SqliteGoalStorage implements GoalStorage {
     const row = this.db.prepare("SELECT * FROM agent_goals WHERE scope_id = ?").get(scopeId) as
       | GoalRow
       | undefined;
-    if (!row) return undefined;
+    return row ? this.toGoal(row) : undefined;
+  }
+
+  async listUnfinished(): Promise<AgentGoal[]> {
+    const rows = this.db
+      .prepare("SELECT * FROM agent_goals WHERE status != 'complete' ORDER BY updated_at DESC")
+      .all();
+    return rows.map((row) => {
+      if (typeof row.id !== "string" || typeof row.scope_id !== "string") {
+        throw new Error("Stored goal is malformed");
+      }
+      return this.toGoal(row as object as GoalRow);
+    });
+  }
+
+  private toGoal(row: GoalRow): AgentGoal {
     return {
       id: row.id,
       scopeId: row.scope_id,

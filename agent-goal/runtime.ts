@@ -28,10 +28,21 @@ const DEFAULT_RETRY_POLICY: GoalRetryPolicy = {
   baseDelayMs: 250,
   maxDelayMs: 2_000,
 };
+/**
+ * Evaluator calls hit a remote model; rate limits and auth refreshes need seconds, not
+ * milliseconds. Waits of 2s, 4s, 8s, 16s, 30s give about a minute of resilience.
+ */
+export const DEFAULT_EVALUATOR_RETRY_POLICY: GoalRetryPolicy = {
+  maxAttempts: 6,
+  baseDelayMs: 2_000,
+  maxDelayMs: 30_000,
+};
+export const EVALUATION_UNAVAILABLE_PREFIX = "Goal evaluation unavailable";
 
 export interface GoalRuntimeOptions {
   defaultBudget?: GoalBudget;
   retryPolicy?: GoalRetryPolicy;
+  evaluatorRetryPolicy?: GoalRetryPolicy;
   eventSink?: GoalEventSink;
   claimTtlMs?: number;
   delay?: (milliseconds: number) => Promise<void>;
@@ -45,6 +56,7 @@ export class GoalRuntime {
   private readonly recoveringScopes = new Set<string>();
   private readonly budget: GoalBudget;
   private readonly retryPolicy: GoalRetryPolicy;
+  private readonly evaluatorRetryPolicy: GoalRetryPolicy;
   private readonly eventSink?: GoalEventSink;
   private readonly claimTtlMs: number;
   private readonly delay: (milliseconds: number) => Promise<void>;
@@ -60,6 +72,8 @@ export class GoalRuntime {
   ) {
     this.budget = options.defaultBudget ?? DEFAULT_BUDGET;
     this.retryPolicy = options.retryPolicy ?? DEFAULT_RETRY_POLICY;
+    this.evaluatorRetryPolicy =
+      options.evaluatorRetryPolicy ?? options.retryPolicy ?? DEFAULT_EVALUATOR_RETRY_POLICY;
     this.eventSink = options.eventSink;
     this.claimTtlMs = options.claimTtlMs ?? 5 * 60_000;
     this.wakeScheduler =
@@ -83,6 +97,10 @@ export class GoalRuntime {
 
   async get(scopeId: string): Promise<AgentGoal | undefined> {
     return this.storage.get(scopeId);
+  }
+
+  async listUnfinished(): Promise<AgentGoal[]> {
+    return this.storage.listUnfinished();
   }
 
   async getContinuationClaim(scopeId: string): Promise<GoalContinuationClaim | undefined> {
@@ -616,32 +634,50 @@ export class GoalRuntime {
           if (!latestPending || latestPending.evaluationId !== pending.evaluationId) continue;
           const failure = error instanceof Error ? error : new Error(String(error));
           const attempt = pending.attempt + 1;
-          if (attempt >= this.retryPolicy.maxAttempts) {
-            const blockedAt = this.now().toISOString();
-            const reason = `evaluator failed after ${attempt} attempts: ${failure.message}`;
-            const blocked: AgentGoal = {
+          if (attempt >= this.evaluatorRetryPolicy.maxAttempts) {
+            // The evaluator, not the objective, failed. Never report that as a blocked goal:
+            // keep working and re-evaluate on the next settle. Only pause once evaluation has
+            // been unavailable for consecutive settlements, so a dead evaluator cannot drive
+            // an unbounded unevaluated loop.
+            const unavailableAt = this.now().toISOString();
+            const reason = `${EVALUATION_UNAVAILABLE_PREFIX} after ${attempt} attempts: ${failure.message}`;
+            const previouslyUnavailable =
+              goal.lastEvaluation?.reason.startsWith(EVALUATION_UNAVAILABLE_PREFIX) ?? false;
+            const unevaluated: AgentGoal = {
               ...goal,
-              status: "blocked",
-              blockedReason: reason,
+              status: "active",
+              blockedReason: undefined,
               usage: accountedUsage,
-              lastSettledAt: blockedAt,
+              lastSettledAt: unavailableAt,
               lastEvaluation: {
                 id: pending.evaluationId,
-                outcome: "blocked",
+                outcome: "continue",
                 reason,
-                at: blockedAt,
+                at: unavailableAt,
               },
               version: goal.version + 1,
-              updatedAt: blockedAt,
+              updatedAt: unavailableAt,
             };
-            if (
-              !(await this.storage.commitEvaluation(blocked, goal.version, pending.evaluationId))
-            ) {
+            // User-configured ceilings hold regardless of whether the evaluator answered.
+            const next: AgentGoal = this.budgetExhausted(unevaluated)
+              ? {
+                  ...unevaluated,
+                  status: "budget_limited",
+                  blockedReason: "Goal continuation budget exhausted",
+                }
+              : previouslyUnavailable
+                ? {
+                    ...unevaluated,
+                    status: "paused",
+                    blockedReason: `${reason}. Paused after consecutive unavailable evaluations; resume when the model is reachable.`,
+                  }
+                : unevaluated;
+            if (!(await this.storage.commitEvaluation(next, goal.version, pending.evaluationId))) {
               continue;
             }
             await this.record({
               type: "goal.progress_accounted",
-              goal: blocked,
+              goal: next,
               tokenDelta: pending.progress.tokenDelta ?? 0,
             });
             await this.record({
@@ -652,14 +688,23 @@ export class GoalRuntime {
               attempt,
               error: failure.message,
             });
+            if (next.status === "active") {
+              await this.continueWithClaim(
+                next,
+                `${reason}. Continue from the latest checkpoint; the next settle re-evaluates.`,
+              );
+              continue;
+            }
             await this.record({
               type: "goal.status_changed",
-              goal: blocked,
+              goal: next,
               previousStatus: goal.status,
             });
             return;
           }
-          const retryAt = new Date(this.now().getTime() + this.retryDelay(attempt)).toISOString();
+          const retryAt = new Date(
+            this.now().getTime() + this.retryDelay(attempt, this.evaluatorRetryPolicy),
+          ).toISOString();
           const retry: GoalPendingEvaluation = {
             ...pending,
             attempt,
@@ -960,8 +1005,8 @@ export class GoalRuntime {
     });
   }
 
-  private retryDelay(attempt: number): number {
-    return Math.min(this.retryPolicy.baseDelayMs * 2 ** (attempt - 1), this.retryPolicy.maxDelayMs);
+  private retryDelay(attempt: number, policy: GoalRetryPolicy = this.retryPolicy): number {
+    return Math.min(policy.baseDelayMs * 2 ** (attempt - 1), policy.maxDelayMs);
   }
 
   private async record(event: GoalEvent): Promise<void> {

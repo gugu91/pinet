@@ -8,7 +8,11 @@ import type {
   GoalWakeScheduler,
 } from "./domain.js";
 import { MemoryGoalStorage } from "./memory-storage.js";
-import { GoalRuntime } from "./runtime.js";
+import {
+  DEFAULT_EVALUATOR_RETRY_POLICY,
+  EVALUATION_UNAVAILABLE_PREFIX,
+  GoalRuntime,
+} from "./runtime.js";
 
 const startedContinuation = (): GoalContinuation => ({
   continueIfIdle: vi.fn().mockResolvedValue({ status: "started" }),
@@ -674,20 +678,16 @@ describe("GoalRuntime", () => {
     expect(await storage.getPendingEvaluation("session-1")).toBeUndefined();
   });
 
-  it("retries evaluator failures and blocks after bounded exhaustion", async () => {
+  it("keeps the goal active and continues when the evaluator stays unavailable", async () => {
     const events: GoalEvent[] = [];
     const evaluator = { evaluate: vi.fn().mockRejectedValue(new Error("offline")) };
-    const runtime = new GoalRuntime(
-      new MemoryGoalStorage(),
-      evaluator,
-      startedContinuation(),
-      undefined,
-      {
-        retryPolicy: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 1 },
-        delay: vi.fn().mockResolvedValue(undefined),
-        eventSink: { record: (event) => void events.push(event) },
-      },
-    );
+    const continuation = startedContinuation();
+    const delay = vi.fn().mockResolvedValue(undefined);
+    const runtime = new GoalRuntime(new MemoryGoalStorage(), evaluator, continuation, undefined, {
+      evaluatorRetryPolicy: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 5_000 },
+      delay,
+      eventSink: { record: (event) => void events.push(event) },
+    });
     await runtime.create("session-1", "ship");
 
     await runtime.settle("session-1", {
@@ -696,11 +696,96 @@ describe("GoalRuntime", () => {
     });
 
     expect(evaluator.evaluate).toHaveBeenCalledTimes(2);
-    expect(await runtime.get("session-1")).toMatchObject({
-      status: "blocked",
-      blockedReason: "evaluator failed after 2 attempts: offline",
+    expect(delay).toHaveBeenCalledWith(1_000);
+    const goal = await runtime.get("session-1");
+    expect(goal).toMatchObject({
+      status: "active",
+      blockedReason: undefined,
+      usage: { iterations: 1 },
+      lastEvaluation: {
+        outcome: "continue",
+        reason: `${EVALUATION_UNAVAILABLE_PREFIX} after 2 attempts: offline`,
+      },
     });
     expect(events.some(({ type }) => type === "goal.retry_exhausted")).toBe(true);
+    expect(continuation.continueIfIdle).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: goal?.id }),
+      expect.objectContaining({
+        expectedGoalVersion: 2,
+        reason: expect.stringContaining(EVALUATION_UNAVAILABLE_PREFIX),
+      }),
+    );
+  });
+
+  it("enforces the goal budget even when the evaluator is unavailable", async () => {
+    const evaluator = { evaluate: vi.fn().mockRejectedValue(new Error("offline")) };
+    const continuation = startedContinuation();
+    const runtime = new GoalRuntime(new MemoryGoalStorage(), evaluator, continuation, undefined, {
+      evaluatorRetryPolicy: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+      delay: vi.fn().mockResolvedValue(undefined),
+    });
+    await runtime.create("session-1", "ship", { maxIterations: 1 });
+
+    await runtime.settle("session-1", { latestOutput: "final turn" });
+
+    expect(await runtime.get("session-1")).toMatchObject({
+      status: "budget_limited",
+      blockedReason: "Goal continuation budget exhausted",
+      usage: { iterations: 1 },
+      lastEvaluation: { reason: expect.stringContaining(EVALUATION_UNAVAILABLE_PREFIX) },
+    });
+    expect(continuation.continueIfIdle).not.toHaveBeenCalled();
+  });
+
+  it("backs off evaluator retries for about a minute by default", async () => {
+    const evaluator = { evaluate: vi.fn().mockRejectedValue(new Error("offline")) };
+    const delay = vi.fn().mockResolvedValue(undefined);
+    const runtime = new GoalRuntime(
+      new MemoryGoalStorage(),
+      evaluator,
+      startedContinuation(),
+      undefined,
+      {
+        delay,
+      },
+    );
+    await runtime.create("session-1", "ship");
+
+    await runtime.settle("session-1", { latestOutput: "work" });
+
+    expect(evaluator.evaluate).toHaveBeenCalledTimes(DEFAULT_EVALUATOR_RETRY_POLICY.maxAttempts);
+    expect(delay.mock.calls.map(([ms]) => ms)).toEqual([2_000, 4_000, 8_000, 16_000, 30_000]);
+  });
+
+  it("pauses instead of looping after consecutive unavailable evaluations", async () => {
+    const evaluator = { evaluate: vi.fn().mockRejectedValue(new Error("offline")) };
+    const continuation = startedContinuation();
+    const runtime = new GoalRuntime(new MemoryGoalStorage(), evaluator, continuation, undefined, {
+      evaluatorRetryPolicy: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+      delay: vi.fn().mockResolvedValue(undefined),
+    });
+    await runtime.create("session-1", "ship");
+
+    await runtime.settle("session-1", { latestOutput: "first" });
+    await runtime.acknowledgeContinuation("session-1");
+    await runtime.settle("session-1", { latestOutput: "second" });
+
+    expect(await runtime.get("session-1")).toMatchObject({
+      status: "paused",
+      usage: { iterations: 2 },
+      blockedReason: expect.stringContaining("Paused after consecutive unavailable evaluations"),
+    });
+    expect(continuation.continueIfIdle).toHaveBeenCalledTimes(1);
+
+    evaluator.evaluate.mockResolvedValue({ outcome: "continue", reason: "keep going" });
+    await runtime.setStatus("session-1", "active");
+    await runtime.settle("session-1", { latestOutput: "third" });
+
+    expect(await runtime.get("session-1")).toMatchObject({
+      status: "active",
+      blockedReason: undefined,
+      lastEvaluation: { outcome: "continue", reason: "keep going" },
+    });
   });
 
   it("retries continuation failures and blocks after bounded exhaustion", async () => {
