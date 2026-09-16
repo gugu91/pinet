@@ -27,6 +27,7 @@ declare module "@earendil-works/pi-coding-agent" {
     theme: any;
     notify(message: string, level?: string): void;
     setStatus(id: string, value?: any): void;
+    select(title: string, options: string[]): Promise<string | undefined>;
     custom<T>(
       factory: (
         tui: { requestRender(): void },
@@ -60,6 +61,98 @@ declare module "@earendil-works/pi-coding-agent" {
     getLeafId(): string | undefined;
     getSessionFile(): string | undefined;
   }
+
+  export interface RegistryModel {
+    provider: string;
+    id: string;
+    name?: string;
+    reasoning?: boolean;
+    thinkingLevelMap?: Partial<
+      Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>
+    >;
+    contextWindow: number;
+    maxTokens: number;
+  }
+
+  export type ResolvedRequestAuth =
+    | {
+        ok: true;
+        apiKey?: string;
+        headers?: import("@earendil-works/pi-ai/compat").ProviderHeaders;
+        baseUrl?: string;
+        env?: Record<string, string>;
+      }
+    | {
+        ok: false;
+        error: string;
+      };
+
+  export interface ModelRuntime {}
+  export const ModelRuntime: {
+    create(options?: {
+      refreshOnCreate?: boolean;
+      modelsPath?: string | null;
+    }): Promise<ModelRuntime>;
+  };
+
+  export interface ModelRegistry {
+    find(provider: string, modelId: string): RegistryModel | undefined;
+    getAvailable(): RegistryModel[];
+    getApiKeyAndHeaders(model: RegistryModel): Promise<ResolvedRequestAuth>;
+    registerProvider(provider: import("@earendil-works/pi-ai/compat").Provider): void;
+    complete<TApi extends import("@earendil-works/pi-ai/compat").Api>(
+      model: import("@earendil-works/pi-ai/compat").Model<TApi>,
+      context: import("@earendil-works/pi-ai/compat").Context,
+      options?: import("@earendil-works/pi-ai/compat").ApiStreamOptions<TApi>,
+    ): Promise<import("@earendil-works/pi-ai/compat").AssistantMessage>;
+  }
+  export const ModelRegistry: {
+    new (runtime: ModelRuntime): ModelRegistry;
+  };
+
+  export interface AgentMessage {
+    role: string;
+  }
+
+  export interface CompactionPreparation {
+    firstKeptEntryId: string;
+    messagesToSummarize: AgentMessage[];
+    turnPrefixMessages: AgentMessage[];
+    isSplitTurn: boolean;
+    tokensBefore: number;
+    previousSummary?: string;
+    fileOps: { read: Set<string>; written: Set<string>; edited: Set<string> };
+    settings: { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
+  }
+
+  export interface SessionBeforeCompactEvent {
+    preparation: CompactionPreparation;
+    branchEntries: SessionEntry[];
+    customInstructions?: string;
+    reason: "manual" | "threshold" | "overflow";
+    willRetry: boolean;
+    signal: AbortSignal;
+  }
+
+  export function convertToLlm(messages: AgentMessage[]): AgentMessage[];
+  export function serializeConversation(messages: AgentMessage[]): string;
+  export function compact(
+    preparation: CompactionPreparation,
+    model: RegistryModel,
+    apiKey?: string,
+    headers?: Record<string, string>,
+    customInstructions?: string,
+    signal?: AbortSignal,
+    thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+    streamFn?: undefined,
+    env?: Record<string, string>,
+  ): Promise<{
+    summary: string;
+    firstKeptEntryId: string;
+    tokensBefore: number;
+    usage?: object;
+    details?: object;
+  }>;
 
   export interface ExtensionContext {
     cwd: string;

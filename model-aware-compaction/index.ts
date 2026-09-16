@@ -1,6 +1,26 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  convertToLlm,
+  serializeConversation,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionBeforeCompactEvent,
+} from "@earendil-works/pi-coding-agent";
+import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
 import { loadConfig } from "./config.js";
-import { decideCompaction, modelKey, type ModelIdentity } from "./helpers.js";
+import {
+  compactionInputError,
+  decideCompaction,
+  modelKey,
+  parseCompactionSelector,
+  selectorForModel,
+  type ModelIdentity,
+  type ThinkingLevel,
+} from "./helpers.js";
+import {
+  mergePriorModelAwareFiles,
+  runSelectedModelCompaction,
+  type RegistryComplete,
+} from "./selected-compaction.js";
 
 interface ContextUsage {
   tokens: number | null;
@@ -8,7 +28,32 @@ interface ContextUsage {
   percent: number | null;
 }
 interface CompatibleContext extends ExtensionContext {
+  modelRegistry: {
+    find(provider: string, modelId: string): Model<Api> | undefined;
+    getAvailable(): Model<Api>[];
+    getApiKeyAndHeaders(model: Model<Api>): Promise<
+      | {
+          ok: true;
+          apiKey?: string;
+          headers?: ProviderHeaders;
+          baseUrl?: string;
+          env?: Record<string, string>;
+        }
+      | { ok: false; error: string }
+    >;
+    complete: RegistryComplete;
+  };
   model?: ModelIdentity;
+  scopedModels?: ReadonlyArray<{
+    model: {
+      provider: string;
+      id: string;
+      name?: string;
+      reasoning?: boolean;
+      thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
+    };
+    thinkingLevel?: ThinkingLevel;
+  }>;
   getContextUsage?: () => ContextUsage | undefined;
   compact?: (options?: {
     customInstructions?: string;
@@ -24,18 +69,122 @@ interface CompatibleAPI extends ExtensionAPI {
 }
 
 const LOG_PREFIX = "[model-aware-compaction]";
+const STATUS_ID = "model-aware-compaction";
 
 export default function modelAwareCompaction(pi: ExtensionAPI) {
   const api = pi as CompatibleAPI;
   let inFlight = false;
+  let summarizationInFlight = false;
   let triggeredModelKey: string | null = null;
+  let runtimeSelector: string | undefined;
 
   const rearm = () => {
     triggeredModelKey = null;
   };
 
-  pi.on("session_start", rearm);
-  pi.on("model_select", rearm);
+  pi.on("session_start", (_event, rawCtx) => {
+    rearm();
+    runtimeSelector = undefined;
+    const ctx = rawCtx as CompatibleContext;
+    const config = loadConfig(ctx.cwd);
+    const selector = selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
+    if (ctx.hasUI) ctx.ui.setStatus(STATUS_ID, selector ? `compact: ${selector}` : undefined);
+  });
+  pi.on("model_select", (_event, rawCtx) => {
+    rearm();
+    const ctx = rawCtx as CompatibleContext;
+    const config = loadConfig(ctx.cwd);
+    const selector =
+      runtimeSelector ??
+      selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
+    if (ctx.hasUI) ctx.ui.setStatus(STATUS_ID, selector ? `compact: ${selector}` : undefined);
+  });
+
+  pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, rawCtx) => {
+    const ctx = rawCtx as CompatibleContext;
+    const config = loadConfig(ctx.cwd);
+    const selectorText =
+      runtimeSelector ??
+      selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
+    if (!selectorText) return;
+
+    const failClosed = (message: string) => {
+      console.error(`${LOG_PREFIX} ${message}`);
+      if (ctx.hasUI && !event.signal.aborted)
+        ctx.ui.notify(`Compaction cancelled: ${message}`, "error");
+      return { cancel: true as const };
+    };
+
+    if (event.signal.aborted) return { cancel: true };
+    if (summarizationInFlight)
+      return failClosed("another selected-model compaction is already in progress");
+
+    const selector = parseCompactionSelector(selectorText, (provider, modelId) =>
+      Boolean(ctx.modelRegistry.find(provider, modelId)),
+    );
+    if (!selector) return failClosed(`invalid compactionModel selector "${selectorText}"`);
+    const model = ctx.modelRegistry.find(selector.provider, selector.modelId);
+    if (!model)
+      return failClosed(
+        `compaction model "${selector.provider}/${selector.modelId}" is unavailable`,
+      );
+    if (selector.thinkingOverride)
+      return failClosed(
+        `thinking override ":${selector.thinkingOverride}" is unsupported; configure provider/model only and the provider default will be used`,
+      );
+
+    // Acquire ownership before the registry begins asynchronous provider/auth work.
+    summarizationInFlight = true;
+    try {
+      const customInstructions =
+        [event.customInstructions, config.customInstructions]
+          .filter(
+            (value, index, values): value is string =>
+              Boolean(value) && values.indexOf(value) === index,
+          )
+          .join("\n\n") || undefined;
+      const preparation = mergePriorModelAwareFiles(event.preparation, event.branchEntries);
+      const history = serializeConversation(convertToLlm(preparation.messagesToSummarize));
+      const turnPrefix = serializeConversation(convertToLlm(preparation.turnPrefixMessages));
+      const outputReserve = Math.min(
+        Math.floor(preparation.settings.reserveTokens * 0.8),
+        model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+      );
+      const prefixOutputReserve = Math.min(
+        Math.floor(preparation.settings.reserveTokens * 0.5),
+        model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+      );
+      const budgetError = compactionInputError({
+        serializedHistory: history,
+        serializedTurnPrefix: turnPrefix,
+        previousSummary: preparation.previousSummary,
+        customInstructions,
+        contextWindow: model.contextWindow,
+        outputReserve,
+        prefixOutputReserve,
+      });
+      if (budgetError) return failClosed(budgetError);
+
+      if (config.debug && ctx.hasUI) {
+        ctx.ui.notify(`Compacting with ${selectorText}`, "info");
+      }
+      const result = await runSelectedModelCompaction({
+        preparation,
+        model,
+        complete: ctx.modelRegistry.complete.bind(ctx.modelRegistry),
+        signal: event.signal,
+        customInstructions,
+      });
+      if (event.signal.aborted) return { cancel: true };
+      return { compaction: result };
+    } catch (error) {
+      if (event.signal.aborted) return { cancel: true };
+      const message = error instanceof Error ? error.message : String(error);
+      return failClosed(`selected model "${selectorText}" failed: ${message}`);
+    } finally {
+      summarizationInFlight = false;
+    }
+  });
 
   // agent_end may still be followed by Pi's automatic compaction and retry.
   // Wait until the full operation settles so proactive compaction cannot race it.
@@ -92,6 +241,34 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     });
   });
 
+  pi.registerCommand("model-aware-compaction-model", {
+    description: "Choose a compaction model for this session",
+    handler: async (_args, rawCtx) => {
+      const ctx = rawCtx as CompatibleContext;
+      if (!ctx.hasUI) return;
+      const models =
+        ctx.scopedModels && ctx.scopedModels.length > 0
+          ? ctx.scopedModels
+          : ctx.modelRegistry.getAvailable().map((model) => ({ model }));
+      const labels = models.map((entry) => `${entry.model.provider}/${entry.model.id}`);
+      const choice = await ctx.ui.select("Compaction model (session only)", [
+        "Use configured selector",
+        ...labels,
+      ]);
+      if (!choice) return;
+      runtimeSelector = choice === "Use configured selector" ? undefined : choice;
+      const config = loadConfig(ctx.cwd);
+      const selected =
+        runtimeSelector ??
+        selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
+      ctx.ui.setStatus(STATUS_ID, selected ? `compact: ${selected}` : undefined);
+      ctx.ui.notify(
+        selected ? `Compaction model: ${selected}` : "Using Pi's default compaction model",
+        "info",
+      );
+    },
+  });
+
   pi.registerCommand("model-aware-compaction-status", {
     description: "Show model-aware proactive compaction status",
     handler: async (_args, rawCtx) => {
@@ -107,17 +284,45 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         inFlight,
         triggeredModelKey,
       });
+      const configuredSelector = selectorForModel(config.rules, key, config.compactionModel);
+      const selector = runtimeSelector ?? configuredSelector;
+      const parsed = selector
+        ? parseCompactionSelector(selector, (provider, modelId) =>
+            Boolean(ctx.modelRegistry.find(provider, modelId)),
+          )
+        : null;
+      const resolved = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId) : undefined;
+      const selectorError = parsed?.thinkingOverride
+        ? `thinking override ":${parsed.thinkingOverride}" is unsupported`
+        : null;
+      const auth =
+        resolved && !selectorError ? await ctx.modelRegistry.getApiKeyAndHeaders(resolved) : null;
+      const readiness = !selector
+        ? "not configured"
+        : !parsed || !resolved
+          ? "invalid or unavailable"
+          : selectorError
+            ? selectorError
+            : auth?.ok
+              ? "ready"
+              : `credentials unavailable: ${auth?.error}`;
       const lines = [
         "**Model-aware compaction**",
         "",
-        `- enabled: ${config.enabled ? "yes" : "no"}`,
+        `- proactive enabled: ${config.enabled ? "yes" : "no"}`,
         `- current model: ${key ?? "unknown"}`,
+        `- compaction model: ${selector ?? "Pi default"}${runtimeSelector ? " (session override)" : ""}`,
+        `- thinking: provider default (overrides unsupported)`,
+        `- compaction model status: ${readiness}`,
         `- current tokens: ${usage?.tokens ?? "unknown"}`,
         `- matched limit: ${decision.limit ?? "none"}`,
         `- state: ${inFlight ? "compacting" : decision.reason}`,
         `- config: ${config.sourcePath ?? "defaults (disabled)"}`,
         "- rules:",
-        ...config.rules.map((rule) => `  - ${rule.model}: ${rule.activeContextTokens}`),
+        ...config.rules.map(
+          (rule) =>
+            `  - ${rule.model}: ${rule.activeContextTokens}${rule.compactionModel ? ` -> ${rule.compactionModel}` : ""}`,
+        ),
       ];
       api.sendMessage(
         { customType: "model-aware-compaction.status", content: lines.join("\n"), display: true },
