@@ -9,6 +9,35 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.18] - 2026-09-16
+
+Pinet v0.2.18 stops durable goals from stalling when the evaluator model is unavailable and makes goals stranded in closed sessions visible.
+
+### Version verification
+
+- `pi-extensions` — `0.2.18` (private repo package)
+- `@pinet/transport-core` — `0.2.18`
+- `@pinet/broker-core` — `0.2.18`
+- `@pinet/pinet-core` — `0.2.18`
+- `@pinet/imessage-bridge` — `0.2.18`
+- `@pinet/slack-bridge` — `0.2.18`
+- `@pinet/model-aware-compaction` — `0.2.18`
+- `@pinet/agent-goal` — `0.2.18`
+
+### Release highlights
+
+- Goal evaluation tolerates a reasoning preamble before the `CONTINUE|COMPLETE|BLOCKED:` verdict line and classifies provider, auth, and transport failures separately from malformed verdicts.
+- Evaluator retries back off for about a minute (2s, 4s, 8s, 16s, 30s) instead of ~3s; when evaluation is still unavailable the goal stays active with a `Goal evaluation unavailable` note and re-evaluates on the next settle, pausing only after consecutive unavailable settlements. Goal budgets are enforced on that path. `blocked` now means the objective is blocked, never the evaluator.
+- Adds `/goal list` and a session-start notice for unfinished goals held by other sessions, with `pi --session <id>` resume hints.
+- Adds an opt-in append-only JSONL goal event log via `PI_AGENT_GOAL_EVENT_LOG=<path>` for diagnosing stalls.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1049](https://github.com/gugu91/pinet/pull/1049) — keep goals alive through evaluator outages and surface orphaned goals (closes [#1048](https://github.com/gugu91/pinet/issues/1048))
+
+See the [full change set since v0.2.17](https://github.com/gugu91/pinet/compare/v0.2.17...v0.2.18).
+
 ## [0.2.17] - 2026-09-14
 
 Pinet v0.2.17 keeps users informed during durable goal work and makes goal progress immediately readable in both model and terminal interfaces.
