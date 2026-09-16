@@ -9,6 +9,36 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.19] - 2026-09-16
+
+Pinet v0.2.19 lets `@pinet/model-aware-compaction` run compaction on a dedicated model instead of the active conversation model.
+
+### Version verification
+
+- `pi-extensions` — `0.2.19` (private repo package)
+- `@pinet/transport-core` — `0.2.19`
+- `@pinet/broker-core` — `0.2.19`
+- `@pinet/pinet-core` — `0.2.19`
+- `@pinet/imessage-bridge` — `0.2.19`
+- `@pinet/slack-bridge` — `0.2.19`
+- `@pinet/model-aware-compaction` — `0.2.19`
+- `@pinet/agent-goal` — `0.2.19`
+
+### Release highlights
+
+- Adds a global `compactionModel` selector plus per-rule overrides and a session-only `/model-aware-compaction-model` picker, so manual, threshold, overflow, and proactive compaction can summarize with a cheaper or larger model while the active session model stays unchanged.
+- Routes selected-model summarization through `ctx.modelRegistry.complete()`, preserving resolved credentials, dynamic endpoints, custom providers, and cancellation.
+- Uses Pi 0.85.1's verbatim summarization prompts and request assembly, with parity tests that fail loudly if the installed SDK's prompts drift.
+- Preserves compaction semantics across repeated compactions: previous summaries, split-turn prefixes, kept-entry boundaries, cumulative read/modified file metadata, custom instructions, and full usage accounting including optional `reasoning` and `cacheWrite1h`.
+- Fails closed on unknown or unavailable models, missing credentials, unsupported thinking suffixes, oversized inputs, provider errors, and empty summary sections, and reports the reason even without a UI. Selection is model-only; the selected provider's default thinking level is used.
+- Requires Pi `>=0.85.1` for `@pinet/model-aware-compaction`. Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1050](https://github.com/gugu91/pinet/pull/1050) — choose a dedicated compaction model (closes [#1047](https://github.com/gugu91/pinet/issues/1047))
+
+See the [full change set since v0.2.18](https://github.com/gugu91/pinet/compare/v0.2.18...v0.2.19).
+
 ## [0.2.18] - 2026-09-16
 
 Pinet v0.2.18 stops durable goals from stalling when the evaluator model is unavailable and makes goals stranded in closed sessions visible.
