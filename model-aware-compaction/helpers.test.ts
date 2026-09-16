@@ -7,7 +7,6 @@ import {
   modelKey,
   parseCompactionSelector,
   selectorForModel,
-  thinkingLevelError,
 } from "./helpers.js";
 
 const rules = [
@@ -28,17 +27,23 @@ describe("model matching", () => {
 });
 
 describe("compaction model selection", () => {
-  it("parses provider/model:thinking while preserving colons in model ids", () => {
+  it("detects unsupported thinking suffixes while preserving exact ids with colons", () => {
     expect(parseCompactionSelector("anthropic/claude-sonnet:high")).toEqual({
       provider: "anthropic",
       modelId: "claude-sonnet",
-      thinkingLevel: "high",
+      thinkingOverride: "high",
     });
     expect(parseCompactionSelector("bedrock/arn:aws:model:off")).toEqual({
       provider: "bedrock",
       modelId: "arn:aws:model",
-      thinkingLevel: "off",
+      thinkingOverride: "off",
     });
+    expect(
+      parseCompactionSelector(
+        "openai/model:high",
+        (provider, modelId) => provider === "openai" && modelId === "model:high",
+      ),
+    ).toEqual({ provider: "openai", modelId: "model:high" });
     expect(parseCompactionSelector("missing-provider")).toBeNull();
   });
 
@@ -53,14 +58,6 @@ describe("compaction model selection", () => {
     expect(selectorForModel(rules, "openai/gpt-5-mini", "google/global-model")).toBe(
       "google/global-model",
     );
-  });
-
-  it("validates thinking support", () => {
-    expect(thinkingLevelError({ reasoning: false }, "low")).toContain("requires a reasoning model");
-    expect(
-      thinkingLevelError({ reasoning: true, thinkingLevelMap: { high: null } }, "high"),
-    ).toContain("unsupported");
-    expect(thinkingLevelError({ reasoning: true }, "high")).toBeNull();
   });
 
   it("rejects serialized requests that do not leave the output reserve", () => {

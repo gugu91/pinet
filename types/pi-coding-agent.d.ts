@@ -82,11 +82,28 @@ declare module "@earendil-works/pi-coding-agent" {
     error?: string;
   }
 
+  export interface ModelRuntime {}
+  export const ModelRuntime: {
+    create(options?: {
+      refreshOnCreate?: boolean;
+      modelsPath?: string | null;
+    }): Promise<ModelRuntime>;
+  };
+
   export interface ModelRegistry {
     find(provider: string, modelId: string): RegistryModel | undefined;
     getAvailable(): RegistryModel[];
     getApiKeyAndHeaders(model: RegistryModel): Promise<ResolvedRequestAuth>;
+    registerProvider(provider: import("@earendil-works/pi-ai/compat").Provider): void;
+    complete<TApi extends import("@earendil-works/pi-ai/compat").Api>(
+      model: import("@earendil-works/pi-ai/compat").Model<TApi>,
+      context: import("@earendil-works/pi-ai/compat").Context,
+      options?: import("@earendil-works/pi-ai/compat").ApiStreamOptions<TApi>,
+    ): Promise<import("@earendil-works/pi-ai/compat").AssistantMessage>;
   }
+  export const ModelRegistry: {
+    new (runtime: ModelRuntime): ModelRegistry;
+  };
 
   export interface AgentMessage {
     role: string;
@@ -99,7 +116,7 @@ declare module "@earendil-works/pi-coding-agent" {
     isSplitTurn: boolean;
     tokensBefore: number;
     previousSummary?: string;
-    fileOps: { read: Set<string>; edited: Set<string> };
+    fileOps: { read: Set<string>; written: Set<string>; edited: Set<string> };
     settings: { enabled: boolean; reserveTokens: number; keepRecentTokens: number };
   }
 

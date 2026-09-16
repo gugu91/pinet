@@ -1,11 +1,11 @@
 import {
-  compact,
   convertToLlm,
   serializeConversation,
   type ExtensionAPI,
   type ExtensionContext,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
+import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
 import { loadConfig } from "./config.js";
 import {
   compactionInputError,
@@ -13,10 +13,10 @@ import {
   modelKey,
   parseCompactionSelector,
   selectorForModel,
-  thinkingLevelError,
   type ModelIdentity,
   type ThinkingLevel,
 } from "./helpers.js";
+import { runSelectedModelCompaction, type RegistryComplete } from "./selected-compaction.js";
 
 interface ContextUsage {
   tokens: number | null;
@@ -25,34 +25,19 @@ interface ContextUsage {
 }
 interface CompatibleContext extends ExtensionContext {
   modelRegistry: {
-    find(
-      provider: string,
-      modelId: string,
-    ):
+    find(provider: string, modelId: string): Model<Api> | undefined;
+    getAvailable(): Model<Api>[];
+    getApiKeyAndHeaders(model: Model<Api>): Promise<
       | {
-          provider: string;
-          id: string;
-          reasoning?: boolean;
-          thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
-          contextWindow: number;
-          maxTokens: number;
+          ok: true;
+          apiKey?: string;
+          headers?: ProviderHeaders;
+          baseUrl?: string;
+          env?: Record<string, string>;
         }
-      | undefined;
-    getAvailable(): Array<{
-      provider: string;
-      id: string;
-      reasoning?: boolean;
-      thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
-      contextWindow: number;
-      maxTokens: number;
-    }>;
-    getApiKeyAndHeaders(model: { provider: string; id: string }): Promise<{
-      ok: boolean;
-      apiKey?: string;
-      headers?: Record<string, string>;
-      env?: Record<string, string>;
-      error?: string;
-    }>;
+      | { ok: false; error: string }
+    >;
+    complete: RegistryComplete;
   };
   model?: ModelIdentity;
   scopedModels?: ReadonlyArray<{
@@ -120,7 +105,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     if (!selectorText) return;
 
     const failClosed = (message: string) => {
-      if (config.debug) console.error(`${LOG_PREFIX} ${message}`);
+      console.error(`${LOG_PREFIX} ${message}`);
       if (ctx.hasUI && !event.signal.aborted)
         ctx.ui.notify(`Compaction cancelled: ${message}`, "error");
       return { cancel: true as const };
@@ -130,67 +115,58 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     if (summarizationInFlight)
       return failClosed("another selected-model compaction is already in progress");
 
-    const selector = parseCompactionSelector(selectorText);
+    const selector = parseCompactionSelector(selectorText, (provider, modelId) =>
+      Boolean(ctx.modelRegistry.find(provider, modelId)),
+    );
     if (!selector) return failClosed(`invalid compactionModel selector "${selectorText}"`);
     const model = ctx.modelRegistry.find(selector.provider, selector.modelId);
     if (!model)
       return failClosed(
         `compaction model "${selector.provider}/${selector.modelId}" is unavailable`,
       );
-    const thinkingError = thinkingLevelError(model, selector.thinkingLevel);
-    if (thinkingError)
-      return failClosed(`${selector.provider}/${selector.modelId}: ${thinkingError}`);
-
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (event.signal.aborted) return { cancel: true };
-    if (!auth.ok)
+    if (selector.thinkingOverride)
       return failClosed(
-        `credentials unavailable for ${selector.provider}/${selector.modelId}: ${auth.error}`,
+        `thinking override ":${selector.thinkingOverride}" is unsupported; configure provider/model only and the provider default will be used`,
       );
 
-    const customInstructions =
-      [event.customInstructions, config.customInstructions]
-        .filter(
-          (value, index, values): value is string =>
-            Boolean(value) && values.indexOf(value) === index,
-        )
-        .join("\n\n") || undefined;
-    const preparation = event.preparation;
-    const history = serializeConversation(convertToLlm(preparation.messagesToSummarize));
-    const turnPrefix = serializeConversation(convertToLlm(preparation.turnPrefixMessages));
-    const outputReserve = Math.min(
-      Math.floor(preparation.settings.reserveTokens * 0.8),
-      model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
-    );
-    const budgetError = compactionInputError({
-      serializedHistory: history,
-      serializedTurnPrefix: turnPrefix,
-      previousSummary: preparation.previousSummary,
-      customInstructions,
-      contextWindow: model.contextWindow,
-      outputReserve,
-    });
-    if (budgetError) return failClosed(budgetError);
-
+    // Acquire ownership before the registry begins asynchronous provider/auth work.
     summarizationInFlight = true;
-    if (config.debug && ctx.hasUI) {
-      ctx.ui.notify(`Compacting with ${selectorText}`, "info");
-    }
     try {
-      const result = await compact(
+      const customInstructions =
+        [event.customInstructions, config.customInstructions]
+          .filter(
+            (value, index, values): value is string =>
+              Boolean(value) && values.indexOf(value) === index,
+          )
+          .join("\n\n") || undefined;
+      const preparation = event.preparation;
+      const history = serializeConversation(convertToLlm(preparation.messagesToSummarize));
+      const turnPrefix = serializeConversation(convertToLlm(preparation.turnPrefixMessages));
+      const outputReserve = Math.min(
+        Math.floor(preparation.settings.reserveTokens * 0.8),
+        model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+      );
+      const budgetError = compactionInputError({
+        serializedHistory: history,
+        serializedTurnPrefix: turnPrefix,
+        previousSummary: preparation.previousSummary,
+        customInstructions,
+        contextWindow: model.contextWindow,
+        outputReserve,
+      });
+      if (budgetError) return failClosed(budgetError);
+
+      if (config.debug && ctx.hasUI) {
+        ctx.ui.notify(`Compacting with ${selectorText}`, "info");
+      }
+      const result = await runSelectedModelCompaction({
         preparation,
         model,
-        auth.apiKey,
-        auth.headers,
+        complete: ctx.modelRegistry.complete.bind(ctx.modelRegistry),
+        signal: event.signal,
         customInstructions,
-        event.signal,
-        selector.thinkingLevel,
-        undefined,
-        auth.env,
-      );
+      });
       if (event.signal.aborted) return { cancel: true };
-      if (!result.summary.trim())
-        return failClosed(`compaction model "${selectorText}" returned an empty summary`);
       return { compaction: result };
     } catch (error) {
       if (event.signal.aborted) return { cancel: true };
@@ -265,10 +241,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         ctx.scopedModels && ctx.scopedModels.length > 0
           ? ctx.scopedModels
           : ctx.modelRegistry.getAvailable().map((model) => ({ model }));
-      const labels = models.map((entry) => {
-        const thinkingLevel = "thinkingLevel" in entry ? entry.thinkingLevel : undefined;
-        return `${entry.model.provider}/${entry.model.id}${thinkingLevel ? `:${thinkingLevel}` : ""}`;
-      });
+      const labels = models.map((entry) => `${entry.model.provider}/${entry.model.id}`);
       const choice = await ctx.ui.select("Compaction model (session only)", [
         "Use configured selector",
         ...labels,
@@ -304,15 +277,34 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       });
       const configuredSelector = selectorForModel(config.rules, key, config.compactionModel);
       const selector = runtimeSelector ?? configuredSelector;
-      const parsed = selector ? parseCompactionSelector(selector) : null;
+      const parsed = selector
+        ? parseCompactionSelector(selector, (provider, modelId) =>
+            Boolean(ctx.modelRegistry.find(provider, modelId)),
+          )
+        : null;
       const resolved = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId) : undefined;
+      const selectorError = parsed?.thinkingOverride
+        ? `thinking override ":${parsed.thinkingOverride}" is unsupported`
+        : null;
+      const auth =
+        resolved && !selectorError ? await ctx.modelRegistry.getApiKeyAndHeaders(resolved) : null;
+      const readiness = !selector
+        ? "not configured"
+        : !parsed || !resolved
+          ? "invalid or unavailable"
+          : selectorError
+            ? selectorError
+            : auth?.ok
+              ? "ready"
+              : `credentials unavailable: ${auth?.error}`;
       const lines = [
         "**Model-aware compaction**",
         "",
         `- proactive enabled: ${config.enabled ? "yes" : "no"}`,
         `- current model: ${key ?? "unknown"}`,
         `- compaction model: ${selector ?? "Pi default"}${runtimeSelector ? " (session override)" : ""}`,
-        `- compaction model status: ${!selector ? "not configured" : resolved ? "resolved" : "invalid or unavailable"}`,
+        `- thinking: provider default (overrides unsupported)`,
+        `- compaction model status: ${readiness}`,
         `- current tokens: ${usage?.tokens ?? "unknown"}`,
         `- matched limit: ${decision.limit ?? "none"}`,
         `- state: ${inFlight ? "compacting" : decision.reason}`,

@@ -4,10 +4,10 @@ import * as path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const { sdkCompact } = vi.hoisted(() => ({ sdkCompact: vi.fn() }));
-vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+const { selectedCompact } = vi.hoisted(() => ({ selectedCompact: vi.fn() }));
+vi.mock("./selected-compaction.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  compact: sdkCompact,
+  runSelectedModelCompaction: selectedCompact,
 }));
 
 import extension from "./index.js";
@@ -15,18 +15,27 @@ import extension from "./index.js";
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 beforeEach(() => {
-  sdkCompact.mockReset();
+  selectedCompact.mockReset();
 });
 
 function harness() {
   const handlers = new Map<string, Handler[]>();
+  const commands = new Map<
+    string,
+    { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void }
+  >();
   const api = {
     on: (event: string, handler: Handler) => {
       const eventHandlers = handlers.get(event) ?? [];
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
-    registerCommand: vi.fn(),
+    registerCommand: vi.fn(
+      (
+        name: string,
+        options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> | void },
+      ) => commands.set(name, options),
+    ),
     sendMessage: vi.fn(),
   } as unknown as ExtensionAPI;
   extension(api);
@@ -35,7 +44,7 @@ function harness() {
   };
   const emitAsync = (event: string, payload: object, ctx: ExtensionContext) =>
     Promise.all((handlers.get(event) ?? []).map((handler) => handler(payload, ctx)));
-  return { handlers, emit, emitAsync, api };
+  return { handlers, commands, emit, emitAsync, api };
 }
 
 function context(tokens: number, compact = vi.fn()): ExtensionContext {
@@ -222,7 +231,51 @@ describe("extension wiring", () => {
         { ...context(20_000), cwd: temp },
       );
       expect(result).toBeUndefined();
-      expect(sdkCompact).not.toHaveBeenCalled();
+      expect(selectedCompact).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("reports provider-default thinking and credential readiness in status", async () => {
+    const { commands, api } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { compactionModel: "test/summary" } }),
+    );
+    const model = {
+      api: "openai-completions",
+      provider: "test",
+      id: "summary",
+      baseUrl: "https://example.test",
+      reasoning: true,
+      contextWindow: 20_000,
+      maxTokens: 2_000,
+    };
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      modelRegistry: {
+        find: (_provider: string, id: string) => (id === "summary" ? model : undefined),
+        getAvailable: () => [model],
+        getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    try {
+      await commands.get("model-aware-compaction-status")?.handler("", ctx);
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("thinking: provider default (overrides unsupported)"),
+        }),
+        { triggerTurn: false },
+      );
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining("status: ready") }),
+        { triggerTurn: false },
+      );
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
@@ -238,27 +291,32 @@ describe("extension wiring", () => {
         path.join(temp, ".pi", "settings.json"),
         JSON.stringify({
           "model-aware-compaction": {
-            compactionModel: "anthropic/summary-model:high",
+            compactionModel: "anthropic/summary-model",
             customInstructions: "Keep validation evidence.",
           },
         }),
       );
       const sessionModel = { provider: "openai", id: "gpt-5-mini" };
       const selectedModel = {
+        api: "anthropic-messages",
         provider: "anthropic",
         id: "summary-model",
+        baseUrl: "https://api.anthropic.com",
         reasoning: true,
         contextWindow: 200_000,
         maxTokens: 8_192,
       };
+      const complete = vi.fn();
       const ctx = {
         ...context(20_000),
         cwd: temp,
         model: sessionModel,
         modelRegistry: {
-          find: vi.fn(() => selectedModel),
+          find: (_provider: string, id: string) =>
+            id === "summary-model" ? selectedModel : undefined,
           getAvailable: () => [selectedModel],
           getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
+          complete,
         },
       } as ExtensionContext;
       const preparation = {
@@ -268,22 +326,19 @@ describe("extension wiring", () => {
         isSplitTurn: true,
         tokensBefore: 20_000,
         previousSummary: "prior summary",
-        fileOps: { read: new Set(["read.ts"]), edited: new Set(["edit.ts"]) },
+        fileOps: {
+          read: new Set(["read.ts"]),
+          written: new Set<string>(),
+          edited: new Set(["edit.ts"]),
+        },
         settings: { enabled: true, reserveTokens: 4_096, keepRecentTokens: 1_000 },
       };
-      const result = {
-        summary: "summary",
-        firstKeptEntryId: "kept",
-        tokensBefore: 20_000,
-        usage: { input: 10, output: 5 },
-        details: { readFiles: ["read.ts"], modifiedFiles: ["edit.ts"] },
-      };
-      sdkCompact.mockResolvedValue(result);
+      const result = { summary: "summary", firstKeptEntryId: "kept", tokensBefore: 20_000 };
+      selectedCompact.mockResolvedValue(result);
       try {
         const [hookResult] = await emitAsync(
           "session_before_compact",
           {
-            type: "session_before_compact",
             preparation,
             customInstructions: "Manual focus.",
             reason,
@@ -291,16 +346,13 @@ describe("extension wiring", () => {
           },
           ctx,
         );
-        expect(sdkCompact).toHaveBeenCalledWith(
-          preparation,
-          selectedModel,
-          "secret",
-          undefined,
-          "Manual focus.\n\nKeep validation evidence.",
-          expect.any(AbortSignal),
-          "high",
-          undefined,
-          undefined,
+        expect(selectedCompact).toHaveBeenCalledWith(
+          expect.objectContaining({
+            preparation,
+            model: selectedModel,
+            complete: expect.any(Function),
+            customInstructions: "Manual focus.\n\nKeep validation evidence.",
+          }),
         );
         expect(hookResult).toEqual({ compaction: result });
         expect(ctx.model).toBe(sessionModel);
@@ -309,6 +361,165 @@ describe("extension wiring", () => {
       }
     },
   );
+
+  it("acquires compaction ownership before asynchronous registry completion", async () => {
+    const { emitAsync } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { compactionModel: "test/summary" } }),
+    );
+    const model = {
+      api: "openai-completions",
+      provider: "test",
+      id: "summary",
+      baseUrl: "https://example.test",
+      reasoning: false,
+      contextWindow: 20_000,
+      maxTokens: 2_000,
+    };
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      modelRegistry: {
+        find: () => model,
+        getAvailable: () => [model],
+        getApiKeyAndHeaders: vi.fn(),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    const preparation = {
+      firstKeptEntryId: "kept",
+      messagesToSummarize: [{ role: "user", content: "history" }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 1_000,
+      fileOps: { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() },
+      settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
+    };
+    let resolveRequest!: (value: object) => void;
+    selectedCompact.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const first = emitAsync(
+        "session_before_compact",
+        { preparation, signal: new AbortController().signal },
+        ctx,
+      );
+      await vi.waitFor(() => expect(resolveRequest).toBeTypeOf("function"));
+      const [overlap] = await emitAsync(
+        "session_before_compact",
+        { preparation, signal: new AbortController().signal },
+        ctx,
+      );
+      expect(overlap).toEqual({ cancel: true });
+      expect(selectedCompact).toHaveBeenCalledTimes(1);
+      resolveRequest({ summary: "done", firstKeptEntryId: "kept", tokensBefore: 1_000 });
+      await first;
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("already in progress"));
+    } finally {
+      error.mockRestore();
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("reports unsupported thinking, unavailable models, and provider failures without UI", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const preparation = {
+      firstKeptEntryId: "kept",
+      messagesToSummarize: [],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 1_000,
+      fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+      settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
+    };
+    try {
+      for (const selector of ["invalid", "test/missing", "test/plain:high"]) {
+        const { emitAsync } = harness();
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+        fs.mkdirSync(path.join(temp, ".pi"));
+        fs.writeFileSync(
+          path.join(temp, ".pi", "settings.json"),
+          JSON.stringify({ "model-aware-compaction": { compactionModel: selector } }),
+        );
+        const model = {
+          api: "openai-completions",
+          provider: "test",
+          id: "plain",
+          baseUrl: "https://example.test",
+          reasoning: false,
+          contextWindow: 20_000,
+          maxTokens: 2_000,
+        };
+        const ctx = {
+          ...context(1_000),
+          cwd: temp,
+          modelRegistry: {
+            find: (_provider: string, id: string) => (id === "plain" ? model : undefined),
+            getAvailable: () => [model],
+            getApiKeyAndHeaders: vi.fn(),
+            complete: vi.fn(),
+          },
+        } as ExtensionContext;
+        const [result] = await emitAsync(
+          "session_before_compact",
+          { preparation, signal: new AbortController().signal },
+          ctx,
+        );
+        expect(result).toEqual({ cancel: true });
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+      selectedCompact.mockRejectedValueOnce(new Error("provider unavailable"));
+      const { emitAsync } = harness();
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+      fs.mkdirSync(path.join(temp, ".pi"));
+      fs.writeFileSync(
+        path.join(temp, ".pi", "settings.json"),
+        JSON.stringify({ "model-aware-compaction": { compactionModel: "test/plain" } }),
+      );
+      const model = {
+        api: "openai-completions",
+        provider: "test",
+        id: "plain",
+        baseUrl: "https://example.test",
+        reasoning: false,
+        contextWindow: 20_000,
+        maxTokens: 2_000,
+      };
+      const ctx = {
+        ...context(1_000),
+        cwd: temp,
+        modelRegistry: {
+          find: () => model,
+          getAvailable: () => [model],
+          getApiKeyAndHeaders: vi.fn(),
+          complete: vi.fn(),
+        },
+      } as ExtensionContext;
+      expect(
+        (
+          await emitAsync(
+            "session_before_compact",
+            { preparation, signal: new AbortController().signal },
+            ctx,
+          )
+        )[0],
+      ).toEqual({ cancel: true });
+      fs.rmSync(temp, { recursive: true, force: true });
+      const messages = error.mock.calls.map(([message]) => message).join("\n");
+      expect(messages).toContain("thinking override");
+      expect(messages).toContain("provider unavailable");
+    } finally {
+      error.mockRestore();
+    }
+  });
 
   it("fails closed for oversized input and honors cancellation without provider work", async () => {
     const { emitAsync } = harness();
@@ -319,8 +530,10 @@ describe("extension wiring", () => {
       JSON.stringify({ "model-aware-compaction": { compactionModel: "test/tiny" } }),
     );
     const model = {
+      api: "openai-completions",
       provider: "test",
       id: "tiny",
+      baseUrl: "https://example.test",
       reasoning: false,
       contextWindow: 2_500,
       maxTokens: 1_000,
@@ -358,7 +571,7 @@ describe("extension wiring", () => {
       );
       expect(oversized).toEqual({ cancel: true });
       expect(cancelled).toEqual({ cancel: true });
-      expect(sdkCompact).not.toHaveBeenCalled();
+      expect(selectedCompact).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }

@@ -14,7 +14,7 @@ export interface CompactionRule {
 export interface CompactionSelector {
   provider: string;
   modelId: string;
-  thinkingLevel: ThinkingLevel;
+  thinkingOverride?: ThinkingLevel;
 }
 
 export interface CompactionDecision {
@@ -73,37 +73,29 @@ export function selectorForModel(
   return (key ? ruleForModel(rules, key)?.compactionModel : undefined) ?? globalSelector;
 }
 
-export function parseCompactionSelector(value: string): CompactionSelector | null {
+export function parseCompactionSelector(
+  value: string,
+  exactModelExists: (provider: string, modelId: string) => boolean = () => false,
+): CompactionSelector | null {
   const trimmed = value.trim();
   const slash = trimmed.indexOf("/");
   if (slash <= 0 || slash === trimmed.length - 1) return null;
 
   const provider = trimmed.slice(0, slash).trim();
   let modelId = trimmed.slice(slash + 1).trim();
-  let thinkingLevel: ThinkingLevel = "off";
+  if (!provider || !modelId) return null;
+  if (exactModelExists(provider, modelId)) return { provider, modelId };
+
+  let thinkingOverride: ThinkingLevel | undefined;
   const colon = modelId.lastIndexOf(":");
   if (colon > 0) {
     const suffix = modelId.slice(colon + 1).toLowerCase() as ThinkingLevel;
     if (THINKING_LEVELS.has(suffix)) {
-      thinkingLevel = suffix;
+      thinkingOverride = suffix;
       modelId = modelId.slice(0, colon).trim();
     }
   }
-  return provider && modelId ? { provider, modelId, thinkingLevel } : null;
-}
-
-export function thinkingLevelError(
-  model: { reasoning?: boolean; thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>> },
-  level: ThinkingLevel,
-): string | null {
-  if (level === "off")
-    return model.thinkingLevelMap?.off === null ? 'thinking level "off" is unsupported' : null;
-  if (!model.reasoning) return `thinking level "${level}" requires a reasoning model`;
-  if (model.thinkingLevelMap?.[level] === null) return `thinking level "${level}" is unsupported`;
-  if ((level === "xhigh" || level === "max") && model.thinkingLevelMap?.[level] === undefined) {
-    return `thinking level "${level}" is unsupported`;
-  }
-  return null;
+  return modelId ? { provider, modelId, thinkingOverride } : null;
 }
 
 export function compactionInputError(input: {
