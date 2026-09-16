@@ -111,10 +111,12 @@ export function compactionInputError(input: {
   const fixedPromptReserve = 2_048;
   const sharedChars =
     (input.previousSummary?.length ?? 0) + (input.customInstructions?.length ?? 0);
-  const requestTokens = (serialized: string, includeShared: boolean) =>
-    serialized
-      ? Math.ceil((serialized.length + (includeShared ? sharedChars : 0)) / 4) + fixedPromptReserve
+  const requestTokens = (serialized: string, includeShared: boolean) => {
+    const shared = includeShared ? sharedChars : 0;
+    return serialized || shared
+      ? Math.ceil((serialized.length + shared) / 4) + fixedPromptReserve
       : 0;
+  };
   const historyTokens = requestTokens(input.serializedHistory, true);
   const prefixTokens = requestTokens(input.serializedTurnPrefix, false);
   const largestInput = Math.max(historyTokens, prefixTokens);

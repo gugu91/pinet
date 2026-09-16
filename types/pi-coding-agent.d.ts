@@ -74,13 +74,18 @@ declare module "@earendil-works/pi-coding-agent" {
     maxTokens: number;
   }
 
-  export interface ResolvedRequestAuth {
-    ok: boolean;
-    apiKey?: string;
-    headers?: Record<string, string>;
-    env?: Record<string, string>;
-    error?: string;
-  }
+  export type ResolvedRequestAuth =
+    | {
+        ok: true;
+        apiKey?: string;
+        headers?: import("@earendil-works/pi-ai/compat").ProviderHeaders;
+        baseUrl?: string;
+        env?: Record<string, string>;
+      }
+    | {
+        ok: false;
+        error: string;
+      };
 
   export interface ModelRuntime {}
   export const ModelRuntime: {
@@ -122,7 +127,10 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export interface SessionBeforeCompactEvent {
     preparation: CompactionPreparation;
+    branchEntries: SessionEntry[];
     customInstructions?: string;
+    reason: "manual" | "threshold" | "overflow";
+    willRetry: boolean;
     signal: AbortSignal;
   }
 

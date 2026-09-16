@@ -71,6 +71,16 @@ describe("compaction model selection", () => {
     ).toContain("exceeds selected model context window");
     expect(
       compactionInputError({
+        serializedHistory: "",
+        serializedTurnPrefix: "prefix",
+        previousSummary: "x".repeat(80_000),
+        customInstructions: "Preserve the prior checkpoint.",
+        contextWindow: 10_000,
+        outputReserve: 1_000,
+      }),
+    ).toContain("exceeds selected model context window");
+    expect(
+      compactionInputError({
         serializedHistory: "short",
         serializedTurnPrefix: "",
         contextWindow: 20_000,

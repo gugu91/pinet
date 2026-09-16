@@ -16,7 +16,11 @@ import {
   type ModelIdentity,
   type ThinkingLevel,
 } from "./helpers.js";
-import { runSelectedModelCompaction, type RegistryComplete } from "./selected-compaction.js";
+import {
+  mergePriorModelAwareFiles,
+  runSelectedModelCompaction,
+  type RegistryComplete,
+} from "./selected-compaction.js";
 
 interface ContextUsage {
   tokens: number | null;
@@ -139,7 +143,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
               Boolean(value) && values.indexOf(value) === index,
           )
           .join("\n\n") || undefined;
-      const preparation = event.preparation;
+      const preparation = mergePriorModelAwareFiles(event.preparation, event.branchEntries);
       const history = serializeConversation(convertToLlm(preparation.messagesToSummarize));
       const turnPrefix = serializeConversation(convertToLlm(preparation.turnPrefixMessages));
       const outputReserve = Math.min(

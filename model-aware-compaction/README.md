@@ -59,7 +59,7 @@ A configured selector intercepts `session_before_compact`, so it covers manual `
 
 - previous summaries and split-turn prefix summaries
 - first-kept-entry boundaries
-- cumulative read/modified file tracking
+- cumulative read/modified file tracking across repeated extension-owned compactions
 - manual and configured custom instructions
 - compaction usage accounting
 - cancellation via Pi's abort signal
@@ -86,7 +86,7 @@ The commands add no LLM tool schema or always-present prompt content.
 
 Pi's `ctx.compact()` remains fire-and-forget, so the proactive trigger is best effort rather than an atomic barrier. Pi owns the manual/automatic compaction barrier and awaits `session_before_compact` there.
 
-Selected-model summaries use extension-owned prompts because Pi 0.85.1 does not expose its registry-backed simple stream to extensions. Tests pin the external compaction contract, but future Pi prompt/assembly changes may require this extension to update in parallel.
+Selected-model summaries and marked file metadata use extension-owned contracts because Pi 0.85.1 does not expose its registry-backed simple stream to extensions or automatically carry `fromHook` compaction details forward. Tests pin the external compaction contract, but future Pi prompt/assembly changes may require this extension to update in parallel.
 
 ## Development
 

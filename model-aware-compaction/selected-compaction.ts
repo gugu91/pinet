@@ -4,6 +4,7 @@ import {
   convertToLlm,
   serializeConversation,
   type CompactionPreparation,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
 const SYSTEM_PROMPT = `You are a context summarization assistant. Summarize the supplied conversation so another LLM can continue the work. Do not continue the conversation or answer its questions.`;
@@ -21,12 +22,69 @@ export type RegistryComplete = (
   },
 ) => Promise<AssistantMessage>;
 
+export interface ModelAwareCompactionDetails {
+  owner: "@pinet/model-aware-compaction";
+  version: 1;
+  readFiles: string[];
+  modifiedFiles: string[];
+}
+
 interface SelectedCompactionOptions {
   preparation: CompactionPreparation;
   model: Model<Api>;
   complete: RegistryComplete;
   signal: AbortSignal;
   customInstructions?: string;
+}
+
+export function mergePriorModelAwareFiles(
+  preparation: CompactionPreparation,
+  branchEntries: SessionEntry[],
+): CompactionPreparation {
+  const cloned = {
+    ...preparation,
+    fileOps: {
+      read: new Set(preparation.fileOps.read),
+      written: new Set(preparation.fileOps.written),
+      edited: new Set(preparation.fileOps.edited),
+    },
+  };
+  const currentBoundaryIndex = branchEntries.findIndex(
+    (entry) => entry.id === preparation.firstKeptEntryId,
+  );
+  if (currentBoundaryIndex < 0) return cloned;
+
+  let priorIndex = -1;
+  for (let index = branchEntries.length - 1; index >= 0; index--) {
+    if (branchEntries[index].type === "compaction") {
+      priorIndex = index;
+      break;
+    }
+  }
+  if (priorIndex < 0) return cloned;
+
+  const prior = branchEntries[priorIndex];
+  if (prior.type !== "compaction" || !prior.fromHook) return cloned;
+  const details = prior.details as Partial<ModelAwareCompactionDetails> | undefined;
+  if (
+    details?.owner !== "@pinet/model-aware-compaction" ||
+    details.version !== 1 ||
+    !Array.isArray(details.readFiles) ||
+    !details.readFiles.every((file) => typeof file === "string") ||
+    !Array.isArray(details.modifiedFiles) ||
+    !details.modifiedFiles.every((file) => typeof file === "string") ||
+    preparation.previousSummary !== prior.summary
+  )
+    return cloned;
+
+  const priorBoundaryIndex = branchEntries.findIndex(
+    (entry) => entry.id === prior.firstKeptEntryId,
+  );
+  if (priorBoundaryIndex < 0 || currentBoundaryIndex < priorBoundaryIndex) return cloned;
+
+  for (const file of details.readFiles) cloned.fileOps.read.add(file);
+  for (const file of details.modifiedFiles) cloned.fileOps.edited.add(file);
+  return cloned;
 }
 
 async function summarize(
@@ -95,7 +153,7 @@ export async function runSelectedModelCompaction({
 
   if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
     const history =
-      preparation.messagesToSummarize.length > 0
+      preparation.messagesToSummarize.length > 0 || preparation.previousSummary
         ? await summarize(
             complete,
             model,
@@ -129,6 +187,14 @@ export async function runSelectedModelCompaction({
             cacheWrite: history.usage.cost.cacheWrite + prefix.usage.cost.cacheWrite,
             total: history.usage.cost.total + prefix.usage.cost.total,
           },
+          ...(history.usage.cacheWrite1h !== undefined || prefix.usage.cacheWrite1h !== undefined
+            ? {
+                cacheWrite1h: (history.usage.cacheWrite1h ?? 0) + (prefix.usage.cacheWrite1h ?? 0),
+              }
+            : {}),
+          ...(history.usage.reasoning !== undefined || prefix.usage.reasoning !== undefined
+            ? { reasoning: (history.usage.reasoning ?? 0) + (prefix.usage.reasoning ?? 0) }
+            : {}),
         }
       : prefix.usage;
   } else {
@@ -161,6 +227,11 @@ export async function runSelectedModelCompaction({
     firstKeptEntryId: preparation.firstKeptEntryId,
     tokensBefore: preparation.tokensBefore,
     usage,
-    details: { readFiles, modifiedFiles },
+    details: {
+      owner: "@pinet/model-aware-compaction" as const,
+      version: 1 as const,
+      readFiles,
+      modifiedFiles,
+    },
   };
 }

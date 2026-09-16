@@ -340,6 +340,7 @@ describe("extension wiring", () => {
           "session_before_compact",
           {
             preparation,
+            branchEntries: [],
             customInstructions: "Manual focus.",
             reason,
             signal: new AbortController().signal,
@@ -409,13 +410,13 @@ describe("extension wiring", () => {
     try {
       const first = emitAsync(
         "session_before_compact",
-        { preparation, signal: new AbortController().signal },
+        { preparation, branchEntries: [], signal: new AbortController().signal },
         ctx,
       );
       await vi.waitFor(() => expect(resolveRequest).toBeTypeOf("function"));
       const [overlap] = await emitAsync(
         "session_before_compact",
-        { preparation, signal: new AbortController().signal },
+        { preparation, branchEntries: [], signal: new AbortController().signal },
         ctx,
       );
       expect(overlap).toEqual({ cancel: true });
@@ -470,7 +471,7 @@ describe("extension wiring", () => {
         } as ExtensionContext;
         const [result] = await emitAsync(
           "session_before_compact",
-          { preparation, signal: new AbortController().signal },
+          { preparation, branchEntries: [], signal: new AbortController().signal },
           ctx,
         );
         expect(result).toEqual({ cancel: true });
@@ -507,7 +508,7 @@ describe("extension wiring", () => {
         (
           await emitAsync(
             "session_before_compact",
-            { preparation, signal: new AbortController().signal },
+            { preparation, branchEntries: [], signal: new AbortController().signal },
             ctx,
           )
         )[0],
@@ -518,6 +519,86 @@ describe("extension wiring", () => {
       expect(messages).toContain("provider unavailable");
     } finally {
       error.mockRestore();
+    }
+  });
+
+  it("merges the latest owned compaction file metadata into a cloned SDK preparation", async () => {
+    const { emitAsync } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { compactionModel: "test/summary" } }),
+    );
+    const model = {
+      api: "openai-completions",
+      provider: "test",
+      id: "summary",
+      baseUrl: "https://example.test",
+      reasoning: false,
+      contextWindow: 20_000,
+      maxTokens: 2_000,
+    };
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      modelRegistry: {
+        find: () => model,
+        getAvailable: () => [model],
+        getApiKeyAndHeaders: vi.fn(),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    const preparation = {
+      firstKeptEntryId: "current-boundary",
+      messagesToSummarize: [{ role: "user", content: "new history" }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 1_000,
+      previousSummary: "owned prior summary",
+      fileOps: {
+        read: new Set(["new-read.ts"]),
+        written: new Set(["old-read.ts"]),
+        edited: new Set<string>(),
+      },
+      settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
+    };
+    const branchEntries = [
+      { type: "message", id: "prior-boundary" },
+      {
+        type: "compaction",
+        id: "prior-compaction",
+        fromHook: true,
+        summary: "owned prior summary",
+        firstKeptEntryId: "prior-boundary",
+        details: {
+          owner: "@pinet/model-aware-compaction",
+          version: 1,
+          readFiles: ["old-read.ts"],
+          modifiedFiles: ["old-modified.ts"],
+        },
+      },
+      { type: "message", id: "current-boundary" },
+    ];
+    selectedCompact.mockResolvedValue({
+      summary: "next summary",
+      firstKeptEntryId: "current-boundary",
+      tokensBefore: 1_000,
+    });
+    try {
+      await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries, signal: new AbortController().signal },
+        ctx,
+      );
+      const merged = selectedCompact.mock.calls[0][0].preparation;
+      expect([...merged.fileOps.read].sort()).toEqual(["new-read.ts", "old-read.ts"]);
+      expect([...merged.fileOps.edited]).toEqual(["old-modified.ts"]);
+      expect([...merged.fileOps.written]).toEqual(["old-read.ts"]);
+      expect([...preparation.fileOps.read]).toEqual(["new-read.ts"]);
+      expect([...preparation.fileOps.edited]).toEqual([]);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
     }
   });
 
@@ -559,17 +640,38 @@ describe("extension wiring", () => {
     try {
       const [oversized] = await emitAsync(
         "session_before_compact",
-        { preparation, signal: new AbortController().signal },
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        ctx,
+      );
+      const [oversizedPriorSummary] = await emitAsync(
+        "session_before_compact",
+        {
+          preparation: {
+            ...preparation,
+            messagesToSummarize: [],
+            turnPrefixMessages: [{ role: "user", content: "retained turn prefix" }],
+            isSplitTurn: true,
+            previousSummary: "p".repeat(40_000),
+          },
+          branchEntries: [],
+          customInstructions: "Preserve owner decisions.",
+          signal: new AbortController().signal,
+        },
         ctx,
       );
       const controller = new AbortController();
       controller.abort();
       const [cancelled] = await emitAsync(
         "session_before_compact",
-        { preparation: { ...preparation, messagesToSummarize: [] }, signal: controller.signal },
+        {
+          preparation: { ...preparation, messagesToSummarize: [] },
+          branchEntries: [],
+          signal: controller.signal,
+        },
         ctx,
       );
       expect(oversized).toEqual({ cancel: true });
+      expect(oversizedPriorSummary).toEqual({ cancel: true });
       expect(cancelled).toEqual({ cancel: true });
       expect(selectedCompact).not.toHaveBeenCalled();
     } finally {
