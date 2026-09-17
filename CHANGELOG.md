@@ -9,6 +9,34 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.20] - 2026-09-17
+
+Pinet v0.2.20 makes the `@pinet/model-aware-compaction` session picker quieter and easier to drive.
+
+### Version verification
+
+- `pi-extensions` — `0.2.20` (private repo package)
+- `@pinet/transport-core` — `0.2.20`
+- `@pinet/broker-core` — `0.2.20`
+- `@pinet/pinet-core` — `0.2.20`
+- `@pinet/imessage-bridge` — `0.2.20`
+- `@pinet/slack-bridge` — `0.2.20`
+- `@pinet/model-aware-compaction` — `0.2.20`
+- `@pinet/agent-goal` — `0.2.20`
+
+### Release highlights
+
+- Removes the persistent `compact: <model>` footer status entry. The extension no longer claims a status slot at all; the active selector is reported on demand by `/model-aware-compaction-status` and confirmed once when the session picker changes it.
+- `/model-aware-compaction-model` now offers the same shortlist as `/model`: the resolved `--models`/`enabledModels` scope when the session is scoped, and all authenticated models only when it is not, so the picker can never widen the model surface past `/model`. Entries show a pinned thinking level and mark the current selection.
+- `/model-aware-compaction-model <provider/model>` sets the session override without opening the picker. Bare model ids resolve when unambiguous, ambiguous ids are rejected instead of guessed, `default` or `reset` restores the configured selector, and anything outside the shortlist is rejected with the reason.
+- Selection stays session-only and never writes project or user settings. Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1053](https://github.com/gugu91/pinet/pull/1053) — drop the footer status and respect the `/model` shortlist
+
+See the [full change set since v0.2.19](https://github.com/gugu91/pinet/compare/v0.2.19...v0.2.20).
+
 ## [0.2.19] - 2026-09-16
 
 Pinet v0.2.19 lets `@pinet/model-aware-compaction` run compaction on a dedicated model instead of the active conversation model.
