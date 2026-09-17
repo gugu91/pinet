@@ -37,6 +37,7 @@ type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 beforeEach(() => {
   selectedCompact.mockReset();
+  modelSelector.mockReset();
 });
 
 function harness() {
@@ -241,7 +242,7 @@ describe("extension wiring", () => {
     }
   });
 
-  it("applies a shortlist model passed straight to the command and rejects one outside it", async () => {
+  it("applies an exact model id passed straight to the command and rejects a bare id outside the shortlist", async () => {
     const { commands } = harness();
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
     fs.mkdirSync(path.join(temp, ".pi"));
@@ -280,8 +281,11 @@ describe("extension wiring", () => {
       expect(ctx.ui.select).not.toHaveBeenCalled();
 
       await command?.handler("openai/gpt-5-mini", ctx);
+      expect(ctx.ui.notify).toHaveBeenCalledWith("Compaction model: openai/gpt-5-mini", "info");
+
+      await command?.handler("gpt-5-mini", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
-        expect.stringContaining("not in this session's model shortlist"),
+        expect.stringContaining("not an authenticated provider/model id"),
         "error",
       );
 
@@ -319,6 +323,7 @@ describe("extension wiring", () => {
       ...context(1_000),
       cwd: temp,
       hasUI: true,
+      mode: "tui",
       scopedModels,
       modelRegistry: {
         find: (provider: string, id: string) =>
@@ -338,10 +343,54 @@ describe("extension wiring", () => {
       const [passedTui, current, runtime, passedScope] = modelSelector.mock.lastCall ?? [];
       expect(passedTui).toBe(tui);
       expect(current).toBe(haiku); // configured selector is pre-highlighted
-      expect(passedScope).toBe(scopedModels); // exact /model shortlist, not a copy
+      expect(passedScope).toEqual(scopedModels); // exact /model shortlist
       expect(runtime?.getAvailableSnapshot()).toEqual([haiku, sonnet]);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
         "Compaction model: anthropic/claude-sonnet-4-5",
+        "info",
+      );
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the flat select list outside the TUI, where ui.custom is unavailable", async () => {
+    const { commands } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { enabled: true } }),
+    );
+    const haiku = { provider: "anthropic", id: "claude-haiku-4-5", contextWindow: 1, maxTokens: 1 };
+    const custom = vi.fn(async () => undefined); // what Pi's RPC host does
+    const select = vi.fn(async () => "anthropic/claude-haiku-4-5");
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      hasUI: true,
+      mode: "rpc",
+      scopedModels: [{ model: haiku }],
+      modelRegistry: {
+        find: () => haiku,
+        getAvailable: () => [haiku],
+        getError: () => undefined,
+        refresh: vi.fn(),
+        getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    ctx.ui = { ...ctx.ui, custom, select } as ExtensionContext["ui"];
+    try {
+      await commands.get("model-aware-compaction-model")?.handler("", ctx);
+      expect(custom).not.toHaveBeenCalled();
+      expect(modelSelector).not.toHaveBeenCalled();
+      expect(select).toHaveBeenCalledWith(
+        "Compaction model (session only)",
+        expect.arrayContaining(["anthropic/claude-haiku-4-5"]),
+      );
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Compaction model: anthropic/claude-haiku-4-5",
         "info",
       );
     } finally {

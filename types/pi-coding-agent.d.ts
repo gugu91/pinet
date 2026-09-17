@@ -89,7 +89,7 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export interface ModelsRefreshResult {
     aborted: boolean;
-    errors: Map<string, unknown>;
+    errors: ReadonlyMap<string, Error>;
   }
 
   /** Catalog-reading slice of Pi's ModelRuntime (see dist/core/model-runtime.d.ts). */
@@ -99,6 +99,7 @@ declare module "@earendil-works/pi-coding-agent" {
     getError(): string | undefined;
     refresh(options?: { signal?: AbortSignal }): Promise<ModelsRefreshResult>;
   }
+  export function initTheme(themeName?: string, enableWatcher?: boolean): void;
   export const ModelRuntime: {
     create(options?: {
       refreshOnCreate?: boolean;
@@ -191,8 +192,12 @@ declare module "@earendil-works/pi-coding-agent" {
     dispose(): void;
   }
 
+  export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
   export interface ExtensionContext {
     cwd: string;
+    /** Run mode; only "tui" supports ui.custom components. */
+    mode?: ExtensionMode;
     hasUI?: boolean;
     isIdle?: () => boolean;
     ui: ExtensionUI;

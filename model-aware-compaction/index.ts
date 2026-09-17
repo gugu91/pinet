@@ -245,19 +245,32 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
 
       const argument = typeof args === "string" ? args.trim() : "";
       if (argument) {
-        const resolved = resolveCompactionModelArgument(argument, choices);
+        const available = ctx.modelRegistry
+          .getAvailable()
+          .map((model) => `${model.provider}/${model.id}`);
+        const resolved = resolveCompactionModelArgument(argument, choices, available);
         if ("error" in resolved) {
           if (ctx.hasUI) ctx.ui.notify(resolved.error, "error");
           else console.error(`${LOG_PREFIX} ${resolved.error}`);
           return;
         }
         runtimeSelector = resolved.selector;
+      } else if (!ctx.hasUI) {
+        return;
+      } else if (ctx.mode !== "tui") {
+        // ui.custom is terminal-only; RPC hosts resolve it to undefined.
+        const choice = await ctx.ui.select(
+          "Compaction model (session only)",
+          choices.map((entry) => entry.label),
+        );
+        if (!choice) return;
+        runtimeSelector = choices.find((entry) => entry.label === choice)?.selector;
       } else {
-        if (!ctx.hasUI) return;
-        // Host Pi's own /model picker (scoped shortlist, fuzzy search, scope
-        // toggle) instead of a flat list. The component only needs the
-        // catalog-reading slice of ModelRuntime, which the registry facade
-        // already exposes.
+        // Host Pi's own /model picker (scoped shortlist, fuzzy search, Tab to
+        // widen to all authenticated models). It reads the catalog through the
+        // four registry methods below; a per-invocation adapter is fine because
+        // refreshModelCatalogs drops its WeakMap entry when the refresh settles.
+        // Esc keeps the current selection; `default` clears a session override.
         const registry = ctx.modelRegistry;
         const runtime: ModelRuntime = {
           getAvailableSnapshot: () => registry.getAvailable(),

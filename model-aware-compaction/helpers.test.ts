@@ -175,17 +175,28 @@ describe("session model picker", () => {
     expect(choices[0].label).toBe("Use configured selector (Pi default)");
   });
 
-  it("resolves an argument only inside the shortlist", () => {
+  it("resolves bare ids inside the shortlist and exact ids across authenticated models", () => {
     const choices = compactionModelChoices({ scopedModels, availableModels });
-    expect(resolveCompactionModelArgument("openai-codex/gpt-5.6-luna", choices)).toEqual({
-      selector: "openai-codex/gpt-5.6-luna",
-    });
-    expect(resolveCompactionModelArgument("claude-haiku-4-5", choices)).toEqual({
+    const available = availableModels.map((model) => `${model.provider}/${model.id}`);
+    expect(resolveCompactionModelArgument("openai-codex/gpt-5.6-luna", choices, available)).toEqual(
+      { selector: "openai-codex/gpt-5.6-luna" },
+    );
+    expect(resolveCompactionModelArgument("claude-haiku-4-5", choices, available)).toEqual({
       selector: "anthropic/claude-haiku-4-5",
     });
-    expect(resolveCompactionModelArgument("default", choices)).toEqual({ selector: undefined });
-    expect(resolveCompactionModelArgument("openai/gpt-5-mini", choices)).toMatchObject({
-      error: expect.stringContaining("not in this session's model shortlist"),
+    expect(resolveCompactionModelArgument("default", choices, available)).toEqual({
+      selector: undefined,
+    });
+    // Same surface as the picker's Tab-to-all: exact ids may leave the shortlist…
+    expect(resolveCompactionModelArgument("openai/gpt-5-mini", choices, available)).toEqual({
+      selector: "openai/gpt-5-mini",
+    });
+    // …but bare ids and unauthenticated models may not.
+    expect(resolveCompactionModelArgument("gpt-5-mini", choices, available)).toMatchObject({
+      error: expect.stringContaining("not an authenticated provider/model id"),
+    });
+    expect(resolveCompactionModelArgument("openai/gpt-9", choices, available)).toMatchObject({
+      error: expect.stringContaining("not an authenticated provider/model id"),
     });
   });
 

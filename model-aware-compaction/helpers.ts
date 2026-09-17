@@ -125,6 +125,7 @@ export function compactionModelChoices(input: {
 export function resolveCompactionModelArgument(
   argument: string,
   choices: ReadonlyArray<{ selector: string | undefined }>,
+  availableSelectors: ReadonlyArray<string> = [],
 ): { selector: string | undefined } | { error: string } {
   const trimmed = argument.trim();
   if (trimmed === "default" || trimmed === "reset") return { selector: undefined };
@@ -133,13 +134,16 @@ export function resolveCompactionModelArgument(
     .map((choice) => choice.selector)
     .filter((selector) => selector !== undefined);
   if (selectors.includes(trimmed)) return { selector: trimmed };
+  // An exact provider/model id outside the shortlist is legal, matching the
+  // picker's Tab-to-all scope. Bare ids never widen past the shortlist.
+  if (availableSelectors.includes(trimmed)) return { selector: trimmed };
 
   const matches = selectors.filter((selector) => selector.split("/")[1] === trimmed);
   if (matches.length === 1) return { selector: matches[0] };
   if (matches.length > 1)
     return { error: `"${trimmed}" matches ${matches.join(", ")}; use the full provider/model id` };
   return {
-    error: `"${trimmed}" is not in this session's model shortlist; run /model-aware-compaction-model without an argument to pick one`,
+    error: `"${trimmed}" is not an authenticated provider/model id or a shortlist model; run /model-aware-compaction-model without an argument to pick one`,
   };
 }
 
