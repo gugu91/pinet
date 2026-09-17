@@ -1,8 +1,11 @@
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import {
   compactionInputError,
   compactionModelChoices,
   decideCompaction,
+  describeThinking,
+  effectiveThinkingLevel,
   limitForModel,
   matchesModel,
   modelKey,
@@ -29,7 +32,7 @@ describe("model matching", () => {
 });
 
 describe("compaction model selection", () => {
-  it("detects unsupported thinking suffixes while preserving exact ids with colons", () => {
+  it("parses thinking suffixes while preserving exact ids with colons", () => {
     expect(parseCompactionSelector("anthropic/claude-sonnet:high")).toEqual({
       provider: "anthropic",
       modelId: "claude-sonnet",
@@ -175,17 +178,28 @@ describe("session model picker", () => {
     expect(choices[0].label).toBe("Use configured selector (Pi default)");
   });
 
-  it("resolves an argument only inside the shortlist", () => {
+  it("resolves bare ids inside the shortlist and exact ids across authenticated models", () => {
     const choices = compactionModelChoices({ scopedModels, availableModels });
-    expect(resolveCompactionModelArgument("openai-codex/gpt-5.6-luna", choices)).toEqual({
-      selector: "openai-codex/gpt-5.6-luna",
-    });
-    expect(resolveCompactionModelArgument("claude-haiku-4-5", choices)).toEqual({
+    const available = availableModels.map((model) => `${model.provider}/${model.id}`);
+    expect(resolveCompactionModelArgument("openai-codex/gpt-5.6-luna", choices, available)).toEqual(
+      { selector: "openai-codex/gpt-5.6-luna" },
+    );
+    expect(resolveCompactionModelArgument("claude-haiku-4-5", choices, available)).toEqual({
       selector: "anthropic/claude-haiku-4-5",
     });
-    expect(resolveCompactionModelArgument("default", choices)).toEqual({ selector: undefined });
-    expect(resolveCompactionModelArgument("openai/gpt-5-mini", choices)).toMatchObject({
-      error: expect.stringContaining("not in this session's model shortlist"),
+    expect(resolveCompactionModelArgument("default", choices, available)).toEqual({
+      selector: undefined,
+    });
+    // Same surface as the picker's Tab-to-all: exact ids may leave the shortlist…
+    expect(resolveCompactionModelArgument("openai/gpt-5-mini", choices, available)).toEqual({
+      selector: "openai/gpt-5-mini",
+    });
+    // …but bare ids and unauthenticated models may not.
+    expect(resolveCompactionModelArgument("gpt-5-mini", choices, available)).toMatchObject({
+      error: expect.stringContaining("not an authenticated provider/model id"),
+    });
+    expect(resolveCompactionModelArgument("openai/gpt-9", choices, available)).toMatchObject({
+      error: expect.stringContaining("not an authenticated provider/model id"),
     });
   });
 
@@ -200,5 +214,36 @@ describe("session model picker", () => {
     expect(resolveCompactionModelArgument("claude-haiku-4-5", choices)).toMatchObject({
       error: expect.stringContaining("use the full provider/model id"),
     });
+  });
+});
+
+describe("effective thinking level", () => {
+  const model = (reasoning: boolean): Model<Api> => ({
+    api: "anthropic-messages",
+    provider: "anthropic",
+    id: reasoning ? "thinker" : "plain",
+    name: "Model",
+    baseUrl: "https://api.anthropic.com",
+    reasoning,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  });
+
+  it("sends nothing without a level or for off, and clamps to what the model supports", () => {
+    expect(effectiveThinkingLevel(model(true), undefined)).toBeUndefined();
+    expect(effectiveThinkingLevel(model(true), "off")).toBeUndefined();
+    expect(effectiveThinkingLevel(model(true), "low")).toBe("low");
+    // Pi clamps a level on a non-reasoning model to off instead of failing.
+    expect(effectiveThinkingLevel(model(false), "high")).toBeUndefined();
+  });
+
+  it("describes configured versus effective thinking for status", () => {
+    expect(describeThinking(model(true), undefined)).toBe("provider default");
+    expect(describeThinking(model(true), "off")).toBe("provider default");
+    expect(describeThinking(model(true), "low")).toBe("low");
+    expect(describeThinking(model(false), "high")).toBe("high (effective: off)");
+    expect(describeThinking(undefined, "high")).toBe("high");
   });
 });

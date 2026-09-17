@@ -1,8 +1,11 @@
 import {
   convertToLlm,
+  ModelSelectorComponent,
   serializeConversation,
   type ExtensionAPI,
   type ExtensionContext,
+  type ModelRuntime,
+  type RegistryModel,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
@@ -11,16 +14,18 @@ import {
   compactionInputError,
   compactionModelChoices,
   decideCompaction,
+  describeThinking,
+  effectiveThinkingLevel,
   modelKey,
   parseCompactionSelector,
   resolveCompactionModelArgument,
   selectorForModel,
   type ModelIdentity,
-  type ThinkingLevel,
 } from "./helpers.js";
 import {
   mergePriorModelAwareFiles,
   runSelectedModelCompaction,
+  thinkingComplete,
   type RegistryComplete,
 } from "./selected-compaction.js";
 
@@ -33,6 +38,8 @@ interface CompatibleContext extends ExtensionContext {
   modelRegistry: {
     find(provider: string, modelId: string): Model<Api> | undefined;
     getAvailable(): Model<Api>[];
+    getError(): string | undefined;
+    refresh: ModelRuntime["refresh"];
     getApiKeyAndHeaders(model: Model<Api>): Promise<
       | {
           ok: true;
@@ -46,16 +53,6 @@ interface CompatibleContext extends ExtensionContext {
     complete: RegistryComplete;
   };
   model?: ModelIdentity;
-  scopedModels?: ReadonlyArray<{
-    model: {
-      provider: string;
-      id: string;
-      name?: string;
-      reasoning?: boolean;
-      thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
-    };
-    thinkingLevel?: ThinkingLevel;
-  }>;
   getContextUsage?: () => ContextUsage | undefined;
   compact?: (options?: {
     customInstructions?: string;
@@ -119,11 +116,6 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       return failClosed(
         `compaction model "${selector.provider}/${selector.modelId}" is unavailable`,
       );
-    if (selector.thinkingOverride)
-      return failClosed(
-        `thinking override ":${selector.thinkingOverride}" is unsupported; configure provider/model only and the provider default will be used`,
-      );
-
     // Acquire ownership before the registry begins asynchronous provider/auth work.
     summarizationInFlight = true;
     try {
@@ -159,10 +151,20 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       if (config.debug && ctx.hasUI) {
         ctx.ui.notify(`Compacting with ${selectorText}`, "info");
       }
+      // A selector level rides Pi's simple-stream path; otherwise the registry keeps
+      // provider-default thinking and existing configurations are unchanged.
+      let complete: RegistryComplete = ctx.modelRegistry.complete.bind(ctx.modelRegistry);
+      const level = effectiveThinkingLevel(model, selector.thinkingOverride);
+      if (level) {
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok)
+          return failClosed(`credentials unavailable for "${selectorText}": ${auth.error}`);
+        complete = thinkingComplete(auth, level);
+      }
       const result = await runSelectedModelCompaction({
         preparation,
         model,
-        complete: ctx.modelRegistry.complete.bind(ctx.modelRegistry),
+        complete,
         signal: event.signal,
         customInstructions,
       });
@@ -251,21 +253,57 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
 
       const argument = typeof args === "string" ? args.trim() : "";
       if (argument) {
-        const resolved = resolveCompactionModelArgument(argument, choices);
+        const available = ctx.modelRegistry
+          .getAvailable()
+          .map((model) => `${model.provider}/${model.id}`);
+        const resolved = resolveCompactionModelArgument(argument, choices, available);
         if ("error" in resolved) {
           if (ctx.hasUI) ctx.ui.notify(resolved.error, "error");
           else console.error(`${LOG_PREFIX} ${resolved.error}`);
           return;
         }
         runtimeSelector = resolved.selector;
-      } else {
-        if (!ctx.hasUI) return;
+      } else if (!ctx.hasUI) {
+        return;
+      } else if (ctx.mode !== "tui") {
+        // ui.custom is terminal-only; RPC hosts resolve it to undefined.
         const choice = await ctx.ui.select(
           "Compaction model (session only)",
           choices.map((entry) => entry.label),
         );
         if (!choice) return;
         runtimeSelector = choices.find((entry) => entry.label === choice)?.selector;
+      } else {
+        // Host Pi's own /model picker (scoped shortlist, fuzzy search, Tab to
+        // widen to all authenticated models). It reads the catalog through the
+        // four registry methods below; a per-invocation adapter is fine because
+        // refreshModelCatalogs drops its WeakMap entry when the refresh settles.
+        // Esc keeps the current selection; `default` clears a session override.
+        const registry = ctx.modelRegistry;
+        const runtime: ModelRuntime = {
+          getAvailableSnapshot: () => registry.getAvailable(),
+          getModel: (provider, modelId) => registry.find(provider, modelId),
+          getError: () => registry.getError(),
+          refresh: (options) => registry.refresh(options),
+        };
+        const active = parseCompactionSelector(
+          runtimeSelector ?? configuredSelector ?? "",
+          (provider, modelId) => registry.find(provider, modelId) !== undefined,
+        );
+        const current = active ? registry.find(active.provider, active.modelId) : undefined;
+        const picked = await ctx.ui.custom<RegistryModel | undefined>(
+          (tui, _theme, _keybindings, done) =>
+            new ModelSelectorComponent(
+              tui,
+              current,
+              runtime,
+              ctx.scopedModels ?? [],
+              (model) => done(model),
+              () => done(undefined),
+            ),
+        );
+        if (!picked) return;
+        runtimeSelector = `${picked.provider}/${picked.id}`;
       }
 
       const selected = runtimeSelector ?? configuredSelector;
@@ -300,27 +338,21 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
           )
         : null;
       const resolved = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId) : undefined;
-      const selectorError = parsed?.thinkingOverride
-        ? `thinking override ":${parsed.thinkingOverride}" is unsupported`
-        : null;
-      const auth =
-        resolved && !selectorError ? await ctx.modelRegistry.getApiKeyAndHeaders(resolved) : null;
+      const auth = resolved ? await ctx.modelRegistry.getApiKeyAndHeaders(resolved) : null;
       const readiness = !selector
         ? "not configured"
         : !parsed || !resolved
           ? "invalid or unavailable"
-          : selectorError
-            ? selectorError
-            : auth?.ok
-              ? "ready"
-              : `credentials unavailable: ${auth?.error}`;
+          : auth?.ok
+            ? "ready"
+            : `credentials unavailable: ${auth?.error}`;
       const lines = [
         "**Model-aware compaction**",
         "",
         `- proactive enabled: ${config.enabled ? "yes" : "no"}`,
         `- current model: ${key ?? "unknown"}`,
         `- compaction model: ${selector ?? "Pi default"}${runtimeSelector ? " (session override)" : ""}`,
-        `- thinking: provider default (overrides unsupported)`,
+        `- thinking: ${describeThinking(resolved, parsed?.thinkingOverride)}`,
         `- compaction model status: ${readiness}`,
         `- current tokens: ${usage?.tokens ?? "unknown"}`,
         `- matched limit: ${decision.limit ?? "none"}`,

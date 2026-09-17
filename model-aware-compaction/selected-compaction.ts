@@ -1,5 +1,14 @@
 import { contentText, uuidv7 } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Context, Model, Usage } from "@earendil-works/pi-ai/compat";
+import {
+  type Api,
+  type AssistantMessage,
+  completeSimple,
+  type Context,
+  type Model,
+  type ProviderHeaders,
+  type ThinkingLevel,
+  type Usage,
+} from "@earendil-works/pi-ai/compat";
 import {
   convertToLlm,
   serializeConversation,
@@ -22,6 +31,34 @@ export type RegistryComplete = (
     sessionId: string;
   },
 ) => Promise<AssistantMessage>;
+
+/** Credentials the registry resolved for the selected model (`getApiKeyAndHeaders`). */
+export interface ResolvedAuth {
+  apiKey?: string;
+  headers?: ProviderHeaders;
+  baseUrl?: string;
+  env?: Record<string, string>;
+}
+
+/**
+ * Transport for a selector with an explicit `:level`.
+ *
+ * `ModelRegistry.complete()` dispatches to each adapter's raw `stream()`, which reads
+ * per-API thinking options and ignores `reasoning`. Only `streamSimple`/`completeSimple`
+ * translate a provider-neutral `reasoning` level into those options, and Pi 0.85.1 does
+ * not expose the registry-backed simple path to extensions. Pi's own compaction calls
+ * `completeSimple` with the registry's resolved credentials, so this mirrors that path.
+ */
+export function thinkingComplete(auth: ResolvedAuth, level: ThinkingLevel): RegistryComplete {
+  return (model, context, options) =>
+    completeSimple(auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model, context, {
+      ...options,
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      env: auth.env,
+      reasoning: level,
+    });
+}
 
 export interface ModelAwareCompactionDetails {
   owner: "@pinet/model-aware-compaction";

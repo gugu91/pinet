@@ -42,7 +42,7 @@ Add settings to project `.pi/settings.json` or global `~/.pi/agent/settings.json
 }
 ```
 
-Selectors have the form `provider/model`. The exact text after `/` is resolved first, so registered model IDs containing colons work. This release does not override thinking: the selected provider/model uses its provider default. A recognized appended suffix such as `:high` is rejected with an actionable error unless it is part of an exact registered model ID.
+Selectors have the form `provider/model` or `provider/model:level`. The exact text after `/` is resolved first, so registered model IDs containing colons work; only when no exact ID matches is a trailing `:off|minimal|low|medium|high|xhigh|max` treated as a thinking level. Without a level (or with `:off`) summaries go through `ctx.modelRegistry.complete()` with no thinking option, so the provider default applies and existing configurations are unchanged. With a level, summaries take the same route as Pi's own compaction: pi-ai's `completeSimple()` with the registry's resolved credentials and endpoint, which translates the level into each provider's thinking request (Anthropic budget or effort, Gemini `thinkingConfig`, OpenAI reasoning effort). The level is clamped to what the model supports, so a level on a non-reasoning model degrades to provider default; `/model-aware-compaction-status` shows both when they differ. Example: `"compactionModel": "jnj-llm-gateway/gemini-3.8-flash:low"` asks that one gateway model for low thinking while other selectors keep their defaults. Levels are settings-only: the `/model-aware-compaction-model` argument and picker select `provider/model` without a suffix. Note that Gemini counts thinking tokens against the summary's output cap while Anthropic widens the cap for the thinking budget, so prefer `:low` on Gemini or raise Pi's `compaction.reserveTokens` before using higher levels.
 
 Precedence is deterministic:
 
@@ -78,22 +78,22 @@ Remaining deviations from Pi's own compaction, all deliberate:
 - **Empty sections are rejected.** Pi persists whatever text a provider returns; this extension fails closed rather than checkpointing an empty summary.
 - **Split turn with no new history.** Pi writes the literal `No prior history.` even when a previous summary exists; this extension re-summarizes that previous checkpoint through the update prompt so an earlier checkpoint is never dropped.
 - **File metadata.** Pi's `computeFileLists` and `formatFileOperations` are not exported, so they are reimplemented with identical sorting and `<read-files>` / `<modified-files>` output, plus an extension-owned `details` payload that carries file lists across repeated extension compactions.
-- **Thinking level.** Pi forwards the session thinking level; this release always uses the selected provider's default.
+- **Thinking level.** Pi forwards the session thinking level; this extension uses the selector's explicit `:level` when present and the provider default otherwise, never the session level.
 - **Pre-send budget check and failure wording** are extension-owned and have no Pi equivalent.
 
 `enabled` only controls the proactive threshold trigger. It does not disable a configured model for manual or Pi-automatic compaction.
 
 ### Failure policy
 
-Configured model selection is **fail closed**. Missing credentials, invalid or unavailable models, thinking-override suffixes, oversized inputs, provider failures, length-limited or tool-call responses, and empty generated sections cancel that compaction. Non-cancellation failures are written to stderr even without interactive UI. The extension never falls back to the active model or another provider, so context is not silently sent elsewhere. User cancellation also cancels immediately and never starts fallback work. Remove `compactionModel` (globally and from matching rules) to restore Pi's unchanged default fallback behavior.
+Configured model selection is **fail closed**. Missing credentials, invalid or unavailable models, oversized inputs, provider failures, length-limited or tool-call responses, and empty generated sections cancel that compaction. Non-cancellation failures are written to stderr even without interactive UI. The extension never falls back to the active model or another provider, so context is not silently sent elsewhere. User cancellation also cancels immediately and never starts fallback work. Remove `compactionModel` (globally and from matching rules) to restore Pi's unchanged default fallback behavior.
 
 After each `agent_settled`, proactive mode reads `ctx.getContextUsage()` and the active `ctx.model`. Waiting for `agent_settled` avoids racing Pi's own automatic compaction/retry lifecycle. It skips a branch whose latest entry is already a compaction and suppresses overlapping or duplicate proactive requests.
 
 ## Status and session picker
 
-- `/model-aware-compaction-status` reports the active model, selector, provider-default thinking policy, credential readiness, usage, matched threshold, config source, and per-rule overrides.
-- `/model-aware-compaction-model` selects a session-only override and does not edit project or user settings. It offers the same shortlist `/model` uses: `ctx.scopedModels` (your `--models`/`enabledModels` scope) when the session is scoped, and every authenticated model otherwise, so the picker can never widen the model surface past `/model`. Entries show a pinned thinking level and mark the current selection.
-- `/model-aware-compaction-model <provider/model>` sets the session override without opening the picker. A bare model id is accepted when it is unambiguous in the shortlist, `default` (or `reset`) restores the configured selector, and anything outside the shortlist is rejected with the reason.
+- `/model-aware-compaction-status` reports the active model, selector, effective thinking level, credential readiness, usage, matched threshold, config source, and per-rule overrides.
+- `/model-aware-compaction-model` selects a session-only override and does not edit project or user settings. In the TUI it opens Pi's own `/model` picker (`ModelSelectorComponent`, a package-root export) with the same `--models`/`enabledModels` shortlist, type-to-filter search, `Tab` to toggle between the scoped list and all authenticated models, and `Esc` to keep the current selection. The active compaction model is pre-highlighted when it is in the current scope. Outside the TUI (RPC hosts), where custom components are unavailable, the command falls back to a flat select list. The picker reads the catalog through the extension `modelRegistry` facade; only package-root exports are used.
+- `/model-aware-compaction-model <provider/model>` sets the session override without opening the picker. The argument accepts the same surface as the picker: an exact `provider/model` id of any authenticated model, or a bare model id when it is unambiguous within the shortlist. `default` (or `reset`) clears a session override and restores the configured selector; anything else is rejected with the reason.
 - The extension deliberately claims no persistent footer status entry. The selector is reported on demand by `/model-aware-compaction-status` instead of occupying the status bar for every turn.
 
 The commands add no LLM tool schema or always-present prompt content.

@@ -4,10 +4,31 @@ import * as path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const { selectedCompact } = vi.hoisted(() => ({ selectedCompact: vi.fn() }));
+type PickerModel = { provider: string; id: string };
+type PickerArgs = [
+  tui: { requestRender(): void },
+  current: PickerModel | undefined,
+  runtime: { getAvailableSnapshot(): readonly PickerModel[] },
+  scopedModels: ReadonlyArray<{ model: PickerModel }>,
+  onSelect: (model: PickerModel) => void,
+  onCancel: () => void,
+];
+const { selectedCompact, modelSelector } = vi.hoisted(() => ({
+  selectedCompact: vi.fn(),
+  modelSelector: vi.fn<(...args: PickerArgs) => void>(),
+}));
 vi.mock("./selected-compaction.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   runSelectedModelCompaction: selectedCompact,
+}));
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  // Pi's real picker needs a live TUI; record the constructor contract instead.
+  ModelSelectorComponent: class {
+    constructor(...args: PickerArgs) {
+      modelSelector(...args);
+    }
+  },
 }));
 
 import extension from "./index.js";
@@ -16,6 +37,7 @@ type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 beforeEach(() => {
   selectedCompact.mockReset();
+  modelSelector.mockReset();
 });
 
 function harness() {
@@ -220,7 +242,7 @@ describe("extension wiring", () => {
     }
   });
 
-  it("applies a shortlist model passed straight to the command and rejects one outside it", async () => {
+  it("applies an exact model id passed straight to the command and rejects a bare id outside the shortlist", async () => {
     const { commands } = harness();
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
     fs.mkdirSync(path.join(temp, ".pi"));
@@ -259,13 +281,118 @@ describe("extension wiring", () => {
       expect(ctx.ui.select).not.toHaveBeenCalled();
 
       await command?.handler("openai/gpt-5-mini", ctx);
+      expect(ctx.ui.notify).toHaveBeenCalledWith("Compaction model: openai/gpt-5-mini", "info");
+
+      await command?.handler("gpt-5-mini", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
-        expect.stringContaining("not in this session's model shortlist"),
+        expect.stringContaining("not an authenticated provider/model id"),
         "error",
       );
 
       await command?.handler("default", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith("Using Pi's default compaction model", "info");
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("hosts Pi's /model picker over the session shortlist and applies the pick", async () => {
+    const { commands } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": { enabled: true, compactionModel: "anthropic/claude-haiku-4-5" },
+      }),
+    );
+    const modelShape = { api: "anthropic-messages", contextWindow: 200_000, maxTokens: 8_000 };
+    const haiku = { ...modelShape, provider: "anthropic", id: "claude-haiku-4-5" };
+    const sonnet = { ...modelShape, provider: "anthropic", id: "claude-sonnet-4-5" };
+    const scopedModels = [{ model: haiku }, { model: sonnet, thinkingLevel: "high" as const }];
+    const tui = { requestRender: vi.fn() };
+    const custom = vi.fn(
+      (factory: (t: object, theme: object, kb: object, done: (v: PickerModel) => void) => void) =>
+        new Promise<PickerModel>((resolve) => {
+          factory(tui, {}, {}, resolve);
+          // Simulate the user choosing an entry inside Pi's picker.
+          modelSelector.mock.lastCall?.[4](sonnet);
+        }),
+    );
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      hasUI: true,
+      mode: "tui",
+      scopedModels,
+      modelRegistry: {
+        find: (provider: string, id: string) =>
+          [haiku, sonnet].find((m) => m.provider === provider && m.id === id),
+        getAvailable: () => [haiku, sonnet],
+        getError: () => undefined,
+        refresh: vi.fn(),
+        getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    ctx.ui = { ...ctx.ui, custom } as ExtensionContext["ui"];
+    try {
+      await commands.get("model-aware-compaction-model")?.handler("", ctx);
+
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+      const [passedTui, current, runtime, passedScope] = modelSelector.mock.lastCall ?? [];
+      expect(passedTui).toBe(tui);
+      expect(current).toBe(haiku); // configured selector is pre-highlighted
+      expect(passedScope).toEqual(scopedModels); // exact /model shortlist
+      expect(runtime?.getAvailableSnapshot()).toEqual([haiku, sonnet]);
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Compaction model: anthropic/claude-sonnet-4-5",
+        "info",
+      );
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the flat select list outside the TUI, where ui.custom is unavailable", async () => {
+    const { commands } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { enabled: true } }),
+    );
+    const haiku = { provider: "anthropic", id: "claude-haiku-4-5", contextWindow: 1, maxTokens: 1 };
+    const custom = vi.fn(async () => undefined); // what Pi's RPC host does
+    const select = vi.fn(async () => "anthropic/claude-haiku-4-5");
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      hasUI: true,
+      mode: "rpc",
+      scopedModels: [{ model: haiku }],
+      modelRegistry: {
+        find: () => haiku,
+        getAvailable: () => [haiku],
+        getError: () => undefined,
+        refresh: vi.fn(),
+        getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    ctx.ui = { ...ctx.ui, custom, select } as ExtensionContext["ui"];
+    try {
+      await commands.get("model-aware-compaction-model")?.handler("", ctx);
+      expect(custom).not.toHaveBeenCalled();
+      expect(modelSelector).not.toHaveBeenCalled();
+      expect(select).toHaveBeenCalledWith(
+        "Compaction model (session only)",
+        expect.arrayContaining(["anthropic/claude-haiku-4-5"]),
+      );
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Compaction model: anthropic/claude-haiku-4-5",
+        "info",
+      );
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
@@ -346,7 +473,7 @@ describe("extension wiring", () => {
       await commands.get("model-aware-compaction-status")?.handler("", ctx);
       expect(api.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          content: expect.stringContaining("thinking: provider default (overrides unsupported)"),
+          content: expect.stringContaining("thinking: provider default"),
         }),
         { triggerTurn: false },
       );
@@ -354,6 +481,89 @@ describe("extension wiring", () => {
         expect.objectContaining({ content: expect.stringContaining("status: ready") }),
         { triggerTurn: false },
       );
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("honours a selector thinking suffix for compaction and reports it in status", async () => {
+    const { emitAsync, commands, api } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": { compactionModel: "anthropic/summary-model:low" },
+      }),
+    );
+    const selectedModel = {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "summary-model",
+      baseUrl: "https://api.anthropic.com",
+      reasoning: true,
+      contextWindow: 200_000,
+      maxTokens: 8_192,
+    };
+    const modelRegistry = {
+      find: (_provider: string, id: string) => (id === "summary-model" ? selectedModel : undefined),
+      getAvailable: () => [selectedModel],
+      getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
+      complete: vi.fn(),
+    };
+    const ctx = { ...context(20_000), cwd: temp, modelRegistry } as ExtensionContext;
+    const preparation = {
+      firstKeptEntryId: "kept",
+      messagesToSummarize: [{ role: "user", content: "history" }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 20_000,
+      fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+      settings: { enabled: true, reserveTokens: 4_096, keepRecentTokens: 1_000 },
+    };
+    selectedCompact.mockResolvedValue({
+      summary: "summary",
+      firstKeptEntryId: "kept",
+      tokensBefore: 20_000,
+    });
+    try {
+      const [hookResult] = await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        ctx,
+      );
+      expect(hookResult).toMatchObject({ compaction: { summary: "summary" } });
+      // A level rides Pi's simple-stream transport with registry credentials,
+      // not the registry's raw complete(), which ignores `reasoning`.
+      expect(modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledWith(selectedModel);
+      expect(modelRegistry.complete).not.toHaveBeenCalled();
+
+      await commands.get("model-aware-compaction-status")?.handler("", ctx);
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining("- thinking: low") }),
+        { triggerTurn: false },
+      );
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining("status: ready") }),
+        { triggerTurn: false },
+      );
+
+      // The level transport needs resolved credentials; without them it fails closed.
+      selectedCompact.mockClear();
+      const denied = {
+        ...ctx,
+        modelRegistry: {
+          ...modelRegistry,
+          getApiKeyAndHeaders: vi.fn(async () => ({ ok: false, error: "no key" })),
+        },
+      } as ExtensionContext;
+      const [deniedResult] = await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        denied,
+      );
+      expect(deniedResult).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
@@ -508,7 +718,7 @@ describe("extension wiring", () => {
     }
   });
 
-  it("reports unsupported thinking, unavailable models, and provider failures without UI", async () => {
+  it("reports invalid selectors, unavailable models, and provider failures without UI", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const preparation = {
       firstKeptEntryId: "kept",
@@ -520,7 +730,7 @@ describe("extension wiring", () => {
       settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
     };
     try {
-      for (const selector of ["invalid", "test/missing", "test/plain:high"]) {
+      for (const selector of ["invalid", "test/missing"]) {
         const { emitAsync } = harness();
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
         fs.mkdirSync(path.join(temp, ".pi"));
@@ -593,7 +803,8 @@ describe("extension wiring", () => {
       ).toEqual({ cancel: true });
       fs.rmSync(temp, { recursive: true, force: true });
       const messages = error.mock.calls.map(([message]) => message).join("\n");
-      expect(messages).toContain("thinking override");
+      expect(messages).toContain("invalid compactionModel selector");
+      expect(messages).toContain("is unavailable");
       expect(messages).toContain("provider unavailable");
     } finally {
       error.mockRestore();

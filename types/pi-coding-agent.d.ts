@@ -87,7 +87,19 @@ declare module "@earendil-works/pi-coding-agent" {
         error: string;
       };
 
-  export interface ModelRuntime {}
+  export interface ModelsRefreshResult {
+    aborted: boolean;
+    errors: ReadonlyMap<string, Error>;
+  }
+
+  /** Catalog-reading slice of Pi's ModelRuntime (see dist/core/model-runtime.d.ts). */
+  export interface ModelRuntime {
+    getModel(providerId: string, modelId: string): RegistryModel | undefined;
+    getAvailableSnapshot(): readonly RegistryModel[];
+    getError(): string | undefined;
+    refresh(options?: { signal?: AbortSignal }): Promise<ModelsRefreshResult>;
+  }
+  export function initTheme(themeName?: string, enableWatcher?: boolean): void;
   export const ModelRuntime: {
     create(options?: {
       refreshOnCreate?: boolean;
@@ -98,6 +110,8 @@ declare module "@earendil-works/pi-coding-agent" {
   export interface ModelRegistry {
     find(provider: string, modelId: string): RegistryModel | undefined;
     getAvailable(): RegistryModel[];
+    getError(): string | undefined;
+    refresh(options?: { signal?: AbortSignal }): Promise<ModelsRefreshResult>;
     getApiKeyAndHeaders(model: RegistryModel): Promise<ResolvedRequestAuth>;
     registerProvider(provider: import("@earendil-works/pi-ai/compat").Provider): void;
     complete<TApi extends import("@earendil-works/pi-ai/compat").Api>(
@@ -154,13 +168,42 @@ declare module "@earendil-works/pi-coding-agent" {
     details?: object;
   }>;
 
+  export interface ScopedModel {
+    model: RegistryModel;
+    thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  }
+
+  /** Pi's /model picker (dist/modes/interactive/components/model-selector.d.ts). */
+  export class ModelSelectorComponent implements import("@earendil-works/pi-tui").Component {
+    constructor(
+      tui: { requestRender(): void },
+      currentModel: RegistryModel | undefined,
+      modelRuntime: ModelRuntime,
+      scopedModels: ReadonlyArray<ScopedModel>,
+      onSelect: (model: RegistryModel) => void,
+      onCancel: () => void,
+      initialSearchInput?: string,
+      onSelectAsDefault?: (model: RegistryModel) => void,
+      defaultModel?: { provider: string; id: string },
+    );
+    render(width: number): string[];
+    handleInput(data: string): void;
+    invalidate(): void;
+    dispose(): void;
+  }
+
+  export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
   export interface ExtensionContext {
     cwd: string;
+    /** Run mode; only "tui" supports ui.custom components. */
+    mode?: ExtensionMode;
     hasUI?: boolean;
     isIdle?: () => boolean;
     ui: ExtensionUI;
     sessionManager: SessionManager;
     model?: { provider?: string; id?: string };
+    scopedModels?: readonly ScopedModel[];
     getContextUsage?: () =>
       | { tokens: number | null; contextWindow: number; percent: number | null }
       | undefined;

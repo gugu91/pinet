@@ -1,4 +1,11 @@
 import {
+  type Api,
+  clampThinkingLevel,
+  type Model,
+  type ModelThinkingLevel,
+  type ThinkingLevel as ReasoningLevel,
+} from "@earendil-works/pi-ai/compat";
+import {
   buildHistoryPrompt,
   buildTurnPrefixPrompt,
   SUMMARIZATION_SYSTEM_PROMPT,
@@ -9,7 +16,8 @@ export interface ModelIdentity {
   id?: string;
 }
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/** Selector suffix vocabulary: pi-ai's reasoning levels plus `off`. */
+export type ThinkingLevel = ModelThinkingLevel;
 
 export interface CompactionRule {
   model: string;
@@ -125,6 +133,7 @@ export function compactionModelChoices(input: {
 export function resolveCompactionModelArgument(
   argument: string,
   choices: ReadonlyArray<{ selector: string | undefined }>,
+  availableSelectors: ReadonlyArray<string> = [],
 ): { selector: string | undefined } | { error: string } {
   const trimmed = argument.trim();
   if (trimmed === "default" || trimmed === "reset") return { selector: undefined };
@@ -133,13 +142,16 @@ export function resolveCompactionModelArgument(
     .map((choice) => choice.selector)
     .filter((selector) => selector !== undefined);
   if (selectors.includes(trimmed)) return { selector: trimmed };
+  // An exact provider/model id outside the shortlist is legal, matching the
+  // picker's Tab-to-all scope. Bare ids never widen past the shortlist.
+  if (availableSelectors.includes(trimmed)) return { selector: trimmed };
 
   const matches = selectors.filter((selector) => selector.split("/")[1] === trimmed);
   if (matches.length === 1) return { selector: matches[0] };
   if (matches.length > 1)
     return { error: `"${trimmed}" matches ${matches.join(", ")}; use the full provider/model id` };
   return {
-    error: `"${trimmed}" is not in this session's model shortlist; run /model-aware-compaction-model without an argument to pick one`,
+    error: `"${trimmed}" is not an authenticated provider/model id or a shortlist model; run /model-aware-compaction-model without an argument to pick one`,
   };
 }
 
@@ -236,4 +248,29 @@ export function decideCompaction(input: {
   if (input.triggeredModelKey === key)
     return { modelKey: key, limit, shouldCompact: false, reason: "already-triggered" };
   return { modelKey: key, limit, shouldCompact: true, reason: "over-limit" };
+}
+
+/**
+ * The reasoning level actually sent for a selector, or undefined when the request
+ * should carry none. Mirrors Pi: the level is clamped to what the model supports,
+ * so `:high` on a non-reasoning model degrades to provider default instead of failing.
+ */
+export function effectiveThinkingLevel(
+  model: Model<Api>,
+  configured: ThinkingLevel | undefined,
+): ReasoningLevel | undefined {
+  if (!configured || configured === "off") return undefined;
+  const clamped = clampThinkingLevel(model, configured);
+  return clamped === "off" ? undefined : clamped;
+}
+
+export function describeThinking(
+  model: Model<Api> | undefined,
+  configured: ThinkingLevel | undefined,
+): string {
+  // `:off` sends no reasoning option, which is the provider default, not a forced off.
+  if (!configured || configured === "off") return "provider default";
+  const effective = model ? (effectiveThinkingLevel(model, configured) ?? "off") : undefined;
+  if (effective === undefined) return configured;
+  return effective === configured ? configured : `${configured} (effective: ${effective})`;
 }
