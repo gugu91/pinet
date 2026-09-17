@@ -1,8 +1,11 @@
 import {
   convertToLlm,
+  ModelSelectorComponent,
   serializeConversation,
   type ExtensionAPI,
   type ExtensionContext,
+  type ModelRuntime,
+  type RegistryModel,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
@@ -16,7 +19,6 @@ import {
   resolveCompactionModelArgument,
   selectorForModel,
   type ModelIdentity,
-  type ThinkingLevel,
 } from "./helpers.js";
 import {
   mergePriorModelAwareFiles,
@@ -33,6 +35,8 @@ interface CompatibleContext extends ExtensionContext {
   modelRegistry: {
     find(provider: string, modelId: string): Model<Api> | undefined;
     getAvailable(): Model<Api>[];
+    getError(): string | undefined;
+    refresh: ModelRuntime["refresh"];
     getApiKeyAndHeaders(model: Model<Api>): Promise<
       | {
           ok: true;
@@ -46,16 +50,6 @@ interface CompatibleContext extends ExtensionContext {
     complete: RegistryComplete;
   };
   model?: ModelIdentity;
-  scopedModels?: ReadonlyArray<{
-    model: {
-      provider: string;
-      id: string;
-      name?: string;
-      reasoning?: boolean;
-      thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>>;
-    };
-    thinkingLevel?: ThinkingLevel;
-  }>;
   getContextUsage?: () => ContextUsage | undefined;
   compact?: (options?: {
     customInstructions?: string;
@@ -260,12 +254,35 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         runtimeSelector = resolved.selector;
       } else {
         if (!ctx.hasUI) return;
-        const choice = await ctx.ui.select(
-          "Compaction model (session only)",
-          choices.map((entry) => entry.label),
+        // Host Pi's own /model picker (scoped shortlist, fuzzy search, scope
+        // toggle) instead of a flat list. The component only needs the
+        // catalog-reading slice of ModelRuntime, which the registry facade
+        // already exposes.
+        const registry = ctx.modelRegistry;
+        const runtime: ModelRuntime = {
+          getAvailableSnapshot: () => registry.getAvailable(),
+          getModel: (provider, modelId) => registry.find(provider, modelId),
+          getError: () => registry.getError(),
+          refresh: (options) => registry.refresh(options),
+        };
+        const active = parseCompactionSelector(
+          runtimeSelector ?? configuredSelector ?? "",
+          (provider, modelId) => registry.find(provider, modelId) !== undefined,
         );
-        if (!choice) return;
-        runtimeSelector = choices.find((entry) => entry.label === choice)?.selector;
+        const current = active ? registry.find(active.provider, active.modelId) : undefined;
+        const picked = await ctx.ui.custom<RegistryModel | undefined>(
+          (tui, _theme, _keybindings, done) =>
+            new ModelSelectorComponent(
+              tui,
+              current,
+              runtime,
+              ctx.scopedModels ?? [],
+              (model) => done(model),
+              () => done(undefined),
+            ),
+        );
+        if (!picked) return;
+        runtimeSelector = `${picked.provider}/${picked.id}`;
       }
 
       const selected = runtimeSelector ?? configuredSelector;

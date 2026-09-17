@@ -92,7 +92,7 @@ After each `agent_settled`, proactive mode reads `ctx.getContextUsage()` and the
 ## Status and session picker
 
 - `/model-aware-compaction-status` reports the active model, selector, provider-default thinking policy, credential readiness, usage, matched threshold, config source, and per-rule overrides.
-- `/model-aware-compaction-model` selects a session-only override and does not edit project or user settings. It offers the same shortlist `/model` uses: `ctx.scopedModels` (your `--models`/`enabledModels` scope) when the session is scoped, and every authenticated model otherwise, so the picker can never widen the model surface past `/model`. Entries show a pinned thinking level and mark the current selection.
+- `/model-aware-compaction-model` selects a session-only override and does not edit project or user settings. It opens Pi's own `/model` picker (`ModelSelectorComponent`) with the same `--models`/`enabledModels` shortlist, type-to-filter search, `Tab` to toggle between the scoped list and all authenticated models, and `Esc` to keep the current selection. The active compaction model is pre-highlighted. The component reads the catalog through the extension `modelRegistry` facade, so nothing beyond the public Pi API is used.
 - `/model-aware-compaction-model <provider/model>` sets the session override without opening the picker. A bare model id is accepted when it is unambiguous in the shortlist, `default` (or `reset`) restores the configured selector, and anything outside the shortlist is rejected with the reason.
 - The extension deliberately claims no persistent footer status entry. The selector is reported on demand by `/model-aware-compaction-status` instead of occupying the status bar for every turn.
 

@@ -4,10 +4,31 @@ import * as path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const { selectedCompact } = vi.hoisted(() => ({ selectedCompact: vi.fn() }));
+type PickerModel = { provider: string; id: string };
+type PickerArgs = [
+  tui: { requestRender(): void },
+  current: PickerModel | undefined,
+  runtime: { getAvailableSnapshot(): readonly PickerModel[] },
+  scopedModels: ReadonlyArray<{ model: PickerModel }>,
+  onSelect: (model: PickerModel) => void,
+  onCancel: () => void,
+];
+const { selectedCompact, modelSelector } = vi.hoisted(() => ({
+  selectedCompact: vi.fn(),
+  modelSelector: vi.fn<(...args: PickerArgs) => void>(),
+}));
 vi.mock("./selected-compaction.js", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   runSelectedModelCompaction: selectedCompact,
+}));
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  // Pi's real picker needs a live TUI; record the constructor contract instead.
+  ModelSelectorComponent: class {
+    constructor(...args: PickerArgs) {
+      modelSelector(...args);
+    }
+  },
 }));
 
 import extension from "./index.js";
@@ -266,6 +287,63 @@ describe("extension wiring", () => {
 
       await command?.handler("default", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith("Using Pi's default compaction model", "info");
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("hosts Pi's /model picker over the session shortlist and applies the pick", async () => {
+    const { commands } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": { enabled: true, compactionModel: "anthropic/claude-haiku-4-5" },
+      }),
+    );
+    const modelShape = { api: "anthropic-messages", contextWindow: 200_000, maxTokens: 8_000 };
+    const haiku = { ...modelShape, provider: "anthropic", id: "claude-haiku-4-5" };
+    const sonnet = { ...modelShape, provider: "anthropic", id: "claude-sonnet-4-5" };
+    const scopedModels = [{ model: haiku }, { model: sonnet, thinkingLevel: "high" as const }];
+    const tui = { requestRender: vi.fn() };
+    const custom = vi.fn(
+      (factory: (t: object, theme: object, kb: object, done: (v: PickerModel) => void) => void) =>
+        new Promise<PickerModel>((resolve) => {
+          factory(tui, {}, {}, resolve);
+          // Simulate the user choosing an entry inside Pi's picker.
+          modelSelector.mock.lastCall?.[4](sonnet);
+        }),
+    );
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      hasUI: true,
+      scopedModels,
+      modelRegistry: {
+        find: (provider: string, id: string) =>
+          [haiku, sonnet].find((m) => m.provider === provider && m.id === id),
+        getAvailable: () => [haiku, sonnet],
+        getError: () => undefined,
+        refresh: vi.fn(),
+        getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    ctx.ui = { ...ctx.ui, custom } as ExtensionContext["ui"];
+    try {
+      await commands.get("model-aware-compaction-model")?.handler("", ctx);
+
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+      const [passedTui, current, runtime, passedScope] = modelSelector.mock.lastCall ?? [];
+      expect(passedTui).toBe(tui);
+      expect(current).toBe(haiku); // configured selector is pre-highlighted
+      expect(passedScope).toBe(scopedModels); // exact /model shortlist, not a copy
+      expect(runtime?.getAvailableSnapshot()).toEqual([haiku, sonnet]);
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Compaction model: anthropic/claude-sonnet-4-5",
+        "info",
+      );
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
