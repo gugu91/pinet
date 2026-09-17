@@ -1,8 +1,11 @@
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 import {
   compactionInputError,
   compactionModelChoices,
   decideCompaction,
+  describeThinking,
+  effectiveThinkingLevel,
   limitForModel,
   matchesModel,
   modelKey,
@@ -211,5 +214,35 @@ describe("session model picker", () => {
     expect(resolveCompactionModelArgument("claude-haiku-4-5", choices)).toMatchObject({
       error: expect.stringContaining("use the full provider/model id"),
     });
+  });
+});
+
+describe("effective thinking level", () => {
+  const model = (reasoning: boolean): Model<Api> => ({
+    api: "anthropic-messages",
+    provider: "anthropic",
+    id: reasoning ? "thinker" : "plain",
+    name: "Model",
+    baseUrl: "https://api.anthropic.com",
+    reasoning,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  });
+
+  it("sends nothing without a level or for off, and clamps to what the model supports", () => {
+    expect(effectiveThinkingLevel(model(true), undefined)).toBeUndefined();
+    expect(effectiveThinkingLevel(model(true), "off")).toBeUndefined();
+    expect(effectiveThinkingLevel(model(true), "low")).toBe("low");
+    // Pi clamps a level on a non-reasoning model to off instead of failing.
+    expect(effectiveThinkingLevel(model(false), "high")).toBeUndefined();
+  });
+
+  it("describes configured versus effective thinking for status", () => {
+    expect(describeThinking(model(true), undefined)).toBe("provider default");
+    expect(describeThinking(model(true), "low")).toBe("low");
+    expect(describeThinking(model(false), "high")).toBe("high (effective: off)");
+    expect(describeThinking(undefined, "high")).toBe("high");
   });
 });

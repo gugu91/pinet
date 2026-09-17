@@ -1,4 +1,11 @@
 import {
+  type Api,
+  clampThinkingLevel,
+  type Model,
+  type ModelThinkingLevel,
+  type ThinkingLevel as ReasoningLevel,
+} from "@earendil-works/pi-ai/compat";
+import {
   buildHistoryPrompt,
   buildTurnPrefixPrompt,
   SUMMARIZATION_SYSTEM_PROMPT,
@@ -9,7 +16,8 @@ export interface ModelIdentity {
   id?: string;
 }
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+/** Selector suffix vocabulary: pi-ai's reasoning levels plus `off`. */
+export type ThinkingLevel = ModelThinkingLevel;
 
 export interface CompactionRule {
   model: string;
@@ -240,4 +248,28 @@ export function decideCompaction(input: {
   if (input.triggeredModelKey === key)
     return { modelKey: key, limit, shouldCompact: false, reason: "already-triggered" };
   return { modelKey: key, limit, shouldCompact: true, reason: "over-limit" };
+}
+
+/**
+ * The reasoning level actually sent for a selector, or undefined when the request
+ * should carry none. Mirrors Pi: the level is clamped to what the model supports,
+ * so `:high` on a non-reasoning model degrades to provider default instead of failing.
+ */
+export function effectiveThinkingLevel(
+  model: Model<Api>,
+  configured: ThinkingLevel | undefined,
+): ReasoningLevel | undefined {
+  if (!configured || configured === "off") return undefined;
+  const clamped = clampThinkingLevel(model, configured);
+  return clamped === "off" ? undefined : clamped;
+}
+
+export function describeThinking(
+  model: Model<Api> | undefined,
+  configured: ThinkingLevel | undefined,
+): string {
+  if (!configured) return "provider default";
+  const effective = model ? (effectiveThinkingLevel(model, configured) ?? "off") : undefined;
+  if (effective === undefined) return configured;
+  return effective === configured ? configured : `${configured} (effective: ${effective})`;
 }

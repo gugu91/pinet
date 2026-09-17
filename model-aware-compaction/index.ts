@@ -14,6 +14,8 @@ import {
   compactionInputError,
   compactionModelChoices,
   decideCompaction,
+  describeThinking,
+  effectiveThinkingLevel,
   modelKey,
   parseCompactionSelector,
   resolveCompactionModelArgument,
@@ -23,6 +25,7 @@ import {
 import {
   mergePriorModelAwareFiles,
   runSelectedModelCompaction,
+  thinkingComplete,
   type RegistryComplete,
 } from "./selected-compaction.js";
 
@@ -148,13 +151,22 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       if (config.debug && ctx.hasUI) {
         ctx.ui.notify(`Compacting with ${selectorText}`, "info");
       }
+      // A selector level rides Pi's simple-stream path; otherwise the registry keeps
+      // provider-default thinking and existing configurations are unchanged.
+      let complete: RegistryComplete = ctx.modelRegistry.complete.bind(ctx.modelRegistry);
+      const level = effectiveThinkingLevel(model, selector.thinkingOverride);
+      if (level) {
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok)
+          return failClosed(`credentials unavailable for "${selectorText}": ${auth.error}`);
+        complete = thinkingComplete(auth, level);
+      }
       const result = await runSelectedModelCompaction({
         preparation,
         model,
-        complete: ctx.modelRegistry.complete.bind(ctx.modelRegistry),
+        complete,
         signal: event.signal,
         customInstructions,
-        thinkingLevel: selector.thinkingOverride,
       });
       if (event.signal.aborted) return { cancel: true };
       return { compaction: result };
@@ -340,7 +352,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         `- proactive enabled: ${config.enabled ? "yes" : "no"}`,
         `- current model: ${key ?? "unknown"}`,
         `- compaction model: ${selector ?? "Pi default"}${runtimeSelector ? " (session override)" : ""}`,
-        `- thinking: ${parsed?.thinkingOverride ?? "provider default"}`,
+        `- thinking: ${describeThinking(resolved, parsed?.thinkingOverride)}`,
         `- compaction model status: ${readiness}`,
         `- current tokens: ${usage?.tokens ?? "unknown"}`,
         `- matched limit: ${decision.limit ?? "none"}`,

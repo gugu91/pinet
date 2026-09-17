@@ -1,11 +1,13 @@
 import { contentText, uuidv7 } from "@earendil-works/pi-ai";
-import type {
-  Api,
-  AssistantMessage,
-  Context,
-  Model,
-  ThinkingLevel as ReasoningLevel,
-  Usage,
+import {
+  type Api,
+  type AssistantMessage,
+  completeSimple,
+  type Context,
+  type Model,
+  type ProviderHeaders,
+  type ThinkingLevel,
+  type Usage,
 } from "@earendil-works/pi-ai/compat";
 import {
   convertToLlm,
@@ -18,7 +20,6 @@ import {
   buildTurnPrefixPrompt,
   SUMMARIZATION_SYSTEM_PROMPT,
 } from "./prompts.js";
-import type { ThinkingLevel } from "./helpers.js";
 
 export type RegistryComplete = (
   model: Model<Api>,
@@ -28,9 +29,36 @@ export type RegistryComplete = (
     signal: AbortSignal;
     cacheRetention: "none";
     sessionId: string;
-    reasoning?: ReasoningLevel;
   },
 ) => Promise<AssistantMessage>;
+
+/** Credentials the registry resolved for the selected model (`getApiKeyAndHeaders`). */
+export interface ResolvedAuth {
+  apiKey?: string;
+  headers?: ProviderHeaders;
+  baseUrl?: string;
+  env?: Record<string, string>;
+}
+
+/**
+ * Transport for a selector with an explicit `:level`.
+ *
+ * `ModelRegistry.complete()` dispatches to each adapter's raw `stream()`, which reads
+ * per-API thinking options and ignores `reasoning`. Only `streamSimple`/`completeSimple`
+ * translate a provider-neutral `reasoning` level into those options, and Pi 0.85.1 does
+ * not expose the registry-backed simple path to extensions. Pi's own compaction calls
+ * `completeSimple` with the registry's resolved credentials, so this mirrors that path.
+ */
+export function thinkingComplete(auth: ResolvedAuth, level: ThinkingLevel): RegistryComplete {
+  return (model, context, options) =>
+    completeSimple(auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model, context, {
+      ...options,
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      env: auth.env,
+      reasoning: level,
+    });
+}
 
 export interface ModelAwareCompactionDetails {
   owner: "@pinet/model-aware-compaction";
@@ -45,8 +73,6 @@ interface SelectedCompactionOptions {
   complete: RegistryComplete;
   signal: AbortSignal;
   customInstructions?: string;
-  /** Explicit `:level` from the selector; omitted (or `off`) sends no reasoning option. */
-  thinkingLevel?: ThinkingLevel;
 }
 
 export function mergePriorModelAwareFiles(
@@ -105,7 +131,6 @@ async function summarize(
   promptText: string,
   maxTokens: number,
   signal: AbortSignal,
-  thinkingLevel: ThinkingLevel | undefined,
 ): Promise<{ text: string; usage: Usage }> {
   const response = await complete(
     model,
@@ -125,14 +150,7 @@ async function summarize(
       ],
     },
     // Pi passes no session ID for compaction, so each summary gets a fresh routing ID.
-    {
-      maxTokens,
-      signal,
-      cacheRetention: "none",
-      sessionId: uuidv7(),
-      // pi-ai has no "off" level: omitting `reasoning` is off / provider default.
-      ...(thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-    },
+    { maxTokens, signal, cacheRetention: "none", sessionId: uuidv7() },
   );
   if (signal.aborted) throw new Error("Compaction cancelled");
   if (response.stopReason === "error")
@@ -152,7 +170,6 @@ export async function runSelectedModelCompaction({
   complete,
   signal,
   customInstructions,
-  thinkingLevel,
 }: SelectedCompactionOptions) {
   const historyMaxTokens = Math.min(
     Math.floor(preparation.settings.reserveTokens * 0.8),
@@ -178,7 +195,6 @@ export async function runSelectedModelCompaction({
             ),
             historyMaxTokens,
             signal,
-            thinkingLevel,
           )
         : undefined;
     const prefix = await summarize(
@@ -187,7 +203,6 @@ export async function runSelectedModelCompaction({
       buildTurnPrefixPrompt(serializeConversation(convertToLlm(preparation.turnPrefixMessages))),
       prefixMaxTokens,
       signal,
-      thinkingLevel,
     );
     summary = `${history?.text ?? "No prior history."}\n\n---\n\n**Turn Context (split turn):**\n\n${prefix.text}`;
     usage = history
@@ -225,7 +240,6 @@ export async function runSelectedModelCompaction({
       ),
       historyMaxTokens,
       signal,
-      thinkingLevel,
     );
     summary = history.text;
     usage = history.usage;

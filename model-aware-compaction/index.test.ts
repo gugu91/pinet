@@ -505,17 +505,13 @@ describe("extension wiring", () => {
       contextWindow: 200_000,
       maxTokens: 8_192,
     };
-    const ctx = {
-      ...context(20_000),
-      cwd: temp,
-      modelRegistry: {
-        find: (_provider: string, id: string) =>
-          id === "summary-model" ? selectedModel : undefined,
-        getAvailable: () => [selectedModel],
-        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
-        complete: vi.fn(),
-      },
-    } as ExtensionContext;
+    const modelRegistry = {
+      find: (_provider: string, id: string) => (id === "summary-model" ? selectedModel : undefined),
+      getAvailable: () => [selectedModel],
+      getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
+      complete: vi.fn(),
+    };
+    const ctx = { ...context(20_000), cwd: temp, modelRegistry } as ExtensionContext;
     const preparation = {
       firstKeptEntryId: "kept",
       messagesToSummarize: [{ role: "user", content: "history" }],
@@ -537,9 +533,10 @@ describe("extension wiring", () => {
         ctx,
       );
       expect(hookResult).toMatchObject({ compaction: { summary: "summary" } });
-      expect(selectedCompact).toHaveBeenCalledWith(
-        expect.objectContaining({ model: selectedModel, thinkingLevel: "low" }),
-      );
+      // A level rides Pi's simple-stream transport with registry credentials,
+      // not the registry's raw complete(), which ignores `reasoning`.
+      expect(modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledWith(selectedModel);
+      expect(modelRegistry.complete).not.toHaveBeenCalled();
 
       await commands.get("model-aware-compaction-status")?.handler("", ctx);
       expect(api.sendMessage).toHaveBeenCalledWith(
@@ -550,6 +547,23 @@ describe("extension wiring", () => {
         expect.objectContaining({ content: expect.stringContaining("status: ready") }),
         { triggerTurn: false },
       );
+
+      // The level transport needs resolved credentials; without them it fails closed.
+      selectedCompact.mockClear();
+      const denied = {
+        ...ctx,
+        modelRegistry: {
+          ...modelRegistry,
+          getApiKeyAndHeaders: vi.fn(async () => ({ ok: false, error: "no key" })),
+        },
+      } as ExtensionContext;
+      const [deniedResult] = await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        denied,
+      );
+      expect(deniedResult).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
