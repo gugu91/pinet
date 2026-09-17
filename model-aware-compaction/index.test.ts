@@ -473,8 +473,77 @@ describe("extension wiring", () => {
       await commands.get("model-aware-compaction-status")?.handler("", ctx);
       expect(api.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          content: expect.stringContaining("thinking: provider default (overrides unsupported)"),
+          content: expect.stringContaining("thinking: provider default"),
         }),
+        { triggerTurn: false },
+      );
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining("status: ready") }),
+        { triggerTurn: false },
+      );
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("honours a selector thinking suffix for compaction and reports it in status", async () => {
+    const { emitAsync, commands, api } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": { compactionModel: "anthropic/summary-model:low" },
+      }),
+    );
+    const selectedModel = {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "summary-model",
+      baseUrl: "https://api.anthropic.com",
+      reasoning: true,
+      contextWindow: 200_000,
+      maxTokens: 8_192,
+    };
+    const ctx = {
+      ...context(20_000),
+      cwd: temp,
+      modelRegistry: {
+        find: (_provider: string, id: string) =>
+          id === "summary-model" ? selectedModel : undefined,
+        getAvailable: () => [selectedModel],
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    const preparation = {
+      firstKeptEntryId: "kept",
+      messagesToSummarize: [{ role: "user", content: "history" }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 20_000,
+      fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+      settings: { enabled: true, reserveTokens: 4_096, keepRecentTokens: 1_000 },
+    };
+    selectedCompact.mockResolvedValue({
+      summary: "summary",
+      firstKeptEntryId: "kept",
+      tokensBefore: 20_000,
+    });
+    try {
+      const [hookResult] = await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        ctx,
+      );
+      expect(hookResult).toMatchObject({ compaction: { summary: "summary" } });
+      expect(selectedCompact).toHaveBeenCalledWith(
+        expect.objectContaining({ model: selectedModel, thinkingLevel: "low" }),
+      );
+
+      await commands.get("model-aware-compaction-status")?.handler("", ctx);
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining("- thinking: low") }),
         { triggerTurn: false },
       );
       expect(api.sendMessage).toHaveBeenCalledWith(
@@ -635,7 +704,7 @@ describe("extension wiring", () => {
     }
   });
 
-  it("reports unsupported thinking, unavailable models, and provider failures without UI", async () => {
+  it("reports invalid selectors, unavailable models, and provider failures without UI", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const preparation = {
       firstKeptEntryId: "kept",
@@ -647,7 +716,7 @@ describe("extension wiring", () => {
       settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
     };
     try {
-      for (const selector of ["invalid", "test/missing", "test/plain:high"]) {
+      for (const selector of ["invalid", "test/missing"]) {
         const { emitAsync } = harness();
         const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
         fs.mkdirSync(path.join(temp, ".pi"));
@@ -720,7 +789,8 @@ describe("extension wiring", () => {
       ).toEqual({ cancel: true });
       fs.rmSync(temp, { recursive: true, force: true });
       const messages = error.mock.calls.map(([message]) => message).join("\n");
-      expect(messages).toContain("thinking override");
+      expect(messages).toContain("invalid compactionModel selector");
+      expect(messages).toContain("is unavailable");
       expect(messages).toContain("provider unavailable");
     } finally {
       error.mockRestore();

@@ -230,6 +230,26 @@ describe("selected-model compaction", () => {
       cacheRetention: "none",
     });
     expect(complete.mock.calls[0][2].sessionId).toEqual(expect.any(String));
+    // No selector level → no reasoning option, so the provider default applies.
+    expect(complete.mock.calls[0][2]).not.toHaveProperty("reasoning");
+  });
+
+  it("forwards an explicit selector thinking level to every section and treats off as omitted", async () => {
+    const run = async (thinkingLevel: "low" | "off") => {
+      const complete = vi.fn<RegistryComplete>(async () => fauxAssistantMessage("section"));
+      await runSelectedModelCompaction({
+        preparation, // split turn: history + turn-prefix sections
+        model: fauxProvider().getModel(),
+        complete,
+        signal: new AbortController().signal,
+        thinkingLevel,
+      });
+      expect(complete).toHaveBeenCalledTimes(2);
+      return complete.mock.calls.map((call) => call[2]);
+    };
+
+    for (const options of await run("low")) expect(options).toMatchObject({ reasoning: "low" });
+    for (const options of await run("off")) expect(options).not.toHaveProperty("reasoning");
   });
 
   it("uses a prior checkpoint as history when a split turn has no new history", async () => {

@@ -29,7 +29,7 @@ describe("model matching", () => {
 });
 
 describe("compaction model selection", () => {
-  it("detects unsupported thinking suffixes while preserving exact ids with colons", () => {
+  it("parses thinking suffixes while preserving exact ids with colons", () => {
     expect(parseCompactionSelector("anthropic/claude-sonnet:high")).toEqual({
       provider: "anthropic",
       modelId: "claude-sonnet",

@@ -113,11 +113,6 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       return failClosed(
         `compaction model "${selector.provider}/${selector.modelId}" is unavailable`,
       );
-    if (selector.thinkingOverride)
-      return failClosed(
-        `thinking override ":${selector.thinkingOverride}" is unsupported; configure provider/model only and the provider default will be used`,
-      );
-
     // Acquire ownership before the registry begins asynchronous provider/auth work.
     summarizationInFlight = true;
     try {
@@ -159,6 +154,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         complete: ctx.modelRegistry.complete.bind(ctx.modelRegistry),
         signal: event.signal,
         customInstructions,
+        thinkingLevel: selector.thinkingOverride,
       });
       if (event.signal.aborted) return { cancel: true };
       return { compaction: result };
@@ -330,27 +326,21 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
           )
         : null;
       const resolved = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId) : undefined;
-      const selectorError = parsed?.thinkingOverride
-        ? `thinking override ":${parsed.thinkingOverride}" is unsupported`
-        : null;
-      const auth =
-        resolved && !selectorError ? await ctx.modelRegistry.getApiKeyAndHeaders(resolved) : null;
+      const auth = resolved ? await ctx.modelRegistry.getApiKeyAndHeaders(resolved) : null;
       const readiness = !selector
         ? "not configured"
         : !parsed || !resolved
           ? "invalid or unavailable"
-          : selectorError
-            ? selectorError
-            : auth?.ok
-              ? "ready"
-              : `credentials unavailable: ${auth?.error}`;
+          : auth?.ok
+            ? "ready"
+            : `credentials unavailable: ${auth?.error}`;
       const lines = [
         "**Model-aware compaction**",
         "",
         `- proactive enabled: ${config.enabled ? "yes" : "no"}`,
         `- current model: ${key ?? "unknown"}`,
         `- compaction model: ${selector ?? "Pi default"}${runtimeSelector ? " (session override)" : ""}`,
-        `- thinking: provider default (overrides unsupported)`,
+        `- thinking: ${parsed?.thinkingOverride ?? "provider default"}`,
         `- compaction model status: ${readiness}`,
         `- current tokens: ${usage?.tokens ?? "unknown"}`,
         `- matched limit: ${decision.limit ?? "none"}`,

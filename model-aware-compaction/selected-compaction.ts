@@ -1,5 +1,12 @@
 import { contentText, uuidv7 } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, Context, Model, Usage } from "@earendil-works/pi-ai/compat";
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  Model,
+  ThinkingLevel as ReasoningLevel,
+  Usage,
+} from "@earendil-works/pi-ai/compat";
 import {
   convertToLlm,
   serializeConversation,
@@ -11,6 +18,7 @@ import {
   buildTurnPrefixPrompt,
   SUMMARIZATION_SYSTEM_PROMPT,
 } from "./prompts.js";
+import type { ThinkingLevel } from "./helpers.js";
 
 export type RegistryComplete = (
   model: Model<Api>,
@@ -20,6 +28,7 @@ export type RegistryComplete = (
     signal: AbortSignal;
     cacheRetention: "none";
     sessionId: string;
+    reasoning?: ReasoningLevel;
   },
 ) => Promise<AssistantMessage>;
 
@@ -36,6 +45,8 @@ interface SelectedCompactionOptions {
   complete: RegistryComplete;
   signal: AbortSignal;
   customInstructions?: string;
+  /** Explicit `:level` from the selector; omitted (or `off`) sends no reasoning option. */
+  thinkingLevel?: ThinkingLevel;
 }
 
 export function mergePriorModelAwareFiles(
@@ -94,6 +105,7 @@ async function summarize(
   promptText: string,
   maxTokens: number,
   signal: AbortSignal,
+  thinkingLevel: ThinkingLevel | undefined,
 ): Promise<{ text: string; usage: Usage }> {
   const response = await complete(
     model,
@@ -113,7 +125,14 @@ async function summarize(
       ],
     },
     // Pi passes no session ID for compaction, so each summary gets a fresh routing ID.
-    { maxTokens, signal, cacheRetention: "none", sessionId: uuidv7() },
+    {
+      maxTokens,
+      signal,
+      cacheRetention: "none",
+      sessionId: uuidv7(),
+      // pi-ai has no "off" level: omitting `reasoning` is off / provider default.
+      ...(thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
+    },
   );
   if (signal.aborted) throw new Error("Compaction cancelled");
   if (response.stopReason === "error")
@@ -133,6 +152,7 @@ export async function runSelectedModelCompaction({
   complete,
   signal,
   customInstructions,
+  thinkingLevel,
 }: SelectedCompactionOptions) {
   const historyMaxTokens = Math.min(
     Math.floor(preparation.settings.reserveTokens * 0.8),
@@ -158,6 +178,7 @@ export async function runSelectedModelCompaction({
             ),
             historyMaxTokens,
             signal,
+            thinkingLevel,
           )
         : undefined;
     const prefix = await summarize(
@@ -166,6 +187,7 @@ export async function runSelectedModelCompaction({
       buildTurnPrefixPrompt(serializeConversation(convertToLlm(preparation.turnPrefixMessages))),
       prefixMaxTokens,
       signal,
+      thinkingLevel,
     );
     summary = `${history?.text ?? "No prior history."}\n\n---\n\n**Turn Context (split turn):**\n\n${prefix.text}`;
     usage = history
@@ -203,6 +225,7 @@ export async function runSelectedModelCompaction({
       ),
       historyMaxTokens,
       signal,
+      thinkingLevel,
     );
     summary = history.text;
     usage = history.usage;
