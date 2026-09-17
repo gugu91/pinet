@@ -9,6 +9,34 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.21] - 2026-09-17
+
+Pinet v0.2.21 gives `@pinet/model-aware-compaction` Pi's own `/model` picker and lets a compaction selector request a thinking level.
+
+### Version verification
+
+- `pi-extensions` — `0.2.21` (private repo package)
+- `@pinet/transport-core` — `0.2.21`
+- `@pinet/broker-core` — `0.2.21`
+- `@pinet/pinet-core` — `0.2.21`
+- `@pinet/imessage-bridge` — `0.2.21`
+- `@pinet/slack-bridge` — `0.2.21`
+- `@pinet/model-aware-compaction` — `0.2.21`
+- `@pinet/agent-goal` — `0.2.21`
+
+### Release highlights
+
+- `/model-aware-compaction-model` now hosts Pi's `ModelSelectorComponent`, so it behaves exactly like `/model`: type-to-filter, the session shortlist by default, `Tab` to widen to all authenticated models, `Esc` to keep the current selection. Outside the TUI (RPC hosts) it falls back to a flat select list instead of silently doing nothing.
+- The `<provider/model>` argument accepts the exact id of any authenticated model, matching the picker's widened scope; bare ids still resolve only within the shortlist.
+- `compactionModel` selectors may carry a thinking level, `provider/model:low`. A level routes summaries through Pi's own compaction transport (pi-ai `completeSimple` with the registry's credentials), which translates it into each provider's thinking request; the level is clamped to what the model supports and `/model-aware-compaction-status` shows the effective value. Selectors without a level are unchanged. Gemini counts thinking against the summary output cap, so prefer `:low` there.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1055](https://github.com/gugu91/pinet/pull/1055) — host Pi's `/model` picker; honour selector thinking level
+
+See the [full change set since v0.2.20](https://github.com/gugu91/pinet/compare/v0.2.20...v0.2.21).
+
 ## [0.2.20] - 2026-09-17
 
 Pinet v0.2.20 makes the `@pinet/model-aware-compaction` session picker quieter and easier to drive.
