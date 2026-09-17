@@ -92,8 +92,9 @@ After each `agent_settled`, proactive mode reads `ctx.getContextUsage()` and the
 ## Status and session picker
 
 - `/model-aware-compaction-status` reports the active model, selector, provider-default thinking policy, credential readiness, usage, matched threshold, config source, and per-rule overrides.
-- `/model-aware-compaction-model` selects a session-only override. It uses `ctx.scopedModels` when the session has a model scope and otherwise uses authenticated available models. It does not edit project or user settings.
-- A compact footer status shows the current selector when configured.
+- `/model-aware-compaction-model` selects a session-only override and does not edit project or user settings. It offers the same shortlist `/model` uses: `ctx.scopedModels` (your `--models`/`enabledModels` scope) when the session is scoped, and every authenticated model otherwise, so the picker can never widen the model surface past `/model`. Entries show a pinned thinking level and mark the current selection.
+- `/model-aware-compaction-model <provider/model>` sets the session override without opening the picker. A bare model id is accepted when it is unambiguous in the shortlist, `default` (or `reset`) restores the configured selector, and anything outside the shortlist is rejected with the reason.
+- The extension deliberately claims no persistent footer status entry. The selector is reported on demand by `/model-aware-compaction-status` instead of occupying the status bar for every turn.
 
 The commands add no LLM tool schema or always-present prompt content.
 

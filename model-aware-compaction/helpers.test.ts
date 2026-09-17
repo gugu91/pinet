@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   compactionInputError,
+  compactionModelChoices,
   decideCompaction,
   limitForModel,
   matchesModel,
   modelKey,
   parseCompactionSelector,
+  resolveCompactionModelArgument,
   selectorForModel,
 } from "./helpers.js";
 
@@ -134,5 +136,69 @@ describe("compaction decisions", () => {
     expect(
       decideCompaction({ ...base, tokens: 120_000, triggeredModelKey: "openai/gpt-5-mini" }),
     ).toMatchObject({ shouldCompact: false, reason: "already-triggered" });
+  });
+});
+
+describe("session model picker", () => {
+  const scopedModels = [
+    { model: { provider: "anthropic", id: "claude-haiku-4-5" } },
+    { model: { provider: "openai-codex", id: "gpt-5.6-luna" }, thinkingLevel: "low" as const },
+  ];
+  const availableModels = [
+    { provider: "anthropic", id: "claude-haiku-4-5" },
+    { provider: "openai-codex", id: "gpt-5.6-luna" },
+    { provider: "openai", id: "gpt-5-mini" },
+  ];
+
+  it("offers only the session shortlist and annotates the active selector", () => {
+    const choices = compactionModelChoices({
+      scopedModels,
+      availableModels,
+      configuredSelector: "anthropic/claude-haiku-4-5",
+      activeSelector: "anthropic/claude-haiku-4-5",
+    });
+    expect(choices).toEqual([
+      { label: "Use configured selector (anthropic/claude-haiku-4-5)", selector: undefined },
+      { label: "anthropic/claude-haiku-4-5 (current)", selector: "anthropic/claude-haiku-4-5" },
+      { label: "openai-codex/gpt-5.6-luna (thinking: low)", selector: "openai-codex/gpt-5.6-luna" },
+    ]);
+  });
+
+  it("offers every authenticated model when the session is unscoped", () => {
+    const choices = compactionModelChoices({ scopedModels: [], availableModels });
+    expect(choices.map((choice) => choice.selector)).toEqual([
+      undefined,
+      "anthropic/claude-haiku-4-5",
+      "openai-codex/gpt-5.6-luna",
+      "openai/gpt-5-mini",
+    ]);
+    expect(choices[0].label).toBe("Use configured selector (Pi default)");
+  });
+
+  it("resolves an argument only inside the shortlist", () => {
+    const choices = compactionModelChoices({ scopedModels, availableModels });
+    expect(resolveCompactionModelArgument("openai-codex/gpt-5.6-luna", choices)).toEqual({
+      selector: "openai-codex/gpt-5.6-luna",
+    });
+    expect(resolveCompactionModelArgument("claude-haiku-4-5", choices)).toEqual({
+      selector: "anthropic/claude-haiku-4-5",
+    });
+    expect(resolveCompactionModelArgument("default", choices)).toEqual({ selector: undefined });
+    expect(resolveCompactionModelArgument("openai/gpt-5-mini", choices)).toMatchObject({
+      error: expect.stringContaining("not in this session's model shortlist"),
+    });
+  });
+
+  it("rejects an ambiguous bare model id instead of guessing a provider", () => {
+    const choices = compactionModelChoices({
+      scopedModels: [],
+      availableModels: [
+        { provider: "anthropic", id: "claude-haiku-4-5" },
+        { provider: "github-copilot", id: "claude-haiku-4-5" },
+      ],
+    });
+    expect(resolveCompactionModelArgument("claude-haiku-4-5", choices)).toMatchObject({
+      error: expect.stringContaining("use the full provider/model id"),
+    });
   });
 });
