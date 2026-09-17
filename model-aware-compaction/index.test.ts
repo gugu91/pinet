@@ -51,7 +51,11 @@ function context(tokens: number, compact = vi.fn()): ExtensionContext {
   return {
     cwd: process.cwd(),
     hasUI: false,
-    ui: { notify: vi.fn(), setStatus: vi.fn() } as unknown as ExtensionContext["ui"],
+    ui: {
+      notify: vi.fn(),
+      setStatus: vi.fn(),
+      select: vi.fn(),
+    } as unknown as ExtensionContext["ui"],
     sessionManager: {
       getEntries: () => [],
       getBranch: () => [],
@@ -211,6 +215,80 @@ describe("extension wiring", () => {
       emit("model_select", ctx);
       emit("agent_settled", ctx);
       expect(compact).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("applies a shortlist model passed straight to the command and rejects one outside it", async () => {
+    const { commands } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { enabled: true } }),
+    );
+    const modelShape = {
+      api: "openai-completions",
+      baseUrl: "https://example.test",
+      reasoning: true,
+      contextWindow: 20_000,
+      maxTokens: 2_000,
+    };
+    const scoped = { ...modelShape, provider: "anthropic", id: "claude-haiku-4-5" };
+    const offScope = { ...modelShape, provider: "openai", id: "gpt-5-mini" };
+    const ctx = {
+      ...context(1_000),
+      cwd: temp,
+      hasUI: true,
+      scopedModels: [{ model: scoped }],
+      modelRegistry: {
+        find: () => undefined,
+        getAvailable: () => [scoped, offScope],
+        getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "secret" }),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    try {
+      const command = commands.get("model-aware-compaction-model");
+      await command?.handler("anthropic/claude-haiku-4-5", ctx);
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Compaction model: anthropic/claude-haiku-4-5",
+        "info",
+      );
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+
+      await command?.handler("openai/gpt-5-mini", ctx);
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("not in this session's model shortlist"),
+        "error",
+      );
+
+      await command?.handler("default", ctx);
+      expect(ctx.ui.notify).toHaveBeenCalledWith("Using Pi's default compaction model", "info");
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("never writes a footer status entry for the configured selector", () => {
+    const { emit } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": {
+          enabled: true,
+          compactionModel: "openai/gpt-5-mini",
+        },
+      }),
+    );
+    try {
+      const ctx = { ...context(20_000), cwd: temp, hasUI: true };
+      emit("session_start", ctx);
+      emit("model_select", ctx);
+      expect(ctx.ui.setStatus).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }

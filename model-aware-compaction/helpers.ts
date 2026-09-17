@@ -79,6 +79,70 @@ export function selectorForModel(
   return (key ? ruleForModel(rules, key)?.compactionModel : undefined) ?? globalSelector;
 }
 
+export const USE_CONFIGURED_SELECTOR = "Use configured selector";
+
+/**
+ * Build the session picker entries from the same shortlist `/model` offers.
+ *
+ * `scopedModels` is Pi's resolved `--models` / `enabledModels` scope. When the
+ * session is scoped we stay inside it, so the compaction picker can never widen
+ * the model surface past what `/model` itself would show. An unscoped session
+ * has no shortlist, so every authenticated model is offered, exactly like
+ * `/model`.
+ */
+export function compactionModelChoices(input: {
+  scopedModels: ReadonlyArray<{ model: ModelIdentity; thinkingLevel?: ThinkingLevel }>;
+  availableModels: ReadonlyArray<ModelIdentity>;
+  configuredSelector?: string;
+  activeSelector?: string;
+}): { label: string; selector: string | undefined }[] {
+  const shortlist =
+    input.scopedModels.length > 0
+      ? input.scopedModels
+      : input.availableModels.map((model) => ({ model, thinkingLevel: undefined }));
+
+  const configuredLabel = input.configuredSelector
+    ? `${USE_CONFIGURED_SELECTOR} (${input.configuredSelector})`
+    : `${USE_CONFIGURED_SELECTOR} (Pi default)`;
+
+  return [
+    { label: configuredLabel, selector: undefined },
+    ...shortlist.map((entry) => {
+      const selector = `${entry.model.provider}/${entry.model.id}`;
+      const notes = [
+        entry.thinkingLevel ? `thinking: ${entry.thinkingLevel}` : undefined,
+        selector === input.activeSelector ? "current" : undefined,
+      ].filter((note) => note !== undefined);
+      return { label: notes.length > 0 ? `${selector} (${notes.join(", ")})` : selector, selector };
+    }),
+  ];
+}
+
+/**
+ * Resolve a `/model-aware-compaction-model <argument>` value against the same
+ * shortlist. `default` restores the configured selector.
+ */
+export function resolveCompactionModelArgument(
+  argument: string,
+  choices: ReadonlyArray<{ selector: string | undefined }>,
+): { selector: string | undefined } | { error: string } {
+  const trimmed = argument.trim();
+  if (trimmed === "default" || trimmed === "reset") return { selector: undefined };
+
+  const selectors = choices
+    .map((choice) => choice.selector)
+    .filter((selector) => selector !== undefined);
+  if (selectors.includes(trimmed)) return { selector: trimmed };
+
+  const matches = selectors.filter((selector) => selector.split("/")[1] === trimmed);
+  if (matches.length === 1) return { selector: matches[0] };
+  if (matches.length > 1)
+    return { error: `"${trimmed}" matches ${matches.join(", ")}; use the full provider/model id` };
+  return {
+    error: `"${trimmed}" is not in this session's model shortlist; run /model-aware-compaction-model without an argument to pick one`,
+  };
+}
+
 export function parseCompactionSelector(
   value: string,
   exactModelExists: (provider: string, modelId: string) => boolean = () => false,

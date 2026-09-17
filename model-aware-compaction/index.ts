@@ -9,9 +9,11 @@ import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
 import { loadConfig } from "./config.js";
 import {
   compactionInputError,
+  compactionModelChoices,
   decideCompaction,
   modelKey,
   parseCompactionSelector,
+  resolveCompactionModelArgument,
   selectorForModel,
   type ModelIdentity,
   type ThinkingLevel,
@@ -69,7 +71,6 @@ interface CompatibleAPI extends ExtensionAPI {
 }
 
 const LOG_PREFIX = "[model-aware-compaction]";
-const STATUS_ID = "model-aware-compaction";
 
 export default function modelAwareCompaction(pi: ExtensionAPI) {
   const api = pi as CompatibleAPI;
@@ -82,22 +83,12 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     triggeredModelKey = null;
   };
 
-  pi.on("session_start", (_event, rawCtx) => {
+  pi.on("session_start", () => {
     rearm();
     runtimeSelector = undefined;
-    const ctx = rawCtx as CompatibleContext;
-    const config = loadConfig(ctx.cwd);
-    const selector = selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
-    if (ctx.hasUI) ctx.ui.setStatus(STATUS_ID, selector ? `compact: ${selector}` : undefined);
   });
-  pi.on("model_select", (_event, rawCtx) => {
+  pi.on("model_select", () => {
     rearm();
-    const ctx = rawCtx as CompatibleContext;
-    const config = loadConfig(ctx.cwd);
-    const selector =
-      runtimeSelector ??
-      selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
-    if (ctx.hasUI) ctx.ui.setStatus(STATUS_ID, selector ? `compact: ${selector}` : undefined);
   });
 
   pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, rawCtx) => {
@@ -242,30 +233,47 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("model-aware-compaction-model", {
-    description: "Choose a compaction model for this session",
-    handler: async (_args, rawCtx) => {
+    description: "Choose a compaction model for this session (optional provider/model argument)",
+    handler: async (args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
-      if (!ctx.hasUI) return;
-      const models =
-        ctx.scopedModels && ctx.scopedModels.length > 0
-          ? ctx.scopedModels
-          : ctx.modelRegistry.getAvailable().map((model) => ({ model }));
-      const labels = models.map((entry) => `${entry.model.provider}/${entry.model.id}`);
-      const choice = await ctx.ui.select("Compaction model (session only)", [
-        "Use configured selector",
-        ...labels,
-      ]);
-      if (!choice) return;
-      runtimeSelector = choice === "Use configured selector" ? undefined : choice;
       const config = loadConfig(ctx.cwd);
-      const selected =
-        runtimeSelector ??
-        selectorForModel(config.rules, modelKey(ctx.model), config.compactionModel);
-      ctx.ui.setStatus(STATUS_ID, selected ? `compact: ${selected}` : undefined);
-      ctx.ui.notify(
-        selected ? `Compaction model: ${selected}` : "Using Pi's default compaction model",
-        "info",
+      const configuredSelector = selectorForModel(
+        config.rules,
+        modelKey(ctx.model),
+        config.compactionModel,
       );
+      const choices = compactionModelChoices({
+        scopedModels: ctx.scopedModels ?? [],
+        availableModels: ctx.modelRegistry.getAvailable(),
+        configuredSelector,
+        activeSelector: runtimeSelector ?? configuredSelector,
+      });
+
+      const argument = typeof args === "string" ? args.trim() : "";
+      if (argument) {
+        const resolved = resolveCompactionModelArgument(argument, choices);
+        if ("error" in resolved) {
+          if (ctx.hasUI) ctx.ui.notify(resolved.error, "error");
+          else console.error(`${LOG_PREFIX} ${resolved.error}`);
+          return;
+        }
+        runtimeSelector = resolved.selector;
+      } else {
+        if (!ctx.hasUI) return;
+        const choice = await ctx.ui.select(
+          "Compaction model (session only)",
+          choices.map((entry) => entry.label),
+        );
+        if (!choice) return;
+        runtimeSelector = choices.find((entry) => entry.label === choice)?.selector;
+      }
+
+      const selected = runtimeSelector ?? configuredSelector;
+      const message = selected
+        ? `Compaction model: ${selected}`
+        : "Using Pi's default compaction model";
+      if (ctx.hasUI) ctx.ui.notify(message, "info");
+      else console.error(`${LOG_PREFIX} ${message}`);
     },
   });
 
