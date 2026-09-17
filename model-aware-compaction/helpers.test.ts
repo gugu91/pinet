@@ -241,6 +241,7 @@ describe("effective thinking level", () => {
 
   it("describes configured versus effective thinking for status", () => {
     expect(describeThinking(model(true), undefined)).toBe("provider default");
+    expect(describeThinking(model(true), "off")).toBe("provider default");
     expect(describeThinking(model(true), "low")).toBe("low");
     expect(describeThinking(model(false), "high")).toBe("high (effective: off)");
     expect(describeThinking(undefined, "high")).toBe("high");

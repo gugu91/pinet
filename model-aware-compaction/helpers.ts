@@ -268,7 +268,8 @@ export function describeThinking(
   model: Model<Api> | undefined,
   configured: ThinkingLevel | undefined,
 ): string {
-  if (!configured) return "provider default";
+  // `:off` sends no reasoning option, which is the provider default, not a forced off.
+  if (!configured || configured === "off") return "provider default";
   const effective = model ? (effectiveThinkingLevel(model, configured) ?? "off") : undefined;
   if (effective === undefined) return configured;
   return effective === configured ? configured : `${configured} (effective: ${effective})`;
