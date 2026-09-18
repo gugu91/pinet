@@ -31,6 +31,14 @@ import {
   type ResolvedTaskAssignment,
 } from "./task-assignments.js";
 import type { ActivityLogEntry, ActivityLogTone } from "./activity-log.js";
+import {
+  buildGithubEventRelayEvent,
+  buildGithubEventRelayPayload,
+  mergeGithubEventRelayMetadata,
+  resolveSafeGithubEventRelayTarget,
+  selectPinetLanesForGithubEventRelay,
+  type GithubEventRelayPayload,
+} from "./github-event-relay.js";
 import { probeGitBranch } from "./git-metadata.js";
 import type { BrokerControlPlaneDashboardSnapshot } from "./broker/control-plane-dashboard.js";
 import type { BrokerMaintenanceResult } from "./broker/maintenance.js";
@@ -267,6 +275,11 @@ export interface RalphLoopDeps {
   sendMaintenanceMessage: (targetAgentId: string, body: string) => void;
   trySendFollowUp: (body: string, onDelivered: () => void) => void;
   logActivity: (entry: ActivityLogEntry) => void;
+  emitGithubEventRelay?: (payload: GithubEventRelayPayload) => Promise<void> | void;
+  resolveTrackedTaskAssignments?: (
+    assignments: TaskAssignmentInfo[],
+    cwd: string,
+  ) => Promise<ResolvedTaskAssignment[]>;
   formatTrackedAgent: (agentId: string) => string;
   summarizeTrackedAssignmentStatus: (
     status: string,
@@ -290,6 +303,80 @@ export interface RalphLoopDeps {
   setLastHomeTabSnapshot: (snapshot: BrokerControlPlaneDashboardSnapshot) => void;
   getLastHomeTabError: () => string | null;
   setLastHomeTabError: (err: string | null) => void;
+}
+
+async function processGithubEventRelayForAssignment(
+  db: BrokerDB,
+  deps: RalphLoopDeps,
+  assignment: ResolvedTaskAssignment,
+  occurredAt: string,
+): Promise<void> {
+  const event = buildGithubEventRelayEvent(assignment, occurredAt);
+  if (!event) return;
+
+  const lanes = db.listPinetLanes({ includeDone: true });
+  const metadataLanes = selectPinetLanesForGithubEventRelay(lanes, event);
+  for (const lane of metadataLanes) {
+    db.upsertPinetLane({
+      laneId: lane.laneId,
+      prNumber: event.prNumber,
+      metadata: mergeGithubEventRelayMetadata(lane.metadata, event),
+    });
+  }
+
+  const target = resolveSafeGithubEventRelayTarget(
+    (threadId) => db.getThread(threadId),
+    event,
+    lanes,
+    assignment.threadId,
+  );
+
+  if (!target) {
+    deps.logActivity({
+      kind: "task_progress",
+      level: "verbose",
+      title: "GitHub relay skipped",
+      summary: `No safe Slack coordination thread for issue #${event.issueNumber} / PR #${event.prNumber}.`,
+      fields: [
+        { label: "Repo", value: event.repoKey },
+        { label: "Status", value: event.status },
+      ],
+      tone: "info",
+    });
+    return;
+  }
+
+  const payload = buildGithubEventRelayPayload(event, target);
+  if (!deps.emitGithubEventRelay) {
+    deps.logActivity({
+      kind: "task_progress",
+      level: "verbose",
+      title: "GitHub relay skipped",
+      summary: "No GitHub relay delivery seam is configured.",
+      fields: [
+        { label: "Thread", value: target.threadId },
+        { label: "Status", value: event.status },
+      ],
+      tone: "info",
+    });
+    return;
+  }
+
+  try {
+    await deps.emitGithubEventRelay(payload);
+  } catch (error) {
+    deps.logActivity({
+      kind: "task_progress",
+      level: "verbose",
+      title: "GitHub relay failed",
+      summary: error instanceof Error ? error.message : String(error),
+      fields: [
+        { label: "Thread", value: target.threadId },
+        { label: "Status", value: event.status },
+      ],
+      tone: "warning",
+    });
+  }
 }
 
 // ─── Core loop ───────────────────────────────────────────
@@ -416,10 +503,9 @@ export async function runRalphLoopCycle(
       state.pendingTaskAssignmentReport = null;
       state.taskAssignmentReportSignature = "";
     } else {
-      const resolvedAssignments = await resolveTaskAssignments(
-        trackedAssignments as TaskAssignmentInfo[],
-        process.cwd(),
-      );
+      const resolvedAssignments = await (
+        deps.resolveTrackedTaskAssignments ?? resolveTaskAssignments
+      )(trackedAssignments as TaskAssignmentInfo[], process.cwd());
       const changedAssignments = resolvedAssignments.filter(hasTaskAssignmentStatusChange);
       taskProgressChanged = changedAssignments.length > 0;
       projectedAssignments = resolvedAssignments.map((assignment) => {
@@ -432,6 +518,10 @@ export async function runRalphLoopCycle(
         }
         return { ...assignment, status: assignment.nextStatus, prNumber: assignment.nextPrNumber };
       });
+
+      for (const assignment of changedAssignments) {
+        await processGithubEventRelayForAssignment(db, deps, assignment, cycleStartedAt);
+      }
 
       if (changedAssignments.length > 0) {
         const openedCount = changedAssignments.filter((a) => a.nextStatus === "pr_open").length;
