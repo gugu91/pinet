@@ -436,8 +436,11 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
               ? "unavailable"
               : !auth?.ok
                 ? `credentials unavailable: ${auth?.error}`
-                : usage?.tokens != null && usage.tokens >= model.contextWindow
-                  ? `ready, but window ${model.contextWindow} is below current context`
+                : // Heuristic: the serialized history differs from current usage (kept
+                  // messages are dropped; prompts and reserve are added). The exact
+                  // per-entry check runs at compaction time.
+                  usage?.tokens != null && usage.tokens >= model.contextWindow
+                  ? `ready, but window ${model.contextWindow} is below current context (heuristic)`
                   : "ready";
           return `  - ${selector}: ${readiness}; thinking: ${describeThinking(model, parsed?.thinkingOverride)}`;
         }),

@@ -1115,6 +1115,50 @@ describe("fallback chain", () => {
     }
   });
 
+  it("fails closed on a malformed rule chain instead of skipping to its fallback or the global chain", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { emitAsync } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": {
+          compactionModel: "test/global",
+          rules: [
+            { model: "openai/*", activeContextTokens: 100_000, compactionModel: [42, "test/rule"] },
+          ],
+        },
+      }),
+    );
+    const models = [modelFor("global"), modelFor("rule")];
+    const ctx = {
+      ...context(20_000),
+      cwd: temp,
+      modelRegistry: {
+        find: (_provider: string, id: string) => models.find((model) => model.id === id),
+        getAvailable: () => models,
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true })),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    try {
+      const [hookResult] = await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        ctx,
+      );
+      expect(hookResult).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('invalid compactionModel selector "<invalid 42>"'),
+      );
+    } finally {
+      error.mockRestore();
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("lets a session override replace the whole chain and default restore it", async () => {
     const { compact, commands, ctx, cleanup } = chainHarness(
       ["test/primary", "test/secondary"],
@@ -1149,7 +1193,7 @@ describe("fallback chain", () => {
       expect(content).toContain("  - test/primary: ready; thinking: provider default");
       expect(content).toContain("  - test/missing: unavailable");
       expect(content).toContain(
-        "  - test/small:low: ready, but window 10000 is below current context; thinking: low (effective: off)",
+        "  - test/small:low: ready, but window 10000 is below current context (heuristic); thinking: low (effective: off)",
       );
     } finally {
       cleanup();

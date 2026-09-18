@@ -78,7 +78,7 @@ Pi's package `exports` map publishes only its root entry, so the prompt constant
 
 Remaining deviations from Pi's own compaction, all deliberate:
 
-- **No retry wrapper.** Pi wraps each summarization in `retryAssistantCall` with the user's retry settings, which extensions cannot read. A failed request cancels the compaction instead of being retried.
+- **No retry wrapper.** Pi wraps each summarization in `retryAssistantCall` with the user's retry settings, which extensions cannot read. A failed request is never retried on the same model; it advances to the next configured chain entry, and only exhausting the chain cancels the compaction.
 - **Empty sections are rejected.** Pi persists whatever text a provider returns; this extension fails closed rather than checkpointing an empty summary.
 - **Split turn with no new history.** Pi writes the literal `No prior history.` even when a previous summary exists; this extension re-summarizes that previous checkpoint through the update prompt so an earlier checkpoint is never dropped.
 - **File metadata.** Pi's `computeFileLists` and `formatFileOperations` are not exported, so they are reimplemented with identical sorting and `<read-files>` / `<modified-files>` output, plus an extension-owned `details` payload that carries file lists across repeated extension compactions.
@@ -95,7 +95,7 @@ After each `agent_settled`, proactive mode reads `ctx.getContextUsage()` and the
 
 ## Status and session picker
 
-- `/model-aware-compaction-status` reports the session switch, active model, the compaction chain with each entry's readiness (credentials, availability, whether its window is above the current context) and effective thinking level, usage, matched threshold, config source, and per-rule chains.
+- `/model-aware-compaction-status` reports the session switch, active model, the compaction chain with each entry's readiness (credentials, availability, and a heuristic window check comparing the model's context window with the session's current token count) and effective thinking level, usage, matched threshold, config source, and per-rule chains.
 - `/model-aware-compaction-off` disables the extension for the current session — no proactive triggering and no compaction-model routing, so Pi's stock compaction on the active model applies — and `/model-aware-compaction-on` re-enables it. Session-only; nothing is written to settings. Persistent off is `enabled: false` with no `compactionModel`.
 - `/model-aware-compaction-model` selects a session-only override and does not edit project or user settings. In the TUI it opens Pi's own `/model` picker (`ModelSelectorComponent`, a package-root export) with the same `--models`/`enabledModels` shortlist, type-to-filter search, `Tab` to toggle between the scoped list and all authenticated models, and `Esc` to keep the current selection. The active compaction model is pre-highlighted when it is in the current scope. Outside the TUI (RPC hosts), where custom components are unavailable, the command falls back to a flat select list. The picker reads the catalog through the extension `modelRegistry` facade; only package-root exports are used.
 - `/model-aware-compaction-model <provider/model>` sets the session override without opening the picker. The argument accepts the same surface as the picker: an exact `provider/model` id of any authenticated model, or a bare model id when it is unambiguous within the shortlist. `default` (or `reset`) clears a session override and restores the configured chain; anything else is rejected with the reason.

@@ -12,13 +12,17 @@ const DEFAULT_RULES: CompactionRule[] = [
 /** A selector or an ordered fallback chain of up to MAX_CHAIN_LENGTH selectors. */
 export type CompactionModelSetting = string | string[];
 
+/**
+ * Raw settings.json shape. `compactionModel` is typed as any JSON value because a
+ * malformed value must be seen at this boundary and turned into a fail-closed entry.
+ */
 export interface ModelAwareCompactionConfig {
   enabled?: boolean;
-  compactionModel?: CompactionModelSetting;
+  compactionModel?: CompactionModelSetting | SettingsJsonValue;
   rules?: Array<{
     model?: string;
     activeContextTokens?: number;
-    compactionModel?: CompactionModelSetting;
+    compactionModel?: CompactionModelSetting | SettingsJsonValue;
   }>;
   customInstructions?: string;
   debug?: boolean;
@@ -40,21 +44,33 @@ type SettingsJsonPrimitive = string | number | boolean | null;
 type SettingsJsonValue = SettingsJsonPrimitive | SettingsJsonObject | SettingsJsonValue[];
 type SettingsJsonObject = { [key: string]: SettingsJsonValue };
 
+/** loadConfig runs on every settled turn; each distinct configuration problem is reported once. */
+const reportedDiagnostics = new Set<string>();
+
 /**
- * Normalize a selector or chain: trimmed, non-empty, de-duplicated, first
- * MAX_CHAIN_LENGTH entries. Every entry is user-named, so fallback never routes
- * context anywhere the configuration does not list.
+ * Normalize a selector or chain into the ordered entries the extension will try.
+ *
+ * Every entry is user-named, so fallback never routes context anywhere the
+ * configuration does not list. Malformed values are kept as entries rather than
+ * dropped: a number, object, or boolean becomes a string that cannot parse as a
+ * selector, which makes the compaction fail closed naming it, instead of quietly
+ * skipping to the next entry or to another chain. `undefined`/`null` mean unset.
  */
-function selectorChain(value: CompactionModelSetting | undefined): string[] {
-  const entries = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+function selectorChain(value: SettingsJsonValue | undefined): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const entries = Array.isArray(value) ? value : [value];
   const chain = entries
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim())
+    .map((entry) =>
+      typeof entry === "string" ? entry.trim() : `<invalid ${JSON.stringify(entry)}>`,
+    )
     .filter((entry, index, all) => entry !== "" && all.indexOf(entry) === index);
-  if (chain.length > MAX_CHAIN_LENGTH)
-    console.error(
-      `[${SETTINGS_KEY}] compactionModel lists ${chain.length} selectors; only the first ${MAX_CHAIN_LENGTH} are used`,
-    );
+  if (chain.length > MAX_CHAIN_LENGTH) {
+    const message = `compactionModel lists ${chain.length} selectors; only the first ${MAX_CHAIN_LENGTH} are used`;
+    if (!reportedDiagnostics.has(message)) {
+      reportedDiagnostics.add(message);
+      console.error(`[${SETTINGS_KEY}] ${message}`);
+    }
+  }
   return chain.slice(0, MAX_CHAIN_LENGTH);
 }
 
@@ -82,13 +98,15 @@ export function resolveConfig(
     ? raw.rules.flatMap((rule) => {
         const model = typeof rule.model === "string" ? rule.model.trim() : "";
         const tokens = rule.activeContextTokens;
+        // A rule chain that is present — even empty or malformed — overrides the
+        // global chain for its models; only an absent key inherits it.
         const compactionModels = selectorChain(rule.compactionModel);
         return model && typeof tokens === "number" && Number.isInteger(tokens) && tokens > 0
           ? [
               {
                 model,
                 activeContextTokens: tokens,
-                ...(compactionModels.length > 0 ? { compactionModels } : {}),
+                ...(compactionModels ? { compactionModels } : {}),
               },
             ]
           : [];
@@ -100,7 +118,7 @@ export function resolveConfig(
       : undefined;
   return {
     enabled: raw?.enabled === true,
-    compactionModels: selectorChain(raw?.compactionModel),
+    compactionModels: selectorChain(raw?.compactionModel) ?? [],
     rules: configured.length > 0 ? configured : DEFAULT_RULES,
     customInstructions,
     debug: raw?.debug === true,

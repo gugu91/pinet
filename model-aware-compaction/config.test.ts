@@ -50,14 +50,44 @@ describe("resolveConfig", () => {
       });
       expect(config.compactionModels).toEqual(["a/one:low", "b/two", "c/three"]);
       expect(error).toHaveBeenCalledWith(expect.stringContaining("only the first 3"));
+      // An explicit empty rule chain is kept: it means Pi default for those models.
       expect(config.rules).toEqual([
         { model: "x/*", activeContextTokens: 1_000, compactionModels: ["r/one", "r/two"] },
-        { model: "y/*", activeContextTokens: 1_000 },
+        { model: "y/*", activeContextTokens: 1_000, compactionModels: [] },
       ]);
       expect(resolveConfig({}).compactionModels).toEqual([]);
+      // The cap warning is reported once, not on every load.
+      resolveConfig({ compactionModel: ["a/one:low", "b/two", "c/three", "d/four"] });
+      expect(error).toHaveBeenCalledTimes(1);
     } finally {
       error.mockRestore();
     }
+  });
+
+  it("keeps malformed chain values as unparseable entries instead of dropping them", () => {
+    type Raw = NonNullable<Parameters<typeof resolveConfig>[0]>["compactionModel"];
+    const raw = (compactionModel: Raw, rule?: Raw) =>
+      resolveConfig({
+        compactionModel,
+        rules: [{ model: "x/*", activeContextTokens: 1_000, compactionModel: rule }],
+      });
+    expect(raw(42).compactionModels).toEqual(["<invalid 42>"]);
+    expect(raw({ provider: "a" }).compactionModels).toEqual(['<invalid {"provider":"a"}>']);
+    // A bad element does not let the chain skip straight to the good one.
+    expect(raw([42, "provider/fallback"]).compactionModels).toEqual([
+      "<invalid 42>",
+      "provider/fallback",
+    ]);
+    // Malformed rule values stay on the rule and do not inherit the global chain.
+    expect(raw("global/model", true).rules[0]).toEqual({
+      model: "x/*",
+      activeContextTokens: 1_000,
+      compactionModels: ["<invalid true>"],
+    });
+    expect(raw("global/model", null).rules[0]).toEqual({
+      model: "x/*",
+      activeContextTokens: 1_000,
+    });
   });
 
   it("gives the project extension object precedence over the global object", () => {

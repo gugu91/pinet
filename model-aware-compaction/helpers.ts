@@ -80,7 +80,11 @@ export function limitForModel(rules: CompactionRule[], key: string): number | nu
   return ruleForModel(rules, key)?.activeContextTokens ?? null;
 }
 
-/** The configured fallback chain for the active model: the matching rule's, else the global one. */
+/**
+ * The configured fallback chain for the active model: the matching rule's when the
+ * rule sets one (an explicit empty chain means "Pi default for these models"), else
+ * the global one.
+ */
 export function chainForModel(
   rules: CompactionRule[],
   key: string | null,
