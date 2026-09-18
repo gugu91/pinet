@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig, resolveConfig } from "./config.js";
 
 describe("resolveConfig", () => {
@@ -28,14 +28,36 @@ describe("resolveConfig", () => {
         { model: "openai/*", activeContextTokens: -1 },
       ],
     });
-    expect(config.compactionModel).toBe("google/gemini-2.5-flash:low");
+    expect(config.compactionModels).toEqual(["google/gemini-2.5-flash:low"]);
     expect(config.rules).toEqual([
       {
         model: "anthropic/*",
         activeContextTokens: 90_000,
-        compactionModel: "anthropic/claude-haiku:off",
+        compactionModels: ["anthropic/claude-haiku:off"],
       },
     ]);
+  });
+
+  it("accepts an ordered fallback chain, trimming, de-duplicating, and capping it", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const config = resolveConfig({
+        compactionModel: [" a/one:low ", "b/two", "", "a/one:low", "c/three", "d/four"],
+        rules: [
+          { model: "x/*", activeContextTokens: 1_000, compactionModel: ["r/one", "r/two"] },
+          { model: "y/*", activeContextTokens: 1_000, compactionModel: [] },
+        ],
+      });
+      expect(config.compactionModels).toEqual(["a/one:low", "b/two", "c/three"]);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("only the first 3"));
+      expect(config.rules).toEqual([
+        { model: "x/*", activeContextTokens: 1_000, compactionModels: ["r/one", "r/two"] },
+        { model: "y/*", activeContextTokens: 1_000 },
+      ]);
+      expect(resolveConfig({}).compactionModels).toEqual([]);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("gives the project extension object precedence over the global object", () => {
@@ -66,7 +88,7 @@ describe("resolveConfig", () => {
       );
       const loaded = loadConfig(root, agentDir);
       expect(loaded.enabled).toBe(false);
-      expect(loaded.compactionModel).toBe("project/model:low");
+      expect(loaded.compactionModels).toEqual(["project/model:low"]);
       expect(loaded.rules).toEqual([{ model: "project/*", activeContextTokens: 20_000 }]);
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -22,7 +22,8 @@ export type ThinkingLevel = ModelThinkingLevel;
 export interface CompactionRule {
   model: string;
   activeContextTokens: number;
-  compactionModel?: string;
+  /** Ordered fallback chain for sessions matching this rule. */
+  compactionModels?: string[];
 }
 
 export interface CompactionSelector {
@@ -79,12 +80,13 @@ export function limitForModel(rules: CompactionRule[], key: string): number | nu
   return ruleForModel(rules, key)?.activeContextTokens ?? null;
 }
 
-export function selectorForModel(
+/** The configured fallback chain for the active model: the matching rule's, else the global one. */
+export function chainForModel(
   rules: CompactionRule[],
   key: string | null,
-  globalSelector?: string,
-): string | undefined {
-  return (key ? ruleForModel(rules, key)?.compactionModel : undefined) ?? globalSelector;
+  globalChain: string[],
+): string[] {
+  return (key ? ruleForModel(rules, key)?.compactionModels : undefined) ?? globalChain;
 }
 
 export const USE_CONFIGURED_SELECTOR = "Use configured selector";

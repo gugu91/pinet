@@ -11,7 +11,7 @@ import {
   modelKey,
   parseCompactionSelector,
   resolveCompactionModelArgument,
-  selectorForModel,
+  chainForModel,
 } from "./helpers.js";
 
 const rules = [
@@ -52,17 +52,18 @@ describe("compaction model selection", () => {
     expect(parseCompactionSelector("missing-provider")).toBeNull();
   });
 
-  it("uses a matching rule selector before the global selector", () => {
+  it("uses a matching rule chain before the global chain", () => {
     expect(
-      selectorForModel(
-        [{ ...rules[0], compactionModel: "anthropic/rule-model:low" }],
+      chainForModel(
+        [{ ...rules[0], compactionModels: ["anthropic/rule-model:low", "b/fallback"] }],
         "openai/gpt-5-mini",
-        "google/global-model",
+        ["google/global-model"],
       ),
-    ).toBe("anthropic/rule-model:low");
-    expect(selectorForModel(rules, "openai/gpt-5-mini", "google/global-model")).toBe(
+    ).toEqual(["anthropic/rule-model:low", "b/fallback"]);
+    expect(chainForModel(rules, "openai/gpt-5-mini", ["google/global-model"])).toEqual([
       "google/global-model",
-    );
+    ]);
+    expect(chainForModel(rules, null, [])).toEqual([]);
   });
 
   it("rejects serialized requests that do not leave the output reserve", () => {

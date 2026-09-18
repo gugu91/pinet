@@ -9,17 +9,27 @@ const DEFAULT_RULES: CompactionRule[] = [
   { model: "anthropic/claude-sonnet-4-6", activeContextTokens: 100_000 },
 ];
 
+/** A selector or an ordered fallback chain of up to MAX_CHAIN_LENGTH selectors. */
+export type CompactionModelSetting = string | string[];
+
 export interface ModelAwareCompactionConfig {
   enabled?: boolean;
-  compactionModel?: string;
-  rules?: Array<{ model?: string; activeContextTokens?: number; compactionModel?: string }>;
+  compactionModel?: CompactionModelSetting;
+  rules?: Array<{
+    model?: string;
+    activeContextTokens?: number;
+    compactionModel?: CompactionModelSetting;
+  }>;
   customInstructions?: string;
   debug?: boolean;
 }
 
+export const MAX_CHAIN_LENGTH = 3;
+
 export interface ResolvedConfig {
   enabled: boolean;
-  compactionModel?: string;
+  /** Ordered fallback chain; empty when no global compaction model is configured. */
+  compactionModels: string[];
   rules: CompactionRule[];
   customInstructions?: string;
   debug: boolean;
@@ -29,6 +39,24 @@ export interface ResolvedConfig {
 type SettingsJsonPrimitive = string | number | boolean | null;
 type SettingsJsonValue = SettingsJsonPrimitive | SettingsJsonObject | SettingsJsonValue[];
 type SettingsJsonObject = { [key: string]: SettingsJsonValue };
+
+/**
+ * Normalize a selector or chain: trimmed, non-empty, de-duplicated, first
+ * MAX_CHAIN_LENGTH entries. Every entry is user-named, so fallback never routes
+ * context anywhere the configuration does not list.
+ */
+function selectorChain(value: CompactionModelSetting | undefined): string[] {
+  const entries = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  const chain = entries
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry, index, all) => entry !== "" && all.indexOf(entry) === index);
+  if (chain.length > MAX_CHAIN_LENGTH)
+    console.error(
+      `[${SETTINGS_KEY}] compactionModel lists ${chain.length} selectors; only the first ${MAX_CHAIN_LENGTH} are used`,
+    );
+  return chain.slice(0, MAX_CHAIN_LENGTH);
+}
 
 function parseSettings(path: string): ModelAwareCompactionConfig | null {
   if (!fs.existsSync(path)) return null;
@@ -54,16 +82,13 @@ export function resolveConfig(
     ? raw.rules.flatMap((rule) => {
         const model = typeof rule.model === "string" ? rule.model.trim() : "";
         const tokens = rule.activeContextTokens;
-        const compactionModel =
-          typeof rule.compactionModel === "string" && rule.compactionModel.trim()
-            ? rule.compactionModel.trim()
-            : undefined;
+        const compactionModels = selectorChain(rule.compactionModel);
         return model && typeof tokens === "number" && Number.isInteger(tokens) && tokens > 0
           ? [
               {
                 model,
                 activeContextTokens: tokens,
-                ...(compactionModel ? { compactionModel } : {}),
+                ...(compactionModels.length > 0 ? { compactionModels } : {}),
               },
             ]
           : [];
@@ -73,13 +98,9 @@ export function resolveConfig(
     typeof raw?.customInstructions === "string" && raw.customInstructions.trim()
       ? raw.customInstructions.trim()
       : undefined;
-  const compactionModel =
-    typeof raw?.compactionModel === "string" && raw.compactionModel.trim()
-      ? raw.compactionModel.trim()
-      : undefined;
   return {
     enabled: raw?.enabled === true,
-    compactionModel,
+    compactionModels: selectorChain(raw?.compactionModel),
     rules: configured.length > 0 ? configured : DEFAULT_RULES,
     customInstructions,
     debug: raw?.debug === true,
