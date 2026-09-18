@@ -185,6 +185,13 @@ export class BrokerSocketServer {
   private readonly meshSecret: string | null;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private assignedPort: number | null = null;
+  /**
+   * Identity (device + inode) of the Unix socket file this server created at
+   * bind time. `stop()` only unlinks the socket path while it still carries
+   * this identity — a successor broker may have already bound a fresh socket
+   * at the same path, and a non-owning shutdown must never sever it (#953).
+   */
+  private boundUnixSocketId: { dev: number; ino: number } | null = null;
   private agentMessageCallback: AgentMessageCallback | null = null;
   private agentStatusChangeCallback: AgentStatusChangeCallback | null = null;
   private outboundMessageAdapters: ReadonlyArray<
@@ -218,11 +225,7 @@ export class BrokerSocketServer {
   }
 
   async start(): Promise<void> {
-    // Clean up stale socket file for Unix mode
     if (this.target.type === "unix") {
-      if (fs.existsSync(this.target.path)) {
-        fs.unlinkSync(this.target.path);
-      }
       fs.mkdirSync(path.dirname(this.target.path), { recursive: true });
     }
 
@@ -234,7 +237,33 @@ export class BrokerSocketServer {
       });
 
       if (this.target.type === "unix") {
-        this.server.listen(this.target.path, () => {
+        const socketPath = this.target.path;
+        // Bind a uniquely named socket, then atomically rename it over the
+        // target path. The takeover swap needs no unlink window, and the
+        // handle only ever remembers the temporary name — so the automatic
+        // unlink Node performs when a server closes targets that (already
+        // renamed-away) name and can never remove a successor's socket
+        // bound at the target path after ownership moved on (#953). The
+        // suffix is kept to 9 chars: sun_path allows ~104 bytes on macOS,
+        // and a hard-crashed broker leaves at worst one inert temp file
+        // beside its stale socket path.
+        const tempPath = `${socketPath}.${crypto.randomBytes(4).toString("hex")}`;
+        this.server.listen(tempPath, () => {
+          try {
+            const stat = fs.statSync(tempPath);
+            fs.renameSync(tempPath, socketPath);
+            this.boundUnixSocketId = { dev: stat.dev, ino: stat.ino };
+          } catch (err) {
+            this.server?.close();
+            this.server = null;
+            try {
+              fs.unlinkSync(tempPath);
+            } catch {
+              /* already gone */
+            }
+            reject(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
           this.startPruning();
           resolve();
         });
@@ -271,16 +300,31 @@ export class BrokerSocketServer {
         return;
       }
       this.server.close(() => {
-        // Clean up socket file for Unix mode
-        if (this.target.type === "unix") {
+        // Clean up the socket file for Unix mode — but only while the path
+        // still holds the socket this server bound. After a takeover the
+        // path belongs to the live successor, and unlinking it would leave
+        // that broker serving an unreachable, unnamed inode.
+        //
+        // The stat + unlink pair is not atomic (POSIX offers no unlink-by-
+        // inode), but a successor only binds this path while holding the
+        // leader lock, and the old owner releases that lock strictly after
+        // stop() resolves — so a takeover cannot slip into the window
+        // unless the lock protocol is already broken. Same accepted
+        // residual-window pattern as replaceBrokerOwner's SIGTERM fence.
+        if (this.target.type === "unix" && this.boundUnixSocketId) {
           try {
-            if (fs.existsSync(this.target.path)) {
+            const stat = fs.statSync(this.target.path);
+            if (
+              stat.dev === this.boundUnixSocketId.dev &&
+              stat.ino === this.boundUnixSocketId.ino
+            ) {
               fs.unlinkSync(this.target.path);
             }
           } catch {
-            // best effort
+            // already gone — nothing to clean up
           }
         }
+        this.boundUnixSocketId = null;
         this.server = null;
         this.assignedPort = null;
         resolve();
