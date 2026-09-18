@@ -425,9 +425,11 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         : chainForModel(config.rules, key, config.compactionModels);
       const entries = await Promise.all(
         chain.map(async (selector) => {
-          const parsed = parseCompactionSelector(selector, (provider, modelId) =>
-            Boolean(ctx.modelRegistry.find(provider, modelId)),
-          );
+          const parsed = isInvalidChainEntry(selector)
+            ? null
+            : parseCompactionSelector(selector, (provider, modelId) =>
+                Boolean(ctx.modelRegistry.find(provider, modelId)),
+              );
           const model = parsed
             ? ctx.modelRegistry.find(parsed.provider, parsed.modelId)
             : undefined;

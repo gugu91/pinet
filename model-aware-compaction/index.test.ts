@@ -1159,6 +1159,11 @@ describe("fallback chain", () => {
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining('invalid compactionModel selector "<invalid {"test/rule":1}>"'),
       );
+      const { commands, api } = harness();
+      await commands.get("model-aware-compaction-status")?.handler("", ctx);
+      expect(vi.mocked(api.sendMessage).mock.calls[0][0].content).toContain(
+        '  - <invalid {"test/rule":1}>: invalid selector',
+      );
     } finally {
       error.mockRestore();
       fs.rmSync(temp, { recursive: true, force: true });
