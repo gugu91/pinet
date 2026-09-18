@@ -275,13 +275,16 @@ describe("extension wiring", () => {
       const command = commands.get("model-aware-compaction-model");
       await command?.handler("anthropic/claude-haiku-4-5", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
-        "Compaction model: anthropic/claude-haiku-4-5",
+        "Compaction model: anthropic/claude-haiku-4-5 (session override, replaces the configured chain)",
         "info",
       );
       expect(ctx.ui.select).not.toHaveBeenCalled();
 
       await command?.handler("openai/gpt-5-mini", ctx);
-      expect(ctx.ui.notify).toHaveBeenCalledWith("Compaction model: openai/gpt-5-mini", "info");
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Compaction model: openai/gpt-5-mini (session override, replaces the configured chain)",
+        "info",
+      );
 
       await command?.handler("gpt-5-mini", ctx);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -346,7 +349,7 @@ describe("extension wiring", () => {
       expect(passedScope).toEqual(scopedModels); // exact /model shortlist
       expect(runtime?.getAvailableSnapshot()).toEqual([haiku, sonnet]);
       expect(ctx.ui.notify).toHaveBeenCalledWith(
-        "Compaction model: anthropic/claude-sonnet-4-5",
+        "Compaction model: anthropic/claude-sonnet-4-5 (session override, replaces the configured chain)",
         "info",
       );
     } finally {
@@ -390,7 +393,7 @@ describe("extension wiring", () => {
         expect.arrayContaining(["anthropic/claude-haiku-4-5"]),
       );
       expect(ctx.ui.notify).toHaveBeenCalledWith(
-        "Compaction model: anthropic/claude-haiku-4-5",
+        "Compaction model: anthropic/claude-haiku-4-5 (session override, replaces the configured chain)",
         "info",
       );
     } finally {
@@ -473,12 +476,12 @@ describe("extension wiring", () => {
       await commands.get("model-aware-compaction-status")?.handler("", ctx);
       expect(api.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
-          content: expect.stringContaining("thinking: provider default"),
+          content: expect.stringContaining("ready; thinking: provider default"),
         }),
         { triggerTurn: false },
       );
       expect(api.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ content: expect.stringContaining("status: ready") }),
+        expect.objectContaining({ content: expect.stringContaining(": ready") }),
         { triggerTurn: false },
       );
     } finally {
@@ -540,11 +543,13 @@ describe("extension wiring", () => {
 
       await commands.get("model-aware-compaction-status")?.handler("", ctx);
       expect(api.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ content: expect.stringContaining("- thinking: low") }),
+        expect.objectContaining({
+          content: expect.stringContaining("anthropic/summary-model:low: ready; thinking: low"),
+        }),
         { triggerTurn: false },
       );
       expect(api.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ content: expect.stringContaining("status: ready") }),
+        expect.objectContaining({ content: expect.stringContaining(": ready") }),
         { triggerTurn: false },
       );
 
@@ -963,6 +968,317 @@ describe("extension wiring", () => {
       expect(oversizedPriorSummary).toEqual({ cancel: true });
       expect(cancelled).toEqual({ cancel: true });
       expect(selectedCompact).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("fallback chain", () => {
+  const modelFor = (id: string, contextWindow = 200_000) => ({
+    api: "anthropic-messages",
+    provider: "test",
+    id,
+    baseUrl: "https://example.test",
+    reasoning: false,
+    contextWindow,
+    maxTokens: 8_192,
+  });
+  const preparation = {
+    firstKeptEntryId: "kept",
+    messagesToSummarize: [{ role: "user", content: "history" }],
+    turnPrefixMessages: [],
+    isSplitTurn: false,
+    tokensBefore: 20_000,
+    fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+    settings: { enabled: true, reserveTokens: 4_096, keepRecentTokens: 1_000 },
+  };
+  const result = { summary: "summary", firstKeptEntryId: "kept", tokensBefore: 20_000 };
+
+  function chainHarness(chain: string[], models: ReturnType<typeof modelFor>[]) {
+    const { emitAsync, commands, api } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { compactionModel: chain } }),
+    );
+    const modelRegistry = {
+      find: (_provider: string, id: string) => models.find((model) => model.id === id),
+      getAvailable: () => models,
+      getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
+      complete: vi.fn(),
+    };
+    const ctx = { ...context(20_000), cwd: temp, modelRegistry } as ExtensionContext;
+    const compact = (signal = new AbortController().signal) =>
+      emitAsync("session_before_compact", { preparation, branchEntries: [], signal }, ctx).then(
+        ([hookResult]) => hookResult,
+      );
+    const cleanup = () => fs.rmSync(temp, { recursive: true, force: true });
+    return { ctx, compact, commands, api, modelRegistry, cleanup };
+  }
+
+  it("advances past a failing provider and records which entry produced the summary", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { compact, cleanup } = chainHarness(
+      ["test/primary", "test/secondary"],
+      [modelFor("primary"), modelFor("secondary")],
+    );
+    selectedCompact
+      .mockRejectedValueOnce(new Error("429 rate limited"))
+      .mockResolvedValueOnce(result);
+    try {
+      expect(await compact()).toEqual({ compaction: result });
+      expect(selectedCompact).toHaveBeenCalledTimes(2);
+      expect(selectedCompact.mock.calls[0][0]).toMatchObject({
+        model: modelFor("primary"),
+        selector: "test/primary",
+      });
+      expect(selectedCompact.mock.calls[1][0]).toMatchObject({
+        model: modelFor("secondary"),
+        selector: "test/secondary",
+      });
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("fell back to test/secondary after test/primary: 429 rate limited"),
+      );
+    } finally {
+      error.mockRestore();
+      cleanup();
+    }
+  });
+
+  it("skips entries whose window cannot hold the history or that are unavailable, without a request", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { compact, cleanup } = chainHarness(
+      ["test/missing", "test/tiny", "test/large"],
+      // 4_096 reserve alone exceeds a 4_000-token window; nothing should be sent there.
+      [modelFor("tiny", 4_000), modelFor("large")],
+    );
+    selectedCompact.mockResolvedValueOnce(result);
+    try {
+      expect(await compact()).toEqual({ compaction: result });
+      expect(selectedCompact).toHaveBeenCalledTimes(1);
+      expect(selectedCompact.mock.calls[0][0]).toMatchObject({ model: modelFor("large") });
+    } finally {
+      vi.mocked(console.error).mockRestore();
+      cleanup();
+    }
+  });
+
+  it("fails closed naming every entry when the whole chain fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { compact, cleanup } = chainHarness(
+      ["test/primary", "test/secondary"],
+      [modelFor("primary"), modelFor("secondary")],
+    );
+    selectedCompact
+      .mockRejectedValueOnce(new Error("primary down"))
+      .mockRejectedValueOnce(new Error("secondary down"));
+    try {
+      expect(await compact()).toEqual({ cancel: true });
+      const messages = error.mock.calls.map(([message]) => String(message)).join("\n");
+      expect(messages).toContain("every compaction model failed");
+      expect(messages).toContain("test/primary: primary down");
+      expect(messages).toContain("test/secondary: secondary down");
+    } finally {
+      error.mockRestore();
+      cleanup();
+    }
+  });
+
+  it("never advances on cancellation or on an unparseable entry", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const cancelled = chainHarness(
+        ["test/primary", "test/secondary"],
+        [modelFor("primary"), modelFor("secondary")],
+      );
+      const controller = new AbortController();
+      selectedCompact.mockImplementationOnce(async () => {
+        controller.abort();
+        throw new Error("Compaction cancelled");
+      });
+      expect(await cancelled.compact(controller.signal)).toEqual({ cancel: true });
+      expect(selectedCompact).toHaveBeenCalledTimes(1);
+      cancelled.cleanup();
+
+      selectedCompact.mockReset();
+      const typo = chainHarness(["not-a-selector", "test/secondary"], [modelFor("secondary")]);
+      expect(await typo.compact()).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('invalid compactionModel selector "not-a-selector"'),
+      );
+      typo.cleanup();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("fails closed on a malformed rule chain instead of skipping to its fallback or the global chain", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { emitAsync } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": {
+          compactionModel: "test/global",
+          rules: [
+            {
+              model: "openai/*",
+              activeContextTokens: 100_000,
+              // An object whose text contains "/" would otherwise parse as a selector
+              // and advance as "unavailable" instead of failing closed.
+              compactionModel: [{ "test/rule": 1 }, "test/rule"],
+            },
+          ],
+        },
+      }),
+    );
+    const models = [modelFor("global"), modelFor("rule")];
+    const ctx = {
+      ...context(20_000),
+      cwd: temp,
+      modelRegistry: {
+        find: (_provider: string, id: string) => models.find((model) => model.id === id),
+        getAvailable: () => models,
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true })),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    try {
+      const [hookResult] = await emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        ctx,
+      );
+      expect(hookResult).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('invalid compactionModel selector "<invalid {"test/rule":1}>"'),
+      );
+      const { commands, api } = harness();
+      await commands.get("model-aware-compaction-status")?.handler("", ctx);
+      expect(vi.mocked(api.sendMessage).mock.calls[0][0].content).toContain(
+        '  - <invalid {"test/rule":1}>: invalid selector',
+      );
+    } finally {
+      error.mockRestore();
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("lets a session override replace the whole chain and default restore it", async () => {
+    const { compact, commands, ctx, cleanup } = chainHarness(
+      ["test/primary", "test/secondary"],
+      [modelFor("primary"), modelFor("secondary"), modelFor("override")],
+    );
+    selectedCompact.mockResolvedValue(result);
+    try {
+      await commands.get("model-aware-compaction-model")?.handler("test/override", ctx);
+      expect(await compact()).toEqual({ compaction: result });
+      expect(selectedCompact).toHaveBeenCalledTimes(1);
+      expect(selectedCompact.mock.calls[0][0]).toMatchObject({ selector: "test/override" });
+
+      await commands.get("model-aware-compaction-model")?.handler("default", ctx);
+      selectedCompact.mockReset();
+      selectedCompact.mockResolvedValue(result);
+      await compact();
+      expect(selectedCompact.mock.calls[0][0]).toMatchObject({ selector: "test/primary" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reports each chain entry's readiness in status", async () => {
+    const { commands, ctx, api, cleanup } = chainHarness(
+      ["test/primary", "test/missing", "test/small:low"],
+      [modelFor("primary"), modelFor("small", 10_000)],
+    );
+    try {
+      await commands.get("model-aware-compaction-status")?.handler("", ctx);
+      const content = vi.mocked(api.sendMessage).mock.calls[0][0].content;
+      expect(content).toContain("- compaction model chain:");
+      expect(content).toContain("  - test/primary: ready; thinking: provider default");
+      expect(content).toContain("  - test/missing: unavailable");
+      expect(content).toContain(
+        "  - test/small:low: ready, but window 10000 is below current context (heuristic); thinking: low (effective: off)",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("session switch", () => {
+  it("/model-aware-compaction-off stops proactive triggers and routing until -on", async () => {
+    const { emit, emitAsync, commands } = harness();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": {
+          enabled: true,
+          compactionModel: "test/plain",
+          rules: [{ model: "openai/*", activeContextTokens: 100_000 }],
+        },
+      }),
+    );
+    const model = {
+      api: "anthropic-messages",
+      provider: "test",
+      id: "plain",
+      baseUrl: "https://example.test",
+      reasoning: false,
+      contextWindow: 200_000,
+      maxTokens: 8_192,
+    };
+    const compact = vi.fn();
+    const ctx = {
+      ...context(120_000, compact),
+      cwd: temp,
+      modelRegistry: {
+        find: () => model,
+        getAvailable: () => [model],
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true })),
+        complete: vi.fn(),
+      },
+    } as ExtensionContext;
+    const preparation = {
+      firstKeptEntryId: "kept",
+      messagesToSummarize: [{ role: "user", content: "history" }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 20_000,
+      fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+      settings: { enabled: true, reserveTokens: 4_096, keepRecentTokens: 1_000 },
+    };
+    const hook = () =>
+      emitAsync(
+        "session_before_compact",
+        { preparation, branchEntries: [], signal: new AbortController().signal },
+        ctx,
+      ).then(([hookResult]) => hookResult);
+    try {
+      await commands.get("model-aware-compaction-off")?.handler("", ctx);
+      emit("agent_settled", ctx);
+      expect(compact).not.toHaveBeenCalled();
+      // Returning nothing lets Pi's stock compaction run on the active model.
+      expect(await hook()).toBeUndefined();
+      expect(selectedCompact).not.toHaveBeenCalled();
+
+      await commands.get("model-aware-compaction-on")?.handler("", ctx);
+      emit("agent_settled", ctx);
+      expect(compact).toHaveBeenCalledTimes(1);
+      selectedCompact.mockResolvedValue({
+        summary: "s",
+        firstKeptEntryId: "kept",
+        tokensBefore: 1,
+      });
+      expect(await hook()).toMatchObject({ compaction: { summary: "s" } });
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }

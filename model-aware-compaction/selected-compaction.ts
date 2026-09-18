@@ -65,6 +65,8 @@ export interface ModelAwareCompactionDetails {
   version: 1;
   readFiles: string[];
   modifiedFiles: string[];
+  /** Selector that produced this summary (absent in summaries written before chains). */
+  compactionModel?: string;
 }
 
 interface SelectedCompactionOptions {
@@ -73,6 +75,8 @@ interface SelectedCompactionOptions {
   complete: RegistryComplete;
   signal: AbortSignal;
   customInstructions?: string;
+  /** Recorded in the compaction details so status and later readers can see which entry ran. */
+  selector?: string;
 }
 
 export function mergePriorModelAwareFiles(
@@ -170,6 +174,7 @@ export async function runSelectedModelCompaction({
   complete,
   signal,
   customInstructions,
+  selector,
 }: SelectedCompactionOptions) {
   const historyMaxTokens = Math.min(
     Math.floor(preparation.settings.reserveTokens * 0.8),
@@ -266,6 +271,7 @@ export async function runSelectedModelCompaction({
       version: 1 as const,
       readFiles,
       modifiedFiles,
+      ...(selector ? { compactionModel: selector } : {}),
     },
   };
 }
