@@ -9,7 +9,7 @@ import {
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
-import { loadConfig } from "./config.js";
+import { isInvalidChainEntry, loadConfig } from "./config.js";
 import {
   chainForModel,
   compactionInputError,
@@ -98,9 +98,11 @@ async function attemptSelectedCompaction(input: {
   debug: boolean;
 }): Promise<AttemptOutcome> {
   const { ctx, selectorText, preparation, signal } = input;
-  const selector = parseCompactionSelector(selectorText, (provider, modelId) =>
-    Boolean(ctx.modelRegistry.find(provider, modelId)),
-  );
+  const selector = isInvalidChainEntry(selectorText)
+    ? null
+    : parseCompactionSelector(selectorText, (provider, modelId) =>
+        Boolean(ctx.modelRegistry.find(provider, modelId)),
+      );
   if (!selector)
     return { kind: "invalid", reason: `invalid compactionModel selector "${selectorText}"` };
   const model = ctx.modelRegistry.find(selector.provider, selector.modelId);

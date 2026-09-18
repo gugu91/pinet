@@ -1126,7 +1126,13 @@ describe("fallback chain", () => {
         "model-aware-compaction": {
           compactionModel: "test/global",
           rules: [
-            { model: "openai/*", activeContextTokens: 100_000, compactionModel: [42, "test/rule"] },
+            {
+              model: "openai/*",
+              activeContextTokens: 100_000,
+              // An object whose text contains "/" would otherwise parse as a selector
+              // and advance as "unavailable" instead of failing closed.
+              compactionModel: [{ "test/rule": 1 }, "test/rule"],
+            },
           ],
         },
       }),
@@ -1151,7 +1157,7 @@ describe("fallback chain", () => {
       expect(hookResult).toEqual({ cancel: true });
       expect(selectedCompact).not.toHaveBeenCalled();
       expect(error).toHaveBeenCalledWith(
-        expect.stringContaining('invalid compactionModel selector "<invalid 42>"'),
+        expect.stringContaining('invalid compactionModel selector "<invalid {"test/rule":1}>"'),
       );
     } finally {
       error.mockRestore();

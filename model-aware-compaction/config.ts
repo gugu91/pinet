@@ -30,6 +30,16 @@ export interface ModelAwareCompactionConfig {
 
 export const MAX_CHAIN_LENGTH = 3;
 
+/**
+ * Marker for a chain entry that was not a string in settings. It is matched
+ * explicitly by the compaction hook (not by failing to parse), because a
+ * stringified object such as `{"a/b":1}` would otherwise look like a selector.
+ */
+const INVALID_ENTRY_PREFIX = "<invalid ";
+export function isInvalidChainEntry(entry: string): boolean {
+  return entry.startsWith(INVALID_ENTRY_PREFIX);
+}
+
 export interface ResolvedConfig {
   enabled: boolean;
   /** Ordered fallback chain; empty when no global compaction model is configured. */
