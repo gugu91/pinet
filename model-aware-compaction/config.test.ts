@@ -18,6 +18,7 @@ describe("resolveConfig", () => {
     const config = resolveConfig({
       enabled: true,
       compactionModel: "google/gemini-2.5-flash:low",
+      summaryReserveTokens: 16_384,
       rules: [
         {
           model: "anthropic/*",
@@ -29,6 +30,7 @@ describe("resolveConfig", () => {
       ],
     });
     expect(config.compactionModels).toEqual(["google/gemini-2.5-flash:low"]);
+    expect(config.summaryReserveTokens).toBe(16_384);
     expect(config.rules).toEqual([
       {
         model: "anthropic/*",
@@ -36,6 +38,16 @@ describe("resolveConfig", () => {
         compactionModels: ["anthropic/claude-haiku:off"],
       },
     ]);
+  });
+
+  it("uses Pi's effective reserve unless a positive safe summarizer reserve is configured", () => {
+    expect(resolveConfig({}).summaryReserveTokens).toBeUndefined();
+    expect(resolveConfig({ summaryReserveTokens: 16_384 }).summaryReserveTokens).toBe(16_384);
+    for (const value of [0, 1, 1.5, "16384", null]) {
+      const config = resolveConfig({ summaryReserveTokens: value });
+      expect(config.summaryReserveTokens).toBeUndefined();
+      expect(config.configError).toContain("safe integer of at least 2");
+    }
   });
 
   it("accepts an ordered fallback chain, trimming, de-duplicating, and capping it", () => {

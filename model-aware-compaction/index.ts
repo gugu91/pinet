@@ -116,10 +116,12 @@ async function attemptSelectedCompaction(input: {
   history: string;
   turnPrefix: string;
   customInstructions?: string;
+  summaryReserveTokens?: number;
   signal: AbortSignal;
   debug: boolean;
 }): Promise<AttemptOutcome> {
   const { ctx, selectorText, preparation, signal } = input;
+  const reserveTokens = input.summaryReserveTokens ?? preparation.settings.reserveTokens;
   const selector = isInvalidChainEntry(selectorText)
     ? null
     : parseCompactionSelector(selectorText, (provider, modelId) =>
@@ -141,8 +143,8 @@ async function attemptSelectedCompaction(input: {
     previousSummary: preparation.previousSummary,
     customInstructions: input.customInstructions,
     contextWindow: model.contextWindow,
-    outputReserve: Math.min(Math.floor(preparation.settings.reserveTokens * 0.8), cap),
-    prefixOutputReserve: Math.min(Math.floor(preparation.settings.reserveTokens * 0.5), cap),
+    outputReserve: Math.min(Math.floor(reserveTokens * 0.8), cap),
+    prefixOutputReserve: Math.min(Math.floor(reserveTokens * 0.5), cap),
   });
   if (budgetError) return { kind: "failed", reason: budgetError };
 
@@ -169,6 +171,7 @@ async function attemptSelectedCompaction(input: {
       complete,
       signal,
       customInstructions: input.customInstructions,
+      summaryReserveTokens: input.summaryReserveTokens,
       selector: selectorText,
     });
     if (signal.aborted) return { kind: "cancelled" };
@@ -212,6 +215,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     try {
       if (sessionDisabled) return;
       const config = loadConfig(ctx.cwd);
+      if (config.configError) return failClosed(config.configError);
       // A session override is exactly one model; otherwise the configured chain is tried in order.
       const chain = runtimeSelector
         ? [runtimeSelector]
@@ -246,6 +250,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
           history,
           turnPrefix,
           customInstructions,
+          summaryReserveTokens: config.summaryReserveTokens,
           signal: event.signal,
           debug: config.debug,
         });
@@ -278,6 +283,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     if (sessionDisabled) return;
     const ctx = rawCtx as CompatibleContext;
     const config = loadConfig(ctx.cwd);
+    if (config.configError) return;
     const usage = ctx.getContextUsage?.();
     const decision = decideCompaction({
       enabled: config.enabled,
@@ -490,10 +496,12 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
           ? "- compaction model: Pi default"
           : `- compaction model chain${runtimeSelector ? " (session override)" : ""}:`,
         ...entries,
+        `- summary reserve: ${config.summaryReserveTokens ?? "Pi effective reserve"}`,
         `- current tokens: ${usage?.tokens ?? "unknown"}`,
         `- matched limit: ${decision.limit ?? "none"}`,
         `- state: ${sessionDisabled ? "disabled" : inFlight ? "compacting" : decision.reason}`,
         `- config: ${config.sourcePath ?? "defaults (disabled)"}`,
+        ...(config.configError ? [`- config error: ${config.configError}`] : []),
         "- rules:",
         ...config.rules.map(
           (rule) =>

@@ -996,13 +996,18 @@ describe("fallback chain", () => {
   };
   const result = { summary: "summary", firstKeptEntryId: "kept", tokensBefore: 20_000 };
 
-  function chainHarness(chain: string[], models: ReturnType<typeof modelFor>[]) {
+  function chainHarness(
+    chain: string[],
+    models: ReturnType<typeof modelFor>[],
+    config: { summaryReserveTokens?: number } = {},
+    compactPreparation = preparation,
+  ) {
     const { emitAsync, commands, api } = harness();
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
     fs.mkdirSync(path.join(temp, ".pi"));
     fs.writeFileSync(
       path.join(temp, ".pi", "settings.json"),
-      JSON.stringify({ "model-aware-compaction": { compactionModel: chain } }),
+      JSON.stringify({ "model-aware-compaction": { compactionModel: chain, ...config } }),
     );
     const modelRegistry = {
       find: (_provider: string, id: string) => models.find((model) => model.id === id),
@@ -1019,9 +1024,11 @@ describe("fallback chain", () => {
     };
     const ctx = { ...context(20_000), cwd: temp, modelRegistry } as ExtensionContext;
     const compact = (signal = new AbortController().signal) =>
-      emitAsync("session_before_compact", { preparation, branchEntries: [], signal }, ctx).then(
-        ([hookResult]) => hookResult,
-      );
+      emitAsync(
+        "session_before_compact",
+        { preparation: compactPreparation, branchEntries: [], signal },
+        ctx,
+      ).then(([hookResult]) => hookResult);
     const cleanup = () => fs.rmSync(temp, { recursive: true, force: true });
     return { ctx, compact, commands, api, modelRegistry, cleanup };
   }
@@ -1069,6 +1076,28 @@ describe("fallback chain", () => {
       expect(selectedCompact.mock.calls[0][0]).toMatchObject({ model: modelFor("large") });
     } finally {
       vi.mocked(console.error).mockRestore();
+      cleanup();
+    }
+  });
+
+  it("uses the dedicated summary reserve for preflight and generation", async () => {
+    const nativeEarlyTrigger = {
+      ...preparation,
+      settings: { ...preparation.settings, reserveTokens: 800_000 },
+    };
+    const { compact, cleanup } = chainHarness(
+      ["test/primary"],
+      [{ ...modelFor("primary", 128_000), maxTokens: 128_000 }],
+      { summaryReserveTokens: 1_000 },
+      nativeEarlyTrigger,
+    );
+    selectedCompact.mockResolvedValueOnce(result);
+    try {
+      expect(await compact()).toEqual({ compaction: result });
+      expect(selectedCompact).toHaveBeenCalledWith(
+        expect.objectContaining({ summaryReserveTokens: 1_000 }),
+      );
+    } finally {
       cleanup();
     }
   });
