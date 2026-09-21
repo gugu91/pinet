@@ -9,6 +9,35 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.22] - 2026-09-21
+
+Pinet v0.2.22 gives `@pinet/model-aware-compaction` ordered fallback models and a session-only on/off switch.
+
+### Version verification
+
+- `pi-extensions` — `0.2.22` (private repo package)
+- `@pinet/transport-core` — `0.2.22`
+- `@pinet/broker-core` — `0.2.22`
+- `@pinet/pinet-core` — `0.2.22`
+- `@pinet/imessage-bridge` — `0.2.22`
+- `@pinet/slack-bridge` — `0.2.22`
+- `@pinet/model-aware-compaction` — `0.2.22`
+- `@pinet/agent-goal` — `0.2.22`
+
+### Release highlights
+
+- `compactionModel` accepts an ordered list of up to three selectors. The extension advances only through models named in that list when a model is unavailable, lacks credentials or context capacity, or returns a failed or incomplete summary.
+- Invalid selectors and cancellation stop immediately rather than advancing. If every listed model fails, compaction is cancelled with the reason for each entry instead of falling back to Pi's active model.
+- `/model-aware-compaction-off` restores Pi's stock compaction for the current session; `/model-aware-compaction-on` re-enables selected-model routing and proactive triggers. The status command reports each chain entry's readiness and the summary records which entry produced it.
+- Pi 0.86 uses its registry-backed simple stream for explicit thinking levels, preserving custom providers and request-time authentication. Unexpected hook errors now fail closed, pending Pi 0.85 credential resolution responds promptly to cancellation, and selectors without a thinking level keep the provider default.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1058](https://github.com/gugu91/pinet/pull/1058) — add ordered compaction fallback chains and session on/off controls
+
+See the [full change set since v0.2.21](https://github.com/gugu91/pinet/compare/v0.2.21...v0.2.22).
+
 ## [0.2.21] - 2026-09-17
 
 Pinet v0.2.21 gives `@pinet/model-aware-compaction` Pi's own `/model` picker and lets a compaction selector request a thinking level.
