@@ -232,6 +232,25 @@ describe("selected-model compaction", () => {
     expect(complete.mock.calls[0][2].sessionId).toEqual(expect.any(String));
   });
 
+  it("records the producing selector in the details and omits it when none is given", async () => {
+    const run = (selector?: string) =>
+      runSelectedModelCompaction({
+        preparation: { ...preparation, isSplitTurn: false, turnPrefixMessages: [] },
+        model: fauxProvider().getModel(),
+        complete: vi.fn<RegistryComplete>(async () => fauxAssistantMessage("summary")),
+        signal: new AbortController().signal,
+        selector,
+      });
+    expect((await run("test/primary:low")).details).toEqual({
+      owner: "@pinet/model-aware-compaction",
+      version: 1,
+      readFiles: ["read.ts"],
+      modifiedFiles: ["edited.ts", "written.ts"],
+      compactionModel: "test/primary:low",
+    });
+    expect((await run()).details).not.toHaveProperty("compactionModel");
+  });
+
   it("uses a prior checkpoint as history when a split turn has no new history", async () => {
     const prompts: string[] = [];
     const complete = vi.fn<RegistryComplete>(async (_model, context) => {
@@ -279,7 +298,7 @@ describe("selected-model compaction", () => {
     const faux = fauxProvider({ provider: "empty-summary-faux" });
     faux.setResponses([fauxAssistantMessage("history summary"), fauxAssistantMessage("")]);
     const complete: RegistryComplete = (model, context, options): Promise<AssistantMessage> =>
-      faux.provider.stream(model, context, options).result();
+      faux.provider.stream(model, context as never, options).result();
 
     await expect(
       runSelectedModelCompaction({
