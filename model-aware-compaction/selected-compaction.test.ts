@@ -298,7 +298,7 @@ describe("selected-model compaction", () => {
     const faux = fauxProvider({ provider: "empty-summary-faux" });
     faux.setResponses([fauxAssistantMessage("history summary"), fauxAssistantMessage("")]);
     const complete: RegistryComplete = (model, context, options): Promise<AssistantMessage> =>
-      faux.provider.stream(model, context, options).result();
+      faux.provider.stream(model, context as never, options).result();
 
     await expect(
       runSelectedModelCompaction({

@@ -71,9 +71,11 @@ function selectorChain(value: SettingsJsonValue | undefined): string[] | undefin
   const entries = Array.isArray(value) ? value : [value];
   const chain = entries
     .map((entry) =>
-      typeof entry === "string" ? entry.trim() : `<invalid ${JSON.stringify(entry)}>`,
+      typeof entry === "string"
+        ? entry.trim() || "<invalid empty string>"
+        : `<invalid ${JSON.stringify(entry)}>`,
     )
-    .filter((entry, index, all) => entry !== "" && all.indexOf(entry) === index);
+    .filter((entry, index, all) => all.indexOf(entry) === index);
   if (chain.length > MAX_CHAIN_LENGTH) {
     const message = `compactionModel lists ${chain.length} selectors; only the first ${MAX_CHAIN_LENGTH} are used`;
     if (!reportedDiagnostics.has(message)) {

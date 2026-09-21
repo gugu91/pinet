@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 
 type PickerModel = { provider: string; id: string };
 type PickerArgs = [
@@ -1008,6 +1009,13 @@ describe("fallback chain", () => {
       getAvailable: () => models,
       getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "secret" })),
       complete: vi.fn(),
+      streamSimple: undefined as
+        | ((
+            model: ReturnType<typeof modelFor>,
+            context: object,
+            options: object,
+          ) => { result(): Promise<ReturnType<typeof fauxAssistantMessage>> })
+        | undefined,
     };
     const ctx = { ...context(20_000), cwd: temp, modelRegistry } as ExtensionContext;
     const compact = (signal = new AbortController().signal) =>
@@ -1110,8 +1118,120 @@ describe("fallback chain", () => {
         expect.stringContaining('invalid compactionModel selector "not-a-selector"'),
       );
       typo.cleanup();
+
+      const blank = chainHarness(["", "test/secondary"], [modelFor("secondary")]);
+      expect(await blank.compact()).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('invalid compactionModel selector "<invalid empty string>"'),
+      );
+      blank.cleanup();
     } finally {
       error.mockRestore();
+    }
+  });
+
+  it("fails closed when unexpected registry work throws", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { compact, modelRegistry, cleanup } = chainHarness(
+      ["test/primary"],
+      [modelFor("primary")],
+    );
+    modelRegistry.find = vi.fn(() => {
+      throw new Error("registry exploded");
+    });
+    try {
+      expect(await compact()).toEqual({ cancel: true });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("registry exploded"));
+      expect(selectedCompact).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      cleanup();
+    }
+  });
+
+  it("uses Pi 0.86 registry streaming for explicit thinking and custom providers", async () => {
+    const model = { ...modelFor("primary"), reasoning: true };
+    const { compact, modelRegistry, cleanup } = chainHarness(["test/primary:low"], [model]);
+    const response = fauxAssistantMessage("summary");
+    const resultPromise = Promise.resolve(response);
+    const streamSimple = vi.fn(() => ({ result: () => resultPromise }));
+    modelRegistry.streamSimple = streamSimple;
+    selectedCompact.mockImplementationOnce(async (input) => {
+      await input.complete(
+        input.model,
+        { systemPrompt: "summary", messages: [] },
+        {
+          maxTokens: 100,
+          signal: new AbortController().signal,
+          cacheRetention: "none",
+          sessionId: "test",
+        },
+      );
+      return result;
+    });
+    try {
+      expect(await compact()).toEqual({ compaction: result });
+      expect(streamSimple).toHaveBeenCalledWith(
+        model,
+        { systemPrompt: "summary", messages: [] },
+        expect.objectContaining({ reasoning: "low" }),
+      );
+      expect(modelRegistry.getApiKeyAndHeaders).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it.each(["test/primary", "test/primary:off"])(
+    "preserves provider-default thinking for %s on Pi 0.86",
+    async (selector) => {
+      const model = { ...modelFor("primary"), reasoning: true };
+      const { compact, modelRegistry, cleanup } = chainHarness([selector], [model]);
+      const streamSimple = vi.fn();
+      modelRegistry.streamSimple = streamSimple;
+      selectedCompact.mockImplementationOnce(async (input) => {
+        await input.complete(
+          input.model,
+          { systemPrompt: "summary", messages: [] },
+          {
+            maxTokens: 100,
+            signal: new AbortController().signal,
+            cacheRetention: "none",
+            sessionId: "test",
+          },
+        );
+        return result;
+      });
+      try {
+        expect(await compact()).toEqual({ compaction: result });
+        expect(modelRegistry.complete).toHaveBeenCalledTimes(1);
+        expect(streamSimple).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    },
+  );
+
+  it("cancels promptly while Pi 0.85 credential resolution is pending", async () => {
+    const model = { ...modelFor("primary"), reasoning: true };
+    const { compact, modelRegistry, cleanup } = chainHarness(["test/primary:low"], [model]);
+    modelRegistry.getApiKeyAndHeaders = vi.fn(() => new Promise(() => undefined));
+    const controller = new AbortController();
+    const pending = compact(controller.signal);
+    await Promise.resolve();
+    controller.abort();
+    try {
+      expect(
+        await Promise.race([
+          pending,
+          // agent-default (not a user rule): 2026-07-21 — keep the cancellation regression fast.
+          new Promise((resolve) => setTimeout(() => resolve("timed out"), 100)),
+        ]),
+      ).toEqual({ cancel: true });
+      expect(selectedCompact).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
     }
   });
 

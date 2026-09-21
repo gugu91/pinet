@@ -42,7 +42,7 @@ describe("resolveConfig", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       const config = resolveConfig({
-        compactionModel: [" a/one:low ", "b/two", "", "a/one:low", "c/three", "d/four"],
+        compactionModel: [" a/one:low ", "b/two", "a/one:low", "c/three", "d/four"],
         rules: [
           { model: "x/*", activeContextTokens: 1_000, compactionModel: ["r/one", "r/two"] },
           { model: "y/*", activeContextTokens: 1_000, compactionModel: [] },
@@ -76,6 +76,10 @@ describe("resolveConfig", () => {
     // A bad element does not let the chain skip straight to the good one.
     expect(raw([42, "provider/fallback"]).compactionModels).toEqual([
       "<invalid 42>",
+      "provider/fallback",
+    ]);
+    expect(raw(["", "provider/fallback"]).compactionModels).toEqual([
+      "<invalid empty string>",
       "provider/fallback",
     ]);
     // Malformed rule values stay on the rule and do not inherit the global chain.

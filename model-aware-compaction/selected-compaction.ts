@@ -12,7 +12,7 @@ import {
 import {
   convertToLlm,
   serializeConversation,
-  type CompactionPreparation,
+  type SessionBeforeCompactEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -31,6 +31,14 @@ export type RegistryComplete = (
     sessionId: string;
   },
 ) => Promise<AssistantMessage>;
+
+type CompactionPreparation = SessionBeforeCompactEvent["preparation"];
+
+type RegistryStreamSimple = (
+  model: Model<Api>,
+  context: Context,
+  options: Parameters<RegistryComplete>[2] & { reasoning?: ThinkingLevel },
+) => { result(): Promise<AssistantMessage> };
 
 /** Credentials the registry resolved for the selected model (`getApiKeyAndHeaders`). */
 export interface ResolvedAuth {
@@ -58,6 +66,15 @@ export function thinkingComplete(auth: ResolvedAuth, level: ThinkingLevel): Regi
       env: auth.env,
       reasoning: level,
     });
+}
+
+/** Pi 0.86+ registry-backed simple transport, including custom providers and request-time auth. */
+export function registrySimpleComplete(
+  streamSimple: RegistryStreamSimple,
+  level?: ThinkingLevel,
+): RegistryComplete {
+  return (model, context, options) =>
+    streamSimple(model, context, { ...options, ...(level ? { reasoning: level } : {}) }).result();
 }
 
 export interface ModelAwareCompactionDetails {

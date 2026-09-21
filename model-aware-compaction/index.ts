@@ -5,10 +5,16 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ModelRuntime,
-  type RegistryModel,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  Model,
+  ProviderHeaders,
+  ThinkingLevel,
+} from "@earendil-works/pi-ai/compat";
 import { isInvalidChainEntry, loadConfig } from "./config.js";
 import {
   chainForModel,
@@ -24,6 +30,7 @@ import {
 } from "./helpers.js";
 import {
   mergePriorModelAwareFiles,
+  registrySimpleComplete,
   runSelectedModelCompaction,
   thinkingComplete,
   type RegistryComplete,
@@ -50,6 +57,11 @@ interface CompatibleContext extends ExtensionContext {
         }
       | { ok: false; error: string }
     >;
+    streamSimple?: (
+      model: Model<Api>,
+      context: Context,
+      options: Parameters<RegistryComplete>[2] & { reasoning?: ThinkingLevel },
+    ) => { result(): Promise<AssistantMessage> };
     complete: RegistryComplete;
   };
   model?: ModelIdentity;
@@ -76,6 +88,16 @@ type AttemptOutcome =
   /** This entry cannot serve the request; the next entry may. */
   | { kind: "failed"; reason: string }
   | { kind: "cancelled" };
+
+// agent-standards-ignore prefer-inline-single-use-helper: the abort race is a transport boundary shared conceptually by every legacy auth provider.
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("Compaction cancelled"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("Compaction cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
 
 /**
  * Run one chain entry. Cancellation is never a reason to advance, and a selector
@@ -129,8 +151,13 @@ async function attemptSelectedCompaction(input: {
     // provider-default thinking and existing configurations are unchanged.
     let complete: RegistryComplete = ctx.modelRegistry.complete.bind(ctx.modelRegistry);
     const level = effectiveThinkingLevel(model, selector.thinkingOverride);
-    if (level) {
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (level && ctx.modelRegistry.streamSimple) {
+      complete = registrySimpleComplete(
+        ctx.modelRegistry.streamSimple.bind(ctx.modelRegistry),
+        level,
+      );
+    } else if (level) {
+      const auth = await abortable(ctx.modelRegistry.getApiKeyAndHeaders(model), signal);
       if (!auth.ok) return { kind: "failed", reason: `credentials unavailable: ${auth.error}` };
       complete = thinkingComplete(auth, level);
     }
@@ -175,28 +202,29 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
 
   pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, rawCtx) => {
     const ctx = rawCtx as CompatibleContext;
-    if (sessionDisabled) return;
-    const config = loadConfig(ctx.cwd);
-    // A session override is exactly one model; otherwise the configured chain is tried in order.
-    const chain = runtimeSelector
-      ? [runtimeSelector]
-      : chainForModel(config.rules, modelKey(ctx.model), config.compactionModels);
-    if (chain.length === 0) return;
-
     const failClosed = (message: string) => {
       console.error(`${LOG_PREFIX} ${message}`);
       if (ctx.hasUI && !event.signal.aborted)
         ctx.ui.notify(`Compaction cancelled: ${message}`, "error");
       return { cancel: true as const };
     };
-
-    if (event.signal.aborted) return { cancel: true };
-    if (summarizationInFlight)
-      return failClosed("another selected-model compaction is already in progress");
-
-    // Acquire ownership before the registry begins asynchronous provider/auth work.
-    summarizationInFlight = true;
+    let ownsSummarization = false;
     try {
+      if (sessionDisabled) return;
+      const config = loadConfig(ctx.cwd);
+      // A session override is exactly one model; otherwise the configured chain is tried in order.
+      const chain = runtimeSelector
+        ? [runtimeSelector]
+        : chainForModel(config.rules, modelKey(ctx.model), config.compactionModels);
+      if (chain.length === 0) return;
+
+      if (event.signal.aborted) return { cancel: true };
+      if (summarizationInFlight)
+        return failClosed("another selected-model compaction is already in progress");
+
+      // Acquire ownership before the registry begins asynchronous provider/auth work.
+      summarizationInFlight = true;
+      ownsSummarization = true;
       const customInstructions =
         [event.customInstructions, config.customInstructions]
           .filter(
@@ -236,8 +264,11 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       return failClosed(
         chain.length === 1 ? failures[0] : `every compaction model failed (${failures.join("; ")})`,
       );
+    } catch (error) {
+      if (event.signal.aborted) return { cancel: true };
+      return failClosed(error instanceof Error ? error.message : String(error));
     } finally {
-      summarizationInFlight = false;
+      if (ownsSummarization) summarizationInFlight = false;
     }
   });
 
@@ -346,25 +377,25 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         // refreshModelCatalogs drops its WeakMap entry when the refresh settles.
         // Esc keeps the current selection; `default` clears a session override.
         const registry = ctx.modelRegistry;
-        const runtime: ModelRuntime = {
+        const runtime = {
           getAvailableSnapshot: () => registry.getAvailable(),
-          getModel: (provider, modelId) => registry.find(provider, modelId),
+          getModel: (provider: string, modelId: string) => registry.find(provider, modelId),
           getError: () => registry.getError(),
-          refresh: (options) => registry.refresh(options),
+          refresh: (options?: Parameters<ModelRuntime["refresh"]>[0]) => registry.refresh(options),
         };
         const active = parseCompactionSelector(
           runtimeSelector ?? configuredChain[0] ?? "",
           (provider, modelId) => registry.find(provider, modelId) !== undefined,
         );
         const current = active ? registry.find(active.provider, active.modelId) : undefined;
-        const picked = await ctx.ui.custom<RegistryModel | undefined>(
+        const picked = await ctx.ui.custom<Model<Api> | undefined>(
           (tui, _theme, _keybindings, done) =>
             new ModelSelectorComponent(
               tui,
               current,
-              runtime,
+              runtime as ModelRuntime,
               ctx.scopedModels ?? [],
-              (model) => done(model),
+              (model) => done(model as Model<Api>),
               () => done(undefined),
             ),
         );
