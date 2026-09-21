@@ -92,6 +92,8 @@ interface SelectedCompactionOptions {
   complete: RegistryComplete;
   signal: AbortSignal;
   customInstructions?: string;
+  /** Output budget input for the dedicated summarizer; defaults to Pi's effective reserve. */
+  summaryReserveTokens?: number;
   /** Recorded in the compaction details so status and later readers can see which entry ran. */
   selector?: string;
 }
@@ -191,14 +193,16 @@ export async function runSelectedModelCompaction({
   complete,
   signal,
   customInstructions,
+  summaryReserveTokens,
   selector,
 }: SelectedCompactionOptions) {
+  const reserveTokens = summaryReserveTokens ?? preparation.settings.reserveTokens;
   const historyMaxTokens = Math.min(
-    Math.floor(preparation.settings.reserveTokens * 0.8),
+    Math.floor(reserveTokens * 0.8),
     model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
   );
   const prefixMaxTokens = Math.min(
-    Math.floor(preparation.settings.reserveTokens * 0.5),
+    Math.floor(reserveTokens * 0.5),
     model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
   );
   let summary: string;

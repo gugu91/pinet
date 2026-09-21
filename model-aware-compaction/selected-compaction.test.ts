@@ -232,6 +232,22 @@ describe("selected-model compaction", () => {
     expect(complete.mock.calls[0][2].sessionId).toEqual(expect.any(String));
   });
 
+  it("can keep the dedicated summary budget independent from Pi's trigger reserve", async () => {
+    const complete = vi.fn<RegistryComplete>(async () => fauxAssistantMessage("summary"));
+    await runSelectedModelCompaction({
+      preparation: {
+        ...preparation,
+        settings: { ...preparation.settings, reserveTokens: 800_000 },
+      },
+      model: fauxProvider().getModel(),
+      complete,
+      signal: new AbortController().signal,
+      summaryReserveTokens: 16_384,
+    });
+
+    expect(complete.mock.calls.map((call) => call[2].maxTokens)).toEqual([13_107, 8_192]);
+  });
+
   it("records the producing selector in the details and omits it when none is given", async () => {
     const run = (selector?: string) =>
       runSelectedModelCompaction({

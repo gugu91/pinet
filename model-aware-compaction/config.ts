@@ -19,6 +19,7 @@ export type CompactionModelSetting = string | string[];
 export interface ModelAwareCompactionConfig {
   enabled?: boolean;
   compactionModel?: CompactionModelSetting | SettingsJsonValue;
+  summaryReserveTokens?: SettingsJsonValue;
   rules?: Array<{
     model?: string;
     activeContextTokens?: number;
@@ -44,6 +45,9 @@ export interface ResolvedConfig {
   enabled: boolean;
   /** Ordered fallback chain; empty when no global compaction model is configured. */
   compactionModels: string[];
+  /** Dedicated summarizer budget; omitted to retain Pi's effective compaction reserve. */
+  summaryReserveTokens?: number;
+  configError?: string;
   rules: CompactionRule[];
   customInstructions?: string;
   debug: boolean;
@@ -128,9 +132,21 @@ export function resolveConfig(
     typeof raw?.customInstructions === "string" && raw.customInstructions.trim()
       ? raw.customInstructions.trim()
       : undefined;
+  const hasSummaryReserve = Boolean(
+    raw && Object.prototype.hasOwnProperty.call(raw, "summaryReserveTokens"),
+  );
+  const summaryReserveTokens = raw?.summaryReserveTokens;
+  const validSummaryReserve =
+    typeof summaryReserveTokens === "number" &&
+    Number.isSafeInteger(summaryReserveTokens) &&
+    summaryReserveTokens >= 2;
   return {
     enabled: raw?.enabled === true,
     compactionModels: selectorChain(raw?.compactionModel) ?? [],
+    ...(validSummaryReserve ? { summaryReserveTokens } : {}),
+    ...(hasSummaryReserve && !validSummaryReserve
+      ? { configError: "summaryReserveTokens must be a safe integer of at least 2" }
+      : {}),
     rules: configured.length > 0 ? configured : DEFAULT_RULES,
     customInstructions,
     debug: raw?.debug === true,
