@@ -194,6 +194,26 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
+  export interface AgentSettledEvent {
+    type: "agent_settled";
+  }
+
+  export type ExtensionEventName =
+    | "agent_end"
+    | "agent_settled"
+    | "agent_start"
+    | "before_agent_start"
+    | "input"
+    | "model_select"
+    | "session_before_compact"
+    | "session_compact"
+    | "session_shutdown"
+    | "session_start"
+    | "tool_call"
+    | "turn_end"
+    | "turn_start"
+    | "user_bash";
+
   export interface ExtensionContext {
     cwd: string;
     /** Run mode; only "tui" supports ui.custom components. */
@@ -245,7 +265,7 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface ExtensionAPI {
-    on(event: string, handler: (event: any, ctx: ExtensionContext) => any): void;
+    on(event: ExtensionEventName, handler: (event: any, ctx: ExtensionContext) => any): void;
     registerTool(definition: ToolDefinition): void;
     registerCommand(name: string, options: CommandDefinition): void;
     registerMessageRenderer(

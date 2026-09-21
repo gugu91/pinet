@@ -2144,13 +2144,13 @@ describe("slack-bridge top-level shutdown", () => {
     slackBridge(pi);
 
     const sessionStart = events.get("session_start");
-    const agentEnd = events.get("agent_end");
+    const agentSettled = events.get("agent_settled");
     const sessionBeforeCompact = events.get("session_before_compact");
     const sessionCompact = events.get("session_compact");
     const sessionShutdown = events.get("session_shutdown");
 
     expect(sessionStart).toBeDefined();
-    expect(agentEnd).toBeDefined();
+    expect(agentSettled).toBeDefined();
     expect(sessionBeforeCompact).toBeDefined();
     expect(sessionCompact).toBeDefined();
     expect(sessionShutdown).toBeDefined();
@@ -2188,7 +2188,7 @@ describe("slack-bridge top-level shutdown", () => {
     const compaction = new AbortController();
     await sessionBeforeCompact?.({ signal: compaction.signal }, ctx);
     idle = true;
-    await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
+    await agentSettled?.({ type: "agent_settled" }, ctx);
     expect(sendUserMessage).not.toHaveBeenCalled();
 
     await sessionCompact?.({}, ctx);
@@ -3903,7 +3903,7 @@ describe("slack-bridge Pinet reconnect", () => {
     }
   });
 
-  it("retries follower idle status sync after agent_end auto-free fails once", async () => {
+  it("keeps a retrying follower working until agent_settled, then retries idle sync", async () => {
     vi.useFakeTimers();
 
     const commands = new Map<string, CommandDefinition>();
@@ -4006,11 +4006,13 @@ describe("slack-bridge Pinet reconnect", () => {
     const sessionShutdown = events.get("session_shutdown");
     const follow = commands.get("pinet");
     const agentEnd = events.get("agent_end");
+    const agentSettled = events.get("agent_settled");
 
     expect(sessionStart).toBeDefined();
     expect(sessionShutdown).toBeDefined();
     expect(follow).toBeDefined();
     expect(agentEnd).toBeDefined();
+    expect(agentSettled).toBeDefined();
 
     try {
       await sessionStart?.({}, ctx);
@@ -4028,6 +4030,11 @@ describe("slack-bridge Pinet reconnect", () => {
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
 
       await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
+      // An agent_before_settle continuation runs another agent loop without settling.
+      await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
+      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
+
+      await agentSettled?.({ type: "agent_settled" }, ctx);
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "idle"]);
       expect(notify).toHaveBeenCalledWith(
         "Pinet auto-free failed: status sync failed once",
@@ -4154,12 +4161,12 @@ describe("slack-bridge Pinet reconnect", () => {
 
     const sessionStart = events.get("session_start");
     const sessionShutdown = events.get("session_shutdown");
-    const agentEnd = events.get("agent_end");
+    const agentSettled = events.get("agent_settled");
     const follow = commands.get("pinet");
 
     expect(sessionStart).toBeDefined();
     expect(sessionShutdown).toBeDefined();
-    expect(agentEnd).toBeDefined();
+    expect(agentSettled).toBeDefined();
     expect(follow).toBeDefined();
 
     try {
@@ -4175,11 +4182,11 @@ describe("slack-bridge Pinet reconnect", () => {
       expect(inputHandler?.("\u001b")).toBeUndefined();
 
       idle = true;
-      await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
+      await agentSettled?.({ type: "agent_settled" }, ctx);
       expect(sendUserMessage).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1_501);
-      await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
+      await agentSettled?.({ type: "agent_settled" }, ctx);
 
       expect(sendUserMessage).toHaveBeenCalledTimes(1);
       expect(sendUserMessage).toHaveBeenCalledWith(

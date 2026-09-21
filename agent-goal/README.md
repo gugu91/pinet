@@ -6,6 +6,8 @@ The worker runs normally. Every settled active-goal run is independently evaluat
 
 ## Install
 
+Requires Pi `>=0.85.1`. Development and CI compile and test against Pi `0.87.0`.
+
 ```bash
 pi install npm:@pinet/agent-goal
 ```

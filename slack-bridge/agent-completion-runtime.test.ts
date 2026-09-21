@@ -49,15 +49,14 @@ function createDeps(overrides: Partial<AgentCompletionRuntimeDeps> = {}) {
     threads,
     clearThreadStatus,
     clearFollowUpPending,
+    signalAgentFree,
   };
 }
 
 describe("createAgentCompletionRuntime", () => {
-  it("clears tracked thread status, clears follow-up pending, and frees the agent", async () => {
-    const signalAgentFree = vi.fn(async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }));
-    const { deps, threads, clearThreadStatus, clearFollowUpPending } = createDeps({
-      signalAgentFree,
-    });
+  it("cleans up each run at agent_end and frees the agent only at agent_settled", async () => {
+    const { deps, threads, clearThreadStatus, clearFollowUpPending, signalAgentFree } =
+      createDeps();
     const runtime = createAgentCompletionRuntime(deps);
     const { ctx, notify } = createContext();
 
@@ -69,9 +68,14 @@ describe("createAgentCompletionRuntime", () => {
 
     await runtime.onAgentEnd({}, ctx);
 
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+    expect(clearFollowUpPending).toHaveBeenCalledTimes(1);
+    expect(signalAgentFree).not.toHaveBeenCalled();
+
+    await runtime.onAgentSettled({ type: "agent_settled" }, ctx);
+
     expect(clearThreadStatus).toHaveBeenNthCalledWith(1, "D100", "100.1");
     expect(clearThreadStatus).toHaveBeenNthCalledWith(2, "D200", "200.2");
-    expect(clearFollowUpPending).toHaveBeenCalledTimes(1);
     expect(signalAgentFree).toHaveBeenCalledWith(ctx);
     expect(clearFollowUpPending.mock.invocationCallOrder[0]).toBeLessThan(
       signalAgentFree.mock.invocationCallOrder[0] ?? Infinity,
@@ -82,7 +86,26 @@ describe("createAgentCompletionRuntime", () => {
     expect(clearThreadStatus).toHaveBeenCalledTimes(2);
   });
 
-  it("warns when auto-free fails after clearing tracked cleanup state", async () => {
+  it("does not expose Slack completion or Pinet free when Pi retries before settlement", async () => {
+    const { deps, threads, clearThreadStatus, signalAgentFree } = createDeps();
+    const runtime = createAgentCompletionRuntime(deps);
+    const { ctx } = createContext();
+
+    threads.set("100.1", { channelId: "D100" });
+    runtime.trackThinkingThread("100.1");
+
+    await runtime.onAgentEnd({}, ctx);
+    await runtime.onAgentEnd({}, ctx);
+
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+    expect(signalAgentFree).not.toHaveBeenCalled();
+
+    await runtime.onAgentSettled({ type: "agent_settled" }, ctx);
+    expect(clearThreadStatus).toHaveBeenCalledWith("D100", "100.1");
+    expect(signalAgentFree).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns when settled auto-free fails after clearing tracked cleanup state", async () => {
     const error = new Error("status sync failed once");
     const signalAgentFree = vi.fn(async () => {
       throw error;
@@ -97,6 +120,7 @@ describe("createAgentCompletionRuntime", () => {
     runtime.trackThinkingThread("100.1");
 
     await runtime.onAgentEnd({}, ctx);
+    await runtime.onAgentSettled({ type: "agent_settled" }, ctx);
 
     expect(clearThreadStatus).toHaveBeenCalledWith("D100", "100.1");
     expect(clearFollowUpPending).toHaveBeenCalledTimes(1);

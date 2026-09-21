@@ -557,6 +557,7 @@ export default function (pi: ExtensionAPI) {
       slackThreadStatuses.update(channel, threadTs, status),
     clearThreadStatus: (channel, threadTs) => slackThreadStatuses.clear(channel, threadTs),
     onCompletionAgentEnd: agentCompletionRuntime.onAgentEnd,
+    onCompletionAgentSettled: agentCompletionRuntime.onAgentSettled,
     setDeliverTrackedSlackFollowUpMessage: (deliver) => {
       deliverTrackedSlackFollowUpMessage = deliver;
     },

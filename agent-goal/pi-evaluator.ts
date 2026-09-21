@@ -1,20 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { completeSimple } from "@earendil-works/pi-ai";
+import {
+  completeSimple,
+  type Api,
+  type Model,
+  type ProviderHeaders,
+} from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentGoal, GoalEvaluation, GoalEvaluator, GoalProgress } from "./domain.js";
-
-interface EvaluatorModel {
-  api: string;
-  provider: string;
-  id: string;
-}
 
 interface CompatibleContext extends ExtensionContext {
   modelRegistry: {
     getApiKeyAndHeaders(
-      model: EvaluatorModel,
+      model: Model<Api>,
     ): Promise<
-      { ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }
+      { ok: true; apiKey?: string; headers?: ProviderHeaders } | { ok: false; error: string }
     >;
   };
 }
@@ -55,7 +54,7 @@ export class PiGoalEvaluator implements GoalEvaluator {
     if (!ctx?.model) {
       throw new GoalEvaluatorUnavailableError("No active model is available to evaluate the goal");
     }
-    const model = ctx.model as EvaluatorModel;
+    const model = ctx.model as Model<Api>;
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok) throw new GoalEvaluatorUnavailableError(auth.error);
 

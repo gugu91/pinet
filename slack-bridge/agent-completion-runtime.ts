@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentSettledEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 interface AgentCompletionThreadState {
   channelId: string;
@@ -15,6 +15,7 @@ export interface AgentCompletionRuntimeDeps {
 export interface AgentCompletionRuntime {
   trackThinkingThread: (threadTs: string) => void;
   onAgentEnd: (_event: unknown, ctx: ExtensionContext) => Promise<void>;
+  onAgentSettled: (_event: AgentSettledEvent, ctx: ExtensionContext) => Promise<void>;
 }
 
 export function createAgentCompletionRuntime(
@@ -26,7 +27,11 @@ export function createAgentCompletionRuntime(
     thinking.add(threadTs);
   }
 
-  async function onAgentEnd(_event: unknown, ctx: ExtensionContext): Promise<void> {
+  async function onAgentEnd(_event: unknown, _ctx: ExtensionContext): Promise<void> {
+    deps.clearFollowUpPending();
+  }
+
+  async function onAgentSettled(_event: AgentSettledEvent, ctx: ExtensionContext): Promise<void> {
     for (const threadTs of thinking) {
       const thread = deps.getThreads().get(threadTs);
       if (thread) {
@@ -34,7 +39,6 @@ export function createAgentCompletionRuntime(
       }
     }
     thinking.clear();
-    deps.clearFollowUpPending();
 
     try {
       await deps.signalAgentFree(ctx);
@@ -46,5 +50,6 @@ export function createAgentCompletionRuntime(
   return {
     trackThinkingThread,
     onAgentEnd,
+    onAgentSettled,
   };
 }

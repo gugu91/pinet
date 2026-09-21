@@ -1,4 +1,11 @@
 minimumReleaseAge: 10080 # 7 days
+minimumReleaseAgeExclude:
+  - "@earendil-works/chord"
+  - "@earendil-works/pi-agent-core"
+  - "@earendil-works/pi-ai"
+  - "@earendil-works/pi-coding-agent"
+  - "@earendil-works/pi-telemetry"
+  - "@earendil-works/pi-tui"
 
 packages:
   - transport-core

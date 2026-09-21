@@ -6,6 +6,7 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
   const deliverFollowUpMessage = vi.fn(() => true);
   const requireToolPolicy = vi.fn();
   const onCompletionAgentEnd = vi.fn(async () => {});
+  const onCompletionAgentSettled = vi.fn(async () => {});
   const setDeliverTrackedSlackFollowUpMessage = vi.fn();
 
   const deps: AgentEventRuntimeDeps = {
@@ -16,6 +17,7 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
     formatError: (error) => (error instanceof Error ? error.message : String(error)),
     deliverFollowUpMessage,
     onCompletionAgentEnd,
+    onCompletionAgentSettled,
     setDeliverTrackedSlackFollowUpMessage,
     ...overrides,
   };
@@ -25,6 +27,7 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
     deliverFollowUpMessage,
     requireToolPolicy,
     onCompletionAgentEnd,
+    onCompletionAgentSettled,
     setDeliverTrackedSlackFollowUpMessage,
   };
 }
@@ -41,8 +44,8 @@ function createPi() {
 }
 
 describe("createAgentEventRuntime", () => {
-  it("registers the pinned agent event wiring in order and preserves agent_end ordering", () => {
-    const { deps, onCompletionAgentEnd } = createDeps();
+  it("registers per-run cleanup on agent_end and completion on agent_settled", () => {
+    const { deps, onCompletionAgentEnd, onCompletionAgentSettled } = createDeps();
     const runtime = createAgentEventRuntime(deps);
     const { pi, registrations } = createPi();
 
@@ -55,12 +58,39 @@ describe("createAgentEventRuntime", () => {
       "agent_end",
       "tool_call",
       "agent_end",
+      "agent_settled",
     ]);
 
     const agentEndHandlers = registrations.filter(({ eventName }) => eventName === "agent_end");
     expect(agentEndHandlers).toHaveLength(2);
     expect(agentEndHandlers[0]?.handler).not.toBe(onCompletionAgentEnd);
     expect(agentEndHandlers[1]?.handler).toBe(onCompletionAgentEnd);
+    expect(registrations.find(({ eventName }) => eventName === "agent_settled")?.handler).toBe(
+      onCompletionAgentSettled,
+    );
+  });
+
+  it("does not signal completion when agent_before_settle continues with a retry", async () => {
+    const { deps, onCompletionAgentEnd, onCompletionAgentSettled } = createDeps();
+    const runtime = createAgentEventRuntime(deps);
+    const { pi, registrations } = createPi();
+
+    runtime.register(pi);
+
+    for (const { eventName, handler } of registrations) {
+      if (eventName === "agent_end") await handler({}, {});
+    }
+    // Pi 0.87 may choose continue in agent_before_settle, producing another run before settlement.
+    for (const { eventName, handler } of registrations) {
+      if (eventName === "agent_end") await handler({}, {});
+    }
+
+    expect(onCompletionAgentEnd).toHaveBeenCalledTimes(2);
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
+
+    const settled = registrations.find(({ eventName }) => eventName === "agent_settled");
+    await settled?.handler({}, {});
+    expect(onCompletionAgentSettled).toHaveBeenCalledTimes(1);
   });
 
   it("hands off tracked Slack follow-up delivery from the created tool-policy runtime", async () => {
