@@ -9,6 +9,33 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.23] - 2026-09-21
+
+Pinet v0.2.23 lets `@pinet/model-aware-compaction` use an output budget that is independent from Pi's native compaction trigger reserve.
+
+### Version verification
+
+- `pi-extensions` — `0.2.23` (private repo package)
+- `@pinet/transport-core` — `0.2.23`
+- `@pinet/broker-core` — `0.2.23`
+- `@pinet/pinet-core` — `0.2.23`
+- `@pinet/imessage-bridge` — `0.2.23`
+- `@pinet/slack-bridge` — `0.2.23`
+- `@pinet/model-aware-compaction` — `0.2.23`
+- `@pinet/agent-goal` — `0.2.23`
+
+### Release highlights
+
+- `summaryReserveTokens` controls the dedicated summarizer's output budget without inheriting a large `reserveTokens` value used to trigger native Pi 0.86 compaction early on a long-context model.
+- Preflight capacity checks and split-turn summary generation use the dedicated budget. Invalid values fail closed only when a selected summarizer owns the compaction; native-only compaction remains available.
+- Publishes the other six packages at the aligned version without additional functional changes.
+
+### Notable pull requests
+
+- [#1060](https://github.com/gugu91/pinet/pull/1060) — separate the summary output budget from Pi's native trigger reserve
+
+See the [full change set since v0.2.22](https://github.com/gugu91/pinet/compare/v0.2.22...v0.2.23).
+
 ## [0.2.22] - 2026-09-21
 
 Pinet v0.2.22 gives `@pinet/model-aware-compaction` ordered fallback models and a session-only on/off switch.
