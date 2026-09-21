@@ -215,12 +215,12 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     try {
       if (sessionDisabled) return;
       const config = loadConfig(ctx.cwd);
-      if (config.configError) return failClosed(config.configError);
       // A session override is exactly one model; otherwise the configured chain is tried in order.
       const chain = runtimeSelector
         ? [runtimeSelector]
         : chainForModel(config.rules, modelKey(ctx.model), config.compactionModels);
       if (chain.length === 0) return;
+      if (config.configError) return failClosed(config.configError);
 
       if (event.signal.aborted) return { cancel: true };
       if (summarizationInFlight)
@@ -283,7 +283,10 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     if (sessionDisabled) return;
     const ctx = rawCtx as CompatibleContext;
     const config = loadConfig(ctx.cwd);
-    if (config.configError) return;
+    const chain = runtimeSelector
+      ? [runtimeSelector]
+      : chainForModel(config.rules, modelKey(ctx.model), config.compactionModels);
+    if (chain.length > 0 && config.configError) return;
     const usage = ctx.getContextUsage?.();
     const decision = decideCompaction({
       enabled: config.enabled,

@@ -112,6 +112,42 @@ describe("extension wiring", () => {
     }
   });
 
+  it("ignores a summarizer-only validation error when native compaction owns the summary", async () => {
+    const { emit, emitAsync } = harness();
+    const compact = vi.fn();
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({
+        "model-aware-compaction": { enabled: true, summaryReserveTokens: null },
+      }),
+    );
+    const ctx = { ...context(120_000, compact), cwd: temp };
+    try {
+      emit("agent_settled", ctx);
+      expect(compact).toHaveBeenCalledTimes(1);
+
+      const [hookResult] = await emitAsync(
+        "session_before_compact",
+        {
+          preparation: {
+            messagesToSummarize: [],
+            turnPrefixMessages: [],
+            fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+          },
+          branchEntries: [],
+          signal: new AbortController().signal,
+        },
+        ctx,
+      );
+      expect(hookResult).toBeUndefined();
+      expect(selectedCompact).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("waits for the full operation to settle before compacting", () => {
     const { emit } = harness();
     const compact = vi.fn();
