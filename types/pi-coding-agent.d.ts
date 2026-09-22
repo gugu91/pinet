@@ -61,9 +61,6 @@ declare module "@earendil-works/pi-coding-agent" {
     getLeafId(): string | undefined;
     getSessionFile(): string | undefined;
   }
-  export const SessionManager: {
-    inMemory(cwd?: string): SessionManager;
-  };
 
   export interface RegistryModel {
     provider: string;
@@ -129,7 +126,6 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export interface AgentMessage {
     role: string;
-    content?: string | Array<{ type: string; text?: string }>;
   }
 
   export interface CompactionPreparation {
@@ -196,55 +192,6 @@ declare module "@earendil-works/pi-coding-agent" {
     dispose(): void;
   }
 
-  export interface ResourceLoader {
-    reload(): Promise<void>;
-  }
-
-  export const DefaultResourceLoader: {
-    new (options: {
-      cwd: string;
-      agentDir: string;
-      extensionFactories?: Array<{
-        name: string;
-        factory: (pi: ExtensionAPI) => void | Promise<void>;
-      }>;
-      noExtensions?: boolean;
-      noSkills?: boolean;
-      noPromptTemplates?: boolean;
-      noThemes?: boolean;
-      noContextFiles?: boolean;
-    }): ResourceLoader;
-  };
-
-  export interface AgentSession {
-    readonly isIdle: boolean;
-    readonly extensionRunner: {
-      onError(
-        listener: (error: { extensionPath: string; event: string; error: string }) => void,
-      ): () => void;
-    };
-    prompt(
-      text: string,
-      options?: {
-        expandPromptTemplates?: boolean;
-        source?: "interactive" | "extension" | "rpc";
-      },
-    ): Promise<void>;
-    dispose(): void;
-  }
-
-  export function createAgentSession(options?: {
-    cwd?: string;
-    agentDir?: string;
-    model?: import("@earendil-works/pi-ai/compat").Model<
-      import("@earendil-works/pi-ai/compat").Api
-    >;
-    modelRuntime?: ModelRuntime;
-    resourceLoader?: ResourceLoader;
-    sessionManager?: SessionManager;
-    noTools?: "all" | "builtin";
-  }): Promise<{ session: AgentSession }>;
-
   export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
   export interface AgentStartEvent {
@@ -260,35 +207,12 @@ declare module "@earendil-works/pi-coding-agent" {
     type: "agent_settled";
   }
 
-  export interface MessageStartEvent {
-    type: "message_start";
-    message: AgentMessage & { content: NonNullable<AgentMessage["content"]> };
-  }
-
-  export type ExtensionEventName =
-    | "agent_end"
-    | "agent_settled"
-    | "agent_start"
-    | "before_agent_start"
-    | "input"
-    | "message_start"
-    | "model_select"
-    | "session_before_compact"
-    | "session_compact"
-    | "session_shutdown"
-    | "session_start"
-    | "tool_call"
-    | "turn_end"
-    | "turn_start"
-    | "user_bash";
-
   export interface ExtensionContext {
     cwd: string;
     /** Run mode; only "tui" supports ui.custom components. */
     mode?: ExtensionMode;
     hasUI?: boolean;
     isIdle?: () => boolean;
-    hasPendingMessages?: () => boolean;
     ui: ExtensionUI;
     sessionManager: SessionManager;
     model?: { provider?: string; id?: string };
@@ -334,7 +258,7 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface ExtensionAPI {
-    on(event: ExtensionEventName, handler: (event: any, ctx: ExtensionContext) => any): void;
+    on(event: string, handler: (event: any, ctx: ExtensionContext) => any): void;
     registerTool(definition: ToolDefinition): void;
     registerCommand(name: string, options: CommandDefinition): void;
     registerMessageRenderer(
@@ -343,7 +267,7 @@ declare module "@earendil-works/pi-coding-agent" {
     ): void;
     sendUserMessage(
       content: string | Array<Record<string, unknown>>,
-      options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+      options?: { deliverAs?: string },
     ): void;
     sendMessage(message: any): void;
     appendEntry(customType: string, data?: unknown): void;

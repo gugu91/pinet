@@ -3921,7 +3921,7 @@ describe("slack-bridge Pinet reconnect", () => {
     }
   });
 
-  it("keeps a retrying follower working until agent_settled, then retries idle sync", async () => {
+  it("keeps a follower working through agent_end, then retries failed settlement sync", async () => {
     vi.useFakeTimers();
 
     const commands = new Map<string, CommandDefinition>();
@@ -4054,12 +4054,9 @@ describe("slack-bridge Pinet reconnect", () => {
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "working"]);
 
       await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
-      // An agent_before_settle continuation runs another agent loop without settling.
-      await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "working"]);
 
       await agentSettled?.({ type: "agent_settled" }, ctx);
-      await vi.advanceTimersByTimeAsync(0);
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual([
         "working",
         "working",
@@ -4088,7 +4085,7 @@ describe("slack-bridge Pinet reconnect", () => {
     }
   });
 
-  it("lets the deterministic Pinet settle drain bypass transient idle suppression", async () => {
+  it("suppresses automatic inbox drain immediately after Escape so interrupts return control", async () => {
     vi.useFakeTimers();
 
     const commands = new Map<string, CommandDefinition>();
@@ -4213,11 +4210,10 @@ describe("slack-bridge Pinet reconnect", () => {
 
       idle = true;
       await agentSettled?.({ type: "agent_settled" }, ctx);
-      expect(sendUserMessage).toHaveBeenCalledTimes(1);
+      expect(sendUserMessage).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1_501);
       await agentSettled?.({ type: "agent_settled" }, ctx);
-      await vi.advanceTimersByTimeAsync(0);
 
       expect(sendUserMessage).toHaveBeenCalledTimes(1);
       expect(sendUserMessage).toHaveBeenCalledWith(

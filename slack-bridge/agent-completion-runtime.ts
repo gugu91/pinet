@@ -8,7 +8,7 @@ import type {
 export interface AgentCompletionRuntimeDeps {
   clearFollowUpPending: () => void;
   signalAgentWorking: () => Promise<void>;
-  signalAgentFree: (ctx: ExtensionContext) => Promise<unknown>;
+  signalAgentSettled: (ctx: ExtensionContext) => Promise<unknown>;
   formatError: (error: unknown) => string;
 }
 
@@ -24,8 +24,8 @@ export function createAgentCompletionRuntime(
   async function onAgentStart(_event: AgentStartEvent, ctx: ExtensionContext): Promise<void> {
     try {
       await deps.signalAgentWorking();
-    } catch (err) {
-      ctx.ui.notify(`Pinet working status sync failed: ${deps.formatError(err)}`, "warning");
+    } catch (error) {
+      ctx.ui.notify(`Pinet working status sync failed: ${deps.formatError(error)}`, "warning");
     }
   }
 
@@ -35,15 +35,11 @@ export function createAgentCompletionRuntime(
 
   async function onAgentSettled(_event: AgentSettledEvent, ctx: ExtensionContext): Promise<void> {
     try {
-      await deps.signalAgentFree(ctx);
-    } catch (err) {
-      ctx.ui.notify(`Pinet auto-free failed: ${deps.formatError(err)}`, "warning");
+      await deps.signalAgentSettled(ctx);
+    } catch (error) {
+      ctx.ui.notify(`Pinet auto-free failed: ${deps.formatError(error)}`, "warning");
     }
   }
 
-  return {
-    onAgentStart,
-    onAgentEnd,
-    onAgentSettled,
-  };
+  return { onAgentStart, onAgentEnd, onAgentSettled };
 }

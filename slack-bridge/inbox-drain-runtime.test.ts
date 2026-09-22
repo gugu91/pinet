@@ -108,22 +108,6 @@ describe("createInboxDrainRuntime", () => {
     expect(sendUserMessage).toHaveBeenCalledWith("steady note", { deliverAs: "followUp" });
   });
 
-  it("bypasses the idle gate only for a settle-time drain", () => {
-    const { runtime, inbox, deliverTrackedSlackFollowUpMessage, setIdle } = createDeps();
-    const message = createMessage({ brokerInboxId: 39 });
-    inbox.push(message);
-    setIdle(false);
-
-    runtime.drainInbox({ fromSettle: true });
-
-    expect(deliverTrackedSlackFollowUpMessage).toHaveBeenCalledWith({
-      prompt: formatInboxMessages([message], new Map<string, string>([["U123", "Ada"]])),
-      messages: [message],
-      fromSettle: true,
-    });
-    expect(inbox).toEqual([]);
-  });
-
   it("formats pending inbox work, applies security guidance, and flushes follower acks", () => {
     const {
       runtime,

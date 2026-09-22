@@ -16,7 +16,6 @@ export interface InboxDrainRuntimeDeps {
   deliverTrackedSlackFollowUpMessage: (options: {
     prompt: string;
     messages: Pick<InboxMessage, "threadTs">[];
-    fromSettle?: boolean;
   }) => boolean;
   getBrokerRole: () => "broker" | "follower" | null;
   hasFollowerClient: () => boolean;
@@ -28,14 +27,14 @@ export interface InboxDrainRuntimeDeps {
 }
 
 export interface InboxDrainRuntime {
-  deliverFollowUpMessage: (text: string, options?: { fromSettle?: boolean }) => boolean;
+  deliverFollowUpMessage: (text: string) => boolean;
   flushDeliveredFollowerAcks: () => Promise<void>;
-  drainInbox: (options?: { fromSettle?: boolean }) => void;
+  drainInbox: () => void;
 }
 
 export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrainRuntime {
-  function deliverFollowUpMessage(text: string, options: { fromSettle?: boolean } = {}): boolean {
-    if (!options.fromSettle && !deps.isIdle()) {
+  function deliverFollowUpMessage(text: string): boolean {
+    if (!deps.isIdle()) {
       return false;
     }
 
@@ -55,8 +54,8 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
     await deps.flushFollowerDeliveredAcks();
   }
 
-  function drainInbox(options: { fromSettle?: boolean } = {}): void {
-    if (!options.fromSettle && !deps.isIdle()) {
+  function drainInbox(): void {
+    if (!deps.isIdle()) {
       return;
     }
 
@@ -79,13 +78,7 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
       prompt = `${securityPrompt}\n\n${prompt}`;
     }
 
-    if (
-      deps.deliverTrackedSlackFollowUpMessage({
-        prompt,
-        messages: pending,
-        ...(options.fromSettle ? { fromSettle: true } : {}),
-      })
-    ) {
+    if (deps.deliverTrackedSlackFollowUpMessage({ prompt, messages: pending })) {
       if (brokerInboxIds.length > 0) {
         if (deps.getBrokerRole() === "follower") {
           markFollowerInboxIdsDelivered(deps.getFollowerDeliveryState(), brokerInboxIds);

@@ -32,12 +32,15 @@ function createContext() {
 function createDeps(overrides: Partial<AgentCompletionRuntimeDeps> = {}) {
   const clearFollowUpPending = vi.fn();
   const signalAgentWorking = vi.fn(async () => {});
-  const signalAgentFree = vi.fn(async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }));
+  const signalAgentSettled = vi.fn(async () => ({
+    queuedInboxCount: 0,
+    drainedQueuedInbox: false,
+  }));
 
   const deps: AgentCompletionRuntimeDeps = {
     clearFollowUpPending,
     signalAgentWorking,
-    signalAgentFree,
+    signalAgentSettled,
     formatError: (error) => (error instanceof Error ? error.message : String(error)),
     ...overrides,
   };
@@ -46,13 +49,13 @@ function createDeps(overrides: Partial<AgentCompletionRuntimeDeps> = {}) {
     deps,
     clearFollowUpPending,
     signalAgentWorking,
-    signalAgentFree,
+    signalAgentSettled,
   };
 }
 
 describe("createAgentCompletionRuntime", () => {
   it("marks every run working, cleans per-run state, and frees only on settlement", async () => {
-    const { deps, clearFollowUpPending, signalAgentWorking, signalAgentFree } = createDeps();
+    const { deps, clearFollowUpPending, signalAgentWorking, signalAgentSettled } = createDeps();
     const runtime = createAgentCompletionRuntime(deps);
     const { ctx, notify } = createContext();
 
@@ -63,11 +66,11 @@ describe("createAgentCompletionRuntime", () => {
 
     expect(signalAgentWorking).toHaveBeenCalledTimes(2);
     expect(clearFollowUpPending).toHaveBeenCalledTimes(2);
-    expect(signalAgentFree).not.toHaveBeenCalled();
+    expect(signalAgentSettled).not.toHaveBeenCalled();
 
     await runtime.onAgentSettled({ type: "agent_settled" }, ctx);
 
-    expect(signalAgentFree).toHaveBeenCalledWith(ctx);
+    expect(signalAgentSettled).toHaveBeenCalledWith(ctx);
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -88,10 +91,10 @@ describe("createAgentCompletionRuntime", () => {
   });
 
   it("warns when settled auto-free fails after per-run cleanup", async () => {
-    const signalAgentFree = vi.fn(async () => {
+    const signalAgentSettled = vi.fn(async () => {
       throw new Error("status sync failed once");
     });
-    const { deps, clearFollowUpPending } = createDeps({ signalAgentFree });
+    const { deps, clearFollowUpPending } = createDeps({ signalAgentSettled });
     const runtime = createAgentCompletionRuntime(deps);
     const { ctx, notify } = createContext();
 
@@ -99,7 +102,7 @@ describe("createAgentCompletionRuntime", () => {
     await runtime.onAgentSettled({ type: "agent_settled" }, ctx);
 
     expect(clearFollowUpPending).toHaveBeenCalledTimes(1);
-    expect(signalAgentFree).toHaveBeenCalledWith(ctx);
+    expect(signalAgentSettled).toHaveBeenCalledWith(ctx);
     expect(notify).toHaveBeenCalledWith(
       "Pinet auto-free failed: status sync failed once",
       "warning",

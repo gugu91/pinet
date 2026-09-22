@@ -66,14 +66,14 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
     await syncDesiredAgentStatus(options);
   }
 
-  // agent-standards-ignore prefer-inline-single-use-helper: public settle path must remain distinct from manual free-and-drain.
+  // agent-standards-ignore prefer-inline-single-use-helper: automatic settlement publishes idle without the manual free command's inbox drain.
   async function signalAgentSettled(ctx?: ExtensionContext): Promise<void> {
     if (!deps.getPinetEnabled()) {
       return;
     }
 
     await reportStatus("idle");
-    const maintenanceCtx = ctx ?? deps.getExtensionContext() ?? undefined;
+    const maintenanceCtx = ctx ?? deps.getExtensionContext();
     if (deps.getBrokerRole() === "broker" && maintenanceCtx) {
       deps.runBrokerMaintenance(maintenanceCtx);
     }
@@ -88,7 +88,7 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
       throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
     }
 
-    const maintenanceCtx = ctx ?? deps.getExtensionContext() ?? undefined;
+    const maintenanceCtx = ctx ?? deps.getExtensionContext();
     await signalAgentSettled(maintenanceCtx);
 
     const queuedInboxCount = deps.getInboxLength();

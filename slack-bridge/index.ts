@@ -243,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 
   const inbox: InboxMessage[] = [];
   const brokerDeliveryState = createBrokerDeliveryState();
-  let drainInboxPort: ((options?: { fromSettle?: boolean }) => void) | null = null;
+  let drainInboxPort: (() => void) | null = null;
   const sessionUiRuntime = createSessionUiRuntime({
     getAgentName: () => agentName,
     getAgentEmoji: () => agentEmoji,
@@ -265,7 +265,6 @@ export default function (pi: ExtensionAPI) {
   let deliverTrackedSlackFollowUpMessage: (options: {
     prompt: string;
     messages: Pick<InboxMessage, "threadTs">[];
-    fromSettle?: boolean;
   }) => boolean = () => false;
   const inboxDrainRuntime = createInboxDrainRuntime({
     sendUserMessage: (body, options) => {
@@ -536,7 +535,7 @@ export default function (pi: ExtensionAPI) {
       brokerRuntime.clearFollowUpPending();
     },
     signalAgentWorking: () => reportStatus("working", { force: true }),
-    signalAgentFree: (ctx) => signalAgentSettled(ctx),
+    signalAgentSettled,
     formatError: msg,
   });
   const agentEventRuntime = createAgentEventRuntime({
@@ -555,7 +554,7 @@ export default function (pi: ExtensionAPI) {
     onCompletionAgentEnd: agentCompletionRuntime.onAgentEnd,
     onCompletionAgentSettled: agentCompletionRuntime.onAgentSettled,
     hasQueuedInbox: () => pinetEnabled && inbox.length > 0,
-    drainInboxFromSettle: () => drainInbox({ fromSettle: true }),
+    drainQueuedInboxIfIdle: maybeDrainInboxIfIdle,
     setDeliverTrackedSlackFollowUpMessage: (deliver) => {
       deliverTrackedSlackFollowUpMessage = deliver;
     },
@@ -2015,7 +2014,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    agentEventRuntime.dispose();
     compactionGate.reset();
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
