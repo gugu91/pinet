@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRegistry,
+  ModelRuntime,
+  SessionManager,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/compat";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -577,10 +586,11 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.listScheduledWakeups(reg.agentId)).toHaveLength(0);
   });
 
-  it("cancels deferred idle publication before settled-handler backlog can be routed", async () => {
+  it("keeps Pinet non-quiescent while a settled-handler prompt awaits before_agent_start", async () => {
     const registration = await client.register("continuing-agent", "🔁");
     let desiredStatus: "working" | "idle" = "idle";
     const maintenanceResults: ReturnType<typeof runBrokerMaintenancePass>[] = [];
+    const clearThreadStatus = vi.fn(async () => undefined);
     server.onAgentStatusChange((_agentId, status) => {
       if (status === "idle") {
         maintenanceResults.push(
@@ -591,24 +601,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
         );
       }
     });
-    const ctx = {
-      cwd: process.cwd(),
-      hasUI: true,
-      isIdle: () => true,
-      ui: {
-        theme: {},
-        notify: vi.fn(),
-        setStatus: vi.fn(),
-        select: async () => undefined,
-        custom: async <T>() => undefined as T,
-      },
-      sessionManager: {
-        getEntries: () => [],
-        getBranch: () => [],
-        getLeafId: () => "continuing-agent-leaf",
-        getSessionFile: () => "/tmp/continuing-agent.jsonl",
-      },
-    } as ExtensionContext;
+
     const status = createPinetAgentStatus({
       getPinetEnabled: () => true,
       getBrokerRole: () => "follower",
@@ -624,7 +617,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       getInboxLength: () => 0,
       getCurrentRuntimeMode: () => "follower",
       maybeDrainInboxIfIdle: () => false,
-      getExtensionContext: () => ctx,
+      getExtensionContext: () => undefined,
     });
     const completion = createAgentCompletionRuntime({
       clearFollowUpPending: vi.fn(),
@@ -632,79 +625,134 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       signalAgentFree: (eventCtx) => status.signalAgentFree(eventCtx),
       formatError: (error) => (error instanceof Error ? error.message : String(error)),
     });
+    let deliverTrackedSlackFollowUpMessage:
+      | ((options: {
+          prompt: string;
+          messages: Array<{ channel: string; threadTs: string }>;
+        }) => boolean)
+      | undefined;
     const runtime = createAgentEventRuntime({
       getBrokerRole: () => "follower",
       getGuardrails: () => ({}),
       requireToolPolicy: vi.fn(),
       formatAction: String,
       formatError: String,
-      deliverFollowUpMessage: () => false,
+      deliverFollowUpMessage: () => true,
+      beginThreadStatus: vi.fn(async () => undefined),
+      clearThreadStatus,
       onCompletionAgentStart: completion.onAgentStart,
       onCompletionAgentEnd: completion.onAgentEnd,
       onCompletionAgentSettled: completion.onAgentSettled,
-      setDeliverTrackedSlackFollowUpMessage: vi.fn(),
-    });
-    type RegisteredEventHandler = (
-      event: never,
-      eventCtx: ExtensionContext,
-    ) => void | Promise<void>;
-    const handlers = new Map<string, RegisteredEventHandler[]>();
-    const pi = {
-      on: (eventName: string, handler: RegisteredEventHandler) => {
-        const eventHandlers = handlers.get(eventName) ?? [];
-        eventHandlers.push(handler);
-        handlers.set(eventName, eventHandlers);
+      setDeliverTrackedSlackFollowUpMessage: (deliver) => {
+        deliverTrackedSlackFollowUpMessage = deliver;
       },
-    } as Pick<ExtensionAPI, "on">;
-    runtime.register(pi);
-
-    const dispatch = async (eventName: string) => {
-      for (const handler of handlers.get(eventName) ?? []) {
-        await handler({} as never, ctx);
-      }
-    };
-    const deferredContinuations: Array<() => Promise<void>> = [];
-    let queuedSettledContinuation = false;
-    pi.on("agent_settled", () => {
-      if (queuedSettledContinuation) return;
-      queuedSettledContinuation = true;
-      db.queueUnroutedMessage({
-        source: "slack",
-        threadId: "t-deferred-continuation",
-        channel: "C-CONTINUE",
-        userId: "U1",
-        text: "do not route concurrently",
-        timestamp: String(Date.now() / 1000),
-      });
-      deferredContinuations.push(() => dispatch("agent_start"));
     });
 
-    await dispatch("agent_start");
-    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+    let releaseBeforeAgentStart: (() => void) | undefined;
+    const beforeAgentStartGate = new Promise<void>((resolve) => {
+      releaseBeforeAgentStart = resolve;
+    });
+    let reportBlockedBeforeAgentStart: (() => void) | undefined;
+    const blockedBeforeAgentStart = new Promise<void>((resolve) => {
+      reportBlockedBeforeAgentStart = resolve;
+    });
+    let queuedSettledContinuation = false;
+    const continuationPrompt = "continue after settlement";
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: dir,
+      agentDir: path.join(dir, "agent"),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      extensionFactories: [
+        {
+          name: "pinet-lifecycle",
+          factory: (pi) => runtime.register(pi),
+        },
+        {
+          name: "settled-continuation",
+          factory: (pi) => {
+            pi.on("agent_settled", () => {
+              if (queuedSettledContinuation) return;
+              queuedSettledContinuation = true;
+              db.queueUnroutedMessage({
+                source: "slack",
+                threadId: "t-deferred-continuation",
+                channel: "C-CONTINUE",
+                userId: "U1",
+                text: "do not route concurrently",
+                timestamp: String(Date.now() / 1000),
+              });
+              pi.sendUserMessage(continuationPrompt);
+            });
+            pi.on("before_agent_start", async (event) => {
+              if (event.prompt !== continuationPrompt) return;
+              reportBlockedBeforeAgentStart?.();
+              await beforeAgentStartGate;
+            });
+          },
+        },
+      ],
+    });
+    await resourceLoader.reload();
 
-    await dispatch("agent_settled");
-    expect(deferredContinuations).toHaveLength(1);
-    expect(db.getBacklogCount("pending")).toBe(1);
-    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
-    expect(maintenanceResults).toEqual([]);
+    const faux = fauxProvider({ provider: "pinet-quiescence-test" });
+    faux.setResponses([
+      fauxAssistantMessage("first run complete"),
+      fauxAssistantMessage("continuation complete"),
+    ]);
+    const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null });
+    new ModelRegistry(modelRuntime).registerProvider(faux.provider);
+    const { session } = await createAgentSession({
+      cwd: dir,
+      agentDir: path.join(dir, "agent"),
+      model: faux.getModel(),
+      modelRuntime,
+      resourceLoader,
+      sessionManager: SessionManager.inMemory(dir),
+      noTools: "all",
+    });
 
-    await deferredContinuations.shift()?.();
-    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      const initialPrompt = "start tracked Slack work";
+      expect(
+        deliverTrackedSlackFollowUpMessage?.({
+          prompt: initialPrompt,
+          messages: [{ channel: "C100", threadTs: "100.1" }],
+        }),
+      ).toBe(true);
 
-    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
-    expect(db.getBacklogCount("pending")).toBe(1);
-    expect(maintenanceResults).toEqual([]);
-    expect(await client.pollInbox()).toEqual([]);
+      const run = session.prompt(initialPrompt, {
+        source: "extension",
+        expandPromptTemplates: false,
+      });
+      await blockedBeforeAgentStart;
+      await new Promise((resolve) => setImmediate(resolve));
 
-    await dispatch("agent_settled");
-    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
-    await waitFor(() => db.getAgentById(registration.agentId)?.status === "idle");
+      expect(session.isIdle).toBe(true);
+      expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+      expect(clearThreadStatus).not.toHaveBeenCalled();
+      expect(db.getBacklogCount("pending")).toBe(1);
+      expect(maintenanceResults).toEqual([]);
+      expect(await client.pollInbox()).toEqual([]);
 
-    expect(db.getAgentById(registration.agentId)?.status).toBe("idle");
-    expect(maintenanceResults).toHaveLength(1);
-    expect(maintenanceResults[0]?.assignedBacklogCount).toBe(1);
-    expect(db.getBacklogCount("pending")).toBe(0);
-    expect(await client.pollInbox()).toHaveLength(1);
+      releaseBeforeAgentStart?.();
+      await run;
+      await waitFor(() => db.getAgentById(registration.agentId)?.status === "idle");
+
+      expect(clearThreadStatus).toHaveBeenCalledOnce();
+      expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
+      expect(maintenanceResults).toHaveLength(1);
+      expect(maintenanceResults[0]?.assignedBacklogCount).toBe(1);
+      expect(db.getBacklogCount("pending")).toBe(0);
+      expect(await client.pollInbox()).toHaveLength(1);
+    } finally {
+      releaseBeforeAgentStart?.();
+      runtime.dispose();
+      session.dispose();
+    }
   });
 
   it("keeps production Pinet slack_send status visible until composed settlement", async () => {
@@ -743,6 +791,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
         cwd: process.cwd(),
         hasUI: true,
         isIdle: () => true,
+        hasPendingMessages: () => false,
         ui: {
           theme: {},
           notify: vi.fn(),

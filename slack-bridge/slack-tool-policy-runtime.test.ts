@@ -199,6 +199,50 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
   });
 
+  it("does not erase a new generation that arrives while an older status is clearing", async () => {
+    let releaseFirstClear: (() => void) | undefined;
+    const firstClearGate = new Promise<void>((resolve) => {
+      releaseFirstClear = resolve;
+    });
+    let clearCount = 0;
+    const clearThreadStatus = vi.fn(async () => {
+      clearCount += 1;
+      if (clearCount === 1) await firstClearGate;
+    });
+    const { deps } = createDeps({
+      beginThreadStatus: vi.fn(async () => undefined),
+      clearThreadStatus,
+    });
+    const runtime = createSlackToolPolicyRuntime(deps);
+
+    runtime.deliverTrackedSlackFollowUpMessage({
+      prompt: "settling generation",
+      messages: [{ channel: "C100", threadTs: "100.1" }],
+    });
+    await runtime.onInput({ source: "extension", text: "settling generation" });
+    await runtime.onTurnStart();
+
+    const firstSettlement = runtime.onAgentSettled();
+    await vi.waitFor(() => {
+      expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
+    });
+
+    runtime.deliverTrackedSlackFollowUpMessage({
+      prompt: "new generation",
+      messages: [{ channel: "C100", threadTs: "100.1" }],
+    });
+    await runtime.onInput({ source: "extension", text: "new generation" });
+    await runtime.onTurnStart();
+
+    releaseFirstClear?.();
+    await firstSettlement;
+    expect(clearThreadStatus).toHaveBeenCalledTimes(1);
+
+    await runtime.onAgentSettled();
+    expect(clearThreadStatus).toHaveBeenCalledTimes(2);
+    expect(clearThreadStatus).toHaveBeenLastCalledWith("C100", "100.1");
+  });
+
   it("clears the active Slack tool-policy turn on agent_end", async () => {
     const { deps, requireToolPolicy } = createDeps({
       getGuardrails: () => ({ requireConfirmation: ["read"] }),

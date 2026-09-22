@@ -60,6 +60,7 @@ describe("createAgentEventRuntime", () => {
 
     expect(registrations.map(({ eventName }) => eventName)).toEqual([
       "input",
+      "before_agent_start",
       "agent_start",
       "turn_start",
       "turn_end",
@@ -94,9 +95,13 @@ describe("createAgentEventRuntime", () => {
       messages: [{ channel: "C100", threadTs: "100.1" }],
     });
 
+    const ctx = {
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+    };
     const dispatch = async (eventName: string, event: object = {}) => {
       const registration = registrations.find((candidate) => candidate.eventName === eventName);
-      await registration?.handler(event, {});
+      await registration?.handler(event, ctx);
     };
 
     await dispatch("input", { source: "extension", text: "retrying Slack prompt" });
@@ -135,6 +140,53 @@ describe("createAgentEventRuntime", () => {
     expect(clearThreadStatus.mock.invocationCallOrder[0]).toBeLessThan(
       onCompletionAgentSettled.mock.invocationCallOrder[0] ?? Infinity,
     );
+  });
+
+  it("publishes only when Pi reports no active run or pending messages", async () => {
+    const { deps, onCompletionAgentSettled } = createDeps();
+    const runtime = createAgentEventRuntime(deps);
+    const { pi, registrations } = createPi();
+    runtime.register(pi);
+
+    let idle = false;
+    let pending = false;
+    const ctx = {
+      isIdle: () => idle,
+      hasPendingMessages: () => pending,
+    };
+    const settled = registrations.find(({ eventName }) => eventName === "agent_settled")?.handler;
+
+    await settled?.({ type: "agent_settled" }, ctx);
+    await nextCheckPhase();
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
+
+    idle = true;
+    pending = true;
+    await settled?.({ type: "agent_settled" }, ctx);
+    await nextCheckPhase();
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
+
+    pending = false;
+    await settled?.({ type: "agent_settled" }, ctx);
+    await nextCheckPhase();
+    expect(onCompletionAgentSettled).toHaveBeenCalledOnce();
+  });
+
+  it("disposes a pending quiescence publication during shutdown", async () => {
+    const { deps, onCompletionAgentSettled } = createDeps();
+    const runtime = createAgentEventRuntime(deps);
+    const { pi, registrations } = createPi();
+    runtime.register(pi);
+
+    const settled = registrations.find(({ eventName }) => eventName === "agent_settled")?.handler;
+    await settled?.(
+      { type: "agent_settled" },
+      { isIdle: () => true, hasPendingMessages: () => false },
+    );
+    runtime.dispose();
+    await nextCheckPhase();
+
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
   });
 
   it("hands off tracked Slack follow-up delivery from the created tool-policy runtime", async () => {

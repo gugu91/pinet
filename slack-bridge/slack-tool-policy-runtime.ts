@@ -43,9 +43,13 @@ export function createSlackToolPolicyRuntime(
   deps: SlackToolPolicyRuntimeDeps,
 ): SlackToolPolicyRuntime {
   const pendingSlackToolPolicyTurns: PendingSlackToolPolicyTurn[] = [];
-  const visibleThreadStatuses = new Map<string, { channel: string; threadTs: string }>();
+  const visibleThreadStatuses = new Map<
+    string,
+    { channel: string; threadTs: string; generation: number }
+  >();
   let nextSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
   let activeSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
+  let statusGeneration = 0;
 
   function deliverTrackedSlackFollowUpMessage(options: {
     prompt: string;
@@ -75,7 +79,12 @@ export function createSlackToolPolicyRuntime(
     nextSlackToolPolicyTurn = null;
     if (activeSlackToolPolicyTurn?.channel && activeSlackToolPolicyTurn.threadTs) {
       const { channel, threadTs } = activeSlackToolPolicyTurn;
-      visibleThreadStatuses.set(`${channel}:${threadTs}`, { channel, threadTs });
+      statusGeneration += 1;
+      visibleThreadStatuses.set(`${channel}:${threadTs}`, {
+        channel,
+        threadTs,
+        generation: statusGeneration,
+      });
       await deps.beginThreadStatus?.(channel, threadTs, "is thinking…").catch(() => {
         /* best effort */
       });
@@ -93,12 +102,19 @@ export function createSlackToolPolicyRuntime(
   async function onAgentSettled(): Promise<void> {
     nextSlackToolPolicyTurn = null;
     activeSlackToolPolicyTurn = null;
-    for (const { channel, threadTs } of visibleThreadStatuses.values()) {
-      await deps.clearThreadStatus?.(channel, threadTs).catch(() => {
+    const settledGeneration = statusGeneration;
+    const settlingStatuses = [...visibleThreadStatuses.entries()].filter(
+      ([, status]) => status.generation <= settledGeneration,
+    );
+    for (const [key, status] of settlingStatuses) {
+      if (visibleThreadStatuses.get(key)?.generation !== status.generation) continue;
+      await deps.clearThreadStatus?.(status.channel, status.threadTs).catch(() => {
         /* best effort */
       });
+      if (visibleThreadStatuses.get(key)?.generation === status.generation) {
+        visibleThreadStatuses.delete(key);
+      }
     }
-    visibleThreadStatuses.clear();
   }
 
   async function onToolCall(event: {

@@ -17,6 +17,7 @@ export interface AgentEventRuntimeDeps extends SlackToolPolicyRuntimeDeps {
 
 export interface AgentEventRuntime {
   register: (pi: Pick<ExtensionAPI, "on">) => void;
+  dispose: () => void;
 }
 
 export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEventRuntime {
@@ -38,15 +39,23 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
 
   let lifecycleGeneration = 0;
   let pendingSettlement: ReturnType<typeof setImmediate> | null = null;
+  let disposed = false;
+
+  function invalidatePendingSettlement(): void {
+    lifecycleGeneration += 1;
+    if (pendingSettlement) {
+      clearImmediate(pendingSettlement);
+      pendingSettlement = null;
+    }
+  }
 
   function register(pi: Pick<ExtensionAPI, "on">): void {
     pi.on("input", slackToolPolicyRuntime.onInput);
+    pi.on("before_agent_start", () => {
+      invalidatePendingSettlement();
+    });
     pi.on("agent_start", async (event, ctx) => {
-      lifecycleGeneration += 1;
-      if (pendingSettlement) {
-        clearImmediate(pendingSettlement);
-        pendingSettlement = null;
-      }
+      invalidatePendingSettlement();
       await deps.onCompletionAgentStart(event, ctx);
     });
     pi.on("turn_start", slackToolPolicyRuntime.onTurnStart);
@@ -57,25 +66,47 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
       await deps.onCompletionAgentEnd(event, ctx);
     });
     pi.on("agent_settled", (event, ctx) => {
+      if (disposed) return;
       if (pendingSettlement) {
         clearImmediate(pendingSettlement);
       }
       const settledGeneration = lifecycleGeneration;
-      // Pi 0.87 starts actions queued by later settled handlers before the next
-      // check phase. Their agent_start cancels this publication first.
+      // AgentSession dispatches actions requested by settled handlers only after
+      // every handler returns. Wait for that dispatch, then publish only if Pi's
+      // public lifecycle still reports true quiescence.
       pendingSettlement = setImmediate(() => {
         pendingSettlement = null;
-        if (lifecycleGeneration !== settledGeneration) return;
+        if (
+          disposed ||
+          lifecycleGeneration !== settledGeneration ||
+          ctx.isIdle?.() === false ||
+          ctx.hasPendingMessages?.() === true
+        ) {
+          return;
+        }
         void (async () => {
           await slackToolPolicyRuntime.onAgentSettled();
-          if (lifecycleGeneration !== settledGeneration) return;
+          if (
+            disposed ||
+            lifecycleGeneration !== settledGeneration ||
+            ctx.isIdle?.() === false ||
+            ctx.hasPendingMessages?.() === true
+          ) {
+            return;
+          }
           await deps.onCompletionAgentSettled(event, ctx);
         })();
       });
     });
   }
 
+  function dispose(): void {
+    disposed = true;
+    invalidatePendingSettlement();
+  }
+
   return {
     register,
+    dispose,
   };
 }

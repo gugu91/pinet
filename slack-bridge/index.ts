@@ -2016,6 +2016,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    agentEventRuntime.dispose();
     compactionGate.reset();
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
