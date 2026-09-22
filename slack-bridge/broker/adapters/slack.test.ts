@@ -2933,6 +2933,24 @@ describe("SlackAdapter — send", () => {
     expect(body.thread_ts).toBe("100.200");
   });
 
+  it("leaves thread status to the hosting lifecycle when configured", async () => {
+    fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
+    const adapter = new SlackAdapter({
+      botToken: "xoxb-test",
+      appToken: "xapp-test",
+      lifecycleManagesThreadStatus: true,
+    });
+
+    await adapter.send({
+      threadId: "100.200",
+      channel: "C123",
+      text: "Hello from adapter",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://slack.com/api/chat.postMessage");
+  });
+
   it("includes agent metadata when agentName is provided", async () => {
     fetchMock.mockResolvedValue(mockSlackResponse({ message: { ts: "1.1" } }));
 

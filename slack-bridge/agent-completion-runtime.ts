@@ -1,50 +1,45 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-interface AgentCompletionThreadState {
-  channelId: string;
-}
+import type {
+  AgentEndEvent,
+  AgentSettledEvent,
+  AgentStartEvent,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 export interface AgentCompletionRuntimeDeps {
-  getThreads: () => Map<string, AgentCompletionThreadState>;
-  clearThreadStatus: (channelId: string, threadTs: string) => Promise<void>;
   clearFollowUpPending: () => void;
-  signalAgentFree: (ctx: ExtensionContext) => Promise<unknown>;
+  signalAgentWorking: () => Promise<void>;
+  signalAgentSettled: (ctx: ExtensionContext) => Promise<unknown>;
   formatError: (error: unknown) => string;
 }
 
 export interface AgentCompletionRuntime {
-  trackThinkingThread: (threadTs: string) => void;
-  onAgentEnd: (_event: unknown, ctx: ExtensionContext) => Promise<void>;
+  onAgentStart: (_event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>;
+  onAgentEnd: (_event: AgentEndEvent, ctx: ExtensionContext) => Promise<void>;
+  onAgentSettled: (_event: AgentSettledEvent, ctx: ExtensionContext) => Promise<void>;
 }
 
 export function createAgentCompletionRuntime(
   deps: AgentCompletionRuntimeDeps,
 ): AgentCompletionRuntime {
-  const thinking = new Set<string>();
-
-  function trackThinkingThread(threadTs: string): void {
-    thinking.add(threadTs);
-  }
-
-  async function onAgentEnd(_event: unknown, ctx: ExtensionContext): Promise<void> {
-    for (const threadTs of thinking) {
-      const thread = deps.getThreads().get(threadTs);
-      if (thread) {
-        await deps.clearThreadStatus(thread.channelId, threadTs);
-      }
-    }
-    thinking.clear();
-    deps.clearFollowUpPending();
-
+  async function onAgentStart(_event: AgentStartEvent, ctx: ExtensionContext): Promise<void> {
     try {
-      await deps.signalAgentFree(ctx);
-    } catch (err) {
-      ctx.ui.notify(`Pinet auto-free failed: ${deps.formatError(err)}`, "warning");
+      await deps.signalAgentWorking();
+    } catch (error) {
+      ctx.ui.notify(`Pinet working status sync failed: ${deps.formatError(error)}`, "warning");
     }
   }
 
-  return {
-    trackThinkingThread,
-    onAgentEnd,
-  };
+  async function onAgentEnd(_event: AgentEndEvent, _ctx: ExtensionContext): Promise<void> {
+    deps.clearFollowUpPending();
+  }
+
+  async function onAgentSettled(_event: AgentSettledEvent, ctx: ExtensionContext): Promise<void> {
+    try {
+      await deps.signalAgentSettled(ctx);
+    } catch (error) {
+      ctx.ui.notify(`Pinet auto-free failed: ${deps.formatError(error)}`, "warning");
+    }
+  }
+
+  return { onAgentStart, onAgentEnd, onAgentSettled };
 }

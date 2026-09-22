@@ -5,7 +5,7 @@ import { formatInboxMessages, type InboxMessage } from "./helpers.js";
 const DEFAULT_MAX_MESSAGES_PER_DRAIN = 5;
 
 export interface InboxDrainRuntimeDeps {
-  sendUserMessage: (text: string) => void;
+  sendUserMessage: (text: string, options: { deliverAs: "followUp" }) => void;
   isIdle: () => boolean;
   takeInboxMessages: (maxMessages?: number) => InboxMessage[];
   restoreInboxMessages: (messages: InboxMessage[]) => void;
@@ -39,7 +39,7 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
     }
 
     try {
-      deps.sendUserMessage(text);
+      deps.sendUserMessage(text, { deliverAs: "followUp" });
       return true;
     } catch {
       return false;
@@ -78,12 +78,7 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
       prompt = `${securityPrompt}\n\n${prompt}`;
     }
 
-    if (
-      deps.deliverTrackedSlackFollowUpMessage({
-        prompt,
-        messages: pending,
-      })
-    ) {
+    if (deps.deliverTrackedSlackFollowUpMessage({ prompt, messages: pending })) {
       if (brokerInboxIds.length > 0) {
         if (deps.getBrokerRole() === "follower") {
           markFollowerInboxIdsDelivered(deps.getFollowerDeliveryState(), brokerInboxIds);

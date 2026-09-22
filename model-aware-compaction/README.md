@@ -4,7 +4,7 @@ A Pi extension for proactive model-aware context limits and optional compaction 
 
 ## Install
 
-Requires Pi `>=0.85.1` for usage-preserving custom compaction and resolved provider authentication.
+Requires Pi `>=0.85.1` for usage-preserving custom compaction and resolved provider authentication. Development and CI compile and test against Pi `0.87.0`.
 
 ```bash
 pi install npm:@pinet/model-aware-compaction

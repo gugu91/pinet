@@ -3,117 +3,127 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentEventRuntime, type AgentEventRuntimeDeps } from "./agent-event-runtime.js";
 
 function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
-  const deliverFollowUpMessage = vi.fn(() => true);
   const requireToolPolicy = vi.fn();
+  const onCompletionAgentStart = vi.fn(async () => {});
   const onCompletionAgentEnd = vi.fn(async () => {});
+  const onCompletionAgentSettled = vi.fn(async () => {});
+  const drainQueuedInboxIfIdle = vi.fn(() => true);
   const setDeliverTrackedSlackFollowUpMessage = vi.fn();
-
   const deps: AgentEventRuntimeDeps = {
     getBrokerRole: () => null,
     getGuardrails: () => ({}),
     requireToolPolicy,
     formatAction: (action) => `<${action}>`,
-    formatError: (error) => (error instanceof Error ? error.message : String(error)),
-    deliverFollowUpMessage,
+    formatError: String,
+    deliverFollowUpMessage: vi.fn(() => true),
+    onCompletionAgentStart,
     onCompletionAgentEnd,
+    onCompletionAgentSettled,
+    hasQueuedInbox: () => false,
+    drainQueuedInboxIfIdle,
     setDeliverTrackedSlackFollowUpMessage,
     ...overrides,
   };
-
   return {
     deps,
-    deliverFollowUpMessage,
     requireToolPolicy,
+    onCompletionAgentStart,
     onCompletionAgentEnd,
+    onCompletionAgentSettled,
+    drainQueuedInboxIfIdle,
     setDeliverTrackedSlackFollowUpMessage,
   };
 }
 
 function createPi() {
-  const registrations: Array<{ eventName: string; handler: (...args: unknown[]) => unknown }> = [];
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const pi = {
     on: vi.fn((eventName: string, handler: (...args: unknown[]) => unknown) => {
-      registrations.push({ eventName, handler });
+      handlers.set(eventName, handler);
     }),
   } as Pick<ExtensionAPI, "on">;
-
-  return { pi, registrations };
+  return { pi, handlers };
 }
 
 describe("createAgentEventRuntime", () => {
-  it("registers the pinned agent event wiring in order and preserves agent_end ordering", () => {
-    const { deps, onCompletionAgentEnd } = createDeps();
-    const runtime = createAgentEventRuntime(deps);
-    const { pi, registrations } = createPi();
-
-    runtime.register(pi);
-
-    expect(registrations.map(({ eventName }) => eventName)).toEqual([
-      "input",
-      "turn_start",
-      "turn_end",
-      "agent_end",
-      "tool_call",
-      "agent_end",
-    ]);
-
-    const agentEndHandlers = registrations.filter(({ eventName }) => eventName === "agent_end");
-    expect(agentEndHandlers).toHaveLength(2);
-    expect(agentEndHandlers[0]?.handler).not.toBe(onCompletionAgentEnd);
-    expect(agentEndHandlers[1]?.handler).toBe(onCompletionAgentEnd);
-  });
-
-  it("hands off tracked Slack follow-up delivery from the created tool-policy runtime", async () => {
+  it("composes the Pi lifecycle around Slack policy and terminal settlement", async () => {
+    const beginThreadStatus = vi.fn(async () => {});
+    const clearThreadStatus = vi.fn(async () => {});
     const {
       deps,
-      deliverFollowUpMessage,
       requireToolPolicy,
+      onCompletionAgentStart,
+      onCompletionAgentEnd,
+      onCompletionAgentSettled,
       setDeliverTrackedSlackFollowUpMessage,
     } = createDeps({
       getGuardrails: () => ({ requireConfirmation: ["read"] }),
+      beginThreadStatus,
+      clearThreadStatus,
     });
-    const runtime = createAgentEventRuntime(deps);
-    const { pi, registrations } = createPi();
+    const { pi, handlers } = createPi();
+    createAgentEventRuntime(deps).register(pi);
 
-    runtime.register(pi);
+    expect([...handlers.keys()]).toEqual([
+      "agent_start",
+      "turn_start",
+      "message_start",
+      "turn_end",
+      "tool_call",
+      "agent_end",
+      "agent_settled",
+    ]);
 
-    expect(setDeliverTrackedSlackFollowUpMessage).toHaveBeenCalledTimes(1);
-    const deliverTrackedSlackFollowUpMessage = setDeliverTrackedSlackFollowUpMessage.mock
-      .calls[0]?.[0] as
-      | ((options: { prompt: string; messages: Array<{ threadTs?: string }> }) => boolean)
-      | undefined;
-    expect(deliverTrackedSlackFollowUpMessage).toBeTypeOf("function");
-
+    const deliver = setDeliverTrackedSlackFollowUpMessage.mock.calls[0]?.[0] as (options: {
+      prompt: string;
+      messages: Array<{ channel: string; threadTs: string }>;
+    }) => boolean;
     expect(
-      deliverTrackedSlackFollowUpMessage?.({
-        prompt: "guarded slack prompt",
-        messages: [{ threadTs: "100.1" }],
+      deliver({
+        prompt: "guarded Slack prompt",
+        messages: [{ channel: "C100", threadTs: "100.1" }],
       }),
     ).toBe(true);
-    expect(deliverFollowUpMessage).toHaveBeenCalledWith("guarded slack prompt");
 
-    const onInput = registrations.find(({ eventName }) => eventName === "input")?.handler as
-      | ((event: { source?: string; text: string }) => Promise<void>)
-      | undefined;
-    const onTurnStart = registrations.find(({ eventName }) => eventName === "turn_start")
-      ?.handler as (() => Promise<void>) | undefined;
-    const onToolCall = registrations.find(({ eventName }) => eventName === "tool_call")?.handler as
-      | ((event: { toolName: string; input: Record<string, unknown> }) => Promise<unknown>)
-      | undefined;
+    const ctx = {};
+    await handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
+    await handlers.get("turn_start")?.({}, ctx);
+    await handlers.get("message_start")?.(
+      {
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "guarded Slack prompt" }],
+        },
+      },
+      ctx,
+    );
+    await handlers.get("tool_call")?.({ toolName: "read", input: { path: "README.md" } }, ctx);
+    await handlers.get("turn_end")?.({}, ctx);
+    await handlers.get("agent_end")?.({ type: "agent_end", messages: [] }, ctx);
+    await handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
 
-    await onInput?.({ source: "extension", text: "guarded slack prompt" });
-    await onTurnStart?.();
-
-    await expect(
-      onToolCall?.({
-        toolName: "read",
-        input: { path: "plans/454.md" },
-      }),
-    ).resolves.toBeUndefined();
+    expect(onCompletionAgentStart).toHaveBeenCalledOnce();
     expect(requireToolPolicy).toHaveBeenCalledWith(
       "read",
       "100.1",
-      "path=plans/454.md | offset= | limit=",
+      "path=README.md | offset= | limit=",
     );
+    expect(beginThreadStatus).toHaveBeenCalledWith("C100", "100.1", "is thinking…");
+    expect(onCompletionAgentEnd).toHaveBeenCalledOnce();
+    expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
+    expect(onCompletionAgentSettled).toHaveBeenCalledOnce();
+  });
+
+  it("hands queued inbox work to Pi instead of publishing idle at settlement", async () => {
+    const { deps, drainQueuedInboxIfIdle, onCompletionAgentSettled } = createDeps({
+      hasQueuedInbox: () => true,
+    });
+    const { pi, handlers } = createPi();
+    createAgentEventRuntime(deps).register(pi);
+
+    await handlers.get("agent_settled")?.({ type: "agent_settled" }, {});
+
+    expect(drainQueuedInboxIfIdle).toHaveBeenCalledOnce();
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,8 @@ Connect pi coding agents to Slack. Pinet provides multi-agent coordination, thre
 
 ## Install Pinet
 
+Requires Pi `>=0.85.1`. Development and CI compile and test against Pi `0.87.0`.
+
 Install the latest version:
 
 ```bash

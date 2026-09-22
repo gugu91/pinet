@@ -23,7 +23,7 @@ export interface PinetMaintenanceDeliveryDeps {
   getActiveBrokerDb: () => PinetMaintenanceDeliveryBrokerDbPort | null;
   getActiveBrokerSelfId: () => string | null;
   isIdle: () => boolean;
-  sendUserMessage: (body: string) => void;
+  sendUserMessage: (body: string, options: { deliverAs: "followUp" }) => void;
 }
 
 export interface PinetMaintenanceDelivery {
@@ -80,7 +80,7 @@ export function createPinetMaintenanceDelivery(
     }
 
     try {
-      deps.sendUserMessage(body);
+      deps.sendUserMessage(body, { deliverAs: "followUp" });
       onDelivered();
     } catch {
       /* best effort */

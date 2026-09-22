@@ -72,10 +72,25 @@ describe("createPinetAgentStatus", () => {
     });
     const pinetAgentStatus = createPinetAgentStatus(deps);
 
-    await pinetAgentStatus.reportStatus("idle");
+    await pinetAgentStatus.reportStatus("idle", { force: true });
 
     expect(getDesiredAgentStatus()).toBe("idle");
-    expect(syncFollowerDesiredStatus).toHaveBeenCalledWith("idle", {});
+    expect(syncFollowerDesiredStatus).toHaveBeenCalledWith("idle", { force: true });
+  });
+
+  it("publishes settled broker idle without running the manual inbox drain", async () => {
+    const { deps, ctx, runBrokerMaintenance, maybeDrainInboxIfIdle, getDesiredAgentStatus } =
+      createDeps({
+        getBrokerRole: () => "broker",
+        getInboxLength: () => 2,
+      });
+    const pinetAgentStatus = createPinetAgentStatus(deps);
+
+    await pinetAgentStatus.signalAgentSettled(ctx);
+
+    expect(getDesiredAgentStatus()).toBe("idle");
+    expect(runBrokerMaintenance).toHaveBeenCalledWith(ctx);
+    expect(maybeDrainInboxIfIdle).not.toHaveBeenCalled();
   });
 
   it("signals broker free, runs maintenance, and drains queued inbox via the cached context", async () => {

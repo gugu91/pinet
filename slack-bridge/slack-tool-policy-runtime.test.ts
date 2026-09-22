@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createSlackToolPolicyRuntime,
+  type SlackToolPolicyRuntime,
   type SlackToolPolicyRuntimeDeps,
 } from "./slack-tool-policy-runtime.js";
 
@@ -25,8 +26,19 @@ function createDeps(overrides: Partial<SlackToolPolicyRuntimeDeps> = {}) {
   };
 }
 
+async function startUserTurn(runtime: SlackToolPolicyRuntime, text: string): Promise<void> {
+  await runtime.onTurnStart();
+  await runtime.onMessageStart({
+    type: "message_start",
+    message: {
+      role: "user",
+      content: [{ type: "text", text }],
+    },
+  });
+}
+
 describe("createSlackToolPolicyRuntime", () => {
-  it("tracks a delivered Slack follow-up turn across input and turn lifecycle", async () => {
+  it("tracks a delivered Slack follow-up turn across message and turn lifecycle", async () => {
     const { deps, deliverFollowUpMessage, requireToolPolicy } = createDeps({
       getGuardrails: () => ({ requireConfirmation: ["read"] }),
     });
@@ -40,8 +52,7 @@ describe("createSlackToolPolicyRuntime", () => {
     ).toBe(true);
     expect(deliverFollowUpMessage).toHaveBeenCalledWith("guarded slack prompt");
 
-    await runtime.onInput({ source: "extension", text: "guarded slack prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "guarded slack prompt");
 
     await expect(
       runtime.onToolCall({
@@ -65,7 +76,37 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(requireToolPolicy).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores non-extension input and rolls back undelivered turns", async () => {
+  it("attributes a queued Slack turn only when its matching user message starts", async () => {
+    const beginThreadStatus = vi.fn(async () => undefined);
+    const { deps, requireToolPolicy } = createDeps({
+      getGuardrails: () => ({ requireConfirmation: ["read"] }),
+      beginThreadStatus,
+    });
+    const runtime = createSlackToolPolicyRuntime(deps);
+
+    runtime.deliverTrackedSlackFollowUpMessage({
+      prompt: "Slack inbox prompt",
+      messages: [{ channel: "C100", threadTs: "100.1" }],
+    });
+
+    await startUserTurn(runtime, "other extension prompt");
+    await runtime.onToolCall({ toolName: "read", input: { path: "README.md" } });
+    expect(requireToolPolicy).not.toHaveBeenCalled();
+    expect(beginThreadStatus).not.toHaveBeenCalled();
+
+    await runtime.onTurnEnd();
+    await startUserTurn(runtime, "Slack inbox prompt");
+    await runtime.onToolCall({ toolName: "read", input: { path: "README.md" } });
+
+    expect(requireToolPolicy).toHaveBeenCalledWith(
+      "read",
+      "100.1",
+      "path=README.md | offset= | limit=",
+    );
+    expect(beginThreadStatus).toHaveBeenCalledWith("C100", "100.1", "is thinking…");
+  });
+
+  it("rolls back turns whose delivery is not accepted", async () => {
     const { deps, requireToolPolicy } = createDeps({
       getGuardrails: () => ({ requireConfirmation: ["read"] }),
       deliverFollowUpMessage: vi.fn(() => false),
@@ -79,9 +120,7 @@ describe("createSlackToolPolicyRuntime", () => {
       }),
     ).toBe(false);
 
-    await runtime.onInput({ source: "user", text: "guarded slack prompt" });
-    await runtime.onInput({ source: "extension", text: "guarded slack prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "guarded slack prompt");
 
     await expect(
       runtime.onToolCall({
@@ -102,8 +141,7 @@ describe("createSlackToolPolicyRuntime", () => {
       prompt: "batched prompt",
       messages: [{ threadTs: "100.1" }, { threadTs: "200.2" }, { threadTs: "100.1" }],
     });
-    await runtime.onInput({ source: "extension", text: "batched prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "batched prompt");
 
     await expect(
       runtime.onToolCall({
@@ -128,8 +166,7 @@ describe("createSlackToolPolicyRuntime", () => {
       prompt: "repo-tool prompt",
       messages: [{ threadTs: "100.1" }],
     });
-    await runtime.onInput({ source: "extension", text: "repo-tool prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "repo-tool prompt");
 
     await expect(
       runtime.onToolCall({
@@ -154,8 +191,7 @@ describe("createSlackToolPolicyRuntime", () => {
       prompt: "repo-write prompt",
       messages: [{ threadTs: "100.1" }],
     });
-    await runtime.onInput({ source: "extension", text: "repo-write prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "repo-write prompt");
 
     await expect(
       runtime.onToolCall({
@@ -169,7 +205,7 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(requireToolPolicy).not.toHaveBeenCalled();
   });
 
-  it("brackets a single Slack thread with visible status updates", async () => {
+  it("keeps visible Slack status through turn and agent completion until settlement", async () => {
     const beginThreadStatus = vi.fn(async () => undefined);
     const updateThreadStatus = vi.fn(async () => undefined);
     const clearThreadStatus = vi.fn(async () => undefined);
@@ -184,14 +220,17 @@ describe("createSlackToolPolicyRuntime", () => {
       prompt: "status prompt",
       messages: [{ channel: "C100", threadTs: "100.1" }],
     });
-    await runtime.onInput({ source: "extension", text: "status prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "status prompt");
     expect(beginThreadStatus).toHaveBeenCalledWith("C100", "100.1", "is thinking…");
 
     await runtime.onToolCall({ toolName: "read", input: { path: "README.md" } });
     expect(updateThreadStatus).toHaveBeenCalledWith("C100", "100.1", "Calling tool…");
 
     await runtime.onTurnEnd();
+    await runtime.onAgentEnd();
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+
+    await runtime.onAgentSettled();
     expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
   });
 
@@ -205,8 +244,7 @@ describe("createSlackToolPolicyRuntime", () => {
       prompt: "guarded slack prompt",
       messages: [{ threadTs: "100.1" }],
     });
-    await runtime.onInput({ source: "extension", text: "guarded slack prompt" });
-    await runtime.onTurnStart();
+    await startUserTurn(runtime, "guarded slack prompt");
     await runtime.onAgentEnd();
 
     await expect(

@@ -86,7 +86,7 @@ describe("createInboxDrainRuntime", () => {
 
     expect(runtime.deliverFollowUpMessage("steady note")).toBe(true);
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(sendUserMessage).toHaveBeenCalledWith("steady note");
+    expect(sendUserMessage).toHaveBeenCalledWith("steady note", { deliverAs: "followUp" });
   });
 
   it("does not inject follow-up messages while the agent is active", () => {
@@ -105,7 +105,7 @@ describe("createInboxDrainRuntime", () => {
 
     expect(runtime.deliverFollowUpMessage("steady note")).toBe(false);
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(sendUserMessage).toHaveBeenCalledWith("steady note");
+    expect(sendUserMessage).toHaveBeenCalledWith("steady note", { deliverAs: "followUp" });
   });
 
   it("formats pending inbox work, applies security guidance, and flushes follower acks", () => {

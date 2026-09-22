@@ -28,7 +28,8 @@ export interface PinetAgentStatusDeps {
 
 export interface PinetAgentStatus {
   syncDesiredAgentStatus: (options?: { force?: boolean }) => Promise<void>;
-  reportStatus: (status: PinetAgentStatusValue) => Promise<void>;
+  reportStatus: (status: PinetAgentStatusValue, options?: { force?: boolean }) => Promise<void>;
+  signalAgentSettled: (ctx?: ExtensionContext) => Promise<void>;
   signalAgentFree: (
     ctx?: ExtensionContext,
     options?: { requirePinet?: boolean },
@@ -57,9 +58,25 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
     }
   }
 
-  async function reportStatus(status: PinetAgentStatusValue): Promise<void> {
+  async function reportStatus(
+    status: PinetAgentStatusValue,
+    options: { force?: boolean } = {},
+  ): Promise<void> {
     deps.setDesiredAgentStatus(status);
-    await syncDesiredAgentStatus();
+    await syncDesiredAgentStatus(options);
+  }
+
+  // agent-standards-ignore prefer-inline-single-use-helper: automatic settlement publishes idle without the manual free command's inbox drain.
+  async function signalAgentSettled(ctx?: ExtensionContext): Promise<void> {
+    if (!deps.getPinetEnabled()) {
+      return;
+    }
+
+    await reportStatus("idle");
+    const maintenanceCtx = ctx ?? deps.getExtensionContext();
+    if (deps.getBrokerRole() === "broker" && maintenanceCtx) {
+      deps.runBrokerMaintenance(maintenanceCtx);
+    }
   }
 
   async function signalAgentFree(
@@ -71,13 +88,8 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
       throw new Error("Pinet is not running. Use /pinet start or /pinet follow first.");
     }
 
-    const maintenanceCtx = ctx ?? deps.getExtensionContext() ?? undefined;
-    if (pinetEnabled) {
-      await reportStatus("idle");
-      if (deps.getBrokerRole() === "broker" && maintenanceCtx) {
-        deps.runBrokerMaintenance(maintenanceCtx);
-      }
-    }
+    const maintenanceCtx = ctx ?? deps.getExtensionContext();
+    await signalAgentSettled(maintenanceCtx);
 
     const queuedInboxCount = deps.getInboxLength();
     const shouldDrainQueuedInbox = pinetEnabled || deps.getCurrentRuntimeMode() === "single";
@@ -92,6 +104,7 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
   return {
     syncDesiredAgentStatus,
     reportStatus,
+    signalAgentSettled,
     signalAgentFree,
   };
 }

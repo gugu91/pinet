@@ -194,6 +194,19 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
+  export interface AgentStartEvent {
+    type: "agent_start";
+  }
+
+  export interface AgentEndEvent {
+    type: "agent_end";
+    messages: AgentMessage[];
+  }
+
+  export interface AgentSettledEvent {
+    type: "agent_settled";
+  }
+
   export interface ExtensionContext {
     cwd: string;
     /** Run mode; only "tui" supports ui.custom components. */

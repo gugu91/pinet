@@ -40,6 +40,9 @@
     "nvim-bridge/nvim/**/*.lua": "stylua"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.0",
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0",
     "@types/node": "^22.13.1",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",

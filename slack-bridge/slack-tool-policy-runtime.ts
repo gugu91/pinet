@@ -1,7 +1,4 @@
 import type { InboxMessage } from "./helpers.js";
-
-type SlackToolPolicyMessageRef = Pick<InboxMessage, "threadTs"> &
-  Partial<Pick<InboxMessage, "channel">>;
 import { evaluateSlackOriginCoreToolPolicy } from "./core-tool-guardrails.js";
 import { evaluateSlackOriginRepoToolPolicy } from "./repo-tool-guardrails.js";
 import { isBrokerForbiddenTool, type SecurityGuardrails } from "./guardrails.js";
@@ -10,6 +7,17 @@ import {
   deliverTrackedSlackFollowUpMessage as trackAndDeliverSlackFollowUpMessage,
   type PendingSlackToolPolicyTurn,
 } from "./slack-turn-guardrails.js";
+
+type SlackToolPolicyMessageRef = Pick<InboxMessage, "threadTs"> &
+  Partial<Pick<InboxMessage, "channel">>;
+
+interface SlackToolPolicyMessageStartEvent {
+  type: "message_start";
+  message: {
+    role: string;
+    content: string | Array<{ type: string; text?: string }>;
+  };
+}
 
 export interface SlackToolPolicyRuntimeDeps {
   getBrokerRole: () => "broker" | "follower" | null;
@@ -28,10 +36,11 @@ export interface SlackToolPolicyRuntime {
     prompt: string;
     messages: SlackToolPolicyMessageRef[];
   }) => boolean;
-  onInput: (event: { source?: string; text: string }) => Promise<void>;
   onTurnStart: () => Promise<void>;
+  onMessageStart: (event: SlackToolPolicyMessageStartEvent) => Promise<void>;
   onTurnEnd: () => Promise<void>;
   onAgentEnd: () => Promise<void>;
+  onAgentSettled: () => Promise<void>;
   onToolCall: (event: {
     toolName: string;
     input: Record<string, unknown>;
@@ -42,7 +51,7 @@ export function createSlackToolPolicyRuntime(
   deps: SlackToolPolicyRuntimeDeps,
 ): SlackToolPolicyRuntime {
   const pendingSlackToolPolicyTurns: PendingSlackToolPolicyTurn[] = [];
-  let nextSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
+  const visibleThreadStatuses = new Map<string, { channel: string; threadTs: string }>();
   let activeSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
 
   function deliverTrackedSlackFollowUpMessage(options: {
@@ -57,50 +66,49 @@ export function createSlackToolPolicyRuntime(
     });
   }
 
-  async function onInput(event: { source?: string; text: string }): Promise<void> {
-    if (event.source !== "extension") {
-      return;
-    }
-
-    nextSlackToolPolicyTurn = consumePendingSlackToolPolicyTurn(
-      pendingSlackToolPolicyTurns,
-      event.text,
-    );
+  async function onTurnStart(): Promise<void> {
+    activeSlackToolPolicyTurn = null;
   }
 
-  async function onTurnStart(): Promise<void> {
-    activeSlackToolPolicyTurn = nextSlackToolPolicyTurn;
-    nextSlackToolPolicyTurn = null;
+  async function onMessageStart(event: SlackToolPolicyMessageStartEvent): Promise<void> {
+    if (event.message.role !== "user") return;
+
+    const content = event.message.content;
+    const text =
+      typeof content === "string"
+        ? content
+        : content
+            .filter((block) => block.type === "text")
+            .map((block) => block.text ?? "")
+            .join("");
+    activeSlackToolPolicyTurn = consumePendingSlackToolPolicyTurn(
+      pendingSlackToolPolicyTurns,
+      text,
+    );
     if (activeSlackToolPolicyTurn?.channel && activeSlackToolPolicyTurn.threadTs) {
-      await deps
-        .beginThreadStatus?.(
-          activeSlackToolPolicyTurn.channel,
-          activeSlackToolPolicyTurn.threadTs,
-          "is thinking…",
-        )
-        .catch(() => {
-          /* best effort */
-        });
+      const { channel, threadTs } = activeSlackToolPolicyTurn;
+      visibleThreadStatuses.set(`${channel}:${threadTs}`, { channel, threadTs });
+      await deps.beginThreadStatus?.(channel, threadTs, "is thinking…").catch(() => {
+        /* best effort */
+      });
     }
   }
 
   async function onTurnEnd(): Promise<void> {
-    const turn = activeSlackToolPolicyTurn;
     activeSlackToolPolicyTurn = null;
-    if (turn?.channel && turn.threadTs) {
-      await deps.clearThreadStatus?.(turn.channel, turn.threadTs).catch(() => {
-        /* best effort */
-      });
-    }
   }
 
   async function onAgentEnd(): Promise<void> {
-    const turn = activeSlackToolPolicyTurn;
     activeSlackToolPolicyTurn = null;
-    if (turn?.channel && turn.threadTs) {
-      await deps.clearThreadStatus?.(turn.channel, turn.threadTs).catch(() => {
+  }
+
+  async function onAgentSettled(): Promise<void> {
+    activeSlackToolPolicyTurn = null;
+    for (const [key, status] of [...visibleThreadStatuses]) {
+      await deps.clearThreadStatus?.(status.channel, status.threadTs).catch(() => {
         /* best effort */
       });
+      visibleThreadStatuses.delete(key);
     }
   }
 
@@ -136,9 +144,7 @@ export function createSlackToolPolicyRuntime(
       formatAction: deps.formatAction,
       formatError: deps.formatError,
     });
-    if (corePolicy) {
-      return corePolicy;
-    }
+    if (corePolicy) return corePolicy;
 
     return evaluateSlackOriginRepoToolPolicy({
       turn: activeSlackToolPolicyTurn,
@@ -153,10 +159,11 @@ export function createSlackToolPolicyRuntime(
 
   return {
     deliverTrackedSlackFollowUpMessage,
-    onInput,
     onTurnStart,
+    onMessageStart,
     onTurnEnd,
     onAgentEnd,
+    onAgentSettled,
     onToolCall,
   };
 }

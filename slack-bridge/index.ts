@@ -267,8 +267,8 @@ export default function (pi: ExtensionAPI) {
     messages: Pick<InboxMessage, "threadTs">[];
   }) => boolean = () => false;
   const inboxDrainRuntime = createInboxDrainRuntime({
-    sendUserMessage: (body) => {
-      pi.sendUserMessage(body);
+    sendUserMessage: (body, options) => {
+      pi.sendUserMessage(body, options);
     },
     isIdle: isIdleAndNotCompacting,
     takeInboxMessages: (maxMessages) => inbox.splice(0, maxMessages ?? inbox.length),
@@ -294,14 +294,10 @@ export default function (pi: ExtensionAPI) {
   const { deliverFollowUpMessage, flushDeliveredFollowerAcks, drainInbox } = inboxDrainRuntime;
   drainInboxPort = drainInbox;
 
-  function deliverSteeringMessage(text: string, ctx: ExtensionContext): boolean {
+  function deliverSteeringMessage(text: string, _ctx: ExtensionContext): boolean {
     try {
       return compactionGate.tryDeliver(() => {
-        if (ctx.isIdle?.() ?? true) {
-          pi.sendUserMessage(text);
-        } else {
-          pi.sendUserMessage(text, { deliverAs: "steer" });
-        }
+        pi.sendUserMessage(text, { deliverAs: "steer" });
       });
     } catch (error) {
       console.error(`[slack-bridge] Pinet steering delivery failed: ${msg(error)}`);
@@ -482,7 +478,6 @@ export default function (pi: ExtensionAPI) {
     rememberChannel,
     resolveChannel,
     resolveFollowerReplyChannel,
-    clearThreadStatus,
     setSuggestedPrompts,
     fetchSlackMessageByTs,
   } = slackRuntimeAccess;
@@ -533,15 +528,14 @@ export default function (pi: ExtensionAPI) {
     maybeDrainInboxIfIdle,
     getExtensionContext: () => sessionUiRuntime.getExtensionContext() ?? undefined,
   });
-  const { reportStatus, signalAgentFree } = pinetAgentStatus;
+  const { reportStatus, signalAgentSettled, signalAgentFree } = pinetAgentStatus;
   reportAgentStatus = reportStatus;
   const agentCompletionRuntime = createAgentCompletionRuntime({
-    getThreads: () => threads,
-    clearThreadStatus,
     clearFollowUpPending: () => {
       brokerRuntime.clearFollowUpPending();
     },
-    signalAgentFree: (ctx) => signalAgentFree(ctx),
+    signalAgentWorking: () => reportStatus("working", { force: true }),
+    signalAgentSettled,
     formatError: msg,
   });
   const agentEventRuntime = createAgentEventRuntime({
@@ -556,7 +550,11 @@ export default function (pi: ExtensionAPI) {
     updateThreadStatus: (channel, threadTs, status) =>
       slackThreadStatuses.update(channel, threadTs, status),
     clearThreadStatus: (channel, threadTs) => slackThreadStatuses.clear(channel, threadTs),
+    onCompletionAgentStart: agentCompletionRuntime.onAgentStart,
     onCompletionAgentEnd: agentCompletionRuntime.onAgentEnd,
+    onCompletionAgentSettled: agentCompletionRuntime.onAgentSettled,
+    hasQueuedInbox: () => pinetEnabled && inbox.length > 0,
+    drainQueuedInboxIfIdle: maybeDrainInboxIfIdle,
     setDeliverTrackedSlackFollowUpMessage: (deliver) => {
       deliverTrackedSlackFollowUpMessage = deliver;
     },
@@ -565,8 +563,8 @@ export default function (pi: ExtensionAPI) {
     getActiveBrokerDb,
     getActiveBrokerSelfId,
     isIdle: isIdleAndNotCompacting,
-    sendUserMessage: (body) => {
-      pi.sendUserMessage(body);
+    sendUserMessage: (body, options) => {
+      pi.sendUserMessage(body, options);
     },
   });
   const { sendBrokerMaintenanceMessage, trySendBrokerFollowUp } = pinetMaintenanceDelivery;
