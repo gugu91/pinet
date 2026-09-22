@@ -612,7 +612,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     });
     const completion = createAgentCompletionRuntime({
       clearFollowUpPending: vi.fn(),
-      signalAgentWorking: () => status.reportStatus("working"),
+      signalAgentWorking: () => status.reportStatus("working", { force: true }),
       signalAgentFree: (eventCtx) => status.signalAgentFree(eventCtx),
       formatError: (error) => (error instanceof Error ? error.message : String(error)),
     });

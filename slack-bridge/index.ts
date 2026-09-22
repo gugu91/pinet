@@ -538,7 +538,7 @@ export default function (pi: ExtensionAPI) {
     clearFollowUpPending: () => {
       brokerRuntime.clearFollowUpPending();
     },
-    signalAgentWorking: () => reportStatus("working"),
+    signalAgentWorking: () => reportStatus("working", { force: true }),
     signalAgentFree: (ctx) => signalAgentFree(ctx),
     formatError: msg,
   });

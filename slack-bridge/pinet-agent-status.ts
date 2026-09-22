@@ -28,7 +28,7 @@ export interface PinetAgentStatusDeps {
 
 export interface PinetAgentStatus {
   syncDesiredAgentStatus: (options?: { force?: boolean }) => Promise<void>;
-  reportStatus: (status: PinetAgentStatusValue) => Promise<void>;
+  reportStatus: (status: PinetAgentStatusValue, options?: { force?: boolean }) => Promise<void>;
   signalAgentFree: (
     ctx?: ExtensionContext,
     options?: { requirePinet?: boolean },
@@ -57,9 +57,12 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
     }
   }
 
-  async function reportStatus(status: PinetAgentStatusValue): Promise<void> {
+  async function reportStatus(
+    status: PinetAgentStatusValue,
+    options: { force?: boolean } = {},
+  ): Promise<void> {
     deps.setDesiredAgentStatus(status);
-    await syncDesiredAgentStatus();
+    await syncDesiredAgentStatus(options);
   }
 
   async function signalAgentFree(

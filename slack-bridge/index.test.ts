@@ -4005,12 +4005,14 @@ describe("slack-bridge Pinet reconnect", () => {
     const sessionStart = events.get("session_start");
     const sessionShutdown = events.get("session_shutdown");
     const follow = commands.get("pinet");
+    const agentStart = events.get("agent_start");
     const agentEnd = events.get("agent_end");
     const agentSettled = events.get("agent_settled");
 
     expect(sessionStart).toBeDefined();
     expect(sessionShutdown).toBeDefined();
     expect(follow).toBeDefined();
+    expect(agentStart).toBeDefined();
     expect(agentEnd).toBeDefined();
     expect(agentSettled).toBeDefined();
 
@@ -4029,13 +4031,20 @@ describe("slack-bridge Pinet reconnect", () => {
       expect(sendUserMessage.mock.calls[0]?.[0]).not.toContain("hello from broker");
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
 
+      await agentStart?.({ type: "agent_start" }, ctx);
+      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "working"]);
+
       await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
       // An agent_before_settle continuation runs another agent loop without settling.
       await agentEnd?.({ type: "agent_end", messages: [] }, ctx);
-      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
+      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "working"]);
 
       await agentSettled?.({ type: "agent_settled" }, ctx);
-      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "idle"]);
+      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual([
+        "working",
+        "working",
+        "idle",
+      ]);
       expect(notify).toHaveBeenCalledWith(
         "Pinet auto-free failed: status sync failed once",
         "warning",
@@ -4044,6 +4053,7 @@ describe("slack-bridge Pinet reconnect", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await vi.waitFor(() => {
         expect(updateStatus.mock.calls.map(([status]) => status)).toEqual([
+          "working",
           "working",
           "idle",
           "idle",

@@ -72,10 +72,10 @@ describe("createPinetAgentStatus", () => {
     });
     const pinetAgentStatus = createPinetAgentStatus(deps);
 
-    await pinetAgentStatus.reportStatus("idle");
+    await pinetAgentStatus.reportStatus("idle", { force: true });
 
     expect(getDesiredAgentStatus()).toBe("idle");
-    expect(syncFollowerDesiredStatus).toHaveBeenCalledWith("idle", {});
+    expect(syncFollowerDesiredStatus).toHaveBeenCalledWith("idle", { force: true });
   });
 
   it("signals broker free, runs maintenance, and drains queued inbox via the cached context", async () => {
