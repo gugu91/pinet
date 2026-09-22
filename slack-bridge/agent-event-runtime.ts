@@ -50,7 +50,7 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
   }
 
   function isGenuinelyQuiescent(ctx: ExtensionContext): boolean {
-    return ctx.isIdle?.() === true && ctx.hasPendingMessages?.() === false;
+    return ctx.isIdle?.() !== false && ctx.hasPendingMessages?.() !== true;
   }
 
   function register(pi: Pick<ExtensionAPI, "on">): void {
