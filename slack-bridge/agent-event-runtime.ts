@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentCompletionRuntime } from "./agent-completion-runtime.js";
 import {
   createSlackToolPolicyRuntime,
@@ -49,9 +49,15 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
     }
   }
 
+  function isGenuinelyQuiescent(ctx: ExtensionContext): boolean {
+    return ctx.isIdle?.() === true && ctx.hasPendingMessages?.() === false;
+  }
+
   function register(pi: Pick<ExtensionAPI, "on">): void {
     pi.on("input", slackToolPolicyRuntime.onInput);
     pi.on("before_agent_start", () => {
+      // AgentSession remains publicly idle until all before-start handlers finish,
+      // so invalidate before a later async handler can hold that pre-run gap open.
       invalidatePendingSettlement();
     });
     pi.on("agent_start", async (event, ctx) => {
@@ -72,26 +78,16 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
       }
       const settledGeneration = lifecycleGeneration;
       // AgentSession dispatches actions requested by settled handlers only after
-      // every handler returns. Wait for that dispatch, then publish only if Pi's
-      // public lifecycle still reports true quiescence.
+      // every handler returns. Wait for that dispatch, then require both the
+      // earliest-start generation and Pi's public idle/no-pending invariant.
       pendingSettlement = setImmediate(() => {
         pendingSettlement = null;
-        if (
-          disposed ||
-          lifecycleGeneration !== settledGeneration ||
-          ctx.isIdle?.() === false ||
-          ctx.hasPendingMessages?.() === true
-        ) {
+        if (disposed || lifecycleGeneration !== settledGeneration || !isGenuinelyQuiescent(ctx)) {
           return;
         }
         void (async () => {
           await slackToolPolicyRuntime.onAgentSettled();
-          if (
-            disposed ||
-            lifecycleGeneration !== settledGeneration ||
-            ctx.isIdle?.() === false ||
-            ctx.hasPendingMessages?.() === true
-          ) {
+          if (disposed || lifecycleGeneration !== settledGeneration || !isGenuinelyQuiescent(ctx)) {
             return;
           }
           await deps.onCompletionAgentSettled(event, ctx);

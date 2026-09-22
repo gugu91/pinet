@@ -124,11 +124,12 @@ describe("createAgentEventRuntime", () => {
     expect(clearThreadStatus).not.toHaveBeenCalled();
 
     await dispatch("agent_settled", { type: "agent_settled" });
-    await dispatch("agent_start", { type: "agent_start" });
+    await dispatch("before_agent_start", { type: "before_agent_start" });
     await nextCheckPhase();
     expect(clearThreadStatus).not.toHaveBeenCalled();
     expect(onCompletionAgentSettled).not.toHaveBeenCalled();
 
+    await dispatch("agent_start", { type: "agent_start" });
     await dispatch("agent_end");
     await dispatch("agent_settled", { type: "agent_settled" });
     expect(clearThreadStatus).not.toHaveBeenCalled();

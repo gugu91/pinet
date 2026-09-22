@@ -657,6 +657,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       reportBlockedBeforeAgentStart = resolve;
     });
     let queuedSettledContinuation = false;
+    let blockedLifecycleState: { idle: boolean; pending: boolean } | undefined;
     const continuationPrompt = "continue after settlement";
     const resourceLoader = new DefaultResourceLoader({
       cwd: dir,
@@ -687,8 +688,12 @@ describe("broker integration — client ↔ server ↔ DB", () => {
               });
               pi.sendUserMessage(continuationPrompt);
             });
-            pi.on("before_agent_start", async (event) => {
+            pi.on("before_agent_start", async (event, ctx) => {
               if (event.prompt !== continuationPrompt) return;
+              blockedLifecycleState = {
+                idle: ctx.isIdle?.() ?? false,
+                pending: ctx.hasPendingMessages?.() ?? true,
+              };
               reportBlockedBeforeAgentStart?.();
               await beforeAgentStartGate;
             });
@@ -732,6 +737,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(session.isIdle).toBe(true);
+      expect(blockedLifecycleState).toEqual({ idle: true, pending: false });
       expect(db.getAgentById(registration.agentId)?.status).toBe("working");
       expect(clearThreadStatus).not.toHaveBeenCalled();
       expect(db.getBacklogCount("pending")).toBe(1);
