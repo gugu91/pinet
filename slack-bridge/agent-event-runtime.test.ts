@@ -173,6 +173,27 @@ describe("createAgentEventRuntime", () => {
     expect(onCompletionAgentSettled).toHaveBeenCalledOnce();
   });
 
+  it.each(["interactive", "rpc", "extension"] as const)(
+    "invalidates pending quiescence publication synchronously for %s input",
+    async (source) => {
+      const { deps, onCompletionAgentSettled } = createDeps();
+      const runtime = createAgentEventRuntime(deps);
+      const { pi, registrations } = createPi();
+      runtime.register(pi);
+
+      const ctx = { isIdle: () => true, hasPendingMessages: () => false };
+      const settled = registrations.find(({ eventName }) => eventName === "agent_settled")?.handler;
+      const input = registrations.find(({ eventName }) => eventName === "input")?.handler;
+      await settled?.({ type: "agent_settled" }, ctx);
+
+      const inputResult = input?.({ type: "input", source, text: "new prompt" }, ctx);
+      await nextCheckPhase();
+
+      expect(onCompletionAgentSettled).not.toHaveBeenCalled();
+      await inputResult;
+    },
+  );
+
   it("disposes a pending quiescence publication during shutdown", async () => {
     const { deps, onCompletionAgentSettled } = createDeps();
     const runtime = createAgentEventRuntime(deps);

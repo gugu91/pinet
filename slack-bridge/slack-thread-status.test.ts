@@ -88,6 +88,92 @@ describe("SlackThreadStatusManager", () => {
     expect(slack).toHaveBeenCalledTimes(3);
   });
 
+  it("serializes a newer generation after an older delayed clear", async () => {
+    let remoteStatus = "";
+    let releaseClear: (() => void) | undefined;
+    const clearGate = new Promise<void>((resolve) => {
+      releaseClear = resolve;
+    });
+    let reportClearStarted: (() => void) | undefined;
+    const clearStarted = new Promise<void>((resolve) => {
+      reportClearStarted = resolve;
+    });
+    const slack = vi.fn(async (_method: string, _token: string, body?: Record<string, unknown>) => {
+      const status = typeof body?.status === "string" ? body.status : "";
+      if (!status) {
+        reportClearStarted?.();
+        await clearGate;
+      }
+      remoteStatus = status;
+      return {};
+    });
+    const manager = new SlackThreadStatusManager({
+      slack,
+      getBotToken: () => "xoxb-test",
+      formatError: String,
+    });
+
+    await manager.begin("C123", "123.456", "is thinking…");
+    const clearing = manager.clear("C123", "123.456");
+    await clearStarted;
+
+    const restarting = manager.begin("C123", "123.456", "Reading context…");
+    await Promise.resolve();
+    expect(slack).toHaveBeenCalledTimes(2);
+
+    releaseClear?.();
+    await Promise.all([clearing, restarting]);
+
+    expect(slack.mock.calls.map(([, , body]) => body?.status)).toEqual([
+      "is thinking…",
+      "",
+      "Reading context…",
+    ]);
+    expect(remoteStatus).toBe("Reading context…");
+  });
+
+  it("skips a queued clear after a newer generation begins", async () => {
+    let releaseUpdate: (() => void) | undefined;
+    const updateGate = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    let reportUpdateStarted: (() => void) | undefined;
+    const updateStarted = new Promise<void>((resolve) => {
+      reportUpdateStarted = resolve;
+    });
+    let remoteStatus = "";
+    const slack = vi.fn(async (_method: string, _token: string, body?: Record<string, unknown>) => {
+      const status = typeof body?.status === "string" ? body.status : "";
+      if (status === "Calling tool…") {
+        reportUpdateStarted?.();
+        await updateGate;
+      }
+      remoteStatus = status;
+      return {};
+    });
+    const manager = new SlackThreadStatusManager({
+      slack,
+      getBotToken: () => "xoxb-test",
+      formatError: String,
+    });
+
+    await manager.begin("C123", "123.456", "is thinking…");
+    const updating = manager.update("C123", "123.456", "Calling tool…");
+    await updateStarted;
+    const clearing = manager.clear("C123", "123.456");
+    const restarting = manager.begin("C123", "123.456", "Reading context…");
+
+    releaseUpdate?.();
+    await Promise.all([updating, clearing, restarting]);
+
+    expect(slack.mock.calls.map(([, , body]) => body?.status)).toEqual([
+      "is thinking…",
+      "Calling tool…",
+      "Reading context…",
+    ]);
+    expect(remoteStatus).toBe("Reading context…");
+  });
+
   it("logs status failures instead of throwing", async () => {
     const logger = { error: vi.fn() };
     const manager = new SlackThreadStatusManager({

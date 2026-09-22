@@ -54,10 +54,14 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
   }
 
   function register(pi: Pick<ExtensionAPI, "on">): void {
-    pi.on("input", slackToolPolicyRuntime.onInput);
+    pi.on("input", (event) => {
+      // Pi 0.87 has no prompt-enqueued hook before its sequential input handlers.
+      // Once input reaches Pinet, invalidate synchronously: before-start handlers
+      // can then block in any registration order without exposing stale idle state.
+      invalidatePendingSettlement();
+      return slackToolPolicyRuntime.onInput(event);
+    });
     pi.on("before_agent_start", () => {
-      // AgentSession remains publicly idle until all before-start handlers finish,
-      // so invalidate before a later async handler can hold that pre-run gap open.
       invalidatePendingSettlement();
     });
     pi.on("agent_start", async (event, ctx) => {

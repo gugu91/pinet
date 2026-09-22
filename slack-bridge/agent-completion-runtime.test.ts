@@ -57,9 +57,9 @@ describe("createAgentCompletionRuntime", () => {
     const { ctx, notify } = createContext();
 
     await runtime.onAgentStart({ type: "agent_start" }, ctx);
-    await runtime.onAgentEnd({}, ctx);
+    await runtime.onAgentEnd({ type: "agent_end", messages: [] }, ctx);
     await runtime.onAgentStart({ type: "agent_start" }, ctx);
-    await runtime.onAgentEnd({}, ctx);
+    await runtime.onAgentEnd({ type: "agent_end", messages: [] }, ctx);
 
     expect(signalAgentWorking).toHaveBeenCalledTimes(2);
     expect(clearFollowUpPending).toHaveBeenCalledTimes(2);
@@ -95,7 +95,7 @@ describe("createAgentCompletionRuntime", () => {
     const runtime = createAgentCompletionRuntime(deps);
     const { ctx, notify } = createContext();
 
-    await runtime.onAgentEnd({}, ctx);
+    await runtime.onAgentEnd({ type: "agent_end", messages: [] }, ctx);
     await runtime.onAgentSettled({ type: "agent_settled" }, ctx);
 
     expect(clearFollowUpPending).toHaveBeenCalledTimes(1);

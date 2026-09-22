@@ -586,7 +586,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.listScheduledWakeups(reg.agentId)).toHaveLength(0);
   });
 
-  it("keeps Pinet non-quiescent while a settled-handler prompt awaits before_agent_start", async () => {
+  it("keeps Pinet non-quiescent when an earlier before-start handler blocks extension input", async () => {
     const registration = await client.register("continuing-agent", "🔁");
     let desiredStatus: "working" | "idle" = "idle";
     const maintenanceResults: ReturnType<typeof runBrokerMaintenancePass>[] = [];
@@ -657,6 +657,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       reportBlockedBeforeAgentStart = resolve;
     });
     let queuedSettledContinuation = false;
+    let continuationInputSource: string | undefined;
     let blockedLifecycleState: { idle: boolean; pending: boolean } | undefined;
     const continuationPrompt = "continue after settlement";
     const resourceLoader = new DefaultResourceLoader({
@@ -669,12 +670,13 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       noContextFiles: true,
       extensionFactories: [
         {
-          name: "pinet-lifecycle",
-          factory: (pi) => runtime.register(pi),
-        },
-        {
           name: "settled-continuation",
           factory: (pi) => {
+            pi.on("input", (event) => {
+              if (event.text === continuationPrompt) {
+                continuationInputSource = event.source;
+              }
+            });
             pi.on("agent_settled", () => {
               if (queuedSettledContinuation) return;
               queuedSettledContinuation = true;
@@ -698,6 +700,10 @@ describe("broker integration — client ↔ server ↔ DB", () => {
               await beforeAgentStartGate;
             });
           },
+        },
+        {
+          name: "pinet-lifecycle",
+          factory: (pi) => runtime.register(pi),
         },
       ],
     });
@@ -737,6 +743,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(session.isIdle).toBe(true);
+      expect(continuationInputSource).toBe("extension");
       expect(blockedLifecycleState).toEqual({ idle: true, pending: false });
       expect(db.getAgentById(registration.agentId)?.status).toBe("working");
       expect(clearThreadStatus).not.toHaveBeenCalled();

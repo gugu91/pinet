@@ -1,4 +1,5 @@
 import type {
+  AgentEndEvent,
   AgentSettledEvent,
   AgentStartEvent,
   ExtensionContext,
@@ -13,7 +14,7 @@ export interface AgentCompletionRuntimeDeps {
 
 export interface AgentCompletionRuntime {
   onAgentStart: (_event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>;
-  onAgentEnd: (_event: unknown, ctx: ExtensionContext) => Promise<void>;
+  onAgentEnd: (_event: AgentEndEvent, ctx: ExtensionContext) => Promise<void>;
   onAgentSettled: (_event: AgentSettledEvent, ctx: ExtensionContext) => Promise<void>;
 }
 
@@ -28,7 +29,7 @@ export function createAgentCompletionRuntime(
     }
   }
 
-  async function onAgentEnd(_event: unknown, _ctx: ExtensionContext): Promise<void> {
+  async function onAgentEnd(_event: AgentEndEvent, _ctx: ExtensionContext): Promise<void> {
     deps.clearFollowUpPending();
   }
 

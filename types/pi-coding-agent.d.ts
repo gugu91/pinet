@@ -245,6 +245,11 @@ declare module "@earendil-works/pi-coding-agent" {
     type: "agent_start";
   }
 
+  export interface AgentEndEvent {
+    type: "agent_end";
+    messages: AgentMessage[];
+  }
+
   export interface AgentSettledEvent {
     type: "agent_settled";
   }

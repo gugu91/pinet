@@ -85,6 +85,7 @@ export class SlackThreadStatusManager {
   private readonly deps: Required<Pick<SlackThreadStatusManagerDeps, "formatError">> &
     SlackThreadStatusManagerDeps;
   private readonly active = new Map<string, ActiveSlackThreadStatus>();
+  private readonly pendingWrites = new Map<string, Promise<void>>();
 
   constructor(deps: SlackThreadStatusManagerDeps) {
     this.deps = deps;
@@ -129,7 +130,7 @@ export class SlackThreadStatusManager {
       }, this.deps.heartbeatMs ?? SLACK_THREAD_STATUS_HEARTBEAT_MS);
     }
 
-    await this.trySet(entry, normalized);
+    await this.queueSet(entry, normalized);
   }
 
   async clear(channelId: string, threadTs: string): Promise<void> {
@@ -141,7 +142,7 @@ export class SlackThreadStatusManager {
     }
     this.active.delete(key);
 
-    await this.trySet(
+    await this.queueSet(
       {
         channelId,
         threadTs,
@@ -165,7 +166,7 @@ export class SlackThreadStatusManager {
     if (entry.heartbeatInFlight) return;
     entry.heartbeatInFlight = true;
     try {
-      await this.trySet(entry, entry.status);
+      await this.queueSet(entry, entry.status);
     } finally {
       entry.heartbeatInFlight = false;
     }
@@ -192,7 +193,25 @@ export class SlackThreadStatusManager {
       clearIntervalFn(entry.timer);
       entry.timer = null;
     }
-    this.active.delete(statusKey(entry.channelId, entry.threadTs));
+    const key = statusKey(entry.channelId, entry.threadTs);
+    if (this.active.get(key) === entry) {
+      this.active.delete(key);
+    }
+  }
+
+  private queueSet(entry: ActiveSlackThreadStatus, status: string): Promise<void> {
+    const key = statusKey(entry.channelId, entry.threadTs);
+    const pending = this.pendingWrites.get(key) ?? Promise.resolve();
+    const write = pending.then(() => {
+      if (!status && this.active.has(key)) return;
+      return this.trySet(entry, status);
+    });
+    this.pendingWrites.set(key, write);
+    return write.finally(() => {
+      if (this.pendingWrites.get(key) === write) {
+        this.pendingWrites.delete(key);
+      }
+    });
   }
 
   private async trySet(entry: ActiveSlackThreadStatus, status: string): Promise<void> {
