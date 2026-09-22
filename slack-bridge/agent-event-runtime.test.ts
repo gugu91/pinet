@@ -35,6 +35,10 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
   };
 }
 
+function nextCheckPhase(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function createPi() {
   const registrations: Array<{ eventName: string; handler: (...args: unknown[]) => unknown }> = [];
   const pi = {
@@ -48,7 +52,7 @@ function createPi() {
 
 describe("createAgentEventRuntime", () => {
   it("registers one composed handler for each agent lifecycle event", () => {
-    const { deps, onCompletionAgentStart } = createDeps();
+    const { deps } = createDeps();
     const runtime = createAgentEventRuntime(deps);
     const { pi, registrations } = createPi();
 
@@ -63,9 +67,7 @@ describe("createAgentEventRuntime", () => {
       "agent_end",
       "agent_settled",
     ]);
-    expect(registrations.find(({ eventName }) => eventName === "agent_start")?.handler).toBe(
-      onCompletionAgentStart,
-    );
+    expect(registrations.filter(({ eventName }) => eventName === "agent_start")).toHaveLength(1);
     expect(registrations.filter(({ eventName }) => eventName === "agent_end")).toHaveLength(1);
     expect(registrations.filter(({ eventName }) => eventName === "agent_settled")).toHaveLength(1);
   });
@@ -117,6 +119,17 @@ describe("createAgentEventRuntime", () => {
     expect(clearThreadStatus).not.toHaveBeenCalled();
 
     await dispatch("agent_settled", { type: "agent_settled" });
+    await dispatch("agent_start", { type: "agent_start" });
+    await nextCheckPhase();
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
+
+    await dispatch("agent_end");
+    await dispatch("agent_settled", { type: "agent_settled" });
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+    await nextCheckPhase();
+
+    expect(clearThreadStatus).toHaveBeenCalledOnce();
     expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
     expect(onCompletionAgentSettled).toHaveBeenCalledTimes(1);
     expect(clearThreadStatus.mock.invocationCallOrder[0]).toBeLessThan(

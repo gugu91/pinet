@@ -4040,6 +4040,7 @@ describe("slack-bridge Pinet reconnect", () => {
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working", "working"]);
 
       await agentSettled?.({ type: "agent_settled" }, ctx);
+      await vi.advanceTimersByTimeAsync(0);
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual([
         "working",
         "working",
@@ -4197,6 +4198,7 @@ describe("slack-bridge Pinet reconnect", () => {
 
       await vi.advanceTimersByTimeAsync(1_501);
       await agentSettled?.({ type: "agent_settled" }, ctx);
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(sendUserMessage).toHaveBeenCalledTimes(1);
       expect(sendUserMessage).toHaveBeenCalledWith(

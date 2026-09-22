@@ -143,6 +143,7 @@ export function createSlackPinetRuntimeAdapterFactory(
       ingressGuard: settings.ingressGuard,
       suggestedPrompts: settings.suggestedPrompts,
       reactionCommands: settings.reactionCommands as ReactionCommandSettings | undefined,
+      lifecycleManagesThreadStatus: true,
       isKnownThread: (threadTs: string) =>
         shouldRouteKnownSlackThread(broker.db.getThread(threadTs)),
       getKnownThread: (threadTs: string) => getKnownSlackThread(broker, threadTs),

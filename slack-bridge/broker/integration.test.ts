@@ -7,11 +7,16 @@ import { BrokerDB } from "./schema.js";
 import { BrokerSocketServer } from "./socket-server.js";
 import { BrokerClient } from "./client.js";
 import { runBrokerMaintenancePass } from "./maintenance.js";
+import { sendBrokerMessage } from "./message-send.js";
 import { MessageRouter } from "./router.js";
+import type { Broker } from "./index.js";
 import type { OutboundMessage } from "./types.js";
 import { createAgentCompletionRuntime } from "../agent-completion-runtime.js";
 import { createAgentEventRuntime } from "../agent-event-runtime.js";
 import { createPinetAgentStatus } from "../pinet-agent-status.js";
+import { registerSlackTools } from "../slack-tools.js";
+import { createSlackPinetRuntimeAdapterFactory } from "../slack-pinet-runtime-adapter.js";
+import { SlackThreadStatusManager } from "../slack-thread-status.js";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -572,9 +577,20 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.listScheduledWakeups(reg.agentId)).toHaveLength(0);
   });
 
-  it("marks a settled-handler continuation working before maintenance can route more work", async () => {
+  it("cancels deferred idle publication before settled-handler backlog can be routed", async () => {
     const registration = await client.register("continuing-agent", "🔁");
     let desiredStatus: "working" | "idle" = "idle";
+    const maintenanceResults: ReturnType<typeof runBrokerMaintenancePass>[] = [];
+    server.onAgentStatusChange((_agentId, status) => {
+      if (status === "idle") {
+        maintenanceResults.push(
+          runBrokerMaintenancePass(db, {
+            staleAfterMs: 15_000,
+            now: Date.now(),
+          }),
+        );
+      }
+    });
     const ctx = {
       cwd: process.cwd(),
       hasUI: true,
@@ -648,7 +664,18 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       }
     };
     const deferredContinuations: Array<() => Promise<void>> = [];
+    let queuedSettledContinuation = false;
     pi.on("agent_settled", () => {
+      if (queuedSettledContinuation) return;
+      queuedSettledContinuation = true;
+      db.queueUnroutedMessage({
+        source: "slack",
+        threadId: "t-deferred-continuation",
+        channel: "C-CONTINUE",
+        userId: "U1",
+        text: "do not route concurrently",
+        timestamp: String(Date.now() / 1000),
+      });
       deferredContinuations.push(() => dispatch("agent_start"));
     });
 
@@ -657,27 +684,256 @@ describe("broker integration — client ↔ server ↔ DB", () => {
 
     await dispatch("agent_settled");
     expect(deferredContinuations).toHaveLength(1);
-    expect(db.getAgentById(registration.agentId)?.status).toBe("idle");
+    expect(db.getBacklogCount("pending")).toBe(1);
+    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+    expect(maintenanceResults).toEqual([]);
 
     await deferredContinuations.shift()?.();
+    await new Promise((resolve) => setImmediate(resolve));
+
     expect(db.getAgentById(registration.agentId)?.status).toBe("working");
-
-    db.queueUnroutedMessage({
-      source: "slack",
-      threadId: "t-deferred-continuation",
-      channel: "C-CONTINUE",
-      userId: "U1",
-      text: "do not route concurrently",
-      timestamp: String(Date.now() / 1000),
-    });
-    const result = runBrokerMaintenancePass(db, {
-      staleAfterMs: 15_000,
-      now: Date.now(),
-    });
-
-    expect(result.assignedBacklogCount).toBe(0);
     expect(db.getBacklogCount("pending")).toBe(1);
+    expect(maintenanceResults).toEqual([]);
     expect(await client.pollInbox()).toEqual([]);
+
+    await dispatch("agent_settled");
+    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+    await waitFor(() => db.getAgentById(registration.agentId)?.status === "idle");
+
+    expect(db.getAgentById(registration.agentId)?.status).toBe("idle");
+    expect(maintenanceResults).toHaveLength(1);
+    expect(maintenanceResults[0]?.assignedBacklogCount).toBe(1);
+    expect(db.getBacklogCount("pending")).toBe(0);
+    expect(await client.pollInbox()).toHaveLength(1);
+  });
+
+  it("keeps production Pinet slack_send status visible until composed settlement", async () => {
+    const registration = await client.register("slack-replier", "💬");
+    db.createThread("100.1", "slack", "C100", registration.agentId);
+
+    const operations: Array<{ method: string; status?: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = String(input).split("/").at(-1) ?? "";
+      const body =
+        typeof init?.body === "string" ? (JSON.parse(init.body) as { status?: string }) : undefined;
+      operations.push({
+        method,
+        ...(typeof body?.status === "string" ? { status: body.status } : {}),
+      });
+      return new Response(JSON.stringify({ ok: true, ts: "100.2", channel: "C100" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const statuses = new SlackThreadStatusManager({
+        slack: async (method, _token, body) => {
+          operations.push({
+            method,
+            ...(typeof body?.status === "string" ? { status: body.status } : {}),
+          });
+          return { ok: true };
+        },
+        getBotToken: () => "xoxb-test",
+        formatError: String,
+      });
+      const ctx = {
+        cwd: process.cwd(),
+        hasUI: true,
+        isIdle: () => true,
+        ui: {
+          theme: {},
+          notify: vi.fn(),
+          setStatus: vi.fn(),
+          select: async () => undefined,
+          custom: async <T>() => undefined as T,
+        },
+        sessionManager: {
+          getEntries: () => [],
+          getBranch: () => [],
+          getLeafId: () => "slack-replier-leaf",
+          getSessionFile: () => "/tmp/slack-replier.jsonl",
+        },
+      } as ExtensionContext;
+      const productionBinding = await createSlackPinetRuntimeAdapterFactory({
+        getSettings: () => ({}),
+        getBotToken: () => "xoxb-test",
+        getAppToken: () => "xapp-test",
+        getAllowedUsers: () => null,
+        shouldAllowAllWorkspaceUsers: () => true,
+        setExtStatus: vi.fn(),
+        onAppHomeOpened: vi.fn(),
+      })({
+        broker: { ...({} as Broker), db },
+        router: new MessageRouter(db),
+        selfId: registration.agentId,
+        ctx,
+      });
+      const adapter = Array.isArray(productionBinding)
+        ? productionBinding[0]?.adapter
+        : productionBinding.adapter;
+      if (!adapter) throw new Error("Expected the production Slack adapter binding");
+
+      const completion = createAgentCompletionRuntime({
+        clearFollowUpPending: vi.fn(),
+        signalAgentWorking: async () => {
+          operations.push({ method: "agent.working" });
+        },
+        signalAgentFree: async () => {
+          operations.push({ method: "agent.idle" });
+        },
+        formatError: String,
+      });
+      type RegisteredEventHandler = (
+        event: never,
+        eventCtx: ExtensionContext,
+      ) => void | Promise<void>;
+      type RegisteredTool = {
+        name: string;
+        execute: (id: string, params: Record<string, object | string>) => Promise<object>;
+      };
+      const handlers = new Map<string, RegisteredEventHandler[]>();
+      const tools = new Map<string, RegisteredTool>();
+      const pi = {
+        ...({} as ExtensionAPI),
+        on: (eventName: string, handler: RegisteredEventHandler) => {
+          const eventHandlers = handlers.get(eventName) ?? [];
+          eventHandlers.push(handler);
+          handlers.set(eventName, eventHandlers);
+          return () => {};
+        },
+        registerTool: (tool: RegisteredTool) => {
+          tools.set(tool.name, tool);
+        },
+      } as ExtensionAPI;
+      let deliverTrackedSlackFollowUpMessage:
+        | ((options: {
+            prompt: string;
+            messages: Array<{ channel: string; threadTs: string }>;
+          }) => boolean)
+        | undefined;
+      createAgentEventRuntime({
+        getBrokerRole: () => "follower",
+        getGuardrails: () => ({}),
+        requireToolPolicy: vi.fn(),
+        formatAction: String,
+        formatError: String,
+        deliverFollowUpMessage: () => true,
+        beginThreadStatus: (channel, threadTs, status) => statuses.begin(channel, threadTs, status),
+        updateThreadStatus: (channel, threadTs, status) =>
+          statuses.update(channel, threadTs, status),
+        clearThreadStatus: (channel, threadTs) => statuses.clear(channel, threadTs),
+        onCompletionAgentStart: completion.onAgentStart,
+        onCompletionAgentEnd: completion.onAgentEnd,
+        onCompletionAgentSettled: completion.onAgentSettled,
+        setDeliverTrackedSlackFollowUpMessage: (deliver) => {
+          deliverTrackedSlackFollowUpMessage = deliver;
+        },
+      }).register(pi);
+      registerSlackTools(pi, {
+        getBotToken: () => "xoxb-test",
+        getDefaultChannel: () => undefined,
+        getSecurityPrompt: () => "",
+        inbox: [],
+        slack: async () => ({ ok: true }),
+        getAgentName: () => "Slack Replier",
+        getAgentEmoji: () => "💬",
+        getAgentOwnerToken: () => "owner:test",
+        getLastDmChannel: () => null,
+        updateBadge: vi.fn(),
+        markSubtreeInboxIdsDelivered: vi.fn(),
+        resolveUser: async (userId) => userId,
+        threadContext: {
+          resolveThreadChannel: async () => "C100",
+          noteThreadReply: vi.fn(),
+          clearPendingAttention: vi.fn(),
+        },
+        resolveChannel: async (channel) => channel,
+        rememberChannel: vi.fn(),
+        requireToolPolicy: vi.fn(),
+        registerConfirmationRequest: () => ({ status: "created" }),
+        getBotUserId: () => "U_BOT",
+        pinetDelivery: {
+          isEnabled: () => true,
+          isAvailable: () => true,
+          sendSlackMessage: async (input) => {
+            const result = await sendBrokerMessage(
+              { db, adapters: [adapter] },
+              {
+                threadId: input.threadId,
+                body: input.text,
+                senderAgentId: registration.agentId,
+                source: "slack",
+                channel: input.channel,
+                ...(input.blocks ? { blocks: input.blocks } : {}),
+                ...(input.files ? { files: input.files } : {}),
+              },
+            );
+            return {
+              adapter: result.adapter,
+              messageId: result.message.id,
+              threadId: result.thread.threadId,
+              channel: result.thread.channel,
+              source: result.thread.source,
+            };
+          },
+        },
+      });
+
+      const dispatch = async (eventName: string, event: object = {}) => {
+        for (const handler of handlers.get(eventName) ?? []) {
+          await handler(event as never, ctx);
+        }
+      };
+      const prompt = "reply to the active Slack thread";
+      expect(
+        deliverTrackedSlackFollowUpMessage?.({
+          prompt,
+          messages: [{ channel: "C100", threadTs: "100.1" }],
+        }),
+      ).toBe(true);
+      await dispatch("input", { source: "extension", text: prompt });
+      await dispatch("agent_start", { type: "agent_start" });
+      await dispatch("turn_start");
+
+      await tools.get("slack_send")?.execute("tool-1", {
+        thread_ts: "100.1",
+        text: "The work is complete.",
+      });
+
+      expect(operations.some(({ method }) => method === "chat.postMessage")).toBe(true);
+      expect(
+        operations.filter(
+          ({ method, status }) => method === "assistant.threads.setStatus" && status === "",
+        ),
+      ).toHaveLength(0);
+
+      await dispatch("turn_end");
+      await dispatch("agent_end");
+      await dispatch("agent_settled", { type: "agent_settled" });
+      expect(
+        operations.filter(
+          ({ method, status }) => method === "assistant.threads.setStatus" && status === "",
+        ),
+      ).toHaveLength(0);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const clearOperations = operations.filter(
+        ({ method, status }) => method === "assistant.threads.setStatus" && status === "",
+      );
+      expect(clearOperations).toHaveLength(1);
+      expect(operations.map(({ method }) => method)).toEqual([
+        "agent.working",
+        "assistant.threads.setStatus",
+        "chat.postMessage",
+        "assistant.threads.setStatus",
+        "agent.idle",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("maintenance assigns unrouted backlog into a follower inbox", async () => {

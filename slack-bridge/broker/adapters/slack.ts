@@ -104,6 +104,9 @@ export interface SlackAdapterConfig {
   onSocketOpen?: () => void;
   onSocketReconnectScheduled?: () => void;
   onSocketError?: (message: string, source: SlackSocketErrorSource) => void;
+  /** True when the hosting Pi lifecycle clears status at agent settlement. */
+  // agent-default (not a user rule): 2026-09-22 - omitted preserves standalone send-time clearing.
+  lifecycleManagesThreadStatus?: boolean;
 }
 
 interface SlackThreadInfo {
@@ -319,7 +322,9 @@ export class SlackAdapter implements MessageAdapter {
       this.pendingEyes.delete(msg.threadId);
     }
 
-    void this.clearThreadStatus(msg.channel, msg.threadId);
+    if (!this.config.lifecycleManagesThreadStatus) {
+      void this.threadStatuses.clear(msg.channel, msg.threadId);
+    }
   }
 
   private buildSlackApiCapabilityEffects(
@@ -806,7 +811,9 @@ export class SlackAdapter implements MessageAdapter {
       });
     }
 
-    void this.threadStatuses.begin(channel, threadTs, DEFAULT_SLACK_THREAD_STATUS);
+    if (!this.config.lifecycleManagesThreadStatus) {
+      void this.threadStatuses.begin(channel, threadTs, DEFAULT_SLACK_THREAD_STATUS);
+    }
     void this.addReaction(channel, messageTs, "eyes");
     const pending = this.pendingEyes.get(threadTs) ?? [];
     pending.push({ channel, messageTs });
@@ -953,10 +960,6 @@ export class SlackAdapter implements MessageAdapter {
       cache: this.userNames,
       shouldUseResult: () => !this.shuttingDown,
     });
-  }
-
-  private async clearThreadStatus(channelId: string, threadTs: string): Promise<void> {
-    await this.threadStatuses.clear(channelId, threadTs);
   }
 
   private async setSuggestedPrompts(channelId: string, threadTs: string): Promise<void> {
