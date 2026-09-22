@@ -5,6 +5,7 @@ import { createAgentEventRuntime, type AgentEventRuntimeDeps } from "./agent-eve
 function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
   const deliverFollowUpMessage = vi.fn(() => true);
   const requireToolPolicy = vi.fn();
+  const onCompletionAgentStart = vi.fn(async () => {});
   const onCompletionAgentEnd = vi.fn(async () => {});
   const onCompletionAgentSettled = vi.fn(async () => {});
   const setDeliverTrackedSlackFollowUpMessage = vi.fn();
@@ -16,6 +17,7 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
     formatAction: (action) => `<${action}>`,
     formatError: (error) => (error instanceof Error ? error.message : String(error)),
     deliverFollowUpMessage,
+    onCompletionAgentStart,
     onCompletionAgentEnd,
     onCompletionAgentSettled,
     setDeliverTrackedSlackFollowUpMessage,
@@ -26,6 +28,7 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
     deps,
     deliverFollowUpMessage,
     requireToolPolicy,
+    onCompletionAgentStart,
     onCompletionAgentEnd,
     onCompletionAgentSettled,
     setDeliverTrackedSlackFollowUpMessage,
@@ -44,8 +47,8 @@ function createPi() {
 }
 
 describe("createAgentEventRuntime", () => {
-  it("registers per-run cleanup on agent_end and completion on agent_settled", () => {
-    const { deps, onCompletionAgentEnd, onCompletionAgentSettled } = createDeps();
+  it("registers one composed handler for each agent lifecycle event", () => {
+    const { deps, onCompletionAgentStart } = createDeps();
     const runtime = createAgentEventRuntime(deps);
     const { pi, registrations } = createPi();
 
@@ -53,44 +56,72 @@ describe("createAgentEventRuntime", () => {
 
     expect(registrations.map(({ eventName }) => eventName)).toEqual([
       "input",
+      "agent_start",
       "turn_start",
       "turn_end",
-      "agent_end",
       "tool_call",
       "agent_end",
       "agent_settled",
     ]);
-
-    const agentEndHandlers = registrations.filter(({ eventName }) => eventName === "agent_end");
-    expect(agentEndHandlers).toHaveLength(2);
-    expect(agentEndHandlers[0]?.handler).not.toBe(onCompletionAgentEnd);
-    expect(agentEndHandlers[1]?.handler).toBe(onCompletionAgentEnd);
-    expect(registrations.find(({ eventName }) => eventName === "agent_settled")?.handler).toBe(
-      onCompletionAgentSettled,
+    expect(registrations.find(({ eventName }) => eventName === "agent_start")?.handler).toBe(
+      onCompletionAgentStart,
     );
+    expect(registrations.filter(({ eventName }) => eventName === "agent_end")).toHaveLength(1);
+    expect(registrations.filter(({ eventName }) => eventName === "agent_settled")).toHaveLength(1);
   });
 
-  it("does not signal completion when agent_before_settle continues with a retry", async () => {
-    const { deps, onCompletionAgentEnd, onCompletionAgentSettled } = createDeps();
+  it("preserves visible status across retries and clears it through the composed settled path", async () => {
+    const beginThreadStatus = vi.fn(async () => {});
+    const clearThreadStatus = vi.fn(async () => {});
+    const { deps, requireToolPolicy, onCompletionAgentEnd, onCompletionAgentSettled } = createDeps({
+      getGuardrails: () => ({ requireConfirmation: ["read"] }),
+      beginThreadStatus,
+      clearThreadStatus,
+    });
     const runtime = createAgentEventRuntime(deps);
     const { pi, registrations } = createPi();
 
     runtime.register(pi);
+    const deliver = deps.setDeliverTrackedSlackFollowUpMessage as ReturnType<typeof vi.fn>;
+    const deliverTrackedSlackFollowUpMessage = deliver.mock.calls[0]?.[0] as (options: {
+      prompt: string;
+      messages: Array<{ channel: string; threadTs: string }>;
+    }) => boolean;
+    deliverTrackedSlackFollowUpMessage({
+      prompt: "retrying Slack prompt",
+      messages: [{ channel: "C100", threadTs: "100.1" }],
+    });
 
-    for (const { eventName, handler } of registrations) {
-      if (eventName === "agent_end") await handler({}, {});
-    }
-    // Pi 0.87 may choose continue in agent_before_settle, producing another run before settlement.
-    for (const { eventName, handler } of registrations) {
-      if (eventName === "agent_end") await handler({}, {});
-    }
+    const dispatch = async (eventName: string, event: object = {}) => {
+      const registration = registrations.find((candidate) => candidate.eventName === eventName);
+      await registration?.handler(event, {});
+    };
 
-    expect(onCompletionAgentEnd).toHaveBeenCalledTimes(2);
+    await dispatch("input", { source: "extension", text: "retrying Slack prompt" });
+    await dispatch("turn_start");
+    await dispatch("tool_call", { toolName: "read", input: { path: "README.md" } });
+    expect(requireToolPolicy).toHaveBeenCalledTimes(1);
+
+    await dispatch("turn_end");
+    await dispatch("tool_call", { toolName: "read", input: { path: "README.md" } });
+    await dispatch("agent_end");
+
+    expect(requireToolPolicy).toHaveBeenCalledTimes(1);
+    expect(beginThreadStatus).toHaveBeenCalledWith("C100", "100.1", "is thinking…");
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+    expect(onCompletionAgentEnd).toHaveBeenCalledTimes(1);
     expect(onCompletionAgentSettled).not.toHaveBeenCalled();
 
-    const settled = registrations.find(({ eventName }) => eventName === "agent_settled");
-    await settled?.handler({}, {});
+    await dispatch("agent_start", { type: "agent_start" });
+    await dispatch("agent_end");
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+
+    await dispatch("agent_settled", { type: "agent_settled" });
+    expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
     expect(onCompletionAgentSettled).toHaveBeenCalledTimes(1);
+    expect(clearThreadStatus.mock.invocationCallOrder[0]).toBeLessThan(
+      onCompletionAgentSettled.mock.invocationCallOrder[0] ?? Infinity,
+    );
   });
 
   it("hands off tracked Slack follow-up delivery from the created tool-policy runtime", async () => {

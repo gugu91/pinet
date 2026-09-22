@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,6 +9,9 @@ import { BrokerClient } from "./client.js";
 import { runBrokerMaintenancePass } from "./maintenance.js";
 import { MessageRouter } from "./router.js";
 import type { OutboundMessage } from "./types.js";
+import { createAgentCompletionRuntime } from "../agent-completion-runtime.js";
+import { createAgentEventRuntime } from "../agent-event-runtime.js";
+import { createPinetAgentStatus } from "../pinet-agent-status.js";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -566,6 +570,114 @@ describe("broker integration — client ↔ server ↔ DB", () => {
 
     await client.ackMessages([inbox[0].inboxId]);
     expect(db.listScheduledWakeups(reg.agentId)).toHaveLength(0);
+  });
+
+  it("marks a settled-handler continuation working before maintenance can route more work", async () => {
+    const registration = await client.register("continuing-agent", "🔁");
+    let desiredStatus: "working" | "idle" = "idle";
+    const ctx = {
+      cwd: process.cwd(),
+      hasUI: true,
+      isIdle: () => true,
+      ui: {
+        theme: {},
+        notify: vi.fn(),
+        setStatus: vi.fn(),
+        select: async () => undefined,
+        custom: async <T>() => undefined as T,
+      },
+      sessionManager: {
+        getEntries: () => [],
+        getBranch: () => [],
+        getLeafId: () => "continuing-agent-leaf",
+        getSessionFile: () => "/tmp/continuing-agent.jsonl",
+      },
+    } as ExtensionContext;
+    const status = createPinetAgentStatus({
+      getPinetEnabled: () => true,
+      getBrokerRole: () => "follower",
+      getDesiredAgentStatus: () => desiredStatus,
+      setDesiredAgentStatus: (nextStatus) => {
+        desiredStatus = nextStatus;
+      },
+      getActiveBrokerDb: () => null,
+      getActiveBrokerSelfId: () => null,
+      hasFollowerClient: () => true,
+      syncFollowerDesiredStatus: (nextStatus) => client.updateStatus(nextStatus),
+      runBrokerMaintenance: vi.fn(),
+      getInboxLength: () => 0,
+      getCurrentRuntimeMode: () => "follower",
+      maybeDrainInboxIfIdle: () => false,
+      getExtensionContext: () => ctx,
+    });
+    const completion = createAgentCompletionRuntime({
+      clearFollowUpPending: vi.fn(),
+      signalAgentWorking: () => status.reportStatus("working"),
+      signalAgentFree: (eventCtx) => status.signalAgentFree(eventCtx),
+      formatError: (error) => (error instanceof Error ? error.message : String(error)),
+    });
+    const runtime = createAgentEventRuntime({
+      getBrokerRole: () => "follower",
+      getGuardrails: () => ({}),
+      requireToolPolicy: vi.fn(),
+      formatAction: String,
+      formatError: String,
+      deliverFollowUpMessage: () => false,
+      onCompletionAgentStart: completion.onAgentStart,
+      onCompletionAgentEnd: completion.onAgentEnd,
+      onCompletionAgentSettled: completion.onAgentSettled,
+      setDeliverTrackedSlackFollowUpMessage: vi.fn(),
+    });
+    type RegisteredEventHandler = (
+      event: never,
+      eventCtx: ExtensionContext,
+    ) => void | Promise<void>;
+    const handlers = new Map<string, RegisteredEventHandler[]>();
+    const pi = {
+      on: (eventName: string, handler: RegisteredEventHandler) => {
+        const eventHandlers = handlers.get(eventName) ?? [];
+        eventHandlers.push(handler);
+        handlers.set(eventName, eventHandlers);
+      },
+    } as Pick<ExtensionAPI, "on">;
+    runtime.register(pi);
+
+    const dispatch = async (eventName: string) => {
+      for (const handler of handlers.get(eventName) ?? []) {
+        await handler({} as never, ctx);
+      }
+    };
+    const deferredContinuations: Array<() => Promise<void>> = [];
+    pi.on("agent_settled", () => {
+      deferredContinuations.push(() => dispatch("agent_start"));
+    });
+
+    await dispatch("agent_start");
+    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+
+    await dispatch("agent_settled");
+    expect(deferredContinuations).toHaveLength(1);
+    expect(db.getAgentById(registration.agentId)?.status).toBe("idle");
+
+    await deferredContinuations.shift()?.();
+    expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+
+    db.queueUnroutedMessage({
+      source: "slack",
+      threadId: "t-deferred-continuation",
+      channel: "C-CONTINUE",
+      userId: "U1",
+      text: "do not route concurrently",
+      timestamp: String(Date.now() / 1000),
+    });
+    const result = runBrokerMaintenancePass(db, {
+      staleAfterMs: 15_000,
+      now: Date.now(),
+    });
+
+    expect(result.assignedBacklogCount).toBe(0);
+    expect(db.getBacklogCount("pending")).toBe(1);
+    expect(await client.pollInbox()).toEqual([]);
   });
 
   it("maintenance assigns unrouted backlog into a follower inbox", async () => {

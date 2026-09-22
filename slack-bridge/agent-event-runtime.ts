@@ -7,6 +7,7 @@ import {
 } from "./slack-tool-policy-runtime.js";
 
 export interface AgentEventRuntimeDeps extends SlackToolPolicyRuntimeDeps {
+  onCompletionAgentStart: AgentCompletionRuntime["onAgentStart"];
   onCompletionAgentEnd: AgentCompletionRuntime["onAgentEnd"];
   onCompletionAgentSettled: AgentCompletionRuntime["onAgentSettled"];
   setDeliverTrackedSlackFollowUpMessage: (
@@ -37,12 +38,18 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
 
   function register(pi: Pick<ExtensionAPI, "on">): void {
     pi.on("input", slackToolPolicyRuntime.onInput);
+    pi.on("agent_start", deps.onCompletionAgentStart);
     pi.on("turn_start", slackToolPolicyRuntime.onTurnStart);
     pi.on("turn_end", slackToolPolicyRuntime.onTurnEnd);
-    pi.on("agent_end", slackToolPolicyRuntime.onAgentEnd);
     pi.on("tool_call", slackToolPolicyRuntime.onToolCall);
-    pi.on("agent_end", deps.onCompletionAgentEnd);
-    pi.on("agent_settled", deps.onCompletionAgentSettled);
+    pi.on("agent_end", async (event, ctx) => {
+      await slackToolPolicyRuntime.onAgentEnd();
+      await deps.onCompletionAgentEnd(event, ctx);
+    });
+    pi.on("agent_settled", async (event, ctx) => {
+      await slackToolPolicyRuntime.onAgentSettled();
+      await deps.onCompletionAgentSettled(event, ctx);
+    });
   }
 
   return {

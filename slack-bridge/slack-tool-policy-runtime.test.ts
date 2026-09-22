@@ -169,7 +169,7 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(requireToolPolicy).not.toHaveBeenCalled();
   });
 
-  it("brackets a single Slack thread with visible status updates", async () => {
+  it("keeps visible Slack status through turn and agent completion until settlement", async () => {
     const beginThreadStatus = vi.fn(async () => undefined);
     const updateThreadStatus = vi.fn(async () => undefined);
     const clearThreadStatus = vi.fn(async () => undefined);
@@ -192,6 +192,10 @@ describe("createSlackToolPolicyRuntime", () => {
     expect(updateThreadStatus).toHaveBeenCalledWith("C100", "100.1", "Calling tool…");
 
     await runtime.onTurnEnd();
+    await runtime.onAgentEnd();
+    expect(clearThreadStatus).not.toHaveBeenCalled();
+
+    await runtime.onAgentSettled();
     expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
   });
 

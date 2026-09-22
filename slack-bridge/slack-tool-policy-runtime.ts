@@ -32,6 +32,7 @@ export interface SlackToolPolicyRuntime {
   onTurnStart: () => Promise<void>;
   onTurnEnd: () => Promise<void>;
   onAgentEnd: () => Promise<void>;
+  onAgentSettled: () => Promise<void>;
   onToolCall: (event: {
     toolName: string;
     input: Record<string, unknown>;
@@ -42,6 +43,7 @@ export function createSlackToolPolicyRuntime(
   deps: SlackToolPolicyRuntimeDeps,
 ): SlackToolPolicyRuntime {
   const pendingSlackToolPolicyTurns: PendingSlackToolPolicyTurn[] = [];
+  const visibleThreadStatuses = new Map<string, { channel: string; threadTs: string }>();
   let nextSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
   let activeSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
 
@@ -72,36 +74,31 @@ export function createSlackToolPolicyRuntime(
     activeSlackToolPolicyTurn = nextSlackToolPolicyTurn;
     nextSlackToolPolicyTurn = null;
     if (activeSlackToolPolicyTurn?.channel && activeSlackToolPolicyTurn.threadTs) {
-      await deps
-        .beginThreadStatus?.(
-          activeSlackToolPolicyTurn.channel,
-          activeSlackToolPolicyTurn.threadTs,
-          "is thinking…",
-        )
-        .catch(() => {
-          /* best effort */
-        });
+      const { channel, threadTs } = activeSlackToolPolicyTurn;
+      visibleThreadStatuses.set(`${channel}:${threadTs}`, { channel, threadTs });
+      await deps.beginThreadStatus?.(channel, threadTs, "is thinking…").catch(() => {
+        /* best effort */
+      });
     }
   }
 
   async function onTurnEnd(): Promise<void> {
-    const turn = activeSlackToolPolicyTurn;
     activeSlackToolPolicyTurn = null;
-    if (turn?.channel && turn.threadTs) {
-      await deps.clearThreadStatus?.(turn.channel, turn.threadTs).catch(() => {
-        /* best effort */
-      });
-    }
   }
 
   async function onAgentEnd(): Promise<void> {
-    const turn = activeSlackToolPolicyTurn;
     activeSlackToolPolicyTurn = null;
-    if (turn?.channel && turn.threadTs) {
-      await deps.clearThreadStatus?.(turn.channel, turn.threadTs).catch(() => {
+  }
+
+  async function onAgentSettled(): Promise<void> {
+    nextSlackToolPolicyTurn = null;
+    activeSlackToolPolicyTurn = null;
+    for (const { channel, threadTs } of visibleThreadStatuses.values()) {
+      await deps.clearThreadStatus?.(channel, threadTs).catch(() => {
         /* best effort */
       });
     }
+    visibleThreadStatuses.clear();
   }
 
   async function onToolCall(event: {
@@ -157,6 +154,7 @@ export function createSlackToolPolicyRuntime(
     onTurnStart,
     onTurnEnd,
     onAgentEnd,
+    onAgentSettled,
     onToolCall,
   };
 }

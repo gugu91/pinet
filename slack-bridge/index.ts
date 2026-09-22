@@ -482,7 +482,6 @@ export default function (pi: ExtensionAPI) {
     rememberChannel,
     resolveChannel,
     resolveFollowerReplyChannel,
-    clearThreadStatus,
     setSuggestedPrompts,
     fetchSlackMessageByTs,
   } = slackRuntimeAccess;
@@ -536,11 +535,10 @@ export default function (pi: ExtensionAPI) {
   const { reportStatus, signalAgentFree } = pinetAgentStatus;
   reportAgentStatus = reportStatus;
   const agentCompletionRuntime = createAgentCompletionRuntime({
-    getThreads: () => threads,
-    clearThreadStatus,
     clearFollowUpPending: () => {
       brokerRuntime.clearFollowUpPending();
     },
+    signalAgentWorking: () => reportStatus("working"),
     signalAgentFree: (ctx) => signalAgentFree(ctx),
     formatError: msg,
   });
@@ -556,6 +554,7 @@ export default function (pi: ExtensionAPI) {
     updateThreadStatus: (channel, threadTs, status) =>
       slackThreadStatuses.update(channel, threadTs, status),
     clearThreadStatus: (channel, threadTs) => slackThreadStatuses.clear(channel, threadTs),
+    onCompletionAgentStart: agentCompletionRuntime.onAgentStart,
     onCompletionAgentEnd: agentCompletionRuntime.onAgentEnd,
     onCompletionAgentSettled: agentCompletionRuntime.onAgentSettled,
     setDeliverTrackedSlackFollowUpMessage: (deliver) => {

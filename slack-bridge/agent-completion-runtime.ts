@@ -1,19 +1,18 @@
-import type { AgentSettledEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-interface AgentCompletionThreadState {
-  channelId: string;
-}
+import type {
+  AgentSettledEvent,
+  AgentStartEvent,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 export interface AgentCompletionRuntimeDeps {
-  getThreads: () => Map<string, AgentCompletionThreadState>;
-  clearThreadStatus: (channelId: string, threadTs: string) => Promise<void>;
   clearFollowUpPending: () => void;
+  signalAgentWorking: () => Promise<void>;
   signalAgentFree: (ctx: ExtensionContext) => Promise<unknown>;
   formatError: (error: unknown) => string;
 }
 
 export interface AgentCompletionRuntime {
-  trackThinkingThread: (threadTs: string) => void;
+  onAgentStart: (_event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>;
   onAgentEnd: (_event: unknown, ctx: ExtensionContext) => Promise<void>;
   onAgentSettled: (_event: AgentSettledEvent, ctx: ExtensionContext) => Promise<void>;
 }
@@ -21,10 +20,12 @@ export interface AgentCompletionRuntime {
 export function createAgentCompletionRuntime(
   deps: AgentCompletionRuntimeDeps,
 ): AgentCompletionRuntime {
-  const thinking = new Set<string>();
-
-  function trackThinkingThread(threadTs: string): void {
-    thinking.add(threadTs);
+  async function onAgentStart(_event: AgentStartEvent, ctx: ExtensionContext): Promise<void> {
+    try {
+      await deps.signalAgentWorking();
+    } catch (err) {
+      ctx.ui.notify(`Pinet working status sync failed: ${deps.formatError(err)}`, "warning");
+    }
   }
 
   async function onAgentEnd(_event: unknown, _ctx: ExtensionContext): Promise<void> {
@@ -32,14 +33,6 @@ export function createAgentCompletionRuntime(
   }
 
   async function onAgentSettled(_event: AgentSettledEvent, ctx: ExtensionContext): Promise<void> {
-    for (const threadTs of thinking) {
-      const thread = deps.getThreads().get(threadTs);
-      if (thread) {
-        await deps.clearThreadStatus(thread.channelId, threadTs);
-      }
-    }
-    thinking.clear();
-
     try {
       await deps.signalAgentFree(ctx);
     } catch (err) {
@@ -48,7 +41,7 @@ export function createAgentCompletionRuntime(
   }
 
   return {
-    trackThinkingThread,
+    onAgentStart,
     onAgentEnd,
     onAgentSettled,
   };
