@@ -86,7 +86,7 @@ describe("createInboxDrainRuntime", () => {
 
     expect(runtime.deliverFollowUpMessage("steady note")).toBe(true);
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(sendUserMessage).toHaveBeenCalledWith("steady note");
+    expect(sendUserMessage).toHaveBeenCalledWith("steady note", { deliverAs: "followUp" });
   });
 
   it("does not inject follow-up messages while the agent is active", () => {
@@ -105,7 +105,23 @@ describe("createInboxDrainRuntime", () => {
 
     expect(runtime.deliverFollowUpMessage("steady note")).toBe(false);
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(sendUserMessage).toHaveBeenCalledWith("steady note");
+    expect(sendUserMessage).toHaveBeenCalledWith("steady note", { deliverAs: "followUp" });
+  });
+
+  it("bypasses the idle gate only for a settle-time drain", () => {
+    const { runtime, inbox, deliverTrackedSlackFollowUpMessage, setIdle } = createDeps();
+    const message = createMessage({ brokerInboxId: 39 });
+    inbox.push(message);
+    setIdle(false);
+
+    runtime.drainInbox({ fromSettle: true });
+
+    expect(deliverTrackedSlackFollowUpMessage).toHaveBeenCalledWith({
+      prompt: formatInboxMessages([message], new Map<string, string>([["U123", "Ada"]])),
+      messages: [message],
+      fromSettle: true,
+    });
+    expect(inbox).toEqual([]);
   });
 
   it("formats pending inbox work, applies security guidance, and flushes follower acks", () => {

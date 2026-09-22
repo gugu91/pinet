@@ -114,7 +114,9 @@ describe("createPinetMaintenanceDelivery", () => {
     pinetMaintenanceDelivery.trySendBrokerFollowUp("Maintenance report", onDelivered);
 
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(sendUserMessage).toHaveBeenCalledWith("Maintenance report");
+    expect(sendUserMessage).toHaveBeenCalledWith("Maintenance report", {
+      deliverAs: "followUp",
+    });
     expect(onDelivered).toHaveBeenCalledTimes(1);
   });
 
@@ -142,7 +144,9 @@ describe("createPinetMaintenanceDelivery", () => {
       pinetMaintenanceDelivery.trySendBrokerFollowUp("Maintenance report", onDelivered),
     ).not.toThrow();
     expect(sendUserMessage).toHaveBeenCalledTimes(1);
-    expect(sendUserMessage).toHaveBeenCalledWith("Maintenance report");
+    expect(sendUserMessage).toHaveBeenCalledWith("Maintenance report", {
+      deliverAs: "followUp",
+    });
     expect(onDelivered).not.toHaveBeenCalled();
   });
 });

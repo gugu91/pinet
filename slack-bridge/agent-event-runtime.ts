@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentCompletionRuntime } from "./agent-completion-runtime.js";
 import {
   createSlackToolPolicyRuntime,
@@ -10,6 +10,8 @@ export interface AgentEventRuntimeDeps extends SlackToolPolicyRuntimeDeps {
   onCompletionAgentStart: AgentCompletionRuntime["onAgentStart"];
   onCompletionAgentEnd: AgentCompletionRuntime["onAgentEnd"];
   onCompletionAgentSettled: AgentCompletionRuntime["onAgentSettled"];
+  hasQueuedInbox: () => boolean;
+  drainInboxFromSettle: () => void;
   setDeliverTrackedSlackFollowUpMessage: (
     deliver: SlackToolPolicyRuntime["deliverTrackedSlackFollowUpMessage"],
   ) => void;
@@ -49,17 +51,12 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
     }
   }
 
-  function isGenuinelyQuiescent(ctx: ExtensionContext): boolean {
-    return ctx.isIdle?.() !== false && ctx.hasPendingMessages?.() !== true;
-  }
-
   function register(pi: Pick<ExtensionAPI, "on">): void {
-    pi.on("input", (event) => {
+    pi.on("input", () => {
       // Pi 0.87 has no prompt-enqueued hook before its sequential input handlers.
       // Once input reaches Pinet, invalidate synchronously: before-start handlers
       // can then block in any registration order without exposing stale idle state.
       invalidatePendingSettlement();
-      return slackToolPolicyRuntime.onInput(event);
     });
     pi.on("before_agent_start", () => {
       invalidatePendingSettlement();
@@ -69,33 +66,39 @@ export function createAgentEventRuntime(deps: AgentEventRuntimeDeps): AgentEvent
       await deps.onCompletionAgentStart(event, ctx);
     });
     pi.on("turn_start", slackToolPolicyRuntime.onTurnStart);
+    pi.on("message_start", slackToolPolicyRuntime.onMessageStart);
     pi.on("turn_end", slackToolPolicyRuntime.onTurnEnd);
     pi.on("tool_call", slackToolPolicyRuntime.onToolCall);
     pi.on("agent_end", async (event, ctx) => {
       await slackToolPolicyRuntime.onAgentEnd();
       await deps.onCompletionAgentEnd(event, ctx);
     });
-    pi.on("agent_settled", (event, ctx) => {
+    pi.on("agent_settled", async (event, ctx) => {
+      if (disposed) return;
+      await slackToolPolicyRuntime.onAgentSettled();
       if (disposed) return;
       if (pendingSettlement) {
         clearImmediate(pendingSettlement);
+        pendingSettlement = null;
+      }
+      if (deps.hasQueuedInbox()) {
+        deps.drainInboxFromSettle();
+        return;
       }
       const settledGeneration = lifecycleGeneration;
-      // AgentSession dispatches actions requested by settled handlers only after
-      // every handler returns. Wait for that dispatch, then require both the
-      // earliest-start generation and Pi's public idle/no-pending invariant.
+      // Unknown deferred prompts are not publicly observable in Pi 0.87. Keep
+      // idle advisory and generation-fenced after the settled dispatch.
       pendingSettlement = setImmediate(() => {
         pendingSettlement = null;
-        if (disposed || lifecycleGeneration !== settledGeneration || !isGenuinelyQuiescent(ctx)) {
+        if (
+          disposed ||
+          lifecycleGeneration !== settledGeneration ||
+          ctx.isIdle?.() === false ||
+          ctx.hasPendingMessages?.() === true
+        ) {
           return;
         }
-        void (async () => {
-          await slackToolPolicyRuntime.onAgentSettled();
-          if (disposed || lifecycleGeneration !== settledGeneration || !isGenuinelyQuiescent(ctx)) {
-            return;
-          }
-          await deps.onCompletionAgentSettled(event, ctx);
-        })();
+        void deps.onCompletionAgentSettled(event, ctx);
       });
     });
   }

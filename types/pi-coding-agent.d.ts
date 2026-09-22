@@ -129,6 +129,7 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export interface AgentMessage {
     role: string;
+    content?: string | Array<{ type: string; text?: string }>;
   }
 
   export interface CompactionPreparation {
@@ -217,6 +218,11 @@ declare module "@earendil-works/pi-coding-agent" {
 
   export interface AgentSession {
     readonly isIdle: boolean;
+    readonly extensionRunner: {
+      onError(
+        listener: (error: { extensionPath: string; event: string; error: string }) => void,
+      ): () => void;
+    };
     prompt(
       text: string,
       options?: {
@@ -254,12 +260,18 @@ declare module "@earendil-works/pi-coding-agent" {
     type: "agent_settled";
   }
 
+  export interface MessageStartEvent {
+    type: "message_start";
+    message: AgentMessage & { content: NonNullable<AgentMessage["content"]> };
+  }
+
   export type ExtensionEventName =
     | "agent_end"
     | "agent_settled"
     | "agent_start"
     | "before_agent_start"
     | "input"
+    | "message_start"
     | "model_select"
     | "session_before_compact"
     | "session_compact"
@@ -331,7 +343,7 @@ declare module "@earendil-works/pi-coding-agent" {
     ): void;
     sendUserMessage(
       content: string | Array<Record<string, unknown>>,
-      options?: { deliverAs?: string },
+      options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
     ): void;
     sendMessage(message: any): void;
     appendEntry(customType: string, data?: unknown): void;

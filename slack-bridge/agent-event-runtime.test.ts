@@ -8,6 +8,8 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
   const onCompletionAgentStart = vi.fn(async () => {});
   const onCompletionAgentEnd = vi.fn(async () => {});
   const onCompletionAgentSettled = vi.fn(async () => {});
+  const hasQueuedInbox = vi.fn(() => false);
+  const drainInboxFromSettle = vi.fn();
   const setDeliverTrackedSlackFollowUpMessage = vi.fn();
 
   const deps: AgentEventRuntimeDeps = {
@@ -20,6 +22,8 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
     onCompletionAgentStart,
     onCompletionAgentEnd,
     onCompletionAgentSettled,
+    hasQueuedInbox,
+    drainInboxFromSettle,
     setDeliverTrackedSlackFollowUpMessage,
     ...overrides,
   };
@@ -31,6 +35,8 @@ function createDeps(overrides: Partial<AgentEventRuntimeDeps> = {}) {
     onCompletionAgentStart,
     onCompletionAgentEnd,
     onCompletionAgentSettled,
+    hasQueuedInbox,
+    drainInboxFromSettle,
     setDeliverTrackedSlackFollowUpMessage,
   };
 }
@@ -63,6 +69,7 @@ describe("createAgentEventRuntime", () => {
       "before_agent_start",
       "agent_start",
       "turn_start",
+      "message_start",
       "turn_end",
       "tool_call",
       "agent_end",
@@ -73,7 +80,7 @@ describe("createAgentEventRuntime", () => {
     expect(registrations.filter(({ eventName }) => eventName === "agent_settled")).toHaveLength(1);
   });
 
-  it("preserves visible status across retries and clears it through the composed settled path", async () => {
+  it("clears visible status at settlement while idle publication stays lifecycle-fenced", async () => {
     const beginThreadStatus = vi.fn(async () => {});
     const clearThreadStatus = vi.fn(async () => {});
     const { deps, requireToolPolicy, onCompletionAgentEnd, onCompletionAgentSettled } = createDeps({
@@ -106,6 +113,13 @@ describe("createAgentEventRuntime", () => {
 
     await dispatch("input", { source: "extension", text: "retrying Slack prompt" });
     await dispatch("turn_start");
+    await dispatch("message_start", {
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "retrying Slack prompt" }],
+      },
+    });
     await dispatch("tool_call", { toolName: "read", input: { path: "README.md" } });
     expect(requireToolPolicy).toHaveBeenCalledTimes(1);
 
@@ -124,18 +138,16 @@ describe("createAgentEventRuntime", () => {
     expect(clearThreadStatus).not.toHaveBeenCalled();
 
     await dispatch("agent_settled", { type: "agent_settled" });
+    expect(clearThreadStatus).toHaveBeenCalledOnce();
     await dispatch("before_agent_start", { type: "before_agent_start" });
     await nextCheckPhase();
-    expect(clearThreadStatus).not.toHaveBeenCalled();
     expect(onCompletionAgentSettled).not.toHaveBeenCalled();
 
     await dispatch("agent_start", { type: "agent_start" });
     await dispatch("agent_end");
     await dispatch("agent_settled", { type: "agent_settled" });
-    expect(clearThreadStatus).not.toHaveBeenCalled();
     await nextCheckPhase();
 
-    expect(clearThreadStatus).toHaveBeenCalledOnce();
     expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
     expect(onCompletionAgentSettled).toHaveBeenCalledTimes(1);
     expect(clearThreadStatus.mock.invocationCallOrder[0]).toBeLessThan(
@@ -194,6 +206,30 @@ describe("createAgentEventRuntime", () => {
     },
   );
 
+  it("drains queued Pinet inbox work before the settled handler returns and skips idle", async () => {
+    const callOrder: string[] = [];
+    const { deps, onCompletionAgentSettled } = createDeps({
+      hasQueuedInbox: () => true,
+      drainInboxFromSettle: () => {
+        callOrder.push("drain");
+      },
+    });
+    const runtime = createAgentEventRuntime(deps);
+    const { pi, registrations } = createPi();
+    runtime.register(pi);
+
+    const settled = registrations.find(({ eventName }) => eventName === "agent_settled")?.handler;
+    await settled?.(
+      { type: "agent_settled" },
+      { isIdle: () => true, hasPendingMessages: () => false },
+    );
+    callOrder.push("returned");
+    await nextCheckPhase();
+
+    expect(callOrder).toEqual(["drain", "returned"]);
+    expect(onCompletionAgentSettled).not.toHaveBeenCalled();
+  });
+
   it("disposes a pending quiescence publication during shutdown", async () => {
     const { deps, onCompletionAgentSettled } = createDeps();
     const runtime = createAgentEventRuntime(deps);
@@ -240,17 +276,27 @@ describe("createAgentEventRuntime", () => {
     ).toBe(true);
     expect(deliverFollowUpMessage).toHaveBeenCalledWith("guarded slack prompt");
 
-    const onInput = registrations.find(({ eventName }) => eventName === "input")?.handler as
-      | ((event: { source?: string; text: string }) => Promise<void>)
-      | undefined;
     const onTurnStart = registrations.find(({ eventName }) => eventName === "turn_start")
       ?.handler as (() => Promise<void>) | undefined;
+    const onMessageStart = registrations.find(({ eventName }) => eventName === "message_start")
+      ?.handler as
+      | ((event: {
+          type: "message_start";
+          message: { role: string; content: Array<{ type: "text"; text: string }> };
+        }) => Promise<void>)
+      | undefined;
     const onToolCall = registrations.find(({ eventName }) => eventName === "tool_call")?.handler as
       | ((event: { toolName: string; input: Record<string, unknown> }) => Promise<unknown>)
       | undefined;
 
-    await onInput?.({ source: "extension", text: "guarded slack prompt" });
     await onTurnStart?.();
+    await onMessageStart?.({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "guarded slack prompt" }],
+      },
+    });
 
     await expect(
       onToolCall?.({

@@ -1,3 +1,4 @@
+import type { MessageStartEvent } from "@earendil-works/pi-coding-agent";
 import type { InboxMessage } from "./helpers.js";
 
 type SlackToolPolicyMessageRef = Pick<InboxMessage, "threadTs"> &
@@ -17,7 +18,7 @@ export interface SlackToolPolicyRuntimeDeps {
   requireToolPolicy: (toolName: string, threadTs: string | undefined, action: string) => void;
   formatAction: (action: string) => string;
   formatError: (error: unknown) => string;
-  deliverFollowUpMessage: (prompt: string) => boolean;
+  deliverFollowUpMessage: (prompt: string, options?: { fromSettle?: boolean }) => boolean;
   beginThreadStatus?: (channel: string, threadTs: string, status: string) => Promise<void>;
   updateThreadStatus?: (channel: string, threadTs: string, status: string) => Promise<void>;
   clearThreadStatus?: (channel: string, threadTs: string) => Promise<void>;
@@ -27,9 +28,10 @@ export interface SlackToolPolicyRuntime {
   deliverTrackedSlackFollowUpMessage: (options: {
     prompt: string;
     messages: SlackToolPolicyMessageRef[];
+    fromSettle?: boolean;
   }) => boolean;
-  onInput: (event: { source?: string; text: string }) => Promise<void>;
   onTurnStart: () => Promise<void>;
+  onMessageStart: (event: MessageStartEvent) => Promise<void>;
   onTurnEnd: () => Promise<void>;
   onAgentEnd: () => Promise<void>;
   onAgentSettled: () => Promise<void>;
@@ -47,36 +49,46 @@ export function createSlackToolPolicyRuntime(
     string,
     { channel: string; threadTs: string; generation: number }
   >();
-  let nextSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
   let activeSlackToolPolicyTurn: PendingSlackToolPolicyTurn | null = null;
   let statusGeneration = 0;
 
   function deliverTrackedSlackFollowUpMessage(options: {
     prompt: string;
     messages: SlackToolPolicyMessageRef[];
+    fromSettle?: boolean;
   }): boolean {
     return trackAndDeliverSlackFollowUpMessage({
       queue: pendingSlackToolPolicyTurns,
       prompt: options.prompt,
       messages: options.messages,
-      deliver: deps.deliverFollowUpMessage,
+      deliver: (prompt) =>
+        options.fromSettle
+          ? deps.deliverFollowUpMessage(prompt, { fromSettle: true })
+          : deps.deliverFollowUpMessage(prompt),
     });
   }
 
-  async function onInput(event: { source?: string; text: string }): Promise<void> {
-    if (event.source !== "extension") {
+  async function onTurnStart(): Promise<void> {
+    activeSlackToolPolicyTurn = null;
+  }
+
+  async function onMessageStart(event: MessageStartEvent): Promise<void> {
+    if (event.message.role !== "user") {
       return;
     }
 
-    nextSlackToolPolicyTurn = consumePendingSlackToolPolicyTurn(
+    const content = event.message.content;
+    const text =
+      typeof content === "string"
+        ? content
+        : content
+            .filter((block) => block.type === "text")
+            .map((block) => block.text ?? "")
+            .join("");
+    activeSlackToolPolicyTurn = consumePendingSlackToolPolicyTurn(
       pendingSlackToolPolicyTurns,
-      event.text,
+      text,
     );
-  }
-
-  async function onTurnStart(): Promise<void> {
-    activeSlackToolPolicyTurn = nextSlackToolPolicyTurn;
-    nextSlackToolPolicyTurn = null;
     if (activeSlackToolPolicyTurn?.channel && activeSlackToolPolicyTurn.threadTs) {
       const { channel, threadTs } = activeSlackToolPolicyTurn;
       statusGeneration += 1;
@@ -100,7 +112,6 @@ export function createSlackToolPolicyRuntime(
   }
 
   async function onAgentSettled(): Promise<void> {
-    nextSlackToolPolicyTurn = null;
     activeSlackToolPolicyTurn = null;
     const settledGeneration = statusGeneration;
     const settlingStatuses = [...visibleThreadStatuses.entries()].filter(
@@ -166,8 +177,8 @@ export function createSlackToolPolicyRuntime(
 
   return {
     deliverTrackedSlackFollowUpMessage,
-    onInput,
     onTurnStart,
+    onMessageStart,
     onTurnEnd,
     onAgentEnd,
     onAgentSettled,

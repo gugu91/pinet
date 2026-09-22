@@ -2195,6 +2195,7 @@ describe("slack-bridge top-level shutdown", () => {
     await vi.waitFor(() => {
       expect(sendUserMessage).toHaveBeenCalledWith(
         expect.stringContaining("hello from Slack inbox"),
+        { deliverAs: "followUp" },
       );
     });
 
@@ -3824,6 +3825,19 @@ describe("slack-bridge Pinet reconnect", () => {
       pollCount += 1;
       return [
         {
+          inboxId: 16,
+          message: {
+            id: 16,
+            threadId: "a2a:broker:worker-1",
+            source: "agent",
+            direction: "inbound",
+            sender: "broker-1",
+            body: "/steer prioritize the inbox",
+            createdAt: "100.0",
+            metadata: { type: "pinet:steer", message: "prioritize the inbox" },
+          },
+        },
+        {
           inboxId: 17,
           message: {
             id: 17,
@@ -3873,9 +3887,13 @@ describe("slack-bridge Pinet reconnect", () => {
           expect.stringContaining(
             "pointer=pinet action=read args.thread_id=100.1 args.unread_only=true",
           ),
+          { deliverAs: "followUp" },
         );
       });
-      expect(sendUserMessage.mock.calls[0]?.[0]).not.toContain("hello from broker");
+      expect(sendUserMessage).toHaveBeenCalledWith(
+        expect.stringContaining("Pinet steering message"),
+        { deliverAs: "steer" },
+      );
       expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
 
       const failedFree = (await pinet!.execute("tool-call-1", {
@@ -4026,6 +4044,7 @@ describe("slack-bridge Pinet reconnect", () => {
           expect.stringContaining(
             "pointer=pinet action=read args.thread_id=100.1 args.unread_only=true",
           ),
+          { deliverAs: "followUp" },
         );
       });
       expect(sendUserMessage.mock.calls[0]?.[0]).not.toContain("hello from broker");
@@ -4069,7 +4088,7 @@ describe("slack-bridge Pinet reconnect", () => {
     }
   });
 
-  it("suppresses automatic inbox drain immediately after Escape so interrupts return control", async () => {
+  it("lets the deterministic Pinet settle drain bypass transient idle suppression", async () => {
     vi.useFakeTimers();
 
     const commands = new Map<string, CommandDefinition>();
@@ -4194,7 +4213,7 @@ describe("slack-bridge Pinet reconnect", () => {
 
       idle = true;
       await agentSettled?.({ type: "agent_settled" }, ctx);
-      expect(sendUserMessage).not.toHaveBeenCalled();
+      expect(sendUserMessage).toHaveBeenCalledTimes(1);
 
       await vi.advanceTimersByTimeAsync(1_501);
       await agentSettled?.({ type: "agent_settled" }, ctx);
@@ -4205,6 +4224,7 @@ describe("slack-bridge Pinet reconnect", () => {
         expect.stringContaining(
           "pointer=pinet action=read args.thread_id=100.1 args.unread_only=true",
         ),
+        { deliverAs: "followUp" },
       );
       expect(sendUserMessage.mock.calls[0]?.[0]).not.toContain("hello from broker");
 

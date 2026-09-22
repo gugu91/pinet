@@ -5,7 +5,7 @@ import { formatInboxMessages, type InboxMessage } from "./helpers.js";
 const DEFAULT_MAX_MESSAGES_PER_DRAIN = 5;
 
 export interface InboxDrainRuntimeDeps {
-  sendUserMessage: (text: string) => void;
+  sendUserMessage: (text: string, options: { deliverAs: "followUp" }) => void;
   isIdle: () => boolean;
   takeInboxMessages: (maxMessages?: number) => InboxMessage[];
   restoreInboxMessages: (messages: InboxMessage[]) => void;
@@ -16,6 +16,7 @@ export interface InboxDrainRuntimeDeps {
   deliverTrackedSlackFollowUpMessage: (options: {
     prompt: string;
     messages: Pick<InboxMessage, "threadTs">[];
+    fromSettle?: boolean;
   }) => boolean;
   getBrokerRole: () => "broker" | "follower" | null;
   hasFollowerClient: () => boolean;
@@ -27,19 +28,19 @@ export interface InboxDrainRuntimeDeps {
 }
 
 export interface InboxDrainRuntime {
-  deliverFollowUpMessage: (text: string) => boolean;
+  deliverFollowUpMessage: (text: string, options?: { fromSettle?: boolean }) => boolean;
   flushDeliveredFollowerAcks: () => Promise<void>;
-  drainInbox: () => void;
+  drainInbox: (options?: { fromSettle?: boolean }) => void;
 }
 
 export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrainRuntime {
-  function deliverFollowUpMessage(text: string): boolean {
-    if (!deps.isIdle()) {
+  function deliverFollowUpMessage(text: string, options: { fromSettle?: boolean } = {}): boolean {
+    if (!options.fromSettle && !deps.isIdle()) {
       return false;
     }
 
     try {
-      deps.sendUserMessage(text);
+      deps.sendUserMessage(text, { deliverAs: "followUp" });
       return true;
     } catch {
       return false;
@@ -54,8 +55,8 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
     await deps.flushFollowerDeliveredAcks();
   }
 
-  function drainInbox(): void {
-    if (!deps.isIdle()) {
+  function drainInbox(options: { fromSettle?: boolean } = {}): void {
+    if (!options.fromSettle && !deps.isIdle()) {
       return;
     }
 
@@ -82,6 +83,7 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
       deps.deliverTrackedSlackFollowUpMessage({
         prompt,
         messages: pending,
+        ...(options.fromSettle ? { fromSettle: true } : {}),
       })
     ) {
       if (brokerInboxIds.length > 0) {

@@ -7,6 +7,7 @@ import {
   SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
+  type MessageStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/compat";
 import * as fs from "node:fs";
@@ -22,6 +23,9 @@ import type { Broker } from "./index.js";
 import type { OutboundMessage } from "./types.js";
 import { createAgentCompletionRuntime } from "../agent-completion-runtime.js";
 import { createAgentEventRuntime } from "../agent-event-runtime.js";
+import { createFollowerDeliveryState } from "../follower-delivery.js";
+import { createInboxDrainRuntime } from "../inbox-drain-runtime.js";
+import { formatInboxMessages, type InboxMessage } from "../helpers.js";
 import { createPinetAgentStatus } from "../pinet-agent-status.js";
 import { registerSlackTools } from "../slack-tools.js";
 import { createSlackPinetRuntimeAdapterFactory } from "../slack-pinet-runtime-adapter.js";
@@ -45,6 +49,51 @@ async function waitFor(fn: () => boolean, timeoutMs = 2000, intervalMs = 10): Pr
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+function userMessageText(event: MessageStartEvent): string {
+  const content = event.message.content;
+  return typeof content === "string"
+    ? content
+    : content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("");
+}
+
+async function createFauxTestSession(
+  dir: string,
+  provider: string,
+  extensionFactories: Array<{
+    name: string;
+    factory: (pi: ExtensionAPI) => void | Promise<void>;
+  }>,
+  responses: string[],
+) {
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: dir,
+    agentDir: path.join(dir, "agent"),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    extensionFactories,
+  });
+  await resourceLoader.reload();
+  const faux = fauxProvider({ provider });
+  faux.setResponses(responses.map((response) => fauxAssistantMessage(response)));
+  const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null });
+  new ModelRegistry(modelRuntime).registerProvider(faux.provider);
+  return createAgentSession({
+    cwd: dir,
+    agentDir: path.join(dir, "agent"),
+    model: faux.getModel(),
+    modelRuntime,
+    resourceLoader,
+    sessionManager: SessionManager.inMemory(dir),
+    noTools: "all",
+  });
 }
 
 // ─── Integration: client ↔ server ↔ DB ──────────────────
@@ -586,184 +635,396 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.listScheduledWakeups(reg.agentId)).toHaveLength(0);
   });
 
-  it("keeps Pinet non-quiescent when an earlier before-start handler blocks extension input", async () => {
-    const registration = await client.register("continuing-agent", "🔁");
-    let desiredStatus: "working" | "idle" = "idle";
-    const maintenanceResults: ReturnType<typeof runBrokerMaintenancePass>[] = [];
-    const clearThreadStatus = vi.fn(async () => undefined);
-    server.onAgentStatusChange((_agentId, status) => {
-      if (status === "idle") {
-        maintenanceResults.push(
-          runBrokerMaintenancePass(db, {
-            staleAfterMs: 15_000,
-            now: Date.now(),
-          }),
-        );
-      }
-    });
+  it.each(["pinet-first", "continuation-first"] as const)(
+    "serializes a settle drain against a blocked concurrent preflight (%s)",
+    async (extensionOrder) => {
+      const registration = await client.register(`continuing-agent-${extensionOrder}`, "🔁");
+      let desiredStatus: "working" | "idle" = "idle";
+      const maintenanceResults: ReturnType<typeof runBrokerMaintenancePass>[] = [];
+      server.onAgentStatusChange((_agentId, status) => {
+        if (status === "idle") {
+          maintenanceResults.push(
+            runBrokerMaintenancePass(db, {
+              staleAfterMs: 15_000,
+              now: Date.now(),
+            }),
+          );
+        }
+      });
 
-    const status = createPinetAgentStatus({
-      getPinetEnabled: () => true,
-      getBrokerRole: () => "follower",
-      getDesiredAgentStatus: () => desiredStatus,
-      setDesiredAgentStatus: (nextStatus) => {
-        desiredStatus = nextStatus;
-      },
-      getActiveBrokerDb: () => null,
-      getActiveBrokerSelfId: () => null,
-      hasFollowerClient: () => true,
-      syncFollowerDesiredStatus: (nextStatus) => client.updateStatus(nextStatus),
-      runBrokerMaintenance: vi.fn(),
-      getInboxLength: () => 0,
-      getCurrentRuntimeMode: () => "follower",
-      maybeDrainInboxIfIdle: () => false,
-      getExtensionContext: () => undefined,
-    });
-    const completion = createAgentCompletionRuntime({
-      clearFollowUpPending: vi.fn(),
-      signalAgentWorking: () => status.reportStatus("working", { force: true }),
-      signalAgentFree: (eventCtx) => status.signalAgentFree(eventCtx),
-      formatError: (error) => (error instanceof Error ? error.message : String(error)),
-    });
-    let deliverTrackedSlackFollowUpMessage:
-      | ((options: {
-          prompt: string;
-          messages: Array<{ channel: string; threadTs: string }>;
-        }) => boolean)
-      | undefined;
-    const runtime = createAgentEventRuntime({
-      getBrokerRole: () => "follower",
-      getGuardrails: () => ({}),
-      requireToolPolicy: vi.fn(),
-      formatAction: String,
-      formatError: String,
-      deliverFollowUpMessage: () => true,
-      beginThreadStatus: vi.fn(async () => undefined),
-      clearThreadStatus,
-      onCompletionAgentStart: completion.onAgentStart,
-      onCompletionAgentEnd: completion.onAgentEnd,
-      onCompletionAgentSettled: completion.onAgentSettled,
-      setDeliverTrackedSlackFollowUpMessage: (deliver) => {
-        deliverTrackedSlackFollowUpMessage = deliver;
-      },
-    });
+      const status = createPinetAgentStatus({
+        getPinetEnabled: () => true,
+        getBrokerRole: () => "follower",
+        getDesiredAgentStatus: () => desiredStatus,
+        setDesiredAgentStatus: (nextStatus) => {
+          desiredStatus = nextStatus;
+        },
+        getActiveBrokerDb: () => null,
+        getActiveBrokerSelfId: () => null,
+        hasFollowerClient: () => true,
+        syncFollowerDesiredStatus: (nextStatus) => client.updateStatus(nextStatus),
+        runBrokerMaintenance: vi.fn(),
+        getInboxLength: () => 0,
+        getCurrentRuntimeMode: () => "follower",
+        maybeDrainInboxIfIdle: () => false,
+        getExtensionContext: () => undefined,
+      });
+      const completion = createAgentCompletionRuntime({
+        clearFollowUpPending: vi.fn(),
+        signalAgentWorking: () => status.reportStatus("working", { force: true }),
+        signalAgentFree: (eventCtx) => status.signalAgentSettled(eventCtx),
+        formatError: (error) => (error instanceof Error ? error.message : String(error)),
+      });
 
-    let releaseBeforeAgentStart: (() => void) | undefined;
-    const beforeAgentStartGate = new Promise<void>((resolve) => {
-      releaseBeforeAgentStart = resolve;
-    });
-    let reportBlockedBeforeAgentStart: (() => void) | undefined;
-    const blockedBeforeAgentStart = new Promise<void>((resolve) => {
-      reportBlockedBeforeAgentStart = resolve;
-    });
-    let queuedSettledContinuation = false;
-    let continuationInputSource: string | undefined;
-    let blockedLifecycleState: { idle: boolean; pending: boolean } | undefined;
-    const continuationPrompt = "continue after settlement";
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: dir,
-      agentDir: path.join(dir, "agent"),
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      extensionFactories: [
+      const continuationPrompt = "continuation from other extension";
+      const inbox: InboxMessage[] = [
         {
-          name: "settled-continuation",
+          channel: "C-INBOX",
+          threadTs: "t-pinet-inbox",
+          userId: "U1",
+          text: "handle this Pinet inbox item",
+          timestamp: "100.2",
+          brokerInboxId: 42,
+        },
+      ];
+      const userNames = new Map([["U1", "Ada"]]);
+      const inboxPrompt = formatInboxMessages(inbox, userNames);
+      const followerDeliveryState = createFollowerDeliveryState();
+      const flushFollowerDeliveredAcks = vi.fn(async () => undefined);
+      const begunStatusPrompts: string[] = [];
+      const messageStarts: string[] = [];
+      let activeMessageText = "";
+      let pinetPromptCompleted = false;
+      let sessionIsIdle = () => true;
+      let pinetRuntime: ReturnType<typeof createAgentEventRuntime> | undefined;
+      let deliverTrackedSlackFollowUpMessage: (options: {
+        prompt: string;
+        messages: Array<{ channel?: string; threadTs: string }>;
+        fromSettle?: boolean;
+      }) => boolean = () => false;
+
+      let releaseContinuationInput: (() => void) | undefined;
+      const continuationInputGate = new Promise<void>((resolve) => {
+        releaseContinuationInput = resolve;
+      });
+      let reportContinuationInputBlocked: (() => void) | undefined;
+      const continuationInputBlocked = new Promise<void>((resolve) => {
+        reportContinuationInputBlocked = resolve;
+      });
+      let queuedSettledContinuation = false;
+      let agentStartCount = 0;
+
+      const slowInputFactory = {
+        name: "slow-input",
+        factory: (pi: ExtensionAPI) => {
+          pi.on("input", async (event) => {
+            if (event.text !== continuationPrompt) return;
+            reportContinuationInputBlocked?.();
+            await continuationInputGate;
+          });
+          pi.on("message_start", (event) => {
+            if (event.message.role !== "user") return;
+            activeMessageText = userMessageText(event);
+            messageStarts.push(activeMessageText);
+          });
+          pi.on("agent_start", () => {
+            agentStartCount += 1;
+          });
+          pi.on("agent_settled", () => {
+            if (activeMessageText === inboxPrompt) {
+              pinetPromptCompleted = true;
+            }
+          });
+        },
+      };
+      const pinetFactory = {
+        name: "pinet-lifecycle",
+        factory: (pi: ExtensionAPI) => {
+          const drain = createInboxDrainRuntime({
+            sendUserMessage: (text, options) => pi.sendUserMessage(text, options),
+            isIdle: () => sessionIsIdle(),
+            takeInboxMessages: (maxMessages) => inbox.splice(0, maxMessages ?? inbox.length),
+            restoreInboxMessages: (messages) => inbox.unshift(...messages),
+            updateBadge: vi.fn(),
+            reportStatus: (nextStatus) => status.reportStatus(nextStatus),
+            userNames,
+            getSecurityPrompt: () => "",
+            deliverTrackedSlackFollowUpMessage: (options) =>
+              deliverTrackedSlackFollowUpMessage(options),
+            getBrokerRole: () => "follower",
+            hasFollowerClient: () => true,
+            flushFollowerDeliveredAcks,
+            markBrokerInboxIdsDelivered: vi.fn(),
+            markSubtreeInboxIdsDelivered: vi.fn(),
+            getFollowerDeliveryState: () => followerDeliveryState,
+          });
+          pinetRuntime = createAgentEventRuntime({
+            getBrokerRole: () => "follower",
+            getGuardrails: () => ({}),
+            requireToolPolicy: vi.fn(),
+            formatAction: String,
+            formatError: String,
+            deliverFollowUpMessage: drain.deliverFollowUpMessage,
+            beginThreadStatus: async () => {
+              begunStatusPrompts.push(activeMessageText);
+            },
+            clearThreadStatus: vi.fn(async () => undefined),
+            onCompletionAgentStart: completion.onAgentStart,
+            onCompletionAgentEnd: completion.onAgentEnd,
+            onCompletionAgentSettled: completion.onAgentSettled,
+            hasQueuedInbox: () => inbox.length > 0,
+            drainInboxFromSettle: () => drain.drainInbox({ fromSettle: true }),
+            setDeliverTrackedSlackFollowUpMessage: (deliver) => {
+              deliverTrackedSlackFollowUpMessage = deliver;
+            },
+          });
+          pinetRuntime.register(pi);
+        },
+      };
+      const continuationFactory = {
+        name: "settled-continuation",
+        factory: (pi: ExtensionAPI) => {
+          pi.on("agent_settled", () => {
+            if (queuedSettledContinuation) return;
+            queuedSettledContinuation = true;
+            db.queueUnroutedMessage({
+              source: "slack",
+              threadId: `t-deferred-${extensionOrder}`,
+              channel: "C-CONTINUE",
+              userId: "U1",
+              text: "do not route concurrently",
+              timestamp: String(Date.now() / 1000),
+            });
+            pi.sendUserMessage(continuationPrompt);
+          });
+        },
+      };
+      const orderedFactories =
+        extensionOrder === "pinet-first"
+          ? [slowInputFactory, pinetFactory, continuationFactory]
+          : [slowInputFactory, continuationFactory, pinetFactory];
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: dir,
+        agentDir: path.join(dir, "agent"),
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        extensionFactories: orderedFactories,
+      });
+      await resourceLoader.reload();
+
+      const faux = fauxProvider({ provider: `pinet-settle-${extensionOrder}` });
+      faux.setResponses([
+        fauxAssistantMessage("first run complete"),
+        fauxAssistantMessage("second run complete"),
+        fauxAssistantMessage("third run complete"),
+      ]);
+      const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null });
+      new ModelRegistry(modelRuntime).registerProvider(faux.provider);
+      const { session } = await createAgentSession({
+        cwd: dir,
+        agentDir: path.join(dir, "agent"),
+        model: faux.getModel(),
+        modelRuntime,
+        resourceLoader,
+        sessionManager: SessionManager.inMemory(dir),
+        noTools: "all",
+      });
+      sessionIsIdle = () => session.isIdle;
+      const runnerErrors: Array<{ event: string; error: string }> = [];
+      const stopCapturingErrors = session.extensionRunner.onError((error) => {
+        runnerErrors.push({ event: error.event, error: error.error });
+      });
+
+      try {
+        const run = session.prompt("initial prompt", {
+          source: "extension",
+          expandPromptTemplates: false,
+        });
+        await continuationInputBlocked;
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(runnerErrors).toEqual([]);
+        expect(followerDeliveryState.deliveredAwaitingAckIds.has(42)).toBe(true);
+        expect(flushFollowerDeliveredAcks).toHaveBeenCalled();
+        expect(db.getAgentById(registration.agentId)?.status).toBe("working");
+        if (!pinetPromptCompleted) {
+          expect(maintenanceResults).toEqual([]);
+          expect(db.getBacklogCount("pending")).toBe(1);
+          expect(await client.pollInbox()).toEqual([]);
+        }
+
+        releaseContinuationInput?.();
+        await run;
+        await waitFor(() => db.getAgentById(registration.agentId)?.status === "idle");
+        await waitFor(() => db.getBacklogCount("pending") === 0);
+
+        expect(runnerErrors).toEqual([]);
+        expect(agentStartCount).toBe(3);
+        expect(messageStarts).toHaveLength(3);
+        expect(new Set(messageStarts)).toEqual(
+          new Set(["initial prompt", continuationPrompt, inboxPrompt]),
+        );
+        expect(begunStatusPrompts).toEqual([inboxPrompt]);
+        expect(await client.pollInbox()).toHaveLength(1);
+      } finally {
+        releaseContinuationInput?.();
+        stopCapturingErrors();
+        pinetRuntime?.dispose();
+        session.dispose();
+      }
+    },
+  );
+
+  it("queues an active-run follow-up and drains it before agent settlement", async () => {
+    const events: string[] = [];
+    let queued = false;
+    const { session } = await createFauxTestSession(
+      dir,
+      "pi-follow-up-contract",
+      [
+        {
+          name: "follow-up-contract",
           factory: (pi) => {
-            pi.on("input", (event) => {
-              if (event.text === continuationPrompt) {
-                continuationInputSource = event.source;
+            pi.on("agent_start", () => {
+              if (queued) return;
+              queued = true;
+              pi.sendUserMessage("queued follow-up", { deliverAs: "followUp" });
+            });
+            pi.on("message_start", (event) => {
+              if (event.message.role === "user") {
+                events.push(`message:${userMessageText(event)}`);
               }
             });
             pi.on("agent_settled", () => {
-              if (queuedSettledContinuation) return;
-              queuedSettledContinuation = true;
-              db.queueUnroutedMessage({
-                source: "slack",
-                threadId: "t-deferred-continuation",
-                channel: "C-CONTINUE",
-                userId: "U1",
-                text: "do not route concurrently",
-                timestamp: String(Date.now() / 1000),
-              });
-              pi.sendUserMessage(continuationPrompt);
+              events.push("settled");
             });
-            pi.on("before_agent_start", async (event, ctx) => {
-              if (event.prompt !== continuationPrompt) return;
-              blockedLifecycleState = {
-                idle: ctx.isIdle?.() ?? false,
-                pending: ctx.hasPendingMessages?.() ?? true,
-              };
-              reportBlockedBeforeAgentStart?.();
-              await beforeAgentStartGate;
+          },
+        },
+      ],
+      ["initial complete", "follow-up complete"],
+    );
+    const runnerErrors: string[] = [];
+    const stopCapturingErrors = session.extensionRunner.onError((error) => {
+      runnerErrors.push(error.error);
+    });
+
+    try {
+      await session.prompt("initial prompt", { expandPromptTemplates: false });
+
+      expect(runnerErrors).toEqual([]);
+      expect(events).toEqual(["message:initial prompt", "message:queued follow-up", "settled"]);
+    } finally {
+      stopCapturingErrors();
+      session.dispose();
+    }
+  });
+
+  it("serializes user messages deferred by two settled handlers", async () => {
+    const events: string[] = [];
+    let activePrompt = "";
+    let queuedFirst = false;
+    let queuedSecond = false;
+    const { session } = await createFauxTestSession(
+      dir,
+      "pi-settled-serialization-contract",
+      [
+        {
+          name: "settled-observer",
+          factory: (pi) => {
+            pi.on("input", (event) => {
+              if (event.text !== "initial prompt") events.push(`input:${event.text}`);
+            });
+            pi.on("message_start", (event) => {
+              if (event.message.role !== "user") return;
+              activePrompt = userMessageText(event);
+              events.push(`message:${activePrompt}`);
+            });
+            pi.on("agent_settled", () => {
+              events.push(`settled:${activePrompt}`);
             });
           },
         },
         {
-          name: "pinet-lifecycle",
-          factory: (pi) => runtime.register(pi),
+          name: "first-settled-sender",
+          factory: (pi) => {
+            pi.on("agent_settled", () => {
+              if (queuedFirst) return;
+              queuedFirst = true;
+              pi.sendUserMessage("first deferred", { deliverAs: "followUp" });
+            });
+          },
+        },
+        {
+          name: "second-settled-sender",
+          factory: (pi) => {
+            pi.on("agent_settled", () => {
+              if (queuedSecond) return;
+              queuedSecond = true;
+              pi.sendUserMessage("second deferred", { deliverAs: "followUp" });
+            });
+          },
         },
       ],
-    });
-    await resourceLoader.reload();
-
-    const faux = fauxProvider({ provider: "pinet-quiescence-test" });
-    faux.setResponses([
-      fauxAssistantMessage("first run complete"),
-      fauxAssistantMessage("continuation complete"),
-    ]);
-    const modelRuntime = await ModelRuntime.create({ refreshOnCreate: false, modelsPath: null });
-    new ModelRegistry(modelRuntime).registerProvider(faux.provider);
-    const { session } = await createAgentSession({
-      cwd: dir,
-      agentDir: path.join(dir, "agent"),
-      model: faux.getModel(),
-      modelRuntime,
-      resourceLoader,
-      sessionManager: SessionManager.inMemory(dir),
-      noTools: "all",
-    });
+      ["initial complete", "first complete", "second complete"],
+    );
 
     try {
-      const initialPrompt = "start tracked Slack work";
-      expect(
-        deliverTrackedSlackFollowUpMessage?.({
-          prompt: initialPrompt,
-          messages: [{ channel: "C100", threadTs: "100.1" }],
-        }),
-      ).toBe(true);
+      await session.prompt("initial prompt", { expandPromptTemplates: false });
 
-      const run = session.prompt(initialPrompt, {
-        source: "extension",
-        expandPromptTemplates: false,
-      });
-      await blockedBeforeAgentStart;
-      await new Promise((resolve) => setImmediate(resolve));
-
-      expect(session.isIdle).toBe(true);
-      expect(continuationInputSource).toBe("extension");
-      expect(blockedLifecycleState).toEqual({ idle: true, pending: false });
-      expect(db.getAgentById(registration.agentId)?.status).toBe("working");
-      expect(clearThreadStatus).not.toHaveBeenCalled();
-      expect(db.getBacklogCount("pending")).toBe(1);
-      expect(maintenanceResults).toEqual([]);
-      expect(await client.pollInbox()).toEqual([]);
-
-      releaseBeforeAgentStart?.();
-      await run;
-      await waitFor(() => db.getAgentById(registration.agentId)?.status === "idle");
-
-      expect(clearThreadStatus).toHaveBeenCalledOnce();
-      expect(clearThreadStatus).toHaveBeenCalledWith("C100", "100.1");
-      expect(maintenanceResults).toHaveLength(1);
-      expect(maintenanceResults[0]?.assignedBacklogCount).toBe(1);
-      expect(db.getBacklogCount("pending")).toBe(0);
-      expect(await client.pollInbox()).toHaveLength(1);
+      expect(events.indexOf("input:second deferred")).toBeGreaterThan(
+        events.indexOf("settled:first deferred"),
+      );
+      expect(events.filter((event) => event.startsWith("message:"))).toEqual([
+        "message:initial prompt",
+        "message:first deferred",
+        "message:second deferred",
+      ]);
     } finally {
-      releaseBeforeAgentStart?.();
-      runtime.dispose();
+      session.dispose();
+    }
+  });
+
+  it("runs deferred settled actions only after every settled handler returns", async () => {
+    const events: string[] = [];
+    let queued = false;
+    const { session } = await createFauxTestSession(
+      dir,
+      "pi-settled-handler-contract",
+      [
+        {
+          name: "settled-sender",
+          factory: (pi) => {
+            pi.on("agent_settled", () => {
+              if (queued) return;
+              queued = true;
+              events.push("handler:sender");
+              pi.sendUserMessage("deferred prompt", { deliverAs: "followUp" });
+            });
+          },
+        },
+        {
+          name: "later-settled-handler",
+          factory: (pi) => {
+            pi.on("agent_settled", () => {
+              events.push("handler:later");
+            });
+            pi.on("input", (event) => {
+              if (event.text === "deferred prompt") events.push("input:deferred");
+            });
+          },
+        },
+      ],
+      ["initial complete", "deferred complete"],
+    );
+
+    try {
+      await session.prompt("initial prompt", { expandPromptTemplates: false });
+
+      expect(events.slice(0, 3)).toEqual(["handler:sender", "handler:later", "input:deferred"]);
+    } finally {
       session.dispose();
     }
   });
@@ -890,6 +1151,8 @@ describe("broker integration — client ↔ server ↔ DB", () => {
         onCompletionAgentStart: completion.onAgentStart,
         onCompletionAgentEnd: completion.onAgentEnd,
         onCompletionAgentSettled: completion.onAgentSettled,
+        hasQueuedInbox: () => false,
+        drainInboxFromSettle: vi.fn(),
         setDeliverTrackedSlackFollowUpMessage: (deliver) => {
           deliverTrackedSlackFollowUpMessage = deliver;
         },
@@ -959,6 +1222,10 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       await dispatch("input", { source: "extension", text: prompt });
       await dispatch("agent_start", { type: "agent_start" });
       await dispatch("turn_start");
+      await dispatch("message_start", {
+        type: "message_start",
+        message: { role: "user", content: [{ type: "text", text: prompt }] },
+      });
 
       await tools.get("slack_send")?.execute("tool-1", {
         thread_ts: "100.1",
@@ -975,11 +1242,6 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       await dispatch("turn_end");
       await dispatch("agent_end");
       await dispatch("agent_settled", { type: "agent_settled" });
-      expect(
-        operations.filter(
-          ({ method, status }) => method === "assistant.threads.setStatus" && status === "",
-        ),
-      ).toHaveLength(0);
       await new Promise((resolve) => setImmediate(resolve));
 
       const clearOperations = operations.filter(
