@@ -105,11 +105,10 @@ export function createSlackToolPolicyRuntime(
   async function onAgentSettled(): Promise<void> {
     activeSlackToolPolicyTurn = null;
     for (const [key, status] of [...visibleThreadStatuses]) {
-      if (visibleThreadStatuses.get(key) !== status) continue;
       await deps.clearThreadStatus?.(status.channel, status.threadTs).catch(() => {
         /* best effort */
       });
-      if (visibleThreadStatuses.get(key) === status) visibleThreadStatuses.delete(key);
+      visibleThreadStatuses.delete(key);
     }
   }
 
