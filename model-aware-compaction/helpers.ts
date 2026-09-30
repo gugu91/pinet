@@ -196,7 +196,7 @@ export function compactionInputError(input: {
   prefixOutputReserve?: number;
 }): string | null {
   // Pi does not expose tokenizer accounting for standalone summary requests. Count the exact
-  // 0.85.1 system/user prompts and retain conservative room for provider message serialization.
+  // 0.87.1 system/user prompts and retain conservative room for provider message serialization.
   const providerSerializationReserve = 512;
   const requestTokens = (promptText: string) =>
     Math.ceil((SUMMARIZATION_SYSTEM_PROMPT.length + promptText.length) / 4) +
