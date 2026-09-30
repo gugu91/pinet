@@ -112,7 +112,7 @@ describe(`Pi ${PI_COMPACTION_PROMPT_VERSION} prompt parity`, () => {
     });
     expect(prompts).toEqual([
       `<conversation>\n[User]: history\n</conversation>\n\n${sdkSummarizationPrompt}`,
-      `<conversation>\n[User]: prefix\n</conversation>\n\n${sdkTurnPrefixPrompt}`,
+      `# Conversation\n[User]: prefix\n\n# Instructions\n${sdkTurnPrefixPrompt}`,
     ]);
   });
 });

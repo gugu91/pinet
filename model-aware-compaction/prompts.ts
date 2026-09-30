@@ -2,14 +2,14 @@
 // @earendil-works/pi-coding-agent's exports map, so they are copied here with per-constant
 // source attribution. prompts.test.ts re-reads the installed SDK files and fails on drift;
 // re-check it whenever this version anchor or the Pi peer floor moves.
-export const PI_COMPACTION_PROMPT_VERSION = "0.85.1";
+export const PI_COMPACTION_PROMPT_VERSION = "0.87.1";
 
-/** Verbatim from pi-coding-agent 0.85.1 dist/core/compaction/utils.js. */
+/** Verbatim from pi-coding-agent 0.87.1 dist/core/compaction/utils.js. */
 export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
 
-/** Verbatim from pi-coding-agent 0.85.1 dist/core/compaction/compaction.js. */
+/** Verbatim from pi-coding-agent 0.87.1 dist/core/compaction/compaction.js. */
 export const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -43,7 +43,7 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-/** Verbatim from pi-coding-agent 0.85.1 dist/core/compaction/compaction.js. */
+/** Verbatim from pi-coding-agent 0.87.1 dist/core/compaction/compaction.js. */
 export const UPDATE_SUMMARIZATION_INSTRUCTIONS = `Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
@@ -81,28 +81,28 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
-/** Verbatim from pi-coding-agent 0.85.1 dist/core/compaction/compaction.js. */
+/** Verbatim from pi-coding-agent 0.87.1 dist/core/compaction/compaction.js. */
 export const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 ${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
 
-/** Verbatim from pi-coding-agent 0.85.1 dist/core/compaction/compaction.js. */
-export const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+/** Verbatim from pi-coding-agent 0.87.1 dist/core/compaction/compaction.js. */
+export const TURN_PREFIX_SUMMARIZATION_PROMPT = `The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
 
-Summarize the prefix to provide context for the retained suffix:
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
 ## Original Request
-[What did the user ask for in this turn?]
+[What did the user ask for?]
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+## Progress So Far
+- [Key decisions and work completed in these messages]
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
 
-Be concise. Focus on what's needed to understand the kept suffix.`;
+Only summarize information explicitly present above. Do not infer or recreate later messages.`;
 
-/** Mirrors generateSummaryWithUsage() request assembly in Pi 0.85.1 compaction.js. */
+/** Mirrors generateSummaryWithUsage() request assembly in Pi 0.87.1 compaction.js. */
 export function buildHistoryPrompt(
   serializedConversation: string,
   customInstructions?: string,
@@ -118,7 +118,7 @@ export function buildHistoryPrompt(
   return promptText + basePrompt;
 }
 
-/** Mirrors generateTurnPrefixSummary() request assembly in Pi 0.85.1 compaction.js. */
+/** Mirrors generateTurnPrefixSummary() request assembly in Pi 0.87.1 compaction.js. */
 export function buildTurnPrefixPrompt(serializedConversation: string): string {
-  return `<conversation>\n${serializedConversation}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+  return `# Conversation\n${serializedConversation}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 }
