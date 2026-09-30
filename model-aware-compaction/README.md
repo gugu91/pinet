@@ -83,7 +83,7 @@ Remaining deviations from Pi's own compaction, all deliberate:
 
 - **No retry wrapper.** Pi wraps each summarization in `retryAssistantCall` with the user's retry settings, which extensions cannot read. A failed request is never retried on the same model; it advances to the next configured chain entry, and only exhausting the chain cancels the compaction.
 - **Empty sections are rejected.** Pi persists whatever text a provider returns; this extension fails closed rather than checkpointing an empty summary.
-- **Split turn with no new history.** Pi writes the literal `No prior history.` even when a previous summary exists; this extension re-summarizes that previous checkpoint through the update prompt so an earlier checkpoint is never dropped.
+- **Split turn with no new history.** Pi carries the previous summary forward unchanged (or writes `No prior history.` when there is none); this extension instead re-summarizes that previous checkpoint through the update prompt with the selected model.
 - **File metadata.** Pi's `computeFileLists` and `formatFileOperations` are not exported, so they are reimplemented with identical sorting and `<read-files>` / `<modified-files>` output, plus an extension-owned `details` payload that carries file lists across repeated extension compactions.
 - **Thinking level.** Pi forwards the session thinking level; this extension uses the selector's explicit `:level` when present and the provider default otherwise, never the session level.
 - **Pre-send budget check and failure wording** are extension-owned and have no Pi equivalent.
