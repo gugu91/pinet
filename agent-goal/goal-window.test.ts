@@ -284,15 +284,20 @@ describe("GoalWindow", () => {
     expect(onAction).toHaveBeenCalledWith({ type: "budget", disabled: true });
   });
 
-  it("accepts timed snooze and has no manual resume action", () => {
+  it("defaults the snooze form to five minutes and accepts explicit durations", () => {
     const onAction = vi.fn();
     const window = new GoalWindow(goal, undefined, theme, onAction);
     window.handleInput("s");
-    for (let index = 0; index < 3; index += 1) window.handleInput("\u007f");
-    window.handleInput("2h");
+    expect(window.render(60).join("\n")).toContain("Snooze for 5m");
     window.handleInput("\r");
+    expect(onAction).toHaveBeenCalledWith({ type: "snooze", durationMs: 300_000 });
+
+    const explicit = new GoalWindow(goal, undefined, theme, onAction);
+    explicit.handleInput("s");
+    explicit.handleInput("2h");
+    explicit.handleInput("\r");
     expect(onAction).toHaveBeenCalledWith({ type: "snooze", durationMs: 7_200_000 });
-    expect(window.render(60).join("\n")).not.toContain("resume");
+    expect(explicit.render(60).join("\n")).not.toContain("resume");
   });
 
   it.each([
