@@ -37,6 +37,8 @@ type Mode = "details" | "create" | "edit" | "budget" | "snooze" | "checkpoint";
 type TextField = "name" | "objective" | "turns" | "runtime";
 type BudgetField = "turns" | "runtime";
 
+export const DEFAULT_SNOOZE_DURATION = "5m";
+
 export class GoalWindow implements Component {
   private mode: Mode = "details";
   private textField: TextField = "name";
@@ -47,7 +49,7 @@ export class GoalWindow implements Component {
   private budgetField: BudgetField = "turns";
   private budgetTurns = "";
   private budgetRuntime = "";
-  private snoozeDuration = "30m";
+  private snoozeDuration = "";
   private inputError: string | undefined;
   private confirmClose = false;
   private selectedCheckpoint = -1;
@@ -278,7 +280,7 @@ export class GoalWindow implements Component {
   private handleSnoozeForm(data: string): void {
     if (matchesKey(data, "backspace")) this.snoozeDuration = this.snoozeDuration.slice(0, -1);
     else if (matchesKey(data, "enter")) {
-      const durationMs = parseDuration(this.snoozeDuration);
+      const durationMs = parseDuration(this.snoozeDuration || DEFAULT_SNOOZE_DURATION);
       if (durationMs === undefined) this.inputError = "Duration must use m, h, or d";
       else this.onAction({ type: "snooze", durationMs });
       this.requestRender();
@@ -390,7 +392,7 @@ export class GoalWindow implements Component {
     }
     if (this.mode === "snooze") {
       lines.push(
-        row(` Snooze for ${this.snoozeDuration || "_"}`),
+        row(` Snooze for ${this.snoozeDuration || DEFAULT_SNOOZE_DURATION}`),
         row(
           ` ${this.theme.fg("dim", "Automatically continues when due · enter save · esc cancel")}`,
         ),

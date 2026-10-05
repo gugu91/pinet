@@ -25,7 +25,8 @@ For local development: `pi -e ./agent-goal/index.ts`.
 /goal update budget turns <n>        Set an optional total-turn limit
 /goal update budget runtime <2h>     Set an optional total-runtime limit
 /goal update budget off              Disable continuation limits
-/goal snooze <30m|2h|1d>             Snooze, then continue automatically
+/goal snooze                         Snooze for 5 minutes, then continue automatically
+/goal snooze <30m|2h|1d>             Snooze for an explicit duration
 /goal close                          Complete and clear the current goal
 /goal clear                          Clear the current goal immediately
 /goal hide | /goal show              Hide or show compact status
@@ -36,7 +37,7 @@ For local development: `pi -e ./agent-goal/index.ts`.
 
 `/goal demo` asks the agent to walk through a small example, checkpointing, inspection, and verified completion. Demo and idea discussions require a session without an existing goal; otherwise the command reports an error without starting a turn. The walkthrough asks for consent before creating its example goal.
 
-Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
+Name changes are visible immediately. Objective changes are fenced from stale evaluations and are used by the next continuation. `/goal snooze` and the TUI snooze form default to 5 minutes; an explicit duration overrides that default. Snooze is timed only: there is no indefinite pause or manual resume action, and a compare-and-swap wake prevents duplicate continuation.
 
 Goals are session-scoped: a goal only continues while its own Pi session is running. When another session still holds an unfinished goal, session start shows a short notice and `/goal list` prints each unfinished goal with its status, accounted turns, last settle time, and the `pi --session <id>` command that resumes it.
 

@@ -8,7 +8,12 @@ import {
   formatOrphanGoalNotice,
 } from "./dashboard.js";
 import { JsonlGoalEventSink } from "./event-log.js";
-import { GoalWindow, parseDuration, type GoalWindowAction } from "./goal-window.js";
+import {
+  DEFAULT_SNOOZE_DURATION,
+  GoalWindow,
+  parseDuration,
+  type GoalWindowAction,
+} from "./goal-window.js";
 import type {
   GoalBudget,
   GoalContinuation,
@@ -713,8 +718,10 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
           );
         } else if (command.startsWith("update ")) {
           await runtime.updateDetails(scopeId, { objective: input.slice("update ".length) });
-        } else if (command.startsWith("snooze ")) {
-          const duration = parseDuration(input.slice("snooze ".length));
+        } else if (command === "snooze" || command.startsWith("snooze ")) {
+          const duration = parseDuration(
+            command === "snooze" ? DEFAULT_SNOOZE_DURATION : input.slice("snooze ".length),
+          );
           if (duration === undefined) throw new Error("Snooze must use m, h, or d");
           await runtime.snooze(scopeId, duration);
         } else if (command === "close") {

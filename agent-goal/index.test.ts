@@ -947,11 +947,19 @@ describe("registerAgentGoal", () => {
     });
     await command.handler("update budget off", context);
     expect((await storage.get("session-1"))?.budget).toEqual({});
+    await command.handler("snooze", context);
+    expect(await storage.get("session-1")).toMatchObject({
+      status: "active",
+      snoozedUntil: "2026-01-01T00:05:00.000Z",
+    });
     await command.handler("snooze 30m", context);
     expect(await storage.get("session-1")).toMatchObject({
       status: "active",
       snoozedUntil: "2026-01-01T00:30:00.000Z",
     });
+    await command.handler("snooze soon", context);
+    expect(notify).toHaveBeenLastCalledWith("Snooze must use m, h, or d", "error");
+    expect((await storage.get("session-1"))?.snoozedUntil).toBe("2026-01-01T00:30:00.000Z");
     await command.handler("update shorthand objective", context);
     expect(await storage.get("session-1")).toMatchObject({
       name: "New name",
