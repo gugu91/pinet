@@ -50,6 +50,15 @@ afterEach(async () => {
 });
 
 describe("resolveBrokerPromptCandidates", () => {
+  it("defaults to the runtime-agnostic policy while retaining explicit tmux presets", async () => {
+    const candidates = resolveBrokerPromptCandidates({ workspaceRoot, homeDir });
+    expect(candidates.at(-1)?.path).toMatch(/prompts\/broker\/default\.md$/);
+    const result = await loadBrokerPrompt({ workspaceRoot, homeDir });
+    expect(result.content).toContain("RUNTIME-AGNOSTIC MEMBERSHIP");
+    expect(result.content).toContain("NOT Slack tokens");
+    expect(result.content).not.toContain("FRESH TMUX WORKERS");
+  });
+
   it("orders workspace override, user-local override, then packaged default", () => {
     const candidates = resolveBrokerPromptCandidates(loaderOptions());
 

@@ -7,6 +7,7 @@ import {
   type TaskAssignmentAwaitingReplyInfo,
 } from "@pinet/broker-core/schema";
 import type { RalphCycleRecord } from "../helpers.js";
+import { WorkerMembership } from "./membership.js";
 
 interface RalphCycleRow {
   id: number;
@@ -56,9 +57,17 @@ export {
 export type { TaskAssignmentAwaitingReplyInfo };
 
 export class BrokerDB extends CoreBrokerDB {
+  private workerMembership: WorkerMembership | null = null;
+
+  get membership(): WorkerMembership {
+    this.workerMembership ??= new WorkerMembership(this.getDb());
+    return this.workerMembership;
+  }
+
   override initialize(): void {
     super.initialize();
     ensureRalphCycleTable(this.getDb());
+    this.workerMembership = new WorkerMembership(this.getDb());
   }
 
   recordRalphCycle(record: Omit<RalphCycleRecord, "id">): number {

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { readJoinProfile, resolveJoinProfilePath } from "./join-profile.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { probeGitBranch, probeGitContext, type GitContext } from "./git-metadata.js";
 import {
@@ -144,7 +145,14 @@ export default function (pi: ExtensionAPI) {
   let botToken = settings.botToken ?? process.env.SLACK_BOT_TOKEN;
   let appToken = settings.appToken ?? process.env.SLACK_APP_TOKEN;
 
-  if (!botToken || !appToken) return;
+  pi.registerFlag?.("pinet-profile", {
+    description: "Protected Pinet worker join profile (no Slack tokens required)",
+    type: "string",
+  });
+  const explicitJoinProfile = () => {
+    const value = pi.getFlag?.("pinet-profile");
+    return typeof value === "string" ? value : process.env.PINET_JOIN_PROFILE;
+  };
 
   const slackRequestRuntime = createSlackRequestRuntime();
   const { slack } = slackRequestRuntime;
@@ -1242,6 +1250,12 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      if ((mode === "single" || mode === "broker") && (!botToken || !appToken)) {
+        throw new Error(
+          "Slack broker/adapters require SLACK_BOT_TOKEN and SLACK_APP_TOKEN. To join as a worker, use /pinet follow with a protected --pinet-profile file; workers need no Slack tokens.",
+        );
+      }
+
       if (mode === "single") {
         currentRuntimeMode = "single";
         setExtStatus(ctx, "reconnecting");
@@ -1327,7 +1341,7 @@ export default function (pi: ExtensionAPI) {
     const reloadWork = runPinetLifecycle(async () => {
       let reloadBrokerInPlace = false;
       const validateRefreshedState = () => {
-        if (!botToken || !appToken) {
+        if (brokerRole !== "follower" && (!botToken || !appToken)) {
           throw new Error("Slack tokens are not configured after reload.");
         }
         if (brokerRole === "broker") {
@@ -1724,6 +1738,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   const followerRuntime = createFollowerRuntime({
+    getJoinProfilePath: explicitJoinProfile,
     getSettings: () => settings,
     refreshSettings,
     getPinetEnabled: () => pinetEnabled,
@@ -1891,7 +1906,12 @@ export default function (pi: ExtensionAPI) {
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.prepareForSessionStart(ctx);
-    const pinetRegistrationBlocked = pinetRegistrationGate.evaluateSessionStart(ctx);
+    let pinetRegistrationBlocked = pinetRegistrationGate.evaluateSessionStart(ctx);
+    // An explicit protected worker profile is intentional membership, including headless shells.
+    if (explicitJoinProfile()) {
+      pinetRegistrationGate.reset();
+      pinetRegistrationBlocked = false;
+    }
     // Restore persisted thread state (always restore, even before /pinet)
     restorePersistedRuntimeState(ctx);
 
@@ -1905,10 +1925,22 @@ export default function (pi: ExtensionAPI) {
 
     refreshSettings();
     maybeWarnSlackUserAccess(ctx);
-    const startupMode = resolveSlackBridgeStartupRuntimeMode(settings, {
-      brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
-      brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
-    });
+    const profilePath = resolveJoinProfilePath(explicitJoinProfile());
+    const startupMode = profilePath
+      ? "follower"
+      : resolveSlackBridgeStartupRuntimeMode(settings, {
+          brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
+          brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+        });
+    if (profilePath) {
+      // Validate only at session startup, never during extension discovery.
+      try {
+        readJoinProfile(profilePath);
+      } catch (error) {
+        ctx.ui.notify(`Pinet join failed: ${msg(error)}`, "error");
+        return;
+      }
+    }
 
     if (startupMode === "off") {
       await transitionToRuntimeMode(ctx, startupMode);

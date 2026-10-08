@@ -3,7 +3,8 @@ import { BrokerDB } from "./schema.js";
 import { loadOrCreateMeshSecret } from "./auth.js";
 import { BrokerSocketServer } from "./socket-server.js";
 import type { ListenTarget } from "./socket-server.js";
-import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { assertPrivateTcpHost } from "./private-network.js";
+import { readBrokerNetworkConfig } from "./network-config.js";
 import { LeaderLock } from "./leader.js";
 import { BrokerLockConflictError, classifyBrokerLockConflict } from "./lock-conflict.js";
 import { getDefaultSocketPath } from "./paths.js";
@@ -66,6 +67,7 @@ export interface BrokerOptions {
   lockPath?: string;
   meshSecret?: string;
   meshSecretPath?: string;
+  privateNetwork?: boolean;
   /**
    * Runs after DB initialization but BEFORE the socket server begins listening
    * (i.e. before any client can connect or register). Use for startup
@@ -95,12 +97,16 @@ export interface Broker {
  */
 export async function startBroker(options: BrokerOptions = {}): Promise<Broker> {
   // Resolve listen target: explicit target > socketPath > default
-  const target: ListenTarget = options.listenTarget ?? {
-    type: "unix" as const,
-    path: options.socketPath ?? getDefaultSocketPath(),
-  };
+  const network =
+    options.listenTarget || options.socketPath ? undefined : readBrokerNetworkConfig();
+  const privateNetwork = options.privateNetwork ?? network?.privateNetwork ?? false;
+  const target: ListenTarget = options.listenTarget ??
+    network?.listenTarget ?? {
+      type: "unix" as const,
+      path: options.socketPath ?? getDefaultSocketPath(),
+    };
   if (target.type === "tcp") {
-    assertLoopbackTcpHost(target.host, "broker listen target");
+    assertPrivateTcpHost(target.host, privateNetwork);
   }
 
   // ── Leader lock: prevent split-brain (issue #119) ────
@@ -153,6 +159,7 @@ export async function startBroker(options: BrokerOptions = {}): Promise<Broker> 
     meshSecret || (meshSecretPath ? loadOrCreateMeshSecret(meshSecretPath) : null);
 
   const server = new BrokerSocketServer(db, target, {
+    privateNetwork,
     ...(resolvedMeshSecret ? { meshSecret: resolvedMeshSecret } : {}),
   });
 

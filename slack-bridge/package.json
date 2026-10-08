@@ -14,8 +14,13 @@
     "access": "public"
   },
   "main": "./dist/index.js",
+  "bin": {
+    "pinet-host": "./dist/host-cli.js"
+  },
   "exports": {
     ".": "./dist/index.js",
+    "./host-runner": "./dist/host-runner.js",
+    "./join-profile": "./dist/join-profile.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -23,6 +28,7 @@
     "LICENSE",
     "manifest.yaml",
     "skills/",
+    "docs/",
     "dist/"
   ],
   "keywords": [

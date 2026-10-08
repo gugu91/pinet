@@ -8,7 +8,9 @@ import { DEFAULT_SOCKET_PATH } from "./paths.js";
 import { MessageRouter } from "./router.js";
 import { dispatchDirectAgentMessage } from "./agent-messaging.js";
 import { sendBrokerMessage } from "./message-send.js";
-import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { isLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { assertPrivateTcpHost } from "./private-network.js";
+import { workerStableId, type WorkerPrincipal } from "./membership.js";
 import { summarizePinetStableId } from "../pinet-session-formatting.js";
 import type {
   AgentInfo,
@@ -47,6 +49,10 @@ import {
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;
 export const DEFAULT_PRUNE_INTERVAL_MS = 5_000;
 export const DEFAULT_AUTH_TIMEOUT_MS = 2_000;
+// agent-default (not a user rule): expire authenticated sessions after 15 minutes.
+export const DEFAULT_WORKER_SESSION_MS = 15 * 60_000;
+// agent-default (not a user rule): bound unauthenticated frame buffering to 1 MiB.
+export const MAX_REQUEST_BYTES = 1024 * 1024;
 
 // ─── Listen target: Unix socket path or TCP host:port ────
 
@@ -87,12 +93,18 @@ export interface BrokerSocketServerOptions {
   pruneIntervalMs?: number;
   authTimeoutMs?: number;
   meshSecret?: string;
+  privateNetwork?: boolean;
+  workerSessionMs?: number;
 }
 
 // ─── Connection state ────────────────────────────────────
 
 interface ConnectionState {
   agentId: string | null;
+  connectionId: string;
+  principal: WorkerPrincipal | null;
+  sessionToken: string | null;
+  sessionExpiresAt: number;
   buffer: string;
   authenticated: boolean;
   authTimer: ReturnType<typeof setTimeout> | null;
@@ -183,6 +195,8 @@ export class BrokerSocketServer {
   private readonly pruneIntervalMs: number;
   private readonly authTimeoutMs: number;
   private readonly meshSecret: string | null;
+  private readonly requiresWorkerCredential: boolean;
+  private readonly workerSessionMs: number;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private assignedPort: number | null = null;
   private agentMessageCallback: AgentMessageCallback | null = null;
@@ -212,8 +226,11 @@ export class BrokerSocketServer {
     } else {
       this.target = { type: "unix", path: DEFAULT_SOCKET_PATH };
     }
+    this.requiresWorkerCredential =
+      this.target.type === "tcp" && !isLoopbackTcpHost(this.target.host);
+    this.workerSessionMs = options.workerSessionMs ?? DEFAULT_WORKER_SESSION_MS;
     if (this.target.type === "tcp") {
-      assertLoopbackTcpHost(this.target.host, "broker listen target");
+      assertPrivateTcpHost(this.target.host, options.privateNetwork === true);
     }
   }
 
@@ -257,6 +274,7 @@ export class BrokerSocketServer {
     // Mark all connected agents as resumably disconnected. Clear agentId so the
     // async close handler won't mark them a second time after db shutdown.
     for (const [socket, state] of this.connections) {
+      this.db.membership.disconnect(state.connectionId);
       if (state.agentId) {
         this.db.disconnectAgent(state.agentId, this.heartbeatTimeoutMs);
         state.agentId = null;
@@ -355,6 +373,14 @@ export class BrokerSocketServer {
     this.pruneTimer = setInterval(() => {
       try {
         this.db.pruneStaleAgents(this.heartbeatTimeoutMs);
+        for (const [socket, state] of this.connections) {
+          if (
+            state.principal &&
+            (state.sessionExpiresAt <= Date.now() ||
+              !this.db.membership.isActive(state.principal.credentialId))
+          )
+            socket.destroy();
+        }
       } catch {
         /* best effort */
       }
@@ -376,7 +402,7 @@ export class BrokerSocketServer {
 
   private startAuthTimer(socket: net.Socket, state: ConnectionState): void {
     this.clearAuthTimer(state);
-    if (state.authenticated || !this.meshSecret) {
+    if (state.authenticated) {
       return;
     }
 
@@ -421,8 +447,12 @@ export class BrokerSocketServer {
   private onConnection(socket: net.Socket): void {
     const state: ConnectionState = {
       agentId: null,
+      connectionId: crypto.randomUUID(),
+      principal: null,
+      sessionToken: null,
+      sessionExpiresAt: 0,
       buffer: "",
-      authenticated: this.meshSecret == null,
+      authenticated: this.meshSecret == null && !this.requiresWorkerCredential,
       authTimer: null,
     };
     this.connections.set(socket, state);
@@ -430,11 +460,16 @@ export class BrokerSocketServer {
 
     socket.on("data", (chunk) => {
       state.buffer += chunk.toString("utf-8");
+      if (Buffer.byteLength(state.buffer) > MAX_REQUEST_BYTES) {
+        socket.destroy();
+        return;
+      }
       void this.processBuffer(socket, state);
     });
 
     socket.on("close", () => {
       this.clearAuthTimer(state);
+      if (this.connections.has(socket)) this.db.membership.disconnect(state.connectionId);
       if (state.agentId) {
         this.db.disconnectAgent(state.agentId, this.heartbeatTimeoutMs);
       }
@@ -504,6 +539,26 @@ export class BrokerSocketServer {
     socket: net.Socket,
   ): Promise<JsonRpcResponse> {
     try {
+      if (
+        state.principal &&
+        (state.sessionExpiresAt <= Date.now() ||
+          !this.db.membership.isActive(state.principal.credentialId) ||
+          req.params?.sessionToken !== state.sessionToken)
+      ) {
+        setImmediate(() => socket.destroy());
+        return rpcError(
+          req.id,
+          RPC_AUTH_REQUIRED,
+          "Worker session expired or revoked; reconnect using your join profile.",
+        );
+      }
+      if (state.principal && req.method === "admin.shutdown") {
+        return rpcError(
+          req.id,
+          RPC_AUTH_REQUIRED,
+          "Worker credentials cannot administer the broker.",
+        );
+      }
       if (!state.authenticated && req.method !== "auth") {
         setImmediate(() => socket.destroy());
         return rpcError(
@@ -590,6 +645,31 @@ export class BrokerSocketServer {
     state: ConnectionState,
     socket: net.Socket,
   ): JsonRpcResponse {
+    if (state.principal)
+      return rpcError(req.id, RPC_AUTH_REQUIRED, "Already authenticated; reconnect to renew.");
+    const credentialId = req.params?.credentialId;
+    const credentialSecret = req.params?.credentialSecret;
+    if (typeof credentialId === "string" && typeof credentialSecret === "string") {
+      const principal = this.db.membership.authenticate(credentialId, credentialSecret);
+      if (!principal) {
+        setImmediate(() => socket.destroy());
+        return rpcError(req.id, RPC_AUTH_REQUIRED, "Invalid or revoked worker credential.");
+      }
+      state.principal = principal;
+      state.sessionToken = crypto.randomBytes(32).toString("base64url");
+      state.sessionExpiresAt = Date.now() + this.workerSessionMs;
+      state.authenticated = true;
+      this.clearAuthTimer(state);
+      return rpcOk(req.id, { sessionToken: state.sessionToken, expiresAt: state.sessionExpiresAt });
+    }
+    if (this.requiresWorkerCredential) {
+      setImmediate(() => socket.destroy());
+      return rpcError(
+        req.id,
+        RPC_AUTH_REQUIRED,
+        "Private-network connections require a per-worker join credential.",
+      );
+    }
     if (!this.meshSecret) {
       state.authenticated = true;
       this.clearAuthTimer(state);
@@ -791,6 +871,13 @@ export class BrokerSocketServer {
     const requestedEmoji = typeof params.emoji === "string" ? params.emoji : "";
     const pid = typeof params.pid === "number" ? params.pid : 0;
     const stableId = typeof params.stableId === "string" ? params.stableId : undefined;
+    if (state.principal && stableId !== workerStableId(state.principal)) {
+      return rpcError(
+        req.id,
+        RPC_AUTH_REQUIRED,
+        "Worker credential is bound to a different stable identity.",
+      );
+    }
     const rawMetadata =
       params.metadata && typeof params.metadata === "object"
         ? (params.metadata as Record<string, unknown>)
@@ -811,6 +898,16 @@ export class BrokerSocketServer {
             runtimeLocator: legacyTmuxSession,
           }
         : rawMetadata;
+    if (state.principal && metadata) {
+      metadata.role = "worker";
+      metadata.brokerManaged = false;
+      metadata.host = state.principal.hostId;
+      metadata.hostId = state.principal.hostId;
+      metadata.workerId = state.principal.workerId;
+      if (metadata.capabilities && typeof metadata.capabilities === "object") {
+        metadata.capabilities = { ...metadata.capabilities, role: "worker" };
+      }
+    }
 
     if (stableId) {
       const liveStableIdConflict = this.findLiveStableIdConflict(stableId, socket);
@@ -936,6 +1033,16 @@ export class BrokerSocketServer {
 
     this.disconnectDuplicateConnections(agent.id, socket);
     state.agentId = agent.id;
+    if (state.principal) {
+      this.db.membership.connect(
+        state.principal,
+        agent.id,
+        state.connectionId,
+        this.heartbeatTimeoutMs,
+        typeof metadata?.runtimeKind === "string" ? metadata.runtimeKind : null,
+        typeof metadata?.runtimeLocator === "string" ? metadata.runtimeLocator : null,
+      );
+    }
 
     return rpcOk(req.id, {
       agentId: agent.id,
@@ -950,6 +1057,7 @@ export class BrokerSocketServer {
       return rpcError(req.id, RPC_INVALID_PARAMS, "Not registered");
     }
 
+    this.db.membership.disconnect(state.connectionId);
     this.db.unregisterAgent(state.agentId);
     state.agentId = null;
 
@@ -968,6 +1076,17 @@ export class BrokerSocketServer {
     }
 
     this.db.heartbeatAgent(state.agentId);
+    this.db.membership.renew(state.connectionId, this.heartbeatTimeoutMs);
+    if (state.principal && metadata && typeof metadata === "object") {
+      const bound = metadata as NonNullable<AgentInfo["metadata"]>;
+      bound.role = "worker";
+      bound.brokerManaged = false;
+      bound.host = state.principal.hostId;
+      bound.hostId = state.principal.hostId;
+      bound.workerId = state.principal.workerId;
+      if (bound.capabilities && typeof bound.capabilities === "object")
+        bound.capabilities = { ...bound.capabilities, role: "worker" };
+    }
     if (metadata !== undefined) {
       this.db.updateAgentMetadata(state.agentId, metadata as Record<string, unknown> | null);
     }
@@ -1126,6 +1245,13 @@ export class BrokerSocketServer {
           (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
         )
       : undefined;
+    if (state.principal && Array.isArray(params.files) && params.files.length > 0) {
+      return rpcError(
+        req.id,
+        RPC_AUTH_REQUIRED,
+        "Worker credentials cannot read broker-local attachment paths.",
+      );
+    }
     const files = Array.isArray(params.files)
       ? params.files.flatMap((entry): OutboundAttachmentFile[] => {
           if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
