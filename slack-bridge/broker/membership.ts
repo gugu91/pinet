@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { AgentInfo } from "./types.js";
 
 export interface WorkerCredential {
   credentialId: string;
@@ -24,6 +25,29 @@ interface CredentialRow {
 
 export function workerStableId(principal: Pick<WorkerPrincipal, "hostId" | "workerId">): string {
   return `${encodeURIComponent(principal.hostId)}:worker:${encodeURIComponent(principal.workerId)}`;
+}
+
+/** Broker-owned metadata binding: credential workers never authorize local process cleanup. */
+export function bindWorkerPrincipal(
+  principal: WorkerPrincipal,
+  metadata: AgentInfo["metadata"] | undefined,
+): NonNullable<AgentInfo["metadata"]> {
+  const bound = { ...metadata };
+  delete bound.pinetBrokerManaged;
+  delete bound.brokerManagedBy;
+  delete bound.brokerManagedAt;
+  return {
+    ...bound,
+    role: "worker",
+    brokerManaged: false,
+    host: principal.hostId,
+    hostId: principal.hostId,
+    workerId: principal.workerId,
+    pinetWorkerPrincipal: { ...principal },
+    ...(bound.capabilities && typeof bound.capabilities === "object"
+      ? { capabilities: { ...bound.capabilities, role: "worker" } }
+      : {}),
+  };
 }
 
 /** Broker-local durable authorization; bearer secrets and session tokens are never stored. */

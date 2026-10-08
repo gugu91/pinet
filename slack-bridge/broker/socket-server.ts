@@ -10,7 +10,7 @@ import { dispatchDirectAgentMessage } from "./agent-messaging.js";
 import { sendBrokerMessage } from "./message-send.js";
 import { isLoopbackTcpHost } from "./raw-tcp-loopback.js";
 import { assertPrivateTcpHost } from "./private-network.js";
-import { workerStableId, type WorkerPrincipal } from "./membership.js";
+import { bindWorkerPrincipal, workerStableId, type WorkerPrincipal } from "./membership.js";
 import { summarizePinetStableId } from "../pinet-session-formatting.js";
 import type {
   AgentInfo,
@@ -890,7 +890,7 @@ export class BrokerSocketServer {
       rawMetadata?.runtimeKind === "herdr" ||
       launchSource === "broker-herdr" ||
       launchSource === "subtree-broker-herdr";
-    const metadata =
+    let metadata =
       legacyTmuxSession && !explicitlyHerdr && typeof rawMetadata?.runtimeLocator !== "string"
         ? {
             ...rawMetadata,
@@ -898,16 +898,7 @@ export class BrokerSocketServer {
             runtimeLocator: legacyTmuxSession,
           }
         : rawMetadata;
-    if (state.principal && metadata) {
-      metadata.role = "worker";
-      metadata.brokerManaged = false;
-      metadata.host = state.principal.hostId;
-      metadata.hostId = state.principal.hostId;
-      metadata.workerId = state.principal.workerId;
-      if (metadata.capabilities && typeof metadata.capabilities === "object") {
-        metadata.capabilities = { ...metadata.capabilities, role: "worker" };
-      }
-    }
+    if (state.principal) metadata = bindWorkerPrincipal(state.principal, metadata);
 
     if (stableId) {
       const liveStableIdConflict = this.findLiveStableIdConflict(stableId, socket);
@@ -970,7 +961,10 @@ export class BrokerSocketServer {
     const finalEmoji = explicitNameRequest
       ? requestedEmoji.trim() || resolved?.emoji?.trim() || ""
       : (resolved?.emoji ?? requestedEmoji).trim();
-    const finalMetadata = resolved?.metadata ?? metadata;
+    const resolvedMetadata = resolved?.metadata ?? metadata;
+    const finalMetadata = state.principal
+      ? bindWorkerPrincipal(state.principal, resolvedMetadata)
+      : resolvedMetadata;
 
     if (explicitNameRequest) {
       const conflict = this.db.findAgentNameConflict(finalName, candidateId, stableId);
@@ -1077,18 +1071,12 @@ export class BrokerSocketServer {
 
     this.db.heartbeatAgent(state.agentId);
     this.db.membership.renew(state.connectionId, this.heartbeatTimeoutMs);
-    if (state.principal && metadata && typeof metadata === "object") {
-      const bound = metadata as NonNullable<AgentInfo["metadata"]>;
-      bound.role = "worker";
-      bound.brokerManaged = false;
-      bound.host = state.principal.hostId;
-      bound.hostId = state.principal.hostId;
-      bound.workerId = state.principal.workerId;
-      if (bound.capabilities && typeof bound.capabilities === "object")
-        bound.capabilities = { ...bound.capabilities, role: "worker" };
-    }
     if (metadata !== undefined) {
-      this.db.updateAgentMetadata(state.agentId, metadata as Record<string, unknown> | null);
+      const nextMetadata = metadata as AgentInfo["metadata"];
+      this.db.updateAgentMetadata(
+        state.agentId,
+        state.principal ? bindWorkerPrincipal(state.principal, nextMetadata) : nextMetadata,
+      );
     }
     return rpcOk(req.id, { ok: true });
   }

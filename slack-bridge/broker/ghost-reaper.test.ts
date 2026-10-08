@@ -56,6 +56,27 @@ describe("broker ghost reaper", () => {
     expect(isBrokerManagedAgent(makeAgent({ metadata: { role: "worker" } }))).toBe(false);
   });
 
+  it.each([
+    { stableId: "host:worker:credential-worker" },
+    { metadata: { ...makeAgent().metadata, pinetWorkerPrincipal: { credentialId: "issued" } } },
+  ])("never reaps credential principals even with forged management claims: %j", (overrides) => {
+    const agent = makeAgent(overrides);
+    expect(isBrokerManagedAgent(agent)).toBe(false);
+    expect(decideGhostReapEligibility(agent, snapshot(), "broker-1")).toMatchObject({
+      eligible: false,
+      reason: "credential_principal",
+    });
+    const signalProcess = vi.fn();
+    const reaper = createBrokerGhostReaper({
+      inspectProcess: () => snapshot(),
+      signalProcess,
+      brokerAgentId: () => "broker-1",
+    });
+    expect(reaper.reapGhosts([agent]).signaledAgentIds).toEqual([]);
+    expect(signalProcess).not.toHaveBeenCalled();
+    reaper.dispose();
+  });
+
   it("refuses ghosts without broker-managed ownership", () => {
     const decision = decideGhostReapEligibility(
       makeAgent({ metadata: { role: "worker" } }),

@@ -25,6 +25,7 @@ export interface RuntimeStart {
 }
 export interface RuntimeAdapter {
   start(input: RuntimeStart): Promise<RuntimeHandle>;
+  /** Throws on backpressure or partial delivery; partial input requires stream recovery, not a full retry. */
   send(handle: RuntimeHandle, text: string): void;
   read(handle: RuntimeHandle): string;
   status(handle: RuntimeHandle): "running" | "stopped";
@@ -177,6 +178,7 @@ export class HostRunner {
       `#!/bin/sh\n${environment}\ncd ${quote(cwd)}\n${kind === "shell" ? `exec 3<>${quote(path.join(directory, "input"))}\nexec ${command} <&3\n` : `exec ${command}\n`}`,
       { mode: 0o700, flag: "wx" },
     );
+    let launched = false;
     try {
       if (kind === "shell") {
         execFileSync("mkfifo", ["-m", "600", path.join(directory, "input")]);
@@ -240,6 +242,7 @@ export class HostRunner {
           throw new Error("Rex returned no unique block handle");
         handle.id = result.block_ids[0];
       }
+      launched = true;
       fs.writeFileSync(
         path.join(directory, "handle.json"),
         JSON.stringify(handle, null, 2) + "\n",
@@ -247,8 +250,16 @@ export class HostRunner {
       );
       return handle;
     } catch (error) {
-      if (handle.pid && getProcessStartTime(handle.pid) === handle.processStartTime)
-        process.kill(-handle.pid, "SIGTERM");
+      if (launched) {
+        try {
+          this.stopOwnedRuntime(handle);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            `Launch failed and ${kind} runtime ${handle.id} could not be stopped; retained ${directory} for recovery.`,
+          );
+        }
+      }
       fs.rmSync(directory, { recursive: true, force: true });
       throw error;
     }
@@ -260,7 +271,11 @@ export class HostRunner {
       .filter((name) => name.startsWith("pinet-"))
       .flatMap((name) => {
         const filename = path.join(this.root, name, "handle.json");
-        return fs.existsSync(filename) ? [this.load(filename)] : [];
+        if (!fs.existsSync(filename))
+          throw new Error(
+            `Incomplete runtime record at ${filename}; recover the owned runtime before starting another.`,
+          );
+        return [this.load(filename)];
       });
   }
 
@@ -318,7 +333,13 @@ export class HostRunner {
         fs.constants.O_WRONLY | fs.constants.O_NONBLOCK,
       );
       try {
-        fs.writeSync(fd, text);
+        const input = Buffer.from(text, "utf8");
+        const written = fs.writeSync(fd, input);
+        if (written !== input.length) {
+          throw new Error(
+            `Incomplete shell input delivery: ${written}/${input.length} bytes written. Recover the input stream before retrying; do not resend the whole message.`,
+          );
+        }
       } finally {
         fs.closeSync(fd);
       }
@@ -363,8 +384,18 @@ export class HostRunner {
   stop(input: RuntimeHandle): void {
     const handle = this.checked(input);
     if (this.status(handle) !== "running") return;
-    if (handle.kind === "shell") process.kill(-handle.pid!, "SIGTERM");
-    else if (handle.kind === "tmux")
+    this.stopOwnedRuntime(handle);
+  }
+
+  private stopOwnedRuntime(handle: RuntimeHandle): void {
+    if (handle.kind === "shell") {
+      if (
+        handle.pid &&
+        handle.processStartTime &&
+        getProcessStartTime(handle.pid) === handle.processStartTime
+      )
+        process.kill(-handle.pid, "SIGTERM");
+    } else if (handle.kind === "tmux")
       execFileSync("tmux", [
         "-S",
         path.join(this.root, "tmux.sock"),

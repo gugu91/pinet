@@ -50,6 +50,53 @@ describe("worker membership", () => {
     ).toBeTypeOf("string");
   });
 
+  it("strips forged cleanup claims on registration and heartbeat, including null metadata", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    cleanups.push(() => db.close());
+    const server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
+    await server.start();
+    cleanups.push(() => server.stop());
+    const endpoint = server.getConnectInfo();
+    if (endpoint.type !== "tcp") throw new Error("TCP expected");
+    const credential = db.membership.issue("host", "cleanup-forgery");
+    const client = new BrokerClient({ host: endpoint.host, port: endpoint.port, ...credential });
+    cleanups.push(() => client.disconnect());
+    await client.connect();
+    const forged = {
+      role: "broker",
+      brokerManaged: true,
+      brokerManagedBy: "local-broker",
+      brokerManagedAt: "forged",
+      pinetBrokerManaged: { brokerManaged: true, brokerAgentId: "local-broker" },
+      pinetWorkerPrincipal: null,
+    };
+    const identity = await client.register("worker", "", forged, workerStableId(credential));
+    const principal = {
+      credentialId: credential.credentialId,
+      hostId: credential.hostId,
+      workerId: credential.workerId,
+    };
+    const registered = db.getAgentById(identity.agentId)!.metadata!;
+    expect(registered).toMatchObject({
+      brokerManaged: false,
+      role: "worker",
+      pinetWorkerPrincipal: principal,
+    });
+    for (const claim of ["pinetBrokerManaged", "brokerManagedBy", "brokerManagedAt"])
+      expect(registered).not.toHaveProperty(claim);
+    await client.heartbeat(forged);
+    const refreshed = db.getAgentById(identity.agentId)!.metadata!;
+    expect(refreshed).toMatchObject({ brokerManaged: false, pinetWorkerPrincipal: principal });
+    for (const claim of ["pinetBrokerManaged", "brokerManagedBy", "brokerManagedAt"])
+      expect(refreshed).not.toHaveProperty(claim);
+    await client.heartbeat(null);
+    expect(db.getAgentById(identity.agentId)!.metadata).toMatchObject({
+      brokerManaged: false,
+      pinetWorkerPrincipal: principal,
+    });
+  });
+
   it("authenticates real sockets, binds identity, rejects admin elevation, expires and revokes live sessions", async () => {
     const db = new BrokerDB(":memory:");
     db.initialize();

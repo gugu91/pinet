@@ -108,6 +108,9 @@ when proving complete Slack credential absence.
 
 - Shell: detached pipe/FIFO-backed process, tail output, PID-start-time fenced
   stop. No terminal attachment exists (`attach` returns null); use send/read.
+  `send` is synchronous and throws on backpressure or incomplete writes, reporting
+  bytes written. Partial input may already be present: recover/restart the input
+  stream rather than blindly resending the whole message.
 - tmux: dedicated socket under this runner root, recorded session only.
 - Rex: `rex run --focus=false --shell=none`; only its returned block is controlled
   and closed, never a user's shared session. `attach` returns an argv array.
@@ -123,7 +126,11 @@ rule**); disk log retention is operator-owned. Host reports advertise hostname,
 configured repos/worktrees, available runtime binaries, capacity, health and the
 worker's runtime handle through its outbound registration/heartbeat. Available
 binaries are discovery, not proof of server health or support on another host.
-No remote arbitrary-command dispatch/scheduler is exposed.
+If persisting a new runtime handle fails, the runner stops the exact newly
+created process/session/block before deleting its directory. If cleanup also
+fails, it retains the directory for operator recovery and refuses new starts
+while an incomplete runtime record remains. No remote arbitrary-command
+dispatch/scheduler is exposed.
 
 ## Durable-ready, not a durable Pi runtime
 
