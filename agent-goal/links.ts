@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { displayGoalText, goalDisplayName } from "./dashboard.js";
 import type { GoalLink, GoalStorage } from "./domain.js";
 import { filterLinks, linkBrowserCommand, parseLinkUrl } from "./link-helpers.js";
-import { LinkWindow, type LinkWindowAction } from "./link-window.js";
+import { LinkWindow, LinkWindowState, type LinkWindowAction } from "./link-window.js";
 
 interface LinkAPI extends ExtensionAPI {
   exec(
@@ -30,6 +30,7 @@ export function registerGoalLinks(
       ctx.sessionManager as ExtensionContext["sessionManager"] & { getSessionId(): string }
     ).getSessionId();
     let query = "";
+    const state = new LinkWindowState();
     let error: string | undefined;
     while (true) {
       const links = filterLinks(await storage.listLinks(scopeId), "", prsOnly, goalId);
@@ -50,7 +51,17 @@ export function registerGoalLinks(
       const action = await ctx.ui.custom<LinkWindowAction>(
         (tui, theme, _keys, done) => {
           openedWindow = true;
-          return new LinkWindow(links, title, theme, done, () => tui.requestRender(), query, error);
+          return new LinkWindow(
+            links,
+            title,
+            theme,
+            done,
+            () => tui.requestRender(),
+            query,
+            error,
+            state,
+            () => Math.min(tui.terminal.rows - 2, Math.floor(tui.terminal.rows * 0.8)),
+          );
         },
         {
           overlay: true,

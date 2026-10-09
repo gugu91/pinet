@@ -16,9 +16,15 @@ export type LinkWindowAction =
   | { type: "close" }
   | { type: "open" | "remove"; url: string; query: string };
 
+export class LinkWindowState {
+  readonly input = new Input();
+  selectedUrl?: string;
+}
+
 export class LinkWindow implements Component {
-  private readonly input = new Input();
+  private readonly input: Input;
   private list: SelectList;
+  private visibleItems = 5;
   private confirmRemove = false;
 
   constructor(
@@ -29,9 +35,12 @@ export class LinkWindow implements Component {
     private readonly requestRender: () => void,
     query = "",
     private readonly error?: string,
+    private readonly state = new LinkWindowState(),
+    private readonly maxRows: () => number = () => 24,
   ) {
-    this.input.setValue(query);
-    this.list = this.createList();
+    this.input = state.input;
+    if (this.input.getValue() !== query) this.input.setValue(query);
+    this.list = this.createList(state.selectedUrl);
   }
 
   get focused(): boolean {
@@ -41,14 +50,15 @@ export class LinkWindow implements Component {
     this.input.focused = value;
   }
 
-  private createList(): SelectList {
-    return new SelectList(
-      filterLinks(this.links, this.input.getValue()).map((link) => ({
+  private createList(selectedUrl?: string): SelectList {
+    const filtered = filterLinks(this.links, this.input.getValue());
+    const list = new SelectList(
+      filtered.map((link) => ({
         value: link.url,
         label: displayGoalText(link.title, 200),
         description: new URL(link.url).hostname,
       })),
-      5,
+      this.visibleItems,
       {
         selectedPrefix: (text) => this.theme.fg("accent", text),
         selectedText: (text) => this.theme.fg("accent", this.theme.bold(text)),
@@ -57,6 +67,9 @@ export class LinkWindow implements Component {
         noMatch: (text) => this.theme.fg("muted", text),
       },
     );
+    const selectedIndex = filtered.findIndex((link) => link.url === selectedUrl);
+    if (selectedIndex >= 0) list.setSelectedIndex(selectedIndex);
+    return list;
   }
 
   handleInput(data: string): void {
@@ -65,6 +78,7 @@ export class LinkWindow implements Component {
       return;
     }
     const selected = this.list.getSelectedItem();
+    this.state.selectedUrl = selected?.value;
     if (this.confirmRemove) {
       if (matchesKey(data, "enter") && selected)
         this.done({ type: "remove", url: selected.value, query: this.input.getValue() });
@@ -80,11 +94,14 @@ export class LinkWindow implements Component {
       this.input.handleInput(data);
       if (previous !== this.input.getValue()) this.list = this.createList();
     }
+    this.state.selectedUrl = this.list.getSelectedItem()?.value;
     this.requestRender();
   }
 
   render(width: number): string[] {
     if (width < 8) return [truncateToWidth("Links", Math.max(0, width), "")];
+    const height = this.maxRows();
+    if (height < 8) return [truncateToWidth("Enlarge pane to browse links · Esc close", width, "")];
     const inner = width - 2;
     const contentWidth = Math.max(1, inner - 2);
     const border = (text: string): string => this.theme.fg("borderAccent", text);
@@ -97,29 +114,36 @@ export class LinkWindow implements Component {
       inner,
       "",
     );
+    // Reserve title/search, destination, action feedback, error and bottom border first.
+    const detailRows = Math.min(6, Math.max(1, height - 8));
+    const visibleItems = Math.max(1, Math.min(5, height - detailRows - 6 - (this.error ? 1 : 0)));
+    if (visibleItems !== this.visibleItems) {
+      const selectedUrl = this.list.getSelectedItem()?.value;
+      this.visibleItems = visibleItems;
+      this.list = this.createList(selectedUrl);
+    }
     const lines = [
       `${border("╭")}${heading}${border(`${"─".repeat(Math.max(0, inner - visibleWidth(heading)))}╮`)}`,
-      row(` ${this.theme.fg("muted", "Search titles, URLs, descriptions, goals")}`),
       ...this.input.render(contentWidth).map((line) => row(` ${line}`)),
-      row(),
       ...this.list.render(contentWidth).map((line) => row(` ${line}`)),
     ];
+    const details: string[] = [];
     const selected = this.links.find((link) => link.url === this.list.getSelectedItem()?.value);
     if (selected) {
-      lines.push(row(), row(` ${this.theme.fg("accent", new URL(selected.url).hostname)}`));
+      details.push(row(` ${this.theme.fg("accent", new URL(selected.url).hostname)}`));
       for (const line of wrapTextWithAnsi(selected.url, contentWidth).slice(0, 3))
-        lines.push(row(` ${this.theme.fg("muted", line)}`));
+        details.push(row(` ${this.theme.fg("muted", line)}`));
       if (selected.description)
-        lines.push(row(` ${displayGoalText(selected.description, contentWidth)}`));
+        details.push(row(` ${displayGoalText(selected.description, contentWidth)}`));
       if (selected.goalName)
-        lines.push(
+        details.push(
           row(
             ` ${this.theme.fg("dim", `Goal: ${displayGoalText(selected.goalName, contentWidth)}`)}`,
           ),
         );
     }
+    lines.push(...details.slice(0, detailRows));
     lines.push(
-      row(),
       row(
         this.confirmRemove
           ? " Enter remove saved link · Esc cancel"

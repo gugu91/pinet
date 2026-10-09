@@ -43,6 +43,7 @@ declare module "@earendil-works/pi-tui" {
       },
     );
     getSelectedItem(): SelectItem | null;
+    setSelectedIndex(index: number): void;
     handleInput(data: string): void;
     render(width: number): string[];
     invalidate(): void;

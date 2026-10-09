@@ -14,7 +14,14 @@ import type { AgentGoal, GoalLink, GoalStorage } from "./domain.js";
 import { MemoryGoalStorage } from "./memory-storage.js";
 import { SqliteGoalStorage } from "./sqlite-storage.js";
 import { filterLinks, isPullRequestUrl, linkBrowserCommand, parseLinkUrl } from "./link-helpers.js";
-import { LinkWindow, type LinkWindowAction } from "./link-window.js";
+import { LinkWindow, LinkWindowState, type LinkWindowAction } from "./link-window.js";
+
+type LinkWindowFactory = (
+  tui: { requestRender(): void; terminal: { rows: number } },
+  theme: Theme,
+  keys: object,
+  done: (action: LinkWindowAction) => void,
+) => LinkWindow;
 import { registerGoalLinks } from "./links.js";
 
 const goal: AgentGoal = {
@@ -167,6 +174,68 @@ describe("link overlay", () => {
     window.handleInput("\u001b");
     expect(done).toHaveBeenLastCalledWith({ type: "close" });
   });
+  it("preserves the search cursor across action refreshes", () => {
+    const state = new LinkWindowState();
+    const window = new LinkWindow(
+      [link, preview],
+      "Links",
+      theme,
+      vi.fn(),
+      vi.fn(),
+      "",
+      undefined,
+      state,
+    );
+    window.handleInput("fix");
+    window.handleInput("\u001b[D");
+    window.handleInput("\r");
+    const reopened = new LinkWindow(
+      [link, preview],
+      "Links",
+      theme,
+      vi.fn(),
+      vi.fn(),
+      "fix",
+      "Failed",
+      state,
+    );
+    reopened.handleInput("X");
+    expect(state.input.getValue()).toBe("fiXx");
+  });
+
+  it.each([20, 24, 40])(
+    "keeps destination, confirmation and errors visible in a %s-row terminal",
+    (rows) => {
+      const links = Array.from({ length: 6 }, (_, index) => ({
+        ...link,
+        url: `https://github.com/org/repo/pull/${index + 1}?long=${"x".repeat(130)}`,
+      }));
+      let maxRows = Math.min(rows - 2, Math.floor(rows * 0.8));
+      const window = new LinkWindow(
+        links,
+        "Links",
+        theme,
+        vi.fn(),
+        vi.fn(),
+        "",
+        "No browser available",
+        new LinkWindowState(),
+        () => maxRows,
+      );
+      window.handleInput("\u001b[B");
+      window.handleInput("\u0004");
+      for (const height of [maxRows, 8, maxRows]) {
+        maxRows = height;
+        const lines = window.render(66);
+        expect(lines.length).toBeLessThanOrEqual(height);
+        expect(lines.join("\n")).toContain("github.com");
+        expect(lines.join("\n")).toContain("Enter remove saved link");
+        expect(lines.join("\n")).toContain("No browser available");
+        expect(lines.at(-1)).toMatch(/^╰.*╯$/u);
+      }
+    },
+  );
+
   it("handles empty results, resizing, wide text, and strips metadata terminal escapes", () => {
     const done = vi.fn();
     const window = new LinkWindow(
@@ -290,25 +359,21 @@ describe("link tool and commands", () => {
       const storage = new MemoryGoalStorage();
       await storage.upsertLink(link);
       const show = registerGoalLinks(pi, storage);
-      const custom = vi.fn(
-        async (
-          factory: (
-            tui: { requestRender(): void },
-            theme: Theme,
-            keys: object,
-            done: (action: LinkWindowAction) => void,
-          ) => LinkWindow,
-        ) => {
-          if (mode === "rpc") return undefined;
-          let action: LinkWindowAction | undefined;
-          const window = factory({ requestRender: vi.fn() }, theme, {}, (value) => {
+      const custom = vi.fn(async (factory: LinkWindowFactory) => {
+        if (mode === "rpc") return undefined;
+        let action: LinkWindowAction | undefined;
+        const window = factory(
+          { requestRender: vi.fn(), terminal: { rows: 24 } },
+          theme,
+          {},
+          (value) => {
             action = value;
-          });
-          expect(window.render(66).join("\n")).toContain("Reconnect fix");
-          window.handleInput("\u001b");
-          return action;
-        },
-      );
+          },
+        );
+        expect(window.render(66).join("\n")).toContain("Reconnect fix");
+        window.handleInput("\u001b");
+        return action;
+      });
       await show({
         hasUI: mode !== "print",
         sessionManager: { getSessionId: () => "s1" },
@@ -324,6 +389,42 @@ describe("link tool and commands", () => {
     },
   );
 
+  it("retries the same non-first destination after browser failure", async () => {
+    const storage = new MemoryGoalStorage();
+    await storage.upsertLink(link);
+    await storage.upsertLink(preview);
+    const exec = vi.fn().mockResolvedValue({ code: 1, stderr: "Cannot open" });
+    const pi = { registerTool: vi.fn(), registerCommand: vi.fn(), exec } as object as ExtensionAPI;
+    const show = registerGoalLinks(pi, storage);
+    let pass = 0;
+    const custom = vi.fn(async (factory: LinkWindowFactory) => {
+      let action: LinkWindowAction | undefined;
+      const window = factory(
+        { requestRender: vi.fn(), terminal: { rows: 20 } },
+        theme,
+        {},
+        (value) => {
+          action = value;
+        },
+      );
+      if (pass === 0) window.handleInput("\u001b[B");
+      const lines = window.render(66);
+      if (pass > 0) expect(lines.join("\n")).toContain("Cannot open");
+      expect(lines.length).toBeLessThanOrEqual(16);
+      window.handleInput(pass < 2 ? "\r" : "\u001b");
+      pass += 1;
+      return action;
+    });
+    await show({
+      mode: "tui",
+      sessionManager: { getSessionId: () => "s1" },
+      ui: { custom },
+    } as object as ExtensionContext);
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(exec.mock.calls[0]![1]).toContain(preview.url);
+    expect(exec.mock.calls[1]).toEqual(exec.mock.calls[0]);
+  });
+
   it("filters current-goal links, surfaces opener failure, and removes only selected URL", async () => {
     const storage = new MemoryGoalStorage();
     await storage.upsertLink(link);
@@ -332,31 +433,27 @@ describe("link tool and commands", () => {
     const pi = { registerTool: vi.fn(), registerCommand: vi.fn(), exec } as object as ExtensionAPI;
     const show = registerGoalLinks(pi, storage);
     let pass = 0;
-    const custom = vi.fn(
-      async (
-        factory: (
-          tui: { requestRender(): void },
-          theme: Theme,
-          keys: object,
-          done: (action: LinkWindowAction) => void,
-        ) => LinkWindow,
-      ) => {
-        let action: LinkWindowAction | undefined;
-        const window = factory({ requestRender: vi.fn() }, theme, {}, (value) => {
+    const custom = vi.fn(async (factory: LinkWindowFactory) => {
+      let action: LinkWindowAction | undefined;
+      const window = factory(
+        { requestRender: vi.fn(), terminal: { rows: 24 } },
+        theme,
+        {},
+        (value) => {
           action = value;
-        });
-        const output = window.render(66).join("\n");
-        expect(output).not.toContain("preview.example.com");
-        if (pass === 0) window.handleInput("\r");
-        else if (pass === 1) {
-          expect(output).toContain("No browser available");
-          window.handleInput("\u0004");
-          window.handleInput("\r");
-        } else window.handleInput("\u001b");
-        pass += 1;
-        return action;
-      },
-    );
+        },
+      );
+      const output = window.render(66).join("\n");
+      expect(output).not.toContain("preview.example.com");
+      if (pass === 0) window.handleInput("\r");
+      else if (pass === 1) {
+        expect(output).toContain("No browser available");
+        window.handleInput("\u0004");
+        window.handleInput("\r");
+      } else window.handleInput("\u001b");
+      pass += 1;
+      return action;
+    });
     await show(
       {
         mode: "tui",
