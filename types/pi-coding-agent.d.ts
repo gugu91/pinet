@@ -30,7 +30,7 @@ declare module "@earendil-works/pi-coding-agent" {
     select(title: string, options: string[]): Promise<string | undefined>;
     custom<T>(
       factory: (
-        tui: { requestRender(): void },
+        tui: { requestRender(): void; terminal: { rows: number } },
         theme: Theme,
         keybindings: object,
         done: (value: T) => void,

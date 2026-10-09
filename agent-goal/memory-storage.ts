@@ -1,6 +1,7 @@
 import type {
   AgentGoal,
   GoalCheckpoint,
+  GoalLink,
   GoalContinuationClaim,
   GoalDeleteResult,
   GoalPendingEvaluation,
@@ -19,6 +20,7 @@ function cloneGoal(goal: AgentGoal): AgentGoal {
 
 export class MemoryGoalStorage implements GoalStorage {
   private readonly goals = new Map<string, AgentGoal>();
+  private readonly links = new Map<string, Map<string, GoalLink>>();
   private readonly pendingEvaluations = new Map<string, GoalPendingEvaluation>();
   private readonly checkpoints = new Map<string, GoalCheckpoint[]>();
   private readonly terminalCandidates = new Map<string, GoalTerminalCandidateRecord>();
@@ -65,6 +67,30 @@ export class MemoryGoalStorage implements GoalStorage {
       this.claims.set(goal.scopeId, { ...claim, goalVersion: goal.version });
     }
     return true;
+  }
+
+  async upsertLink(link: GoalLink): Promise<void> {
+    const links = this.links.get(link.scopeId) ?? new Map<string, GoalLink>();
+    links.set(link.url, { ...link, seenAt: links.get(link.url)?.seenAt });
+    this.links.set(link.scopeId, links);
+  }
+
+  async listLinks(scopeId: string): Promise<GoalLink[]> {
+    return [...(this.links.get(scopeId)?.values() ?? [])]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.url.localeCompare(b.url))
+      .map((link) => ({ ...link }));
+  }
+
+  async deleteLink(scopeId: string, url: string): Promise<void> {
+    this.links.get(scopeId)?.delete(url);
+  }
+
+  async markLinksSeen(scopeId: string, urls: string[], seenAt: string): Promise<void> {
+    const links = this.links.get(scopeId);
+    for (const url of urls) {
+      const link = links?.get(url);
+      if (link && !link.seenAt) link.seenAt = seenAt;
+    }
   }
 
   async addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean> {

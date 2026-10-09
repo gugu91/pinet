@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   AgentGoal,
   GoalCheckpoint,
+  GoalLink,
   GoalContinuationClaim,
   GoalDeleteResult,
   GoalEvaluation,
@@ -161,6 +162,17 @@ export class SqliteGoalStorage implements GoalStorage {
     }
     this.db.exec(`
       PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS agent_goal_links (
+        scope_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        goal_id TEXT,
+        goal_name TEXT,
+        seen_at TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope_id, url)
+      );
       CREATE TABLE IF NOT EXISTS agent_goal_checkpoints (
         id TEXT PRIMARY KEY NOT NULL,
         scope_id TEXT NOT NULL,
@@ -218,6 +230,14 @@ export class SqliteGoalStorage implements GoalStorage {
         FOREIGN KEY (scope_id) REFERENCES agent_goals(scope_id) ON DELETE CASCADE
       );
     `);
+    if (
+      !this.db
+        .prepare("PRAGMA table_info(agent_goal_links)")
+        .all()
+        .some((column) => column.name === "seen_at")
+    ) {
+      this.db.exec("ALTER TABLE agent_goal_links ADD COLUMN seen_at TEXT");
+    }
     const pendingColumns = new Set(
       (
         this.db.prepare("PRAGMA table_info(agent_goal_pending_evaluations)").all() as Array<{
@@ -441,6 +461,74 @@ export class SqliteGoalStorage implements GoalStorage {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  async upsertLink(link: GoalLink): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO agent_goal_links
+      (scope_id, url, title, description, goal_id, goal_name, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope_id, url) DO UPDATE SET
+        title = excluded.title, description = excluded.description,
+        goal_id = excluded.goal_id, goal_name = excluded.goal_name,
+        updated_at = excluded.updated_at`,
+      )
+      .run(
+        link.scopeId,
+        link.url,
+        link.title,
+        link.description ?? null,
+        link.goalId ?? null,
+        link.goalName ?? null,
+        link.updatedAt,
+      );
+  }
+
+  async listLinks(scopeId: string): Promise<GoalLink[]> {
+    return this.db
+      .prepare(
+        `SELECT * FROM agent_goal_links
+      WHERE scope_id = ? ORDER BY updated_at DESC, url ASC`,
+      )
+      .all(scopeId)
+      .map((row) => {
+        if (
+          typeof row.scope_id !== "string" ||
+          typeof row.url !== "string" ||
+          typeof row.title !== "string" ||
+          typeof row.updated_at !== "string" ||
+          (row.description !== null && typeof row.description !== "string") ||
+          (row.goal_id !== null && typeof row.goal_id !== "string") ||
+          (row.goal_name !== null && typeof row.goal_name !== "string") ||
+          (row.seen_at !== null && typeof row.seen_at !== "string")
+        ) {
+          throw new Error("Stored goal link is malformed");
+        }
+        return {
+          scopeId: row.scope_id,
+          url: row.url,
+          title: row.title,
+          description: row.description ?? undefined,
+          goalId: row.goal_id ?? undefined,
+          goalName: row.goal_name ?? undefined,
+          seenAt: row.seen_at ?? undefined,
+          updatedAt: row.updated_at,
+        };
+      });
+  }
+
+  async markLinksSeen(scopeId: string, urls: string[], seenAt: string): Promise<void> {
+    const mark = this.db.prepare(
+      "UPDATE agent_goal_links SET seen_at = ? WHERE scope_id = ? AND url = ? AND seen_at IS NULL",
+    );
+    for (const url of urls) mark.run(seenAt, scopeId, url);
+  }
+
+  async deleteLink(scopeId: string, url: string): Promise<void> {
+    this.db
+      .prepare("DELETE FROM agent_goal_links WHERE scope_id = ? AND url = ?")
+      .run(scopeId, url);
   }
 
   async addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean> {

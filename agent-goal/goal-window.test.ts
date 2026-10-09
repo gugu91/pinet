@@ -31,6 +31,18 @@ const checkpoints: GoalCheckpoint[] = [1, 2, 3, 4].map((number) => ({
 }));
 
 describe("GoalWindow", () => {
+  it("exposes a current-goal links shortcut without hijacking form input", () => {
+    const done = vi.fn();
+    const window = new GoalWindow(goal, undefined, theme, done);
+    expect(window.render(66).join("\n")).toContain("l links");
+    window.handleInput("l");
+    expect(done).toHaveBeenCalledWith("links");
+    done.mockClear();
+    window.handleInput("e");
+    window.handleInput("l");
+    expect(done).not.toHaveBeenCalled();
+    window.dispose();
+  });
   it("refreshes elapsed time once per second while an active goal is visible", () => {
     vi.useFakeTimers();
     const requestRender = vi.fn();

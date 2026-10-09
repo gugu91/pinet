@@ -32,6 +32,7 @@ import {
 } from "./progress.js";
 import { GoalRuntime } from "./runtime.js";
 import { SqliteGoalStorage } from "./sqlite-storage.js";
+import { registerGoalLinks } from "./links.js";
 
 export type {
   AgentGoal,
@@ -42,6 +43,7 @@ export type {
   GoalContinuationRequest,
   GoalContinuationResult,
   GoalDeleteResult,
+  GoalLink,
   GoalEvaluation,
   GoalEvaluationRecord,
   GoalEvaluator,
@@ -194,6 +196,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     wakeScheduler: options.wakeScheduler,
   });
 
+  const showLinks = registerGoalLinks(pi, storage);
+
   const stopStatusRefresh = (): void => {
     if (!statusRefreshTimer) return;
     clearTimeout(statusRefreshTimer);
@@ -236,7 +240,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
 
   const applyGoalAction = async (
     scopeId: string,
-    action: Exclude<GoalWindowAction, "close">,
+    action: Exclude<GoalWindowAction, "close" | "links">,
   ): Promise<void> => {
     if (action === "closeGoal") {
       await runtime.closeGoal(scopeId);
@@ -671,7 +675,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
             initialMode = "details";
             if (!action || action === "close") return;
             try {
-              await applyGoalAction(scopeId, action);
+              if (action === "links") await showLinks(ctx, false, goal!.id);
+              else await applyGoalAction(scopeId, action);
               actionError = undefined;
               await refreshUi(ctx);
             } catch (error) {
