@@ -66,6 +66,8 @@ Agents can call `attach_link({ url, title, description? })` to save PRs, preview
 - In `/goal`, press `l` to browse links associated with that goal.
 - Type to search titles, URLs, descriptions, and goal names; ↑/↓ selects; Enter opens in the default browser; Ctrl+D then Enter removes the saved link; Escape cancels or closes.
 
+The footer shows only `🔗 N` while the session has unseen links, including when no goal is active. New URLs start unseen; reattaching an existing URL preserves its seen state, even when its metadata changes. After you view and leave a picker, its listed links are marked seen: `/pr` only acknowledges PRs, and the `/goal` shortcut only that goal’s links. Search-filtered listings acknowledge matching links; an opened unfiltered listing acknowledges all its entries, not just the visible scroll page. Tiny panes that cannot display the listing do not acknowledge links. Text listings in non-TUI modes also acknowledge the URLs they print. Seen state survives restarts, and the indicator disappears when none remain unseen.
+
 The selected entry shows its destination hostname and URL. Only HTTP(S) URLs without embedded credentials are accepted, and attaching a link never opens a browser. Descriptions are agent-provided context, not live PR status or completion evidence. No GitHub credentials, background polling, or remote fetches are needed. Browser opening uses the OS opener on macOS, Linux, and Windows; opener errors remain visible in the picker. Non-TUI modes display URLs without opening them.
 
 Links persist in the same SQLite database as goals but **survive goal completion, `/goal close`, `/goal clear`, and session restart**. Remove them explicitly from the picker. They are scoped to one session, not aggregated across agents or projects. The optional goal name is a snapshot from the most recent attachment.
@@ -97,7 +99,7 @@ Set `PI_AGENT_GOAL_EVENT_LOG=<path>` to append every goal lifecycle event (claim
 
 ## Architecture
 
-The runtime depends on ports for evaluation, continuation, events, wake scheduling, and storage. `GoalStorage` owns optimistic goal mutations, checkpoints, session links (`upsertLink`, `listLinks`, `deleteLink`), pending-settlement aggregation, terminal candidates, and continuation claims. Custom storage adapters must implement the link methods; deleting a goal must not delete session links. The package exports `GoalRuntime`, memory/SQLite storage, `TimerGoalWakeScheduler`, `PiGoalEvaluator`, dashboard formatters, and `registerAgentGoal`.
+The runtime depends on ports for evaluation, continuation, events, wake scheduling, and storage. `GoalStorage` owns optimistic goal mutations, checkpoints, session links (`upsertLink`, `listLinks`, `deleteLink`, `markLinksSeen`), pending-settlement aggregation, terminal candidates, and continuation claims. Custom storage adapters must implement the link methods; deleting a goal must not delete session links. The package exports `GoalRuntime`, memory/SQLite storage, `TimerGoalWakeScheduler`, `PiGoalEvaluator`, dashboard formatters, and `registerAgentGoal`.
 
 ```ts
 import { registerAgentGoal } from "@pinet/agent-goal";

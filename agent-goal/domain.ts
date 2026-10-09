@@ -27,6 +27,7 @@ export interface GoalLink {
   description?: string;
   goalId?: string;
   goalName?: string;
+  seenAt?: string;
   updatedAt: string;
 }
 
@@ -137,6 +138,7 @@ export interface GoalStorage {
   upsertLink(link: GoalLink): Promise<void>;
   listLinks(scopeId: string): Promise<GoalLink[]>;
   deleteLink(scopeId: string, url: string): Promise<void>;
+  markLinksSeen(scopeId: string, urls: string[], seenAt: string): Promise<void>;
   addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean>;
   listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]>;
   delete(

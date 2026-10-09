@@ -19,6 +19,7 @@ export type LinkWindowAction =
 export class LinkWindowState {
   readonly input = new Input();
   selectedUrl?: string;
+  readonly viewedUrls = new Set<string>();
 }
 
 export class LinkWindow implements Component {
@@ -112,6 +113,8 @@ export class LinkWindow implements Component {
     if (width < 8) return [truncateToWidth("Links", Math.max(0, width), "")];
     const height = this.maxRows();
     if (height < 8) return [truncateToWidth("Enlarge pane to browse links · Esc close", width, "")];
+    for (const link of filterLinks(this.links, this.input.getValue()))
+      this.state.viewedUrls.add(link.url);
     const inner = width - 2;
     const contentWidth = Math.max(1, inner - 2);
     const border = (text: string): string => this.theme.fg("borderAccent", text);

@@ -169,6 +169,7 @@ export class SqliteGoalStorage implements GoalStorage {
         description TEXT,
         goal_id TEXT,
         goal_name TEXT,
+        seen_at TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (scope_id, url)
       );
@@ -229,6 +230,14 @@ export class SqliteGoalStorage implements GoalStorage {
         FOREIGN KEY (scope_id) REFERENCES agent_goals(scope_id) ON DELETE CASCADE
       );
     `);
+    if (
+      !this.db
+        .prepare("PRAGMA table_info(agent_goal_links)")
+        .all()
+        .some((column) => column.name === "seen_at")
+    ) {
+      this.db.exec("ALTER TABLE agent_goal_links ADD COLUMN seen_at TEXT");
+    }
     const pendingColumns = new Set(
       (
         this.db.prepare("PRAGMA table_info(agent_goal_pending_evaluations)").all() as Array<{
@@ -491,7 +500,8 @@ export class SqliteGoalStorage implements GoalStorage {
           typeof row.updated_at !== "string" ||
           (row.description !== null && typeof row.description !== "string") ||
           (row.goal_id !== null && typeof row.goal_id !== "string") ||
-          (row.goal_name !== null && typeof row.goal_name !== "string")
+          (row.goal_name !== null && typeof row.goal_name !== "string") ||
+          (row.seen_at !== null && typeof row.seen_at !== "string")
         ) {
           throw new Error("Stored goal link is malformed");
         }
@@ -502,9 +512,17 @@ export class SqliteGoalStorage implements GoalStorage {
           description: row.description ?? undefined,
           goalId: row.goal_id ?? undefined,
           goalName: row.goal_name ?? undefined,
+          seenAt: row.seen_at ?? undefined,
           updatedAt: row.updated_at,
         };
       });
+  }
+
+  async markLinksSeen(scopeId: string, urls: string[], seenAt: string): Promise<void> {
+    const mark = this.db.prepare(
+      "UPDATE agent_goal_links SET seen_at = ? WHERE scope_id = ? AND url = ? AND seen_at IS NULL",
+    );
+    for (const url of urls) mark.run(seenAt, scopeId, url);
   }
 
   async deleteLink(scopeId: string, url: string): Promise<void> {

@@ -71,7 +71,7 @@ export class MemoryGoalStorage implements GoalStorage {
 
   async upsertLink(link: GoalLink): Promise<void> {
     const links = this.links.get(link.scopeId) ?? new Map<string, GoalLink>();
-    links.set(link.url, { ...link });
+    links.set(link.url, { ...link, seenAt: links.get(link.url)?.seenAt });
     this.links.set(link.scopeId, links);
   }
 
@@ -83,6 +83,14 @@ export class MemoryGoalStorage implements GoalStorage {
 
   async deleteLink(scopeId: string, url: string): Promise<void> {
     this.links.get(scopeId)?.delete(url);
+  }
+
+  async markLinksSeen(scopeId: string, urls: string[], seenAt: string): Promise<void> {
+    const links = this.links.get(scopeId);
+    for (const url of urls) {
+      const link = links?.get(url);
+      if (link && !link.seenAt) link.seenAt = seenAt;
+    }
   }
 
   async addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean> {

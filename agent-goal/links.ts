@@ -21,6 +21,28 @@ export function registerGoalLinks(
   storage: GoalStorage,
 ): (ctx: ExtensionContext, prsOnly?: boolean, goalId?: string) => Promise<void> {
   const pi = rawPi as LinkAPI;
+  let statusGeneration = 0;
+  const refreshStatus = async (ctx: ExtensionContext): Promise<void> => {
+    const generation = ++statusGeneration;
+    if (!ctx.hasUI) return;
+    const scopeId = (
+      ctx.sessionManager as ExtensionContext["sessionManager"] & { getSessionId(): string }
+    ).getSessionId();
+    const unseen = (await storage.listLinks(scopeId)).filter((link) => !link.seenAt).length;
+    if (generation === statusGeneration)
+      ctx.ui.setStatus("agent-goal.links", unseen ? `🔗 ${unseen}` : undefined);
+  };
+  const markSeen = async (ctx: ExtensionContext, urls: string[]): Promise<void> => {
+    const scopeId = (
+      ctx.sessionManager as ExtensionContext["sessionManager"] & { getSessionId(): string }
+    ).getSessionId();
+    await storage.markLinksSeen(scopeId, urls, new Date().toISOString());
+    await refreshStatus(ctx);
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    await refreshStatus(ctx);
+  });
+
   const showLinks = async (
     ctx: ExtensionContext,
     prsOnly = false,
@@ -44,6 +66,10 @@ export function registerGoalLinks(
       };
       if (ctx.mode === undefined ? !ctx.hasUI : ctx.mode !== "tui") {
         pi.sendMessage(listing, { triggerTurn: false });
+        await markSeen(
+          ctx,
+          links.map((link) => link.url),
+        );
         return;
       }
       // Older Pi versions have no mode field; RPC custom() does not invoke its factory.
@@ -75,11 +101,15 @@ export function registerGoalLinks(
         },
       );
       if (!openedWindow) pi.sendMessage(listing, { triggerTurn: false });
+      await markSeen(ctx, openedWindow ? [...state.viewedUrls] : links.map((link) => link.url));
+      state.viewedUrls.clear();
       if (!action || action.type === "close") return;
       query = action.query;
       try {
-        if (action.type === "remove") await storage.deleteLink(scopeId, action.url);
-        else {
+        if (action.type === "remove") {
+          await storage.deleteLink(scopeId, action.url);
+          await refreshStatus(ctx);
+        } else {
           const { command, args } = linkBrowserCommand(action.url, process.platform);
           const result = await pi.exec(command, args, { timeout: 10_000 });
           if (result.code !== 0)
@@ -130,6 +160,7 @@ export function registerGoalLinks(
         updatedAt: new Date().toISOString(),
       };
       await storage.upsertLink(link);
+      await refreshStatus(ctx);
       return {
         content: [
           { type: "text", text: `Saved ${title}. Available in /link and, for pull requests, /pr.` },

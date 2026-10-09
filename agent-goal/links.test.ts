@@ -282,6 +282,7 @@ describe("link tool and commands", () => {
     const tools = new Map<string, ToolDefinition>();
     const exec = vi.fn();
     const pi = {
+      on: vi.fn(),
       registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
       registerCommand: vi.fn(),
       exec,
@@ -337,6 +338,7 @@ describe("link tool and commands", () => {
     const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
     const exec = vi.fn();
     const pi = {
+      on: vi.fn(),
       registerTool: vi.fn(),
       registerCommand: (name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]) =>
         commands.set(name, command),
@@ -365,6 +367,7 @@ describe("link tool and commands", () => {
     "supports legacy %s contexts without mode",
     async (mode) => {
       const pi = {
+        on: vi.fn(),
         registerTool: vi.fn(),
         registerCommand: vi.fn(),
         sendMessage: vi.fn(),
@@ -390,7 +393,7 @@ describe("link tool and commands", () => {
       await show({
         hasUI: mode !== "print",
         sessionManager: { getSessionId: () => "s1" },
-        ui: { custom },
+        ui: { custom, setStatus: vi.fn() },
       } as object as ExtensionContext);
       expect(custom).toHaveBeenCalledTimes(mode === "print" ? 0 : 1);
       if (mode === "tui") expect(pi.sendMessage).not.toHaveBeenCalled();
@@ -409,6 +412,7 @@ describe("link tool and commands", () => {
       await storage.upsertLink(link);
       const exec = vi.fn();
       const pi = {
+        on: vi.fn(),
         registerTool: vi.fn(),
         registerCommand: vi.fn(),
         exec,
@@ -438,7 +442,8 @@ describe("link tool and commands", () => {
         ui: { custom },
       } as object as ExtensionContext);
       expect(exec).not.toHaveBeenCalled();
-      expect(await storage.listLinks("s1")).toEqual([link]);
+      expect(await storage.listLinks("s1")).toMatchObject([link]);
+      expect((await storage.listLinks("s1"))[0]!.seenAt !== undefined).toBe(resize);
     },
   );
 
@@ -447,7 +452,12 @@ describe("link tool and commands", () => {
     await storage.upsertLink(link);
     await storage.upsertLink(preview);
     const exec = vi.fn().mockResolvedValue({ code: 1, stderr: "Cannot open" });
-    const pi = { registerTool: vi.fn(), registerCommand: vi.fn(), exec } as object as ExtensionAPI;
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      exec,
+    } as object as ExtensionAPI;
     const show = registerGoalLinks(pi, storage);
     let pass = 0;
     const custom = vi.fn(async (factory: LinkWindowFactory) => {
@@ -483,7 +493,12 @@ describe("link tool and commands", () => {
     await storage.upsertLink(link);
     await storage.upsertLink(preview);
     const exec = vi.fn().mockResolvedValue({ code: 1, stderr: "No browser available" });
-    const pi = { registerTool: vi.fn(), registerCommand: vi.fn(), exec } as object as ExtensionAPI;
+    const pi = {
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      exec,
+    } as object as ExtensionAPI;
     const show = registerGoalLinks(pi, storage);
     let pass = 0;
     const custom = vi.fn(async (factory: LinkWindowFactory) => {
