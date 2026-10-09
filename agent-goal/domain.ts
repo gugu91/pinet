@@ -20,6 +20,16 @@ export interface GoalBudgetUpdate {
   maxTokens?: number;
 }
 
+export interface GoalLink {
+  scopeId: string;
+  url: string;
+  title: string;
+  description?: string;
+  goalId?: string;
+  goalName?: string;
+  updatedAt: string;
+}
+
 export interface GoalCheckpoint {
   id: string;
   scopeId: string;
@@ -124,6 +134,9 @@ export interface GoalStorage {
   create(goal: AgentGoal): Promise<void>;
   replace(goal: AgentGoal, expectedVersion: number): Promise<boolean>;
   updateBudget(goal: AgentGoal, expectedVersion: number): Promise<boolean>;
+  upsertLink(link: GoalLink): Promise<void>;
+  listLinks(scopeId: string): Promise<GoalLink[]>;
+  deleteLink(scopeId: string, url: string): Promise<void>;
   addCheckpoint(checkpoint: GoalCheckpoint): Promise<boolean>;
   listCheckpoints(scopeId: string): Promise<GoalCheckpoint[]>;
   delete(

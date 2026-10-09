@@ -12,6 +12,7 @@ import type { AgentGoal, GoalCheckpoint, GoalContinuationClaim } from "./domain.
 export type GoalWindowAction =
   | "close"
   | "closeGoal"
+  | "links"
   /** @deprecated Parsed only for compatibility with older integrations; not exposed in the UI. */
   | "pause"
   /** @deprecated Parsed only for compatibility with older integrations; not exposed in the UI. */
@@ -149,7 +150,8 @@ export class GoalWindow implements Component {
       }
       return;
     }
-    if (key === "e") this.openTextForm("edit");
+    if (key === "l") this.onAction("links");
+    else if (key === "e") this.openTextForm("edit");
     else if (key === "b" && this.goal.status !== "complete") this.openBudgetForm();
     else if (key === "s" && this.goal.status !== "complete") {
       this.mode = "snooze";
@@ -451,6 +453,7 @@ export class GoalWindow implements Component {
       }
       lines.push(row(` ${this.theme.fg("dim", "tab/shift+tab select · enter open")}`));
     }
+    lines.push(row(), row(` ${this.theme.fg("accent", "l links · PRs, previews, references")}`));
     const footer = this.confirmClose
       ? "x again to close goal · esc cancel"
       : goal.status === "complete"

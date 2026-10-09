@@ -1148,7 +1148,8 @@ describe("registerAgentGoal", () => {
       });
       const createGoalTool = tools.get("create_goal");
       const getGoalTool = tools.get("get_goal");
-      if (!createGoalTool?.execute || !getGoalTool?.execute) {
+      const attachLinkTool = tools.get("attach_link");
+      if (!createGoalTool?.execute || !getGoalTool?.execute || !attachLinkTool?.execute) {
         throw new Error("goal tools were not registered");
       }
 
@@ -1156,6 +1157,16 @@ describe("registerAgentGoal", () => {
       await createGoalTool.execute(
         "call-1",
         { name: "Finish task", objective: "finish the approved task" },
+        new AbortController().signal,
+        undefined,
+        context,
+      );
+      await attachLinkTool.execute(
+        "link-1",
+        {
+          url: "https://github.com/org/repo/pull/123",
+          title: "Deliverable",
+        },
         new AbortController().signal,
         undefined,
         context,
@@ -1174,6 +1185,9 @@ describe("registerAgentGoal", () => {
         expect.objectContaining({ usage: { iterations: 0, tokens: 0 } }),
         expect.objectContaining({ terminalCandidate: undefined, tokenDelta: 0 }),
       );
+      expect(await storage.listLinks("session-1")).toEqual([
+        expect.objectContaining({ title: "Deliverable", goalName: "Finish task" }),
+      ]);
       if (outcome === "complete") expect(await storage.get("session-1")).toBeUndefined();
       else
         expect(await storage.get("session-1")).toMatchObject({
