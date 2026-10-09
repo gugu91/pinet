@@ -26,6 +26,7 @@ export class LinkWindow implements Component {
   private list: SelectList;
   private visibleItems = 5;
   private confirmRemove = false;
+  private renderedWidth = Number.POSITIVE_INFINITY;
 
   constructor(
     private readonly links: GoalLink[],
@@ -73,8 +74,16 @@ export class LinkWindow implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "ctrl+c") || (matchesKey(data, "escape") && !this.confirmRemove)) {
+    const tooSmall = this.maxRows() < 8 || this.renderedWidth < 8;
+    if (
+      matchesKey(data, "ctrl+c") ||
+      (matchesKey(data, "escape") && (!this.confirmRemove || tooSmall))
+    ) {
       this.done({ type: "close" });
+      return;
+    }
+    if (tooSmall) {
+      this.confirmRemove = false;
       return;
     }
     const selected = this.list.getSelectedItem();
@@ -99,6 +108,7 @@ export class LinkWindow implements Component {
   }
 
   render(width: number): string[] {
+    this.renderedWidth = width;
     if (width < 8) return [truncateToWidth("Links", Math.max(0, width), "")];
     const height = this.maxRows();
     if (height < 8) return [truncateToWidth("Enlarge pane to browse links · Esc close", width, "")];

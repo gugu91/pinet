@@ -174,6 +174,19 @@ describe("link overlay", () => {
     window.handleInput("\u001b");
     expect(done).toHaveBeenLastCalledWith({ type: "close" });
   });
+  it("blocks invisible actions at narrow widths and resumes after resize", () => {
+    const done = vi.fn();
+    const window = new LinkWindow([link], "Links", theme, done, vi.fn());
+    window.render(7);
+    window.handleInput("\r");
+    window.handleInput("\u0004");
+    window.handleInput("\r");
+    expect(done).not.toHaveBeenCalled();
+    window.render(66);
+    window.handleInput("\r");
+    expect(done).toHaveBeenCalledWith({ type: "open", url: link.url, query: "" });
+  });
+
   it("preserves the search cursor across action refreshes", () => {
     const state = new LinkWindowState();
     const window = new LinkWindow(
@@ -386,6 +399,46 @@ describe("link tool and commands", () => {
           expect.objectContaining({ content: `Reconnect fix\n${link.url}` }),
           { triggerTurn: false },
         );
+    },
+  );
+
+  it.each([false, true])(
+    "blocks invisible actions in an eight-row terminal (resize=%s)",
+    async (resize) => {
+      const storage = new MemoryGoalStorage();
+      await storage.upsertLink(link);
+      const exec = vi.fn();
+      const pi = {
+        registerTool: vi.fn(),
+        registerCommand: vi.fn(),
+        exec,
+      } as object as ExtensionAPI;
+      const show = registerGoalLinks(pi, storage);
+      const custom = vi.fn(async (factory: LinkWindowFactory) => {
+        const terminal = { rows: resize ? 24 : 8 };
+        let action: LinkWindowAction | undefined;
+        const window = factory({ requestRender: vi.fn(), terminal }, theme, {}, (value) => {
+          action = value;
+        });
+        if (resize) {
+          window.render(66);
+          window.handleInput("\u0004");
+          terminal.rows = 8;
+        }
+        expect(window.render(66).join("\n")).toContain("Enlarge pane");
+        for (const key of ["\r", "\u0004", "\r"]) window.handleInput(key);
+        expect(action).toBeUndefined();
+        window.handleInput("\u001b");
+        expect(action).toEqual({ type: "close" });
+        return action;
+      });
+      await show({
+        mode: "tui",
+        sessionManager: { getSessionId: () => "s1" },
+        ui: { custom },
+      } as object as ExtensionContext);
+      expect(exec).not.toHaveBeenCalled();
+      expect(await storage.listLinks("s1")).toEqual([link]);
     },
   );
 
