@@ -86,9 +86,12 @@ unsupported versions/capabilities before dispatch. No silent bootstrap install.
 
 Protocol sketches below are **proposed Teleport DTOs**, not upstream APIs. Parse
 JSON/config/CLI/peer data at each boundary into named DTOs with strict schemas,
-bounded strings/arrays, positive safe-integer epochs/generations, digest format,
-allowed enum values and frame size. Never propagate generic records or unparsed
-values into routing. Repeated request ID with different digest is a conflict.
+bounded strings/arrays, positive safe-integer epochs, nonnegative safe-integer
+source/current generations, digest format, allowed enum values and frame size.
+Reserved/accepted target generations must be positive safe integers derived by
+the existing authority as source/current generation + 1, never caller-selected.
+Never propagate generic records or unparsed values into routing. Repeated request
+ID with different digest is a conflict.
 
 ```typescript
 type ToolCapability = "read" | "write" | "edit" | "bash";
@@ -392,21 +395,21 @@ These are required future tests, not results of this documentation change. Use
 fake transports/authority clocks first, then disposable two-host fixtures with
 explicit approval; no real credential enrollment or host mutations in design CI.
 
-| Test ID / boundary or threat                             | Expected behavior and decisive assertion                                                                                                                                |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T1 Host injection/key mismatch/revocation                | Untrusted names/paths never enter SSH command; wrong host key or denied profile executes zero requests; revoked broker membership rejected separately                   |
-| T2 Discovery missing/offline/renamed/collision/malformed | Configured SSH unaffected by absent CLI; rename retains device binding; collisions/oversized or unsupported JSON rejected; no login/ACL changes                         |
-| T3 Parallel calls and target switch                      | Freeze all admissions; event precedes first new dispatch; metadata/UI match cwd/epoch; late old result remains old; failed preflight restores unchanged epoch           |
-| T4 Cancel/disconnect/output flood/unsupported tool       | Helper bounds output/time; proven cancel versus indeterminate distinguished; no local write fallback or automatic mutation replay; local-only tools identified          |
-| T5 Workspace/secret/archive attacks                      | Dirty/missing/divergent workspace blocks; dry-run allowlist excludes keys/settings; reject traversal, symlinks and unsafe files; corrupted manifest/store fails import  |
-| T6 Crash before checkpoint/source stop proof             | Source can resume only via proven authority; unproven source death blocks reservation; pending control/retry/tool work cannot pass quiescence                           |
-| T7 Crash during copy/import/reserve/launch               | Staging cannot dispatch; exact-nonce atomic settle plus attempt stop proof precedes rollback/retry; no-handle launch quarantined                                        |
-| T8 Lost acceptance ACK / partition / settle fault        | Receipt replay accepts no second generation; `unknown` never kills target/resumes source; crash after accept before bookkeeping recovers forward                        |
-| T9 Stale source/target registration or writer            | Wrong host/digest/generation/nonce denied atomically; only accepted target writes; stale store writer rejected before reopening                                         |
-| T10 Two running children and result during transfer      | Same child/job IDs; buffered result eventually reaches new parent, duplicate produces one durable insertion; stale supervisor ACK cannot delete it                      |
-| T11 Parent/endpoint crash and partial child-owner update | Endpoint survives where capability declared; postaccept partial CAS reconciles forward; endpoint loss blocks readiness; #962 orphan policy invoked                      |
-| T12 Nonportable CLI/native child / absent APIs           | Move refused with wait/cancel/eligible-leave choices; no conversion, deep import or capability invented; lost provider handle stays fail-closed pending #1072           |
-| T13 Session/extension compatibility and environment      | Preserve leaf/compaction/history via public APIs; incompatible model/volatile extension blocks; no tool before trusted new environment event; non-TUI has same contract |
+| Test ID / boundary or threat                             | Expected behavior and decisive assertion                                                                                                                                                                                 |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| T1 Host injection/key mismatch/revocation                | Untrusted names/paths never enter SSH command; wrong host key or denied profile executes zero requests; revoked broker membership rejected separately                                                                    |
+| T2 Discovery missing/offline/renamed/collision/malformed | Configured SSH unaffected by absent CLI; rename retains device binding; collisions/oversized or unsupported JSON rejected; no login/ACL changes                                                                          |
+| T3 Parallel calls and target switch                      | Freeze all admissions; event precedes first new dispatch; metadata/UI match cwd/epoch; late old result remains old; failed preflight restores unchanged epoch                                                            |
+| T4 Cancel/disconnect/output flood/unsupported tool       | Helper bounds output/time; proven cancel versus indeterminate distinguished; no local write fallback or automatic mutation replay; local-only tools identified                                                           |
+| T5 Workspace/secret/archive attacks                      | Dirty/missing/divergent workspace blocks; dry-run allowlist excludes keys/settings; reject traversal, symlinks and unsafe files; corrupted manifest/store fails import                                                   |
+| T6 Crash before checkpoint/source stop proof             | Source can resume only via proven authority; unproven source death blocks reservation; pending control/retry/tool work cannot pass quiescence                                                                            |
+| T7 Crash during copy/import/reserve/launch               | Staging cannot dispatch; exact-nonce atomic settle plus attempt stop proof precedes rollback/retry; no-handle launch quarantined                                                                                         |
+| T8 Lost acceptance ACK / partition / settle fault        | Receipt replay accepts no second generation; `unknown` never kills target/resumes source; crash after accept before bookkeeping recovers forward                                                                         |
+| T9 Stale source/target registration or writer            | Source generation 0 reserves/accepts target generation 1 through the existing authority; wrong host/digest/generation/nonce denied atomically; only accepted target writes; stale store writer rejected before reopening |
+| T10 Two running children and result during transfer      | Same child/job IDs; buffered result eventually reaches new parent, duplicate produces one durable insertion; stale supervisor ACK cannot delete it                                                                       |
+| T11 Parent/endpoint crash and partial child-owner update | Endpoint survives where capability declared; postaccept partial CAS reconciles forward; endpoint loss blocks readiness; #962 orphan policy invoked                                                                       |
+| T12 Nonportable CLI/native child / absent APIs           | Move refused with wait/cancel/eligible-leave choices; no conversion, deep import or capability invented; lost provider handle stays fail-closed pending #1072                                                            |
+| T13 Session/extension compatibility and environment      | Preserve leaf/compaction/history via public APIs; incompatible model/volatile extension blocks; no tool before trusted new environment event; non-TUI has same contract                                                  |
 
 Each crash test kills only fixture-created processes, reopens persisted state,
 asserts ownership/result counts and includes a negative control (e.g. remove nonce
