@@ -279,6 +279,51 @@ describe("link tool and commands", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
+  it.each(["tui", "rpc", "print"] as const)(
+    "supports legacy %s contexts without mode",
+    async (mode) => {
+      const pi = {
+        registerTool: vi.fn(),
+        registerCommand: vi.fn(),
+        sendMessage: vi.fn(),
+      } as object as ExtensionAPI;
+      const storage = new MemoryGoalStorage();
+      await storage.upsertLink(link);
+      const show = registerGoalLinks(pi, storage);
+      const custom = vi.fn(
+        async (
+          factory: (
+            tui: { requestRender(): void },
+            theme: Theme,
+            keys: object,
+            done: (action: LinkWindowAction) => void,
+          ) => LinkWindow,
+        ) => {
+          if (mode === "rpc") return undefined;
+          let action: LinkWindowAction | undefined;
+          const window = factory({ requestRender: vi.fn() }, theme, {}, (value) => {
+            action = value;
+          });
+          expect(window.render(66).join("\n")).toContain("Reconnect fix");
+          window.handleInput("\u001b");
+          return action;
+        },
+      );
+      await show({
+        hasUI: mode !== "print",
+        sessionManager: { getSessionId: () => "s1" },
+        ui: { custom },
+      } as object as ExtensionContext);
+      expect(custom).toHaveBeenCalledTimes(mode === "print" ? 0 : 1);
+      if (mode === "tui") expect(pi.sendMessage).not.toHaveBeenCalled();
+      else
+        expect(pi.sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ content: `Reconnect fix\n${link.url}` }),
+          { triggerTurn: false },
+        );
+    },
+  );
+
   it("filters current-goal links, surfaces opener failure, and removes only selected URL", async () => {
     const storage = new MemoryGoalStorage();
     await storage.upsertLink(link);

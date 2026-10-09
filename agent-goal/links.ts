@@ -34,22 +34,24 @@ export function registerGoalLinks(
     while (true) {
       const links = filterLinks(await storage.listLinks(scopeId), "", prsOnly, goalId);
       const title = prsOnly ? "Pull requests" : goalId ? "Goal links" : "Links";
-      if (ctx.mode !== "tui") {
-        pi.sendMessage(
-          {
-            customType: "agent-goal.links",
-            display: true,
-            content: links.length
-              ? links.map((link) => `${displayGoalText(link.title, 200)}\n${link.url}`).join("\n\n")
-              : "No saved links.",
-          },
-          { triggerTurn: false },
-        );
+      const listing = {
+        customType: "agent-goal.links",
+        display: true,
+        content: links.length
+          ? links.map((link) => `${displayGoalText(link.title, 200)}\n${link.url}`).join("\n\n")
+          : "No saved links.",
+      };
+      if (ctx.mode === undefined ? !ctx.hasUI : ctx.mode !== "tui") {
+        pi.sendMessage(listing, { triggerTurn: false });
         return;
       }
+      // Older Pi versions have no mode field; RPC custom() does not invoke its factory.
+      let openedWindow = false;
       const action = await ctx.ui.custom<LinkWindowAction>(
-        (tui, theme, _keys, done) =>
-          new LinkWindow(links, title, theme, done, () => tui.requestRender(), query, error),
+        (tui, theme, _keys, done) => {
+          openedWindow = true;
+          return new LinkWindow(links, title, theme, done, () => tui.requestRender(), query, error);
+        },
         {
           overlay: true,
           overlayOptions: {
@@ -61,6 +63,7 @@ export function registerGoalLinks(
           },
         },
       );
+      if (!openedWindow) pi.sendMessage(listing, { triggerTurn: false });
       if (!action || action.type === "close") return;
       query = action.query;
       try {
