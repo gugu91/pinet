@@ -31,6 +31,13 @@ import {
   resetFollowerDeliveryState,
 } from "./follower-delivery.js";
 import { BrokerClient, DEFAULT_SOCKET_PATH } from "./broker/client.js";
+import {
+  joinClientOptions,
+  joinIdentity,
+  readJoinProfile,
+  resolveJoinProfilePath,
+} from "./join-profile.js";
+import { hostReport } from "./host-runner.js";
 
 export function resolveBrokerSocketPath(): string {
   const envPath = process.env.PINET_SOCKET_PATH?.trim();
@@ -48,6 +55,7 @@ type SharedFollowerThreadState = Pick<
 >;
 
 export interface FollowerRuntimeDeps {
+  getJoinProfilePath?: () => string | undefined;
   getSettings: () => SlackBridgeSettings;
   refreshSettings: () => void;
   getPinetEnabled: () => boolean;
@@ -210,11 +218,39 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
     signal?.throwIfAborted();
     deps.refreshSettings();
     const meshAuth = resolvePinetMeshAuth(deps.getSettings());
-    const client = new BrokerClient({
-      path: resolveBrokerSocketPath(),
-      ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
-      ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+    const profilePath = resolveJoinProfilePath(deps.getJoinProfilePath?.());
+    const profile = profilePath ? readJoinProfile(profilePath) : null;
+    const stableId = profile ? joinIdentity(profile) : deps.getAgentStableId();
+    const host = profile
+      ? hostReport(profile.repos, Number(process.env.PINET_HOST_CAPACITY) || 1)
+      : null;
+    const registrationMetadata = async () => ({
+      ...(await deps.getAgentMetadata("worker", signal)),
+      ...(profile
+        ? {
+            hostId: profile.hostId,
+            workerId: profile.workerId,
+            repos: profile.repos,
+            workerCapabilities: profile.capabilities,
+            hostReport: host,
+          }
+        : {}),
+      ...(process.env.PINET_RUNTIME_KIND
+        ? {
+            runtimeKind: process.env.PINET_RUNTIME_KIND,
+            runtimeLocator: process.env.PINET_RUNTIME_HANDLE,
+          }
+        : {}),
     });
+    const client = new BrokerClient(
+      profile
+        ? joinClientOptions(profile)
+        : {
+            path: resolveBrokerSocketPath(),
+            ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
+            ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+          },
+    );
     const abortConnect = () => {
       client.disconnect();
     };
@@ -235,16 +271,16 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
         Boolean(settings.agentName?.trim() && settings.agentEmoji?.trim()) ||
         Boolean(process.env.PI_NICKNAME?.trim());
 
-      deps.setAgentOwnerToken(buildPinetOwnerToken(deps.getAgentStableId()));
+      deps.setAgentOwnerToken(buildPinetOwnerToken(stableId));
       const registration = await client.register(
         hasExplicitIdentityRequest ? workerIdentity.name : "",
         hasExplicitIdentityRequest ? workerIdentity.emoji : "",
-        await deps.getAgentMetadata("worker", signal),
-        deps.getAgentStableId(),
+        await registrationMetadata(),
+        stableId,
       );
       deps.applyRegistrationIdentity(registration);
       await deps.onRegistrationIdentityApplied();
-      client.setHeartbeatMetadataProvider(() => deps.getAgentMetadata("worker"));
+      client.setHeartbeatMetadataProvider(registrationMetadata);
     }
 
     async function resumeThreadClaims(): Promise<void> {

@@ -2,7 +2,7 @@ import * as net from "node:net";
 import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
 import { readMeshSecret } from "./auth.js";
 import { DEFAULT_SOCKET_PATH as PINET_DEFAULT_SOCKET_PATH } from "./paths.js";
-import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
+import { assertPrivateTcpHost } from "./private-network.js";
 import { RPC_AGENT_NAME_CONFLICT, RPC_METHOD_NOT_FOUND } from "./types.js";
 import type {
   PinetReadOptions,
@@ -232,6 +232,9 @@ export type BrokerConnectOpts = { path: string } | { host: string; port: number 
 export interface BrokerClientAuthOptions {
   meshSecret?: string;
   meshSecretPath?: string;
+  credentialId?: string;
+  credentialSecret?: string;
+  privateNetwork?: boolean;
 }
 
 export interface BrokerClientTimingOptions {
@@ -247,6 +250,9 @@ export type BrokerClientOptions = BrokerConnectOpts &
 
 export class BrokerClient {
   private readonly connectOpts: BrokerConnectOpts;
+  private readonly credentialId: string | undefined;
+  private readonly credentialSecret: string | undefined;
+  private sessionToken: string | null = null;
   private readonly meshSecret: string | null;
   private readonly meshSecretPath: string | null;
   private readonly reconnectDelayMs: (attempt: number) => number;
@@ -278,6 +284,8 @@ export class BrokerClient {
         ? (opts.reconnectDelayMs ?? computeReconnectDelay)
         : computeReconnectDelay;
 
+    this.credentialId = typeof opts === "object" ? opts.credentialId : undefined;
+    this.credentialSecret = typeof opts === "object" ? opts.credentialSecret : undefined;
     if (opts === undefined) {
       this.connectOpts = { path: DEFAULT_SOCKET_PATH };
       this.meshSecret = null;
@@ -295,7 +303,7 @@ export class BrokerClient {
     if ("path" in opts) {
       this.connectOpts = { path: opts.path };
     } else {
-      assertLoopbackTcpHost(opts.host, "broker client connect target");
+      assertPrivateTcpHost(opts.host, opts.privateNetwork === true);
       this.connectOpts = { host: opts.host, port: opts.port };
     }
 
@@ -376,6 +384,15 @@ export class BrokerClient {
   }
 
   private async authenticateIfNeeded(): Promise<void> {
+    this.sessionToken = null;
+    if (this.credentialId && this.credentialSecret) {
+      const result = (await this.request("auth", {
+        credentialId: this.credentialId,
+        credentialSecret: this.credentialSecret,
+      })) as { sessionToken: string };
+      this.sessionToken = result.sessionToken;
+      return;
+    }
     const meshSecret = this.resolveMeshSecret();
     if (!meshSecret) {
       return;
@@ -771,7 +788,14 @@ export class BrokerClient {
       jsonrpc: "2.0",
       id,
       method,
-      ...(params ? { params } : {}),
+      ...(params || this.sessionToken
+        ? {
+            params: {
+              ...params,
+              ...(this.sessionToken ? { sessionToken: this.sessionToken } : {}),
+            },
+          }
+        : {}),
     };
 
     return new Promise<unknown>((resolve, reject) => {

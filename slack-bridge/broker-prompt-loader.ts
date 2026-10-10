@@ -121,7 +121,7 @@ export function resolveBrokerPromptCandidates(
   const homeDir = path.resolve(options.homeDir ?? process.env.HOME ?? "");
   const userRoot = path.join(homeDir, ".pi", "agent", "slack-bridge");
   const defaultPromptPath = path.resolve(
-    options.defaultPromptPath ?? path.join(moduleDir, "prompts", "broker", "tmux.md"),
+    options.defaultPromptPath ?? path.join(moduleDir, "prompts", "broker", "default.md"),
   );
   const defaultRoot = path.resolve(path.dirname(path.dirname(path.dirname(defaultPromptPath))));
   const packagedCandidates: BrokerPromptCandidate[] = [

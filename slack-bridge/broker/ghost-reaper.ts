@@ -54,7 +54,15 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-export function isBrokerManagedAgent(agent: Pick<AgentInfo, "metadata">): boolean {
+type GhostAgentIdentity = Pick<AgentInfo, "metadata"> & Partial<Pick<AgentInfo, "stableId">>;
+
+function isCredentialWorkerAgent(agent: GhostAgentIdentity): boolean {
+  // The reserved stable-ID kind also fences rows written before principal markers existed.
+  return agent.stableId?.split(":")[1] === "worker" || agent.metadata?.pinetWorkerPrincipal != null;
+}
+
+export function isBrokerManagedAgent(agent: GhostAgentIdentity): boolean {
+  if (isCredentialWorkerAgent(agent)) return false;
   const metadata = asRecord(agent.metadata);
   if (!metadata) return false;
   if (metadata.brokerManaged === true) return true;
@@ -124,6 +132,9 @@ export function decideGhostReapEligibility(
 ): GhostReapDecision {
   const metadata = asRecord(agent.metadata);
   const pid = agent.pid;
+  if (isCredentialWorkerAgent(agent)) {
+    return { eligible: false, agentId: agent.id, reason: "credential_principal" };
+  }
   if (!Number.isInteger(pid) || pid <= 1) {
     return { eligible: false, agentId: agent.id, reason: "missing_or_unsafe_pid" };
   }
