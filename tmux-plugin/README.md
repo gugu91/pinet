@@ -52,8 +52,10 @@ expands them into those format options **before** this plugin loads.
 
 Queries reuse the publisher's shared helper. Stale/recycled owners are filtered,
 linked panes deduplicated and acknowledgement applied. Names cannot inject tmux
-formatting or terminal controls. Socket/window/session targets are explicit;
-multiple attached clients do not accidentally query the server's latest session.
+formatting or terminal controls. Jobs resolve their server from `TMUX` inside the
+Node helper; window/session targets are explicit. No shell parameter expressions
+are embedded in nested tmux formats. Multiple attached clients do not accidentally
+query the server's latest session.
 The user's existing status interval controls refresh; no interval is changed.
 
 ## Optional examples — choose/edit these yourself

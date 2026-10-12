@@ -89,7 +89,9 @@ node /path/to/installed/package/dist/status.js SOCKET session SESSION_ID aggrega
 
 Modes: `json` (validated pane records), `aggregate` (counts/name/state as JSON),
 `summary` (plain text, no styles/icons), `state`, `name`, `unread`, `count`.
-Arguments explicitly select socket and target; no implicit latest-client routing.
+Arguments select socket and target; no implicit latest-client routing. The companion
+uses `env` instead of SOCKET to resolve the job's own `TMUX` server inside Node,
+keeping shell brace/comma expressions out of tmux's nested-format parser.
 The helper deduplicates linked panes, validates PID/start-time ownership, excludes
 crashed/recycled owners, and applies focus acknowledgement. Its plain-text summary
 is optional convenience, not a required layout.

@@ -1,8 +1,11 @@
 import { Tmux } from "./transport.ts";
 import { summarize } from "./query.ts";
 
-// Explicit socket/target avoid accidentally querying another attached client's session.
-const [socket, scope, target, mode = "summary"] = process.argv.slice(2);
+// The job's TMUX environment identifies its server; the target always identifies the rendered window/session.
+// Resolve here rather than embedding shell parameter expansion inside tmux's nested-format grammar.
+const [socketArgument, scope, target, mode = "summary"] = process.argv.slice(2);
+const socket =
+  socketArgument === "env" ? process.env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1] : socketArgument;
 if (
   !socket ||
   (scope !== "session" && scope !== "window") ||
@@ -11,7 +14,7 @@ if (
   !["json", "summary", "state", "name", "unread", "count", "aggregate"].includes(mode)
 ) {
   console.error(
-    "Usage: node status.ts SOCKET session|window TARGET [json|aggregate|summary|state|name|unread|count]",
+    "Usage: node status.ts SOCKET|env session|window TARGET [json|aggregate|summary|state|name|unread|count]",
   );
   process.exitCode = 2;
 } else {

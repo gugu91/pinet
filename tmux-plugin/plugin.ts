@@ -28,7 +28,7 @@ export function expand(format: string, node: string, query: string): string {
     const target = scope === "window" ? "#{window_id}" : "#{session_id}";
     result = result.replaceAll(
       `#{${placeholder}}`,
-      `#(PI_TMUX_SOCKET=\${TMUX%,*}; ${shellQuote(node)} ${shellQuote(query)} "\${PI_TMUX_SOCKET%,*}" ${scope} '${target}' ${mode})`,
+      `#(${shellQuote(node)} ${shellQuote(query)} env ${scope} '${target}' ${mode})`,
     );
   }
   return result;

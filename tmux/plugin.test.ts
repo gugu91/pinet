@@ -40,7 +40,7 @@ test(
       }
       const normal = "#[fg=red] #I #W #F";
       const right = "#{pi_session_summary} #(continuum-save) %H:%M";
-      const local = "#[bold] #I #{pi_window_summary} #F";
+      const local = "#[bold] #I #{?#{pi_count},#{pi_window_summary},#W}#{?#{pi_unread}, bell,} #F";
       await tmux.run(["set-option", "-g", "window-status-format", normal]);
       await tmux.run(["set-option", "-g", "status-right", right]);
       await tmux.run(["set-option", "-w", "-t", pane, "window-status-current-format", local]);
@@ -54,6 +54,11 @@ test(
       assert.equal(
         await tmux.run(["show-options", "-wqv", "-t", pane, "window-status-current-format"]),
         expand(local, process.execPath, query),
+      );
+      // Parse through tmux itself: nested conditionals must not leak command fragments into the label.
+      assert.equal(
+        await tmux.run(["display-message", "-p", "-t", pane, "#{E:window-status-current-format}"]),
+        await tmux.run(["display-message", "-p", "-t", pane, "#[bold] #I #W #F"]),
       );
       const configured = await tmux.run(["show-options", "-g"]);
       await configure(tmux, process.execPath, query);
