@@ -189,6 +189,18 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   let triggeredModelKey: string | null = null;
   let runtimeSelector: string | undefined;
   let sessionDisabled = false;
+  const reportedDiagnostics = new Set<string>();
+
+  function loadContextConfig(ctx: ExtensionContext) {
+    const config = loadConfig(ctx.cwd);
+    for (const diagnostic of config.diagnostics) {
+      if (reportedDiagnostics.has(diagnostic)) continue;
+      reportedDiagnostics.add(diagnostic);
+      if (ctx.hasUI) ctx.ui.notify(`${LOG_PREFIX} ${diagnostic}`, "warning");
+      else console.error(`${LOG_PREFIX} ${diagnostic}`);
+    }
+    return config;
+  }
 
   const rearm = () => {
     triggeredModelKey = null;
@@ -214,7 +226,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     let ownsSummarization = false;
     try {
       if (sessionDisabled) return;
-      const config = loadConfig(ctx.cwd);
+      const config = loadContextConfig(ctx);
       // A session override is exactly one model; otherwise the configured chain is tried in order.
       const chain = runtimeSelector
         ? [runtimeSelector]
@@ -282,7 +294,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   pi.on("agent_settled", (_event, rawCtx) => {
     if (sessionDisabled) return;
     const ctx = rawCtx as CompatibleContext;
-    const config = loadConfig(ctx.cwd);
+    const config = loadContextConfig(ctx);
     const chain = runtimeSelector
       ? [runtimeSelector]
       : chainForModel(config.rules, modelKey(ctx.model), config.compactionModels);
@@ -340,7 +352,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     description: "Choose a compaction model for this session (optional provider/model argument)",
     handler: async (args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
-      const config = loadConfig(ctx.cwd);
+      const config = loadContextConfig(ctx);
       const configuredChain = chainForModel(
         config.rules,
         modelKey(ctx.model),
@@ -448,7 +460,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     description: "Show model-aware proactive compaction status",
     handler: async (_args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
-      const config = loadConfig(ctx.cwd);
+      const config = loadContextConfig(ctx);
       const key = modelKey(ctx.model);
       const usage = ctx.getContextUsage?.();
       const decision = decideCompaction({

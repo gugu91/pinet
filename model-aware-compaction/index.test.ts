@@ -274,6 +274,54 @@ describe("extension wiring", () => {
     },
   );
 
+  it.each([
+    { hasUI: true, problem: "chain" },
+    { hasUI: false, problem: "chain" },
+    { hasUI: true, problem: "parse" },
+    { hasUI: false, problem: "parse" },
+    { hasUI: true, problem: "read" },
+    { hasUI: false, problem: "read" },
+  ])(
+    "routes and deduplicates config diagnostics ($problem, hasUI=$hasUI)",
+    ({ hasUI, problem }) => {
+      const { emit } = harness();
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+      fs.mkdirSync(path.join(temp, ".pi"));
+      const settingsPath = path.join(temp, ".pi", "settings.json");
+      if (problem === "read") fs.mkdirSync(settingsPath);
+      else
+        fs.writeFileSync(
+          settingsPath,
+          problem === "parse"
+            ? "{"
+            : JSON.stringify({
+                "model-aware-compaction": {
+                  compactionModel: ["a/one", "b/two", "c/three", "d/four"],
+                },
+              }),
+        );
+      try {
+        const ctx = { ...context(0), cwd: temp, hasUI };
+        emit("agent_settled", ctx);
+        emit("agent_settled", ctx);
+        const message = expect.stringContaining(
+          problem === "chain" ? "only the first 3" : `Failed to parse ${settingsPath}`,
+        );
+        if (hasUI) {
+          expect(error).not.toHaveBeenCalled();
+          expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(message, "warning");
+        } else {
+          expect(error).toHaveBeenCalledExactlyOnceWith(message);
+          expect(ctx.ui.notify).not.toHaveBeenCalled();
+        }
+      } finally {
+        error.mockRestore();
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("treats an already-compacted callback as an idempotent outcome", () => {
     const { emit } = harness();
     const compact = vi.fn();
