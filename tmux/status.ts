@@ -5,7 +5,7 @@ import { summarize } from "./query.ts";
 // Resolve here rather than embedding shell parameter expansion inside tmux's nested-format grammar.
 const [socketArgument, scope, target, mode = "summary"] = process.argv.slice(2);
 const socket =
-  socketArgument === "env" ? process.env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1] : socketArgument;
+  socketArgument === "env" ? process.env.TMUX?.match(/^(.*),\d+,-?\d+$/)?.[1] : socketArgument;
 if (
   !socket ||
   (scope !== "session" && scope !== "window") ||

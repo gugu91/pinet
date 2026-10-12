@@ -141,14 +141,14 @@ test(
           .replace("#{session_id}", session);
         assert.equal(
           (
-            await exec("bash", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,0` } })
+            await exec("bash", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,-1` } })
           ).stdout.trim(),
           expected,
         );
       }
       // The actual TPM root entry runs native TS; neither node_modules nor dist is used by this path.
       await exec("bash", [fileURLToPath(new URL("../pinet.tmux", import.meta.url))], {
-        env: { ...process.env, TMUX: `${socket},0,0`, TMUX_PANE: pane },
+        env: { ...process.env, TMUX: `${socket},0,-1`, TMUX_PANE: pane },
       });
       assert.ok((await tmux.run(["show-hooks", "-g", HOOK])).includes("@pi_rollup_ack"));
     } finally {
