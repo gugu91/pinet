@@ -411,8 +411,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     lastSlackScopeDriftWarning = warning;
-    console.warn(`[slack-bridge] ${warning}`);
-    ctx?.ui.notify(warning, "warning");
+    if (ctx?.hasUI) ctx.ui.notify(warning, "warning");
+    else console.warn(`[slack-bridge] ${warning}`);
   }
 
   async function ensureSlackScopeDiagnostics(ctx?: ExtensionContext): Promise<void> {

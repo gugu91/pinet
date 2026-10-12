@@ -233,6 +233,47 @@ describe("extension wiring", () => {
     }
   });
 
+  it.each([true, false])(
+    "routes proactive diagnostics without corrupting UI (hasUI=%s)",
+    (hasUI) => {
+      const { emit } = harness();
+      const compact = vi.fn();
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+      fs.mkdirSync(path.join(temp, ".pi"));
+      fs.writeFileSync(
+        path.join(temp, ".pi", "settings.json"),
+        JSON.stringify({ "model-aware-compaction": { enabled: true, debug: true } }),
+      );
+      try {
+        const ctx = { ...context(120_000, compact), cwd: temp, hasUI };
+        emit("agent_settled", ctx);
+        const options = compact.mock.calls[0]?.[0] as {
+          onComplete: () => void;
+          onError: (error: Error) => void;
+        };
+        options.onComplete();
+        emit("model_select", ctx);
+        emit("agent_settled", ctx);
+        options.onError(new Error("provider unavailable"));
+        if (hasUI) {
+          expect(error).not.toHaveBeenCalled();
+          expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("started"), "info");
+          expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("completed"), "info");
+          expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("failed"), "error");
+        } else {
+          expect(error).toHaveBeenCalledWith(expect.stringContaining("triggered"));
+          expect(error).toHaveBeenCalledWith(expect.stringContaining("completed"));
+          expect(error).toHaveBeenCalledWith(expect.stringContaining("failed"));
+          expect(ctx.ui.notify).not.toHaveBeenCalled();
+        }
+      } finally {
+        error.mockRestore();
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("treats an already-compacted callback as an idempotent outcome", () => {
     const { emit } = harness();
     const compact = vi.fn();

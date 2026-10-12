@@ -206,7 +206,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, rawCtx) => {
     const ctx = rawCtx as CompatibleContext;
     const failClosed = (message: string) => {
-      console.error(`${LOG_PREFIX} ${message}`);
+      if (!ctx.hasUI) console.error(`${LOG_PREFIX} ${message}`);
       if (ctx.hasUI && !event.signal.aborted)
         ctx.ui.notify(`Compaction cancelled: ${message}`, "error");
       return { cancel: true as const };
@@ -259,8 +259,8 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         if (attempt.kind === "compaction") {
           if (failures.length > 0) {
             const report = `fell back to ${selectorText} after ${failures.join("; ")}`;
-            console.error(`${LOG_PREFIX} ${report}`);
-            if (config.debug && ctx.hasUI) ctx.ui.notify(`Compaction ${report}`, "info");
+            if (!ctx.hasUI) console.error(`${LOG_PREFIX} ${report}`);
+            if (ctx.hasUI) ctx.ui.notify(`Compaction ${report}`, "info");
           }
           return { compaction: attempt.result };
         }
@@ -312,7 +312,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     triggeredModelKey = decision.modelKey;
     const details = `model=${decision.modelKey} tokens=${usage?.tokens ?? "unknown"} limit=${decision.limit}`;
     if (config.debug) {
-      console.error(`${LOG_PREFIX} triggered ${details}`);
+      if (!ctx.hasUI) console.error(`${LOG_PREFIX} triggered ${details}`);
       if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction started (${details})`, "info");
     }
 
@@ -321,7 +321,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       onComplete: () => {
         inFlight = false;
         if (config.debug) {
-          console.error(`${LOG_PREFIX} completed ${details}`);
+          if (!ctx.hasUI) console.error(`${LOG_PREFIX} completed ${details}`);
           if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction completed (${details})`, "info");
         }
       },
@@ -330,9 +330,8 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         if (error.message === "Already compacted") return;
 
         triggeredModelKey = null;
-        console.error(`${LOG_PREFIX} failed ${details}: ${error.message}`);
-        if (config.debug && ctx.hasUI)
-          ctx.ui.notify(`Model-aware compaction failed: ${error.message}`, "error");
+        if (!ctx.hasUI) console.error(`${LOG_PREFIX} failed ${details}: ${error.message}`);
+        if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction failed: ${error.message}`, "error");
       },
     });
   });
