@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { configure, expand, HOOK, shellQuote } from "../tmux-plugin/plugin.ts";
+import { configure, expand, HOOK } from "../tmux-plugin/plugin.ts";
 import { Tmux, processIdentity } from "./transport.ts";
 const exec = promisify(execFile);
 
@@ -73,7 +73,7 @@ test("TPM adapter does not choose layouts; expands only explicit tokens, preserv
 });
 test("query jobs use portable quoting and target-specific aggregates, without npm bootstrap", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pinet-plugin-jobs-"));
-  const socket = join(dir, "socket ' $literal (space)");
+  const socket = join(dir, "socket ' $literal, (space)");
   const tmux = new Tmux(socket);
   try {
     const pane = await tmux.run([
@@ -125,10 +125,14 @@ test("query jobs use portable quoting and target-specific aggregates, without np
     ]) {
       const job = expand(`#{${placeholder}}`, node, query)
         .slice(2, -1)
-        .replace("#{q:socket_path}", shellQuote(socket))
         .replace("#{window_id}", window)
         .replace("#{session_id}", session);
-      assert.equal((await exec("bash", ["-c", job])).stdout.trim(), expected);
+      assert.equal(
+        (
+          await exec("bash", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,0` } })
+        ).stdout.trim(),
+        expected,
+      );
     }
     // The actual TPM root entry runs native TS; neither node_modules nor dist is used by this path.
     await exec("bash", [fileURLToPath(new URL("../pinet.tmux", import.meta.url))], {
