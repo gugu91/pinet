@@ -7,8 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { test } from "vitest";
-import { Tmux, OPTION, FOCUS_HOOK, processIdentity } from "./transport.ts";
+import { Tmux, OPTION, FOCUS_HOOK, processIdentity, decodeOutput } from "./transport.ts";
 import type { PaneRecord } from "./helpers.ts";
+
+test("CLI decoding is capability-gated and preserves literal slashes and trailing layout spaces", () => {
+  const raw = " $PI ${value} $_var $9 \\$PI \\literal trailing  ";
+  const oldOutput = raw.replace(/\$(?=[A-Za-z_{])/g, "\\$") + "\n";
+  assert.equal(decodeOutput(oldOutput, true), raw);
+  assert.equal(decodeOutput(raw + "\n", false), raw);
+});
 
 test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-tmux-test-"));

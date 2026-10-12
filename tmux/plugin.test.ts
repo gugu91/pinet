@@ -58,7 +58,7 @@ test("TPM adapter does not choose layouts; expands only explicit tokens, preserv
     const hook = await tmux.run(["show-hooks", "-g", HOOK]);
     assert.ok(hook.includes("@pi_unread"));
     await configure(tmux, process.execPath, query, true);
-    assert.equal(await tmux.run(["show-hooks", "-g", HOOK]), HOOK);
+    assert.equal((await tmux.run(["show-hooks", "-g", HOOK])).trim(), HOOK);
     assert.ok((await tmux.run(["show-hooks", "-g", "pane-focus-in[123]"])).includes("retained"));
     await tmux.run(["set-hook", "-g", HOOK, "display-message user-owned"]);
     const after = await tmux.run(["show-options", "-g"]);

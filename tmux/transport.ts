@@ -26,8 +26,14 @@ export async function processIdentity(pid: number): Promise<string> {
   if (!stdout.trim()) throw new Error("Process start time unavailable");
   return Buffer.from(stdout.trim()).toString("base64");
 }
+export function decodeOutput(text: string, escapedDollars: boolean): string {
+  const value = text.replace(/\n$/, "");
+  // tmux <=3.4 inserts one slash before dollars followed by a letter, underscore or brace.
+  return escapedDollars ? value.replace(/\\\$(?=[A-Za-z_{])/g, "$") : value;
+}
 export class Tmux {
   private prefix: string[];
+  private escapedDollars: boolean | undefined;
   constructor(socket?: string) {
     this.prefix = socket ? ["-S", socket] : [];
   }
@@ -36,7 +42,15 @@ export class Tmux {
       timeout: 2000,
       maxBuffer: 1024 * 1024,
     });
-    return stdout.trimEnd();
+    if (this.escapedDollars === undefined && stdout.includes("$")) {
+      const probe = await exec(
+        "tmux",
+        [...this.prefix, "display-message", "-p", "#{l:$PI_TMUX_PROBE}"],
+        { timeout: 2000 },
+      );
+      this.escapedDollars = probe.stdout.startsWith("\\$PI_TMUX_PROBE");
+    }
+    return decodeOutput(stdout, this.escapedDollars === true);
   }
   async claim(
     pane: string,
