@@ -75,6 +75,7 @@ The repository includes these extensions:
 | [`imessage-bridge`](imessage-bridge/) | macOS iMessage transport                                |
 | [`nvim-bridge`](nvim-bridge/)         | Neovim editor context sync                              |
 | [`neon-psql`](neon-psql/)             | Neon Postgres tunnel                                    |
+| [`agent-goal`](agent-goal/)           | Standalone durable goals, checkpoints, and saved links  |
 | [`types`](types/)                     | Shared type declarations                                |
 
 Recent updates include:
@@ -83,6 +84,30 @@ Recent updates include:
 - Slack canvases, uploads, modals, bookmarks, and pins
 - scheduled wake-ups and inbox sync
 - optional shared-secret mesh authentication
+
+## Goals, links, and pull requests
+
+[`@pinet/agent-goal`](agent-goal/README.md) works without Pinet, Slack, or a broker. It keeps one durable goal per Pi session and provides `/goal` controls and progress checkpoints.
+
+**Added in v0.2.24:** agents can call `attach_link({ url, title, description? })` to save PRs, preview deployments, and useful references. Run `/link` for a searchable terminal picker, or `/pr` for pull requests only. Select with ↑/↓, press Enter to open in your browser, or Ctrl+D then Enter to remove a saved link. The `/goal` overlay’s `l` shortcut filters links to its current goal.
+
+The footer shows only `🔗 N` while there are unseen links. Viewing and leaving a picker acknowledges its listing; filtered views leave unrelated links unseen. Links and seen state survive restarts and goal completion. They belong to the current session, not a shared project-wide inbox, and a goal is not required to save them.
+
+### Terminal previews
+
+`/link`: all saved session links, with search and destination details.
+
+![Saved links picker showing an issue and a pull request](agent-goal/images/saved-links.png)
+
+`/pr`: the same picker filtered to pull requests.
+
+![Pull-request picker showing PR 1070](agent-goal/images/pull-requests.png)
+
+`/goal`: checkpoints and the `l` shortcut to goal-associated links. This development capture shows a historical blocked goal, not the current release status.
+
+![Goal overlay with checkpoints and the links shortcut](agent-goal/images/goal-links-shortcut.png)
+
+See [saved-link behavior and safety](agent-goal/README.md#saved-links-and-pull-requests), the [release notes](CHANGELOG.md#0224---2026-10-09), and the [next-release checklist](plans/next-release.md).
 
 ## How Pinet works
 

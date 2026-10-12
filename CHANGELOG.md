@@ -9,6 +9,45 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.24] - 2026-10-09
+
+Pinet v0.2.24 adds durable session links and pull-request pickers, a compact unseen-link footer, and a five-minute default goal snooze, alongside updated compaction prompt compatibility.
+
+### Version verification
+
+- `pi-extensions` — `0.2.24` (private repo package)
+- `@pinet/transport-core` — `0.2.24`
+- `@pinet/broker-core` — `0.2.24`
+- `@pinet/pinet-core` — `0.2.24`
+- `@pinet/imessage-bridge` — `0.2.24`
+- `@pinet/slack-bridge` — `0.2.24`
+- `@pinet/model-aware-compaction` — `0.2.24`
+- `@pinet/agent-goal` — `0.2.24`
+
+The five core/bridge packages have no additional functional changes in this release. See the [release checklist](plans/next-release.md) for publication gates; a release entry is not proof of publication.
+
+### Added
+
+- `@pinet/agent-goal`: agents can save PRs, previews, and references with `attach_link`. The themed `/link` picker searches all saved links; `/pr` filters pull-request URLs; `l` in `/goal` opens that goal’s links. Enter explicitly opens the selected URL, and Ctrl+D then Enter removes it. Links are session-scoped and survive goal completion, clearing, and restart.
+- A compact `🔗 N` footer indicator counts unseen links without requiring an active goal. Viewing a listing acknowledges its links; PR/goal filters leave unrelated links unseen. Seen state persists, reattachments preserve it, and tiny panes do not acknowledge hidden listings.
+
+### Fixed and updated
+
+- `@pinet/agent-goal`: `/goal snooze` and an empty snooze form default to five minutes rather than rejecting a missing duration. Explicit durations still override the default.
+- `@pinet/model-aware-compaction`: split-turn prompt parity now tracks Pi 0.87.1, verified unchanged through Pi 0.99.1. Documents virtual-model rule matching and corrects the description of previous-summary handling.
+
+### Upgrade notes
+
+- Built-in goal storage migrates existing SQLite databases automatically. Custom `GoalStorage` adapters must implement `upsertLink`, `listLinks`, `deleteLink`, and `markLinksSeen`; preserve link records when deleting a goal and preserve seen state on URL upserts.
+- Link attachments accept HTTP(S) URLs without embedded credentials. PR detection is path-based, not live GitHub status; no remote polling or credentials are needed. Links are not aggregated across sessions.
+- Older Pi hosts remain supported by the link picker. Compaction on Pi 0.85.x/0.86.x uses the newer pinned 0.87.1 split-turn wording rather than the host’s older wording.
+
+### Included pull requests
+
+- [#1070](https://github.com/gugu91/pinet/pull/1070) — persistent goal links, PR picker, and unseen-link footer
+- [#1066](https://github.com/gugu91/pinet/pull/1066) — five-minute durationless snooze
+- [#1063](https://github.com/gugu91/pinet/pull/1063) — update pinned compaction prompts and compatibility notes
+
 ## [0.2.23] - 2026-09-21
 
 Pinet v0.2.23 lets `@pinet/model-aware-compaction` use an output budget that is independent from Pi's native compaction trigger reserve.
