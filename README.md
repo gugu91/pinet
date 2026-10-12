@@ -89,7 +89,7 @@ Recent updates include:
 
 [`@pinet/agent-goal`](agent-goal/README.md) works without Pinet, Slack, or a broker. It keeps one durable goal per Pi session and provides `/goal` controls and progress checkpoints.
 
-**New on `main`, pending the next npm release:** agents can call `attach_link({ url, title, description? })` to save PRs, preview deployments, and useful references. Run `/link` for a searchable terminal picker, or `/pr` for pull requests only. Select with ↑/↓, press Enter to open in your browser, or Ctrl+D then Enter to remove a saved link. The `/goal` overlay’s `l` shortcut filters links to its current goal.
+**Added in v0.2.24:** agents can call `attach_link({ url, title, description? })` to save PRs, preview deployments, and useful references. Run `/link` for a searchable terminal picker, or `/pr` for pull requests only. Select with ↑/↓, press Enter to open in your browser, or Ctrl+D then Enter to remove a saved link. The `/goal` overlay’s `l` shortcut filters links to its current goal.
 
 The footer shows only `🔗 N` while there are unseen links. Viewing and leaving a picker acknowledges its listing; filtered views leave unrelated links unseen. Links and seen state survive restarts and goal completion. They belong to the current session, not a shared project-wide inbox, and a goal is not required to save them.
 
@@ -107,7 +107,7 @@ The footer shows only `🔗 N` while there are unseen links. Viewing and leaving
 
 ![Goal overlay with checkpoints and the links shortcut](agent-goal/images/goal-links-shortcut.png)
 
-See [saved-link behavior and safety](agent-goal/README.md#saved-links-and-pull-requests), the [unreleased changes](CHANGELOG.md#unreleased), and the [next-release checklist](plans/next-release.md).
+See [saved-link behavior and safety](agent-goal/README.md#saved-links-and-pull-requests), the [release notes](CHANGELOG.md#0224---2026-10-09), and the [next-release checklist](plans/next-release.md).
 
 ## How Pinet works
 

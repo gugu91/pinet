@@ -9,9 +9,22 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
-## Unreleased
+## [0.2.24] - 2026-10-09
 
-Merged on `main` after v0.2.23; not yet published. Version selection and the coordinated seven-package release still require maintainer approval. See the [release preparation checklist](plans/next-release.md).
+Pinet v0.2.24 adds durable session links and pull-request pickers, a compact unseen-link footer, and a five-minute default goal snooze, alongside updated compaction prompt compatibility.
+
+### Version verification
+
+- `pi-extensions` — `0.2.24` (private repo package)
+- `@pinet/transport-core` — `0.2.24`
+- `@pinet/broker-core` — `0.2.24`
+- `@pinet/pinet-core` — `0.2.24`
+- `@pinet/imessage-bridge` — `0.2.24`
+- `@pinet/slack-bridge` — `0.2.24`
+- `@pinet/model-aware-compaction` — `0.2.24`
+- `@pinet/agent-goal` — `0.2.24`
+
+The five core/bridge packages have no additional functional changes in this release. See the [release checklist](plans/next-release.md) for publication gates; a release entry is not proof of publication.
 
 ### Added
 
