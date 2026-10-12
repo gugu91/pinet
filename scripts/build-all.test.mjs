@@ -14,6 +14,7 @@ const expectedBuildPackages = [
   "openai-execution-shaping",
   "model-aware-compaction",
   "agent-goal",
+  "tmux",
   "slack-bridge",
 ];
 

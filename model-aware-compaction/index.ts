@@ -229,6 +229,10 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       // Acquire ownership before the registry begins asynchronous provider/auth work.
       summarizationInFlight = true;
       ownsSummarization = true;
+      pi.events?.emit("pinet:compaction-start", {
+        phase: "start",
+        sessionFile: ctx.sessionManager.getSessionFile(),
+      });
       const customInstructions =
         [event.customInstructions, config.customInstructions]
           .filter(
