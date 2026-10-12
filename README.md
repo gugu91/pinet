@@ -76,7 +76,8 @@ The repository includes these extensions:
 | [`nvim-bridge`](nvim-bridge/)         | Neovim editor context sync                              |
 | [`neon-psql`](neon-psql/)             | Neon Postgres tunnel                                    |
 | [`types`](types/)                     | Shared type declarations                                |
-| [`tmux`](tmux/)                       | Optional Pi window states, compaction and unread labels |
+| [`tmux`](tmux/)                       | Optional Pi pane state/compaction/unread publisher      |
+| [`tmux-plugin`](tmux-plugin/)         | Separate TPM format integration; no prescribed theme    |
 
 Recent updates include:
 

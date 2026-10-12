@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { windowLabel, safeName, isInteraction, type PaneStatus } from "./helpers.ts";
+import { safeName, isInteraction, type PaneStatus } from "./helpers.ts";
+import { summarize } from "./query.ts";
 const pane: PaneStatus = {
   pane: "%1",
   window: "@1",
@@ -14,35 +15,44 @@ const pane: PaneStatus = {
     unread: false,
   },
 };
-test("one Pi: its session name and state, no count", () => {
-  assert.equal(windowLabel([pane]), "⚙️ cool beans");
-  assert.equal(windowLabel([]), "");
+test("one/zero Pi: plain data, no prescribed icons or formatting", () => {
+  assert.equal(summarize([pane]).text, "cool beans · working");
+  assert.deepEqual(summarize([]), {
+    count: 0,
+    unread: 0,
+    state: "",
+    name: "",
+    states: { blocked: 0, error: 0, compacting: 0, working: 0, done: 0, idle: 0 },
+    text: "",
+  });
 });
-test("several Pi panes: active Pi name plus others, with state counts", () => {
-  const active = {
+test("multiple panes: active name, priority, state counts and unread are separate", () => {
+  const active: PaneStatus = {
     ...pane,
     pane: "%2",
     name: "ship it",
     active: true,
-    record: { ...pane.record, state: "blocked" as const, unread: true },
+    record: { ...pane.record, state: "blocked", unread: true },
   };
-  assert.equal(windowLabel([pane, active]), "ship it + 1 other · 🙋 1 · ⚙️ 1 · 🔔 1");
-  assert.equal(
-    windowLabel([pane, active, { ...pane, pane: "%3" }]),
-    "ship it + 2 others · 🙋 1 · ⚙️ 2 · 🔔 1",
-  );
+  const summary = summarize([pane, active, { ...pane, pane: "%3" }]);
+  assert.equal(summary.text, "ship it + 2 others · blocked 1 · working 2 · unread 1");
+  assert.equal(summary.state, "blocked");
+  assert.equal(summary.name, "ship it");
+  assert.equal(summary.count, 3);
+  assert.equal(summary.unread, 1);
+  assert.equal(summary.states.working, 2);
 });
-test("shell-active window falls back to first Pi; duplicate panes not counted", () => {
-  assert.equal(windowLabel([pane, pane]), "⚙️ cool beans");
+test("shell-active window selects first Pi; linked panes count only once", () => {
+  assert.equal(summarize([pane, pane]).count, 1);
   assert.equal(
-    windowLabel([pane, { ...pane, pane: "%3", name: "another" }]),
-    "cool beans + 1 other · ⚙️ 2",
+    summarize([pane, { ...pane, pane: "%3", name: "another" }]).text,
+    "cool beans + 1 other · working 2",
   );
 });
 test("names cannot inject tmux formatting or terminal controls", () => {
   assert.equal(safeName("a\n#[fg=red]\x1bb\u202e"), "a ＃[fg=red] b");
   assert.equal(safeName("🚀".repeat(34)), "🚀".repeat(32) + "…");
-  assert.equal(windowLabel([{ ...pane, name: "" }]), "⚙️ Pi");
+  assert.equal(summarize([{ ...pane, name: "" }]).name, "Pi");
 });
 test("automatic ack recognizes keys/focus but ignores terminal replies", () => {
   for (const input of ["x", "\r", "\x1b[A", "\x1b[97;1u", "\x1b[I"])

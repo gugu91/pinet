@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { INITIAL, reduce, visibleState, shouldBell } from "./helpers.ts";
+import { INITIAL, reduce, visibleState, attentionChanged } from "./helpers.ts";
 test("compaction overlays an active run and returns to working, without completion bell", () => {
   const working = reduce(INITIAL, { type: "start" });
   const compacting = reduce(working, { type: "compact-start" });
@@ -11,7 +11,7 @@ test("compaction overlays an active run and returns to working, without completi
     aborted: false,
   });
   assert.equal(visibleState(complete), "working");
-  assert.equal(shouldBell(compacting, complete), false);
+  assert.equal(attentionChanged(compacting, complete), false);
 });
 test("manual compaction restores idle/done; failure becomes error; abort is not failure", () => {
   const done = reduce(reduce(INITIAL, { type: "start" }), { type: "settled" });
@@ -24,7 +24,7 @@ test("manual compaction restores idle/done; failure becomes error; abort is not 
     });
     assert.equal(visibleState(complete), prior.base);
     assert.equal(
-      shouldBell(compacting, complete),
+      attentionChanged(compacting, complete),
       false,
       "restored completion must not notify again",
     );

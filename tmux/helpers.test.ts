@@ -5,8 +5,7 @@ import {
   encode,
   parseRecord,
   reduce,
-  rollup,
-  shouldBell,
+  attentionChanged,
   visibleState,
   type PaneRecord,
 } from "./helpers.ts";
@@ -72,21 +71,21 @@ test("settlement behind a dialog preserves blocked state then reveals completion
   assert.equal(visibleState(activity), "done");
   assert.equal(activity.unread, true);
 });
-test("bells fire on attention transitions, not repeats, acknowledgements or cancellation", () => {
+test("attention generation changes on alerts, not repeats, acknowledgements or cancellation", () => {
   const working = reduce(INITIAL, { type: "start" });
   const blocked = reduce(working, { type: "prompt-start" });
   const done = reduce(working, { type: "settled" });
-  assert.equal(shouldBell(working, blocked), true);
-  assert.equal(shouldBell(working, done), true);
-  assert.equal(shouldBell(blocked, reduce(blocked, { type: "prompt-start" })), false);
-  assert.equal(shouldBell(done, reduce(done, { type: "settled" })), false);
+  assert.equal(attentionChanged(working, blocked), true);
+  assert.equal(attentionChanged(working, done), true);
+  assert.equal(attentionChanged(blocked, reduce(blocked, { type: "prompt-start" })), false);
+  assert.equal(attentionChanged(done, reduce(done, { type: "settled" })), false);
   const acked = reduce(done, { type: "ack" });
-  assert.equal(shouldBell(done, acked), false);
+  assert.equal(attentionChanged(done, acked), false);
   assert.deepEqual(reduce(acked, { type: "settled" }), acked);
   const aborted = reduce(reduce(working, { type: "outcome", outcome: "aborted" }), {
     type: "settled",
   });
-  assert.equal(shouldBell(working, aborted), false);
+  assert.equal(attentionChanged(working, aborted), false);
 });
 test("records roundtrip and invalid/untrusted option values are discarded", () => {
   assert.deepEqual(parseRecord(encode(record)), record);
@@ -100,25 +99,4 @@ test("records roundtrip and invalid/untrusted option values are discarded", () =
   ]) {
     assert.equal(parseRecord(value), null);
   }
-});
-test("rollup counts panes, deduplicates linked windows, and separates unread", () => {
-  const working = { pane: "%1", window: "@1", record };
-  assert.equal(rollup([]), "");
-  assert.equal(
-    rollup([
-      working,
-      working,
-      {
-        pane: "%2",
-        window: "@1",
-        record: { ...record, state: "blocked", unread: false },
-      },
-      {
-        pane: "%3",
-        window: "@2",
-        record: { ...record, state: "done", unread: true },
-      },
-    ]),
-    "Pi 🙋 1 · ⚙️ 1 · ✅ 1 · 🔔 1",
-  );
 });

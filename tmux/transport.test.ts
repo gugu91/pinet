@@ -79,7 +79,7 @@ test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async 
       "session",
       pane1,
     ]);
-    assert.equal(cli.stdout.trim(), "Pi 🙋 1 · ⚙️ 1 · 🔔 1");
+    assert.equal(cli.stdout.trim(), "Pi + 1 other · blocked 1 · working 1 · unread 1");
     assert.equal(cli.stderr, "");
     assert.equal(await tmux.publish(pane1, { ...record, state: "error", unread: true }), true);
     assert.equal((await tmux.snapshot(pane1, "window"))[0].record.state, "error");
@@ -88,6 +88,13 @@ test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async 
     const acknowledged = (await tmux.snapshot(pane1, "window"))[0].record;
     assert.equal(acknowledged.unread, false, "focus auto acknowledges");
     assert.equal(acknowledged.state, "error", "ack does not change state");
+    assert.equal(await tmux.run(["show-options", "-pqv", "-t", pane1, "@pi_unread"]), "0");
+    await tmux.publish(pane1, { ...record, state: "working", unread: true });
+    assert.equal(
+      await tmux.run(["show-options", "-pqv", "-t", pane1, "@pi_unread"]),
+      "0",
+      "a state refresh must not resurrect externally acknowledged attention",
+    );
     await tmux.publish(
       pane1,
       { ...record, state: "blocked", unread: true },
@@ -114,6 +121,14 @@ test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async 
     assert.equal((await tmux.snapshot(pane1, "window"))[0].record.owner, replacement.owner);
     await tmux.release(pane1, replacement.owner);
     assert.equal((await tmux.snapshot(pane1, "window")).length, 0);
+    for (const option of ["@pi_state", "@pi_name", "@pi_unread"])
+      assert.equal(await tmux.run(["show-options", "-pqv", "-t", pane1, option]), "");
+    await tmux.run(["set-hook", "-R", "-t", pane1, "pane-focus-in"]);
+    assert.equal(
+      await tmux.run(["show-options", "-pqv", "-t", pane1, "@pi_unread"]),
+      "",
+      "the focus hook must not create data on shell-only panes",
+    );
     await tmux.claim(pane1, { ...record, started: "ZmFrZQ==" });
     assert.equal((await tmux.snapshot(pane1, "window")).length, 0, "reject recycled PID");
     await tmux.claim(pane1, { ...record, pid: 2147483647 });

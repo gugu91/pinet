@@ -27,14 +27,6 @@ export const INITIAL: Activity = {
   unread: false,
   resumeUnread: false,
 };
-export const ICONS: Record<State, string> = {
-  blocked: "🙋",
-  error: "❌",
-  working: "⚙️",
-  compacting: "🗜️",
-  done: "✅",
-  idle: "💤",
-};
 export const ORDER: State[] = ["blocked", "error", "compacting", "working", "done", "idle"];
 interface CompactionNotice {
   phase?: string;
@@ -163,30 +155,12 @@ export function safeName(name: string): string {
   ].map((part) => part.segment);
   return graphemes.slice(0, 32).join("") + (graphemes.length > 32 ? "…" : "");
 }
-export function windowLabel(panes: PaneStatus[]): string {
-  const unique = [...new Map(panes.map((pane) => [pane.pane, pane])).values()];
-  if (!unique.length) return "";
-  const primary = unique.find((pane) => pane.active) ?? unique[0];
-  const name = safeName(primary.name || "Pi");
-  if (unique.length === 1)
-    return `${ICONS[primary.record.state]} ${name}${primary.record.unread ? " 🔔" : ""}`;
-  return `${name} + ${unique.length - 1} ${unique.length === 2 ? "other" : "others"} · ${rollup(unique).slice(3)}`;
-}
 export function isInteraction(data: string): boolean {
   if (!data || data.startsWith("\x1b]") || data.startsWith("\x1bP")) return false;
   // eslint-disable-next-line no-control-regex -- Filter terminal replies and focus-out, not actual user input.
   return data.replace(/\x1b\[[?=>\d;]*[cnRt]|\x1b\[O/g, "").length > 0;
 }
-export function rollup(panes: PaneStatus[]): string {
-  const unique = [...new Map(panes.map((pane) => [pane.pane, pane])).values()];
-  const counts = ORDER.map((state) => {
-    const count = unique.filter((pane) => pane.record.state === state).length;
-    return count ? `${ICONS[state]} ${count}` : "";
-  }).filter(Boolean);
-  const unread = unique.filter((pane) => pane.record.unread).length;
-  return counts.length ? `Pi ${counts.join(" · ")}${unread ? ` · 🔔 ${unread}` : ""}` : "";
-}
-export function shouldBell(before: Activity, after: Activity): boolean {
+export function attentionChanged(before: Activity, after: Activity): boolean {
   const state = visibleState(after);
   return (
     after.unread &&

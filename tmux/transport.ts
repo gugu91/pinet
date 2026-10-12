@@ -7,7 +7,13 @@ export const OWNER = "@pi_rollup_owner";
 export const NAME = "@pi_rollup_name";
 export const ATTENTION = "@pi_rollup_attention";
 export const ACK = "@pi_rollup_ack";
-export const FOCUS_HOOK = `set-option -p -F ${ACK} '#{${ATTENTION}}'`;
+export const STATE = "@pi_state";
+export const DISPLAY_NAME = "@pi_name";
+export const UNREAD = "@pi_unread";
+export const FOCUS_HOOK = `if-shell -F '#{!=:#{${OWNER}},}' "set-option -p -F ${ACK} '#{${ATTENTION}}' ; set-option -p ${UNREAD} 0"`;
+export function quoteTmuxValue(text: string): string {
+  return JSON.stringify(text).replaceAll("$", "\\$");
+}
 export interface Metadata {
   name: string;
   attention: string;
@@ -66,6 +72,27 @@ export class Tmux {
       pane,
       ATTENTION,
       metadata.attention,
+      ";",
+      "set-option",
+      "-p",
+      "-t",
+      pane,
+      STATE,
+      record.state,
+      ";",
+      "set-option",
+      "-p",
+      "-t",
+      pane,
+      DISPLAY_NAME,
+      metadata.name,
+      ";",
+      "set-option",
+      "-p",
+      "-t",
+      pane,
+      UNREAD,
+      record.unread ? "1" : "0",
     ]);
   }
   async publish(
@@ -79,7 +106,7 @@ export class Tmux {
       "-t",
       pane,
       `#{==:#{${OWNER}},${record.owner}}`,
-      `set-option -p -t ${pane} ${OPTION} '${encode(record)}' ; set-option -p -t ${pane} ${NAME} '${Buffer.from(metadata.name).toString("base64")}' ; set-option -p -t ${pane} ${ATTENTION} '${metadata.attention}' ; display-message -p published`,
+      `set-option -p -t ${pane} ${OPTION} '${encode(record)}' ; set-option -p -t ${pane} ${NAME} '${Buffer.from(metadata.name).toString("base64")}' ; set-option -p -t ${pane} ${ATTENTION} '${metadata.attention}' ; set-option -p -t ${pane} ${STATE} ${record.state} ; set-option -p -t ${pane} ${DISPLAY_NAME} ${quoteTmuxValue(metadata.name)} ; set-option -p -F -t ${pane} ${UNREAD} '${record.unread ? `#{?#{==:#{${ACK}},${metadata.attention}},0,1}` : "0"}' ; display-message -p published`,
     ]);
     return result === "published";
   }
@@ -90,7 +117,7 @@ export class Tmux {
       "-t",
       pane,
       `#{==:#{${OWNER}},${owner}}`,
-      [OPTION, OWNER, NAME, ATTENTION, ACK]
+      [OPTION, OWNER, NAME, ATTENTION, ACK, STATE, DISPLAY_NAME, UNREAD]
         .map((option) => `set-option -pu -t ${pane} ${option}`)
         .join(" ; "),
     ]);

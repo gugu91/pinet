@@ -1,6 +1,32 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
+    "@pinet/tmux#lint": {
+      "inputs": ["**/*.ts", "../tmux-plugin/**/*.ts", "../.oxlintrc.json"],
+      "outputs": []
+    },
+    "@pinet/tmux#typecheck": {
+      "inputs": [
+        "**/*.ts",
+        "../tmux-plugin/**/*.ts",
+        "tsconfig.json",
+        "../tsconfig.json",
+        "../types/**/*.d.ts"
+      ],
+      "outputs": []
+    },
+    "@pinet/tmux#test": {
+      "inputs": [
+        "**/*.ts",
+        "**/*.mjs",
+        "../tmux-plugin/**",
+        "../pinet.tmux",
+        "../vitest.config.ts",
+        "../pnpm-lock.yaml"
+      ],
+      "outputs": [],
+      "passThroughEnv": ["TMPDIR"]
+    },
     "build": {
       "dependsOn": ["^build"],
       "inputs": [

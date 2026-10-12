@@ -1,35 +1,35 @@
 import { Tmux } from "./transport.ts";
-import { rollup, windowLabel, safeName } from "./helpers.ts";
+import { summarize } from "./query.ts";
 
-// Run with Node 24+. Explicit socket + target also work when invoked by tmux's status job environment.
-const [socket, scope, target, mode] = process.argv.slice(2);
+// Explicit socket/target avoid accidentally querying another attached client's session.
+const [socket, scope, target, mode = "summary"] = process.argv.slice(2);
 if (
   !socket ||
   (scope !== "session" && scope !== "window") ||
   !target ||
   !/^[$@%]\d+$/.test(target) ||
-  (mode && mode !== "json")
+  !["json", "summary", "state", "name", "unread", "count", "aggregate"].includes(mode)
 ) {
-  console.error("Usage: node status.ts SOCKET session|window TARGET [json]");
+  console.error(
+    "Usage: node status.ts SOCKET session|window TARGET [json|aggregate|summary|state|name|unread|count]",
+  );
   process.exitCode = 2;
 } else {
   try {
-    const tmux = new Tmux(socket);
-    const panes = await tmux.snapshot(target, scope);
-    const fallback =
-      scope === "window" && !panes.length && mode !== "json"
-        ? safeName(await tmux.run(["display-message", "-p", "-t", target, "#{window_name}"]))
-        : "";
+    const panes = await new Tmux(socket).snapshot(target, scope);
+    const summary = summarize(panes);
     console.log(
       mode === "json"
-        ? JSON.stringify(panes, null, 2)
-        : scope === "window"
-          ? windowLabel(panes) || fallback
-          : rollup(panes),
+        ? JSON.stringify(panes)
+        : mode === "aggregate"
+          ? JSON.stringify(summary)
+          : mode === "summary"
+            ? summary.text
+            : summary[mode as "state" | "name" | "unread" | "count"],
     );
   } catch (error) {
-    // Never put process failures in a status line. Explicit JSON inspection reports failures to stderr.
-    if (mode === "json") console.error(error instanceof Error ? error.message : String(error));
+    if (mode === "json" || mode === "aggregate")
+      console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
 }

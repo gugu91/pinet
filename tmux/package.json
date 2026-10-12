@@ -2,7 +2,7 @@
   "name": "@pinet/tmux",
   "version": "0.2.23",
   "type": "module",
-  "description": "Optional Pi session state, attention and compaction labels for tmux",
+  "description": "Optional Pi pane state, attention and compaction publisher for tmux",
   "author": "Will Porcellini <5994936+gugu91@users.noreply.github.com>",
   "license": "MIT",
   "repository": {
@@ -41,7 +41,7 @@
   "scripts": {
     "build": "node ../scripts/build-package.mjs",
     "prepack": "pnpm run build",
-    "lint": "oxlint .",
+    "lint": "cd .. && oxlint tmux tmux-plugin",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../vitest.config.ts *.test.ts && node --test index.test.mjs"
   },

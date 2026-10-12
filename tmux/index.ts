@@ -3,12 +3,10 @@ import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   INITIAL,
-  ICONS,
   reduce,
-  windowLabel,
   safeName,
   isInteraction,
-  shouldBell,
+  attentionChanged,
   visibleState,
   compactionNoticeMatches,
   type Outcome,
@@ -17,15 +15,13 @@ import {
   type PaneRecord,
 } from "./helpers.ts";
 import { processIdentity, Tmux } from "./transport.ts";
-import { setupPaths, preview, install, uninstall, installation, snapshot } from "./setup.ts";
-import { CLIENT_FORMAT, parseClients, relay } from "./rex.ts";
 
+/** State publisher only: presentation and tmux integration belong to the companion plugin. */
 export default function tmuxPi(pi: ExtensionAPI) {
   const tmux = new Tmux();
   const pane = process.env.TMUX_PANE;
   let record: PaneRecord | undefined;
   let activity: Activity = { ...INITIAL };
-  let bell = false;
   let queue = Promise.resolve();
   let warned = false;
   let name = "Pi";
@@ -56,18 +52,18 @@ export default function tmuxPi(pi: ExtensionAPI) {
         name === nextName
       )
         return;
-      const alert = event.type !== "unread" && shouldBell(before, activity);
-      if (alert || event.type === "unread") attention = randomUUID();
+      if (
+        (event.type !== "unread" && attentionChanged(before, activity)) ||
+        event.type === "unread"
+      )
+        attention = randomUUID();
       const next = { ...record, state, unread: activity.unread };
       if (!(await tmux.publish(pane, next, { name: nextName, attention }))) {
         record = undefined;
-        ctx.ui.setStatus("tmux-pi", undefined);
         return;
       }
       record = next;
       name = nextName;
-      ctx.ui.setStatus("tmux-pi", `${ICONS[state]}${activity.unread ? " 🔔" : ""}`);
-      if (bell && alert) process.stdout.write("\x07");
     }, ctx);
   }
 
@@ -92,16 +88,14 @@ export default function tmuxPi(pi: ExtensionAPI) {
       name = safeName(pi.getSessionName() || basename(ctx.cwd) || "Pi");
       attention = randomUUID();
       await tmux.claim(pane, record, { name, attention });
-      ctx.ui.setStatus("tmux-pi", ICONS.idle);
       unsubscribeCompaction?.();
       unsubscribeCompaction = pi.events?.on("pinet:compaction-start", (data) => {
         if (
           data &&
           typeof data === "object" &&
           compactionNoticeMatches(data, ctx.sessionManager.getSessionFile())
-        ) {
+        )
           void transition({ type: "compact-start" }, ctx);
-        }
       });
       unsubscribeInput?.();
       unsubscribeInput = ctx.ui.onTerminalInput((data) => {
@@ -136,122 +130,31 @@ export default function tmuxPi(pi: ExtensionAPI) {
       unsubscribeCompaction = undefined;
       const old = record;
       record = undefined;
-      ctx.ui.setStatus("tmux-pi", undefined);
       if (old && pane) await tmux.release(pane, old.owner);
     }, ctx),
   );
 
   pi.registerCommand("tmux", {
-    description:
-      "Pi window labels: status, preview/setup, doctor/uninstall, rex on/off, bell on/off",
+    description: "Inspect published Pi pane state, or acknowledge it (no UI/config setup)",
     handler: async (args, ctx) => {
       await queue;
       if (!record || !pane) {
         ctx.ui.notify("/tmux needs interactive Pi inside tmux (Pi 1.1+).", "warning");
         return;
       }
-      const paths = setupPaths();
-      try {
-        switch (args.trim()) {
-          case "preview":
-          case "setup": {
-            const plan = await preview(tmux, paths);
-            const detail = `${paths.config}\n\n${plan.block}\n${plan.include}`;
-            if (args.trim() === "preview") ctx.ui.notify(detail, "info");
-            else if (
-              await ctx.ui.confirm(
-                "Set up @pinet/tmux?",
-                `${detail}\nExisting config will be backed up. No Rex forwarding is enabled.`,
-              )
-            ) {
-              await install(tmux, paths, plan);
-              ctx.ui.notify(
-                "@pinet/tmux setup completed. /tmux doctor checks the installed options.",
-                "info",
-              );
-            }
-            return;
-          }
-          case "uninstall":
-            if (
-              await ctx.ui.confirm(
-                "Remove @pinet/tmux integration?",
-                "Remove only the managed include and restore unchanged managed options. Other configuration is preserved.",
-              )
-            ) {
-              await uninstall(tmux, paths);
-              ctx.ui.notify(
-                "Managed tmux integration removed. Remove the Pi package separately with pi remove npm:@pinet/tmux.",
-                "info",
-              );
-            }
-            return;
-          case "doctor": {
-            const saved = await installation(paths);
-            const current = await snapshot(tmux);
-            const drift = saved
-              ? Object.keys(saved.applied).filter(
-                  (key) =>
-                    current[key as keyof typeof current] !==
-                    saved.applied[key as keyof typeof current],
-                )
-              : [];
-            ctx.ui.notify(
-              `${await tmux.run(["-V"])} · Pi 1.1+ required\nPane: ${pane} · managed setup: ${saved ? "installed" : "not installed"}\n${drift.length ? `Changed options (preserved on uninstall): ${drift.join(", ")}` : "No managed option drift"}\nRex forwarding is experimental and per-client opt-in. Desktop banners are unverified; no automatic notifications are sent.`,
-              "info",
-            );
-            return;
-          }
-          case "rex on":
-          case "rex off": {
-            const session = await tmux.run(["display-message", "-p", "-t", pane, "#{session_id}"]);
-            const clients = parseClients(
-              await tmux.run(["list-clients", "-F", CLIENT_FORMAT]),
-            ).filter((client) => client.session === session);
-            if (clients.length !== 1)
-              throw new Error(
-                "Rex opt-in needs exactly one attached terminal client for this session; select a client explicitly with rex-cli.js instead",
-              );
-            ctx.ui.notify(
-              await relay(tmux, clients[0].pid, args.trim() === "rex on" ? "on" : "off"),
-              "info",
-            );
-            return;
-          }
-          case "bell on":
-            bell = true;
-            break;
-          case "bell off":
-            bell = false;
-            break;
-          case "ack":
-            await transition({ type: "ack" }, ctx);
-            break;
-          case "":
-          case "status":
-            break;
-          default:
-            ctx.ui.notify(
-              "Usage: /tmux [status | preview | setup | doctor | uninstall | rex on/off | bell on/off | ack]",
-              "warning",
-            );
-            return;
-        }
+      if (args.trim() === "ack") await transition({ type: "ack" }, ctx);
+      else if (args.trim() && args.trim() !== "status") {
         ctx.ui.notify(
-          `${windowLabel(await tmux.snapshot(pane, "window")) || "No live Pi panes"}\nBell: ${bell ? "on" : "off"} · /unread marks attention silently`,
-          "info",
-        );
-      } catch (error) {
-        ctx.ui.notify(
-          `@pinet/tmux: ${error instanceof Error ? error.message : String(error)}`,
+          "Usage: /tmux [status | ack]. Configure presentation with the companion tmux plugin.",
           "warning",
         );
+        return;
       }
+      ctx.ui.notify(JSON.stringify(await tmux.snapshot(pane, "window"), null, 2), "info");
     },
   });
-
   pi.registerCommand("unread", {
-    description: "Mark this Pi pane unread without changing its state or ringing a bell",
+    description: "Mark this Pi pane unread without changing its execution state",
     handler: async (args, ctx) => {
       await queue;
       if (args.trim()) {
@@ -263,38 +166,6 @@ export default function tmuxPi(pi: ExtensionAPI) {
         return;
       }
       await transition({ type: "unread" }, ctx);
-    },
-  });
-
-  pi.registerCommand("tmux-pi", {
-    description: "Preview this window's Pi names/states; bell on/off (automatic acknowledgement)",
-    handler: async (args, ctx) => {
-      await queue;
-      if (!record || !pane) {
-        ctx.ui.notify("tmux-pi needs interactive Pi inside tmux. Reload to activate.", "warning");
-        return;
-      }
-      switch (args.trim()) {
-        case "ack":
-          await transition({ type: "ack" }, ctx);
-          break;
-        case "bell on":
-          bell = true;
-          break;
-        case "bell off":
-          bell = false;
-          break;
-        case "":
-          break;
-        default:
-          ctx.ui.notify("Usage: /tmux-pi [ack | bell on | bell off]", "warning");
-          return;
-      }
-      const panes = await tmux.snapshot(pane, "window");
-      ctx.ui.notify(
-        `${windowLabel(panes) || "No live Pi panes"}\nBell: ${bell ? "on" : "off"} · 🙋 needs input · ❌ error · ⚙️ working · 🗜️ compacting · ✅ done · 💤 idle · 🔔 unread panes`,
-        "info",
-      );
     },
   });
 }
