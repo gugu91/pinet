@@ -72,6 +72,18 @@ The selected entry shows its destination hostname and URL. Only HTTP(S) URLs wit
 
 Links persist in the same SQLite database as goals but **survive goal completion, `/goal close`, `/goal clear`, and session restart**. Remove them explicitly from the picker. They are scoped to one session, not aggregated across agents or projects. The optional goal name is a snapshot from the most recent attachment.
 
+### Terminal previews
+
+`/link` lists all saved links; `/pr` filters pull requests. Both show the destination before you explicitly open it.
+
+![Saved links picker showing an issue and a pull request](https://raw.githubusercontent.com/gugu91/pinet/main/agent-goal/images/saved-links.png)
+
+![Pull-request picker showing PR 1070](https://raw.githubusercontent.com/gugu91/pinet/main/agent-goal/images/pull-requests.png)
+
+The `/goal` overlay includes an `l` shortcut to its associated links. This development capture shows a historical blocked goal, not the current release status.
+
+![Goal overlay with checkpoints and the links shortcut](https://raw.githubusercontent.com/gugu91/pinet/main/agent-goal/images/goal-links-shortcut.png)
+
 ## Optional continuation limits
 
 New goals are unlimited by default. Turns and runtime limits are opt-in and only decide whether a future continuation may start; they never interrupt in-flight work. Existing usage is preserved when limits change or are disabled. Configured environment values remain hard ceilings/defaults when present:

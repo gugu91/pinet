@@ -43,6 +43,7 @@ export function isInvalidChainEntry(entry: string): boolean {
 
 export interface ResolvedConfig {
   enabled: boolean;
+  diagnostics: string[];
   /** Ordered fallback chain; empty when no global compaction model is configured. */
   compactionModels: string[];
   /** Dedicated summarizer budget; omitted to retain Pi's effective compaction reserve. */
@@ -58,9 +59,6 @@ type SettingsJsonPrimitive = string | number | boolean | null;
 type SettingsJsonValue = SettingsJsonPrimitive | SettingsJsonObject | SettingsJsonValue[];
 type SettingsJsonObject = { [key: string]: SettingsJsonValue };
 
-/** loadConfig runs on every settled turn; each distinct configuration problem is reported once. */
-const reportedDiagnostics = new Set<string>();
-
 /**
  * Normalize a selector or chain into the ordered entries the extension will try.
  *
@@ -70,7 +68,10 @@ const reportedDiagnostics = new Set<string>();
  * selector, which makes the compaction fail closed naming it, instead of quietly
  * skipping to the next entry or to another chain. `undefined`/`null` mean unset.
  */
-function selectorChain(value: SettingsJsonValue | undefined): string[] | undefined {
+function selectorChain(
+  value: SettingsJsonValue | undefined,
+  diagnostics: string[],
+): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   const entries = Array.isArray(value) ? value : [value];
   const chain = entries
@@ -82,15 +83,12 @@ function selectorChain(value: SettingsJsonValue | undefined): string[] | undefin
     .filter((entry, index, all) => all.indexOf(entry) === index);
   if (chain.length > MAX_CHAIN_LENGTH) {
     const message = `compactionModel lists ${chain.length} selectors; only the first ${MAX_CHAIN_LENGTH} are used`;
-    if (!reportedDiagnostics.has(message)) {
-      reportedDiagnostics.add(message);
-      console.error(`[${SETTINGS_KEY}] ${message}`);
-    }
+    if (!diagnostics.includes(message)) diagnostics.push(message);
   }
   return chain.slice(0, MAX_CHAIN_LENGTH);
 }
 
-function parseSettings(path: string): ModelAwareCompactionConfig | null {
+function parseSettings(path: string, diagnostics: string[]): ModelAwareCompactionConfig | null {
   if (!fs.existsSync(path)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8")) as SettingsJsonValue;
@@ -99,8 +97,8 @@ function parseSettings(path: string): ModelAwareCompactionConfig | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return value as ModelAwareCompactionConfig;
   } catch (error) {
-    console.error(
-      `[${SETTINGS_KEY}] Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    diagnostics.push(
+      `Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
     );
     return null;
   }
@@ -110,13 +108,14 @@ export function resolveConfig(
   raw?: ModelAwareCompactionConfig | null,
   sourcePath: string | null = null,
 ): ResolvedConfig {
+  const diagnostics: string[] = [];
   const configured = Array.isArray(raw?.rules)
     ? raw.rules.flatMap((rule) => {
         const model = typeof rule.model === "string" ? rule.model.trim() : "";
         const tokens = rule.activeContextTokens;
         // A rule chain that is present — even empty or malformed — overrides the
         // global chain for its models; only an absent key inherits it.
-        const compactionModels = selectorChain(rule.compactionModel);
+        const compactionModels = selectorChain(rule.compactionModel, diagnostics);
         return model && typeof tokens === "number" && Number.isInteger(tokens) && tokens > 0
           ? [
               {
@@ -142,7 +141,8 @@ export function resolveConfig(
     summaryReserveTokens >= 2;
   return {
     enabled: raw?.enabled === true,
-    compactionModels: selectorChain(raw?.compactionModel) ?? [],
+    diagnostics,
+    compactionModels: selectorChain(raw?.compactionModel, diagnostics) ?? [],
     ...(validSummaryReserve ? { summaryReserveTokens } : {}),
     ...(hasSummaryReserve && !validSummaryReserve
       ? { configError: "summaryReserveTokens must be a safe integer of at least 2" }
@@ -160,9 +160,14 @@ export function loadConfig(
 ): ResolvedConfig {
   const projectPath = join(cwd, ".pi", "settings.json");
   const globalPath = join(agentDir, "settings.json");
-  const project = parseSettings(projectPath);
-  if (project) return resolveConfig(project, `${projectPath}#${SETTINGS_KEY}`);
-  const global = parseSettings(globalPath);
-  if (global) return resolveConfig(global, `${globalPath}#${SETTINGS_KEY}`);
-  return resolveConfig();
+  const diagnostics: string[] = [];
+  const project = parseSettings(projectPath, diagnostics);
+  const global = project ? null : parseSettings(globalPath, diagnostics);
+  const config = project
+    ? resolveConfig(project, `${projectPath}#${SETTINGS_KEY}`)
+    : global
+      ? resolveConfig(global, `${globalPath}#${SETTINGS_KEY}`)
+      : resolveConfig();
+  config.diagnostics.unshift(...diagnostics);
+  return config;
 }

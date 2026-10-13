@@ -189,6 +189,18 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   let triggeredModelKey: string | null = null;
   let runtimeSelector: string | undefined;
   let sessionDisabled = false;
+  const reportedDiagnostics = new Set<string>();
+
+  function loadContextConfig(ctx: ExtensionContext) {
+    const config = loadConfig(ctx.cwd);
+    for (const diagnostic of config.diagnostics) {
+      if (reportedDiagnostics.has(diagnostic)) continue;
+      reportedDiagnostics.add(diagnostic);
+      if (ctx.hasUI) ctx.ui.notify(`${LOG_PREFIX} ${diagnostic}`, "warning");
+      else console.error(`${LOG_PREFIX} ${diagnostic}`);
+    }
+    return config;
+  }
 
   const rearm = () => {
     triggeredModelKey = null;
@@ -206,7 +218,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event: SessionBeforeCompactEvent, rawCtx) => {
     const ctx = rawCtx as CompatibleContext;
     const failClosed = (message: string) => {
-      console.error(`${LOG_PREFIX} ${message}`);
+      if (!ctx.hasUI) console.error(`${LOG_PREFIX} ${message}`);
       if (ctx.hasUI && !event.signal.aborted)
         ctx.ui.notify(`Compaction cancelled: ${message}`, "error");
       return { cancel: true as const };
@@ -214,7 +226,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     let ownsSummarization = false;
     try {
       if (sessionDisabled) return;
-      const config = loadConfig(ctx.cwd);
+      const config = loadContextConfig(ctx);
       // A session override is exactly one model; otherwise the configured chain is tried in order.
       const chain = runtimeSelector
         ? [runtimeSelector]
@@ -263,8 +275,8 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         if (attempt.kind === "compaction") {
           if (failures.length > 0) {
             const report = `fell back to ${selectorText} after ${failures.join("; ")}`;
-            console.error(`${LOG_PREFIX} ${report}`);
-            if (config.debug && ctx.hasUI) ctx.ui.notify(`Compaction ${report}`, "info");
+            if (!ctx.hasUI) console.error(`${LOG_PREFIX} ${report}`);
+            if (ctx.hasUI) ctx.ui.notify(`Compaction ${report}`, "info");
           }
           return { compaction: attempt.result };
         }
@@ -286,7 +298,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
   pi.on("agent_settled", (_event, rawCtx) => {
     if (sessionDisabled) return;
     const ctx = rawCtx as CompatibleContext;
-    const config = loadConfig(ctx.cwd);
+    const config = loadContextConfig(ctx);
     const chain = runtimeSelector
       ? [runtimeSelector]
       : chainForModel(config.rules, modelKey(ctx.model), config.compactionModels);
@@ -316,7 +328,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     triggeredModelKey = decision.modelKey;
     const details = `model=${decision.modelKey} tokens=${usage?.tokens ?? "unknown"} limit=${decision.limit}`;
     if (config.debug) {
-      console.error(`${LOG_PREFIX} triggered ${details}`);
+      if (!ctx.hasUI) console.error(`${LOG_PREFIX} triggered ${details}`);
       if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction started (${details})`, "info");
     }
 
@@ -325,7 +337,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       onComplete: () => {
         inFlight = false;
         if (config.debug) {
-          console.error(`${LOG_PREFIX} completed ${details}`);
+          if (!ctx.hasUI) console.error(`${LOG_PREFIX} completed ${details}`);
           if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction completed (${details})`, "info");
         }
       },
@@ -334,9 +346,8 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         if (error.message === "Already compacted") return;
 
         triggeredModelKey = null;
-        console.error(`${LOG_PREFIX} failed ${details}: ${error.message}`);
-        if (config.debug && ctx.hasUI)
-          ctx.ui.notify(`Model-aware compaction failed: ${error.message}`, "error");
+        if (!ctx.hasUI) console.error(`${LOG_PREFIX} failed ${details}: ${error.message}`);
+        if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction failed: ${error.message}`, "error");
       },
     });
   });
@@ -345,7 +356,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     description: "Choose a compaction model for this session (optional provider/model argument)",
     handler: async (args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
-      const config = loadConfig(ctx.cwd);
+      const config = loadContextConfig(ctx);
       const configuredChain = chainForModel(
         config.rules,
         modelKey(ctx.model),
@@ -453,7 +464,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     description: "Show model-aware proactive compaction status",
     handler: async (_args, rawCtx) => {
       const ctx = rawCtx as CompatibleContext;
-      const config = loadConfig(ctx.cwd);
+      const config = loadContextConfig(ctx);
       const key = modelKey(ctx.model);
       const usage = ctx.getContextUsage?.();
       const decision = decideCompaction({
