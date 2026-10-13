@@ -1,46 +1,46 @@
 # Next release preparation
 
-Tracking: #1078, requested after merging #1070 / #1069.
-
-Status: maintainer approved preparing **v0.2.24** across all seven packages and publishing after independent review and CI pass. Versions are aligned in the preparation PR. Publication is still pending; the protected environment approval cannot be bypassed. The proposed resume integration is explicitly deferred until after this release.
+Tracking: #1085. Maintainer approved preparing a **v0.2.25 PR only**, including coordinated version bumps for all seven public `@pinet/*` packages and the private root package. **No tagging or publishing is authorized.**
 
 ## Candidate contents
 
-Baseline: `v0.2.23`. Inspected `main` commit: `da823db`.
+Baseline: published npm `0.2.24`. All seven packages reported `0.2.24` as their latest version during preparation. The local tag list stops at `v0.2.23`, so that tag is not the release baseline.
 
-- #1070: persistent session links, `attach_link`, themed `/link` and `/pr`, `/goal` links shortcut, and the compact unseen-link footer. Includes legacy Pi context support, small-pane safeguards, and durable seen state.
-- #1066: durationless goal snooze defaults to five minutes.
-- #1063: pinned split-turn prompt updated to Pi 0.87.1 (verified unchanged through 0.99.1); corrected previous-summary and virtual-model matching documentation.
+Inspected `main` commit: `49a8962`, immediately after #1083 merged. The only functional change after the v0.2.24 preparation commit (`d3c30cb`) is:
 
-See [v0.2.24 release notes](../CHANGELOG.md#0224---2026-10-09) for user-facing notes and [agent-goal](../agent-goal/README.md#saved-links-and-pull-requests) for commands, persistence, and safety. The root and package READMEs include three cropped terminal screenshots. PNG copies contain no ancillary metadata; desktop originals are not committed. Visible GitHub handles and issue/PR URLs refer to this public repository. No unseen-count screenshot is claimed: the supplied captures show the pickers and goal overlay.
+- #1083: prevent compaction and Slack scope diagnostics from corrupting Pi's interactive editor. Compaction debug, failure, fallback, and config messages use UI notifications when UI is available, preserving headless stderr output. Configuration diagnostics are returned to wiring and deduplicated per extension instance. Slack scope warnings no longer emit through both UI and stderr.
+
+See [v0.2.25 release notes](../CHANGELOG.md#0225---2026-10-13). The five other packages ship unchanged functionally at the aligned version. The previously deferred resume integration remains outside this candidate.
 
 ## Compatibility and upgrade
 
-- No user configuration change is required for the built-in goal storage. SQLite creates the session-link table and adds nullable seen-state data automatically. Links remain independent of goal deletion; no manual database reset is needed.
-- Third-party `GoalStorage` adapters must add the four link methods documented in the package README. The maintainer selected v0.2.24 with this adapter migration documented; custom adapter users must update before upgrading.
-- Attachments are session-scoped. Reattach links in another session if needed; clearing or completing a goal does not remove them.
-- The link picker supports legacy Pi contexts. Selected-model compaction on Pi 0.85.x/0.86.x uses the newer pinned 0.87.1 split-turn wording.
-- After publication, update the installed `@pinet/agent-goal` package and reload Pi. Development users must replace any local source override with the npm package entry when returning to published builds; avoid loading both copies.
+- No configuration or database migration is required for this patch. Debug mode may remain enabled.
+- Failure and fallback diagnostics remain visible even when compaction debug mode is off. Headless logging is retained; supported RPC notifications use the UI route.
+- After a separately approved publication, update installed packages and reload or restart Pi. Preparing or merging the release PR does not update running sessions or npm installations.
+- Existing v0.2.24 custom `GoalStorage` adapter requirements remain unchanged; see its changelog entry for that earlier migration.
 
-## Preparation evidence
+## Readiness evidence
 
-On the documentation worktree based on `da823db`:
+On the preparation worktree based on `49a8962`:
 
-- Frozen-lockfile install and full `pnpm prepush` (lint, typecheck, tests) passed. The first run hit two pre-existing wall-clock retry assertions in `agent-goal/runtime.test.ts` off by 1 ms; an unchanged rerun passed all 160 goal tests. Release CI must still pass independently.
-- `pnpm publish:npm` passed the full seven-package build, declaration, metadata, and npm dry-run checks at the unchanged `0.2.23` version. This is artifact validation only: it neither establishes that this version is publishable again nor approves a real publish.
-- All three cropped PNGs contain only `IHDR`, `IDAT`, and `IEND` chunks: no text, EXIF, location, or other ancillary metadata. Their visible contents were checked before upload. Package README images use absolute GitHub raw URLs so npm renders them after this documentation PR merges; the images are not added to the npm tarball.
+- `pnpm install --frozen-lockfile` and full `pnpm prepush` (lint, typecheck, tests) passed.
+- `pnpm publish:npm` passed builds, metadata, public declaration checks, and npm dry-runs for all seven packages at v0.2.25. Original dependency specifiers were restored; no lockfile change was needed.
+- A separate read-only npm availability check found v0.2.25 unpublished for all seven packages. This is a point-in-time result, not a reservation; the protected real-publish workflow must check again.
+
+Independent review and CI are recorded in the release PR. A local dry-run validates artifacts only and publishes nothing.
 
 ## Release gates
 
-Follow [the npm publish runbook](npm-publish.md), which is authoritative for workflow inputs, Trusted Publishing, and recovery.
+Follow [the npm publish runbook](npm-publish.md), which is authoritative for workflow inputs, Trusted Publishing, and partial-release recovery.
 
-- [x] Maintainer chose v0.2.24 and approved the coordinated seven-package scope. All seven public `@pinet/*` packages ship together, including the five with no functional changes in this candidate; the private root package is aligned too.
-- [ ] Refresh the candidate inventory against the latest `main`, including any additional merged PRs.
-- [x] Added version bumps to PR #1080, converted Unreleased to v0.2.24, and updated the root README’s release wording. Actual publication remains pending.
-- [ ] Confirm `pnpm install --frozen-lockfile`, lint, typecheck, tests, builds, and full-set `pnpm publish:npm` dry-run readiness. Dry-run may rewrite local dependency specifiers: inspect the working tree before committing.
-- [ ] Obtain independent review and maintainer approval; merge the release-prep PR.
-- [ ] Run the GitHub npm readiness workflow with `dry_run=true` on the exact intended `main` commit. Local or earlier-commit checks do not replace this gate.
-- [ ] With explicit publish approval, use the protected workflow. Manual real publishing requires `release_approval=publish all`; alternatively, an approved `vX.Y.Z` tag must point to the current `main` tip. Both require the `npm-publish` environment approval and configured Trusted Publishers.
-- [ ] Verify all seven packages exist on npm at the selected version, publish the matching release notes, and smoke-test `/link`, `/pr`, explicit browser opening, and unseen-count acknowledgement from the installed npm artifact.
+- [x] Maintainer approved preparing v0.2.25 across the full seven-package set, without tagging or publishing.
+- [x] Inventory refreshed against `main` at `49a8962`; v0.2.24 is already on npm.
+- [x] Package and private root versions aligned to v0.2.25; changelog added.
+- [x] Confirm frozen-lockfile install, full lint/typecheck/tests, build/declaration checks, and full-set `pnpm publish:npm` dry-run. Confirm the dry-run restores local dependency specifiers.
+- [ ] Obtain independent review and green release-PR CI; merge only when requested.
+- [ ] Refresh the inventory if additional changes land on `main` before release.
+- [ ] After the release PR merges, run the GitHub npm readiness workflow with `dry_run=true` on the exact intended `main` commit. Checks on another commit do not replace this gate.
+- [ ] Obtain separate explicit maintainer approval to tag or publish. A tag-triggered release must point at the current `main` tip; a manual real publish requires `release_approval=publish all`. Both require the protected `npm-publish` environment approval and configured npm Trusted Publishers.
+- [ ] After publication, verify all seven packages at v0.2.25 on npm and smoke-test installed artifacts, including compaction with debug enabled.
 
-A green dry-run proves packaging readiness, not publication. If any real package publish fails after another succeeds, follow the runbook’s full-set patch recovery procedure rather than treating the partial set as a completed release.
+A green dry-run proves packaging readiness, not publication. If a real publish partially succeeds, prepare a new approved patch version for the full set rather than retrying already-published versions.
