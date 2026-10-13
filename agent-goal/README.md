@@ -4,6 +4,8 @@ A standalone Pi extension that keeps one agent session working toward one durabl
 
 The worker runs normally. Every settled active-goal run is independently evaluated as `continue`, `complete`, or `blocked`. A continuation starts only while the goal remains active, unsnoozed, and within any operator-enabled limits.
 
+Internal goal prompts use Pi hidden custom messages (`display: false`), not user messages. Automatic continuation also waits while the user has an editor draft or queued input; it never clears or restores editor text. Explicit `/goal` status and list output remain visible.
+
 ## Install
 
 ```bash

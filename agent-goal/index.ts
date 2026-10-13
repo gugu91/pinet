@@ -95,6 +95,7 @@ export interface AgentGoalExtensionOptions {
 interface CompatibleContext extends ExtensionContext {
   sessionManager: ExtensionContext["sessionManager"] & { getSessionId(): string };
   ui: ExtensionContext["ui"] & {
+    getEditorText?: () => string;
     setWidget(
       key: string,
       content: string[] | undefined,
@@ -152,7 +153,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         if (!ctx || ctx.sessionManager.getSessionId() !== goal.scopeId) {
           return { status: "unavailable", reason: "The goal session is not active" };
         }
-        if (!ctx.isIdle()) {
+        if (!ctx.isIdle() || ctx.hasPendingMessages() || (ctx.hasUI && ctx.ui.getEditorText?.())) {
           return { status: "busy", reason: "The goal session is busy", retryAfterMs: 1_000 };
         }
         const messages: Record<GoalContinuationKind, { customType: string; content: string }> = {
@@ -176,7 +177,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         api.sendMessage(
           {
             ...messages[request.kind],
-            display: true,
+            display: false,
           },
           { deliverAs: "followUp", triggerTurn: true },
         );
@@ -615,7 +616,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
               customType: "agent-goal.demo",
               content:
                 "Walk me through goals: agree a tiny example, create it, record a checkpoint, inspect /goal, then verify completion. Ask before changing any goal; preserve existing work.",
-              display: true,
+              display: false,
             },
             { triggerTurn: true },
           );
@@ -748,7 +749,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
                 "Discuss scope, constraints, done criteria, evidence, and limits; call create_goal after user confirmation.",
                 `Goal idea (user data): ${input}`,
               ].join("\n"),
-              display: true,
+              display: false,
             },
             { triggerTurn: true },
           );

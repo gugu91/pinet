@@ -58,7 +58,7 @@ describe("registerAgentGoal", () => {
           role: "custom",
           customType: `agent-goal.${kind}`,
           content,
-          display: true,
+          display: false,
           timestamp: Date.parse("2026-01-01T00:00:00.000Z"),
         },
       ]);
@@ -559,7 +559,7 @@ describe("registerAgentGoal", () => {
         customType: "agent-goal.idea",
         content:
           "Discuss scope, constraints, done criteria, evidence, and limits; call create_goal after user confirmation.\nGoal idea (user data): verify operator goal start",
-        display: true,
+        display: false,
       },
       { triggerTurn: true },
     );
@@ -627,7 +627,7 @@ describe("registerAgentGoal", () => {
           customType: "agent-goal.demo",
           content:
             "Walk me through goals: agree a tiny example, create it, record a checkpoint, inspect /goal, then verify completion. Ask before changing any goal; preserve existing work.",
-          display: true,
+          display: false,
         },
         { triggerTurn: true },
       );
@@ -637,75 +637,87 @@ describe("registerAgentGoal", () => {
     expect(continueIfIdle).not.toHaveBeenCalled();
   });
 
-  it("automatically retries a continuation deferred while the session is busy", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const handlers = new Map<string, GoalEventHandler>();
-    const tools = new Map<string, ToolDefinition>();
-    const sendMessage = vi.fn();
-    const pi = {
-      on(name: string, handler: GoalEventHandler) {
-        handlers.set(name, handler);
-      },
-      registerTool(tool: ToolDefinition) {
-        tools.set(tool.name, tool);
-      },
-      registerCommand: vi.fn(),
-      sendMessage,
-    } as object as ExtensionAPI;
-    let idle = false;
-    const context = {
-      hasUI: true,
-      isIdle: () => idle,
-      hasPendingMessages: () => false,
-      sessionManager: { getSessionId: () => "session-1" },
-      ui: {
-        setStatus: vi.fn(),
-        setWidget: vi.fn(),
-        notify: vi.fn(),
-      },
-    } as object as ExtensionContext;
-    const storage = new MemoryGoalStorage();
-    await storage.create({
-      id: "goal-1",
-      scopeId: "session-1",
-      objective: "ship",
-      status: "active",
-      budget: { maxIterations: 5 },
-      usage: { iterations: 0, tokens: 0 },
-      version: 1,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    });
-    registerAgentGoal(pi, {
-      storage,
-      evaluator: {
-        evaluate: vi.fn().mockResolvedValue({ outcome: "continue", reason: "more work remains" }),
-      },
-    });
+  it.each(["running", "draft", "queued"])(
+    "defers hidden continuation while user input is occupied (%s)",
+    async (mode) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const handlers = new Map<string, GoalEventHandler>();
+      const tools = new Map<string, ToolDefinition>();
+      const sendMessage = vi.fn();
+      const pi = {
+        on(name: string, handler: GoalEventHandler) {
+          handlers.set(name, handler);
+        },
+        registerTool(tool: ToolDefinition) {
+          tools.set(tool.name, tool);
+        },
+        registerCommand: vi.fn(),
+        sendMessage,
+      } as object as ExtensionAPI;
+      let idle = mode !== "running";
+      let draft = mode === "draft" ? "unfinished user prompt" : "";
+      let queued = mode === "queued";
+      const setEditorText = vi.fn();
+      const context = {
+        hasUI: true,
+        isIdle: () => idle,
+        hasPendingMessages: () => queued,
+        sessionManager: { getSessionId: () => "session-1" },
+        ui: {
+          getEditorText: () => draft,
+          setEditorText,
+          setStatus: vi.fn(),
+          setWidget: vi.fn(),
+          notify: vi.fn(),
+        },
+      } as object as ExtensionContext;
+      const storage = new MemoryGoalStorage();
+      await storage.create({
+        id: "goal-1",
+        scopeId: "session-1",
+        objective: "ship",
+        status: "active",
+        budget: { maxIterations: 5 },
+        usage: { iterations: 0, tokens: 0 },
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      registerAgentGoal(pi, {
+        storage,
+        evaluator: {
+          evaluate: vi.fn().mockResolvedValue({ outcome: "continue", reason: "more work remains" }),
+        },
+      });
 
-    await handlers.get("agent_start")?.({}, context);
-    await handlers.get("agent_end")?.({ messages: [] }, context);
-    await handlers.get("agent_settled")?.({}, context);
-    expect(sendMessage).not.toHaveBeenCalled();
-    expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "deferred" });
+      await handlers.get("agent_start")?.({}, context);
+      await handlers.get("agent_end")?.({ messages: [] }, context);
+      await handlers.get("agent_settled")?.({}, context);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "deferred" });
 
-    idle = true;
-    await vi.advanceTimersByTimeAsync(1_000);
+      expect(draft).toBe(mode === "draft" ? "unfinished user prompt" : "");
+      expect(setEditorText).not.toHaveBeenCalled();
+      idle = true;
+      draft = "";
+      queued = false;
+      await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(sendMessage).toHaveBeenCalledOnce();
-    expect(sendMessage).toHaveBeenCalledWith(
-      {
-        customType: "agent-goal.continuation",
-        content:
-          "[agent-goal.continuation]\nObjective (user data): ship\nGuidance: more work remains",
-        display: true,
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-    expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "started" });
-    await handlers.get("session_shutdown")?.({}, context);
-  });
+      expect(sendMessage).toHaveBeenCalledOnce();
+      expect(sendMessage).toHaveBeenCalledWith(
+        {
+          customType: "agent-goal.continuation",
+          content:
+            "[agent-goal.continuation]\nObjective (user data): ship\nGuidance: more work remains",
+          display: false,
+        },
+        { deliverAs: "followUp", triggerTurn: true },
+      );
+      expect(await storage.getContinuationClaim("session-1")).toMatchObject({ state: "started" });
+      await handlers.get("session_shutdown")?.({}, context);
+    },
+  );
 
   it("opens a goal overlay in TUI mode and preserves the textual fallback", async () => {
     const commands = new Map<string, RegisteredCommand>();
@@ -887,7 +899,7 @@ describe("registerAgentGoal", () => {
       {
         customType: "agent-goal.updated",
         content: "[agent-goal.updated]\nObjective (user data): updated objective",
-        display: true,
+        display: false,
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
@@ -1102,7 +1114,7 @@ describe("registerAgentGoal", () => {
         customType: "agent-goal.started",
         content:
           "[agent-goal.started]\nObjective (user data): ship the explicit lifecycle\nUse checkpoint_goal after meaningful progress to keep users in the loop.",
-        display: true,
+        display: false,
       },
       { deliverAs: "followUp", triggerTurn: true },
     );
