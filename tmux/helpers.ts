@@ -101,7 +101,8 @@ export function reduce(activity: Activity, event: Event): Activity {
         outcome: "completed",
         unread: activity.prompts > 0 && activity.unread,
         resumeUnread: false,
-        explicit: activity.prompts > 0 && activity.explicit,
+        // A new run discards earlier attention; an open dialog shows its own.
+        explicit: false,
         pending: false,
       };
     case "outcome":

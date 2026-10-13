@@ -145,6 +145,31 @@ test("/unread provenance is discarded with the unread mark it explained", () => 
   ).activity;
   assert.deepEqual([visibleState(waiting), visibleUnread(waiting)], ["working", false]);
 });
+test("a new run discards earlier /unread provenance, even when settlement restores unread", () => {
+  const { activity } = run(
+    INITIAL,
+    { type: "unread" },
+    { type: "prompt-start" },
+    { type: "start" },
+    { type: "background", count: 1 },
+    { type: "settled", aborted: false },
+    { type: "prompt-end" },
+  );
+  assert.deepEqual([visibleState(activity), visibleUnread(activity)], ["working", false]);
+  // Cancellation drops the mark; a later failure must still wait for background work.
+  const cancelled = run(
+    reduce(INITIAL, { type: "start" }),
+    { type: "unread" },
+    { type: "settled", aborted: true },
+    { type: "background", count: 1 },
+    { type: "compact-start" },
+    { type: "compact-end", failed: true, aborted: false },
+  ).activity;
+  assert.deepEqual([visibleState(cancelled), visibleUnread(cancelled)], ["working", false]);
+  // /unread during the current run still shows immediately.
+  const marked = run(activity, { type: "unread" }).activity;
+  assert.deepEqual([visibleState(marked), visibleUnread(marked)], ["working", true]);
+});
 test("an idle parent waiting on background subagents stays working; attention follows them", () => {
   const settled = reduce(reduce(INITIAL, { type: "start" }), { type: "settled", aborted: false });
   const waiting = reduce(settled, { type: "background", count: 2 });
