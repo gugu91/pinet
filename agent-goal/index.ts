@@ -409,7 +409,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
                 ctx.model?.id === modelId &&
                 ctx.model?.provider === modelProvider &&
                 ctx.isIdle() &&
-                !ctx.hasPendingMessages()
+                !ctx.hasPendingMessages() &&
+                (!ctx.hasUI || !ctx.ui.getEditorText?.())
               );
             },
             resume: async () => {

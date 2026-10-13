@@ -47,6 +47,7 @@ async function fixture(builtInEvaluator = false) {
     sessionManager: { getSessionId: () => "session" },
     ui: {
       setStatus: vi.fn(),
+      getEditorText: vi.fn().mockReturnValue(""),
       setWidget: vi.fn(),
       notify: vi.fn(),
       onTerminalInput: (handler: () => undefined) => {
@@ -152,6 +153,16 @@ describe("goal outage integration", () => {
     expect(
       f.data.ui.setStatus.mock.calls.filter(([name]) => name === "agent-goal-network").at(-1),
     ).toEqual(["agent-goal-network", undefined]);
+  });
+
+  it("does not evaluate recovery while an existing editor draft owns the input", async () => {
+    const f = await fixture();
+    await f.outage();
+    f.data.ui.getEditorText.mockReturnValue("unfinished user prompt");
+    expect(await f.recovery().canResume()).toBe(false);
+    expect(f.evaluate).not.toHaveBeenCalled();
+    expect(f.continueIfIdle).not.toHaveBeenCalled();
+    expect(f.data.ui.getEditorText()).toBe("unfinished user prompt");
   });
 
   it("arms only at final native settlement and resumes through one normal claim", async () => {
