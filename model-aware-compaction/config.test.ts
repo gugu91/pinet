@@ -61,16 +61,19 @@ describe("resolveConfig", () => {
         ],
       });
       expect(config.compactionModels).toEqual(["a/one:low", "b/two", "c/three"]);
-      expect(error).toHaveBeenCalledWith(expect.stringContaining("only the first 3"));
+      expect(config.diagnostics).toEqual([expect.stringContaining("only the first 3")]);
+      expect(error).not.toHaveBeenCalled();
       // An explicit empty rule chain is kept: it means Pi default for those models.
       expect(config.rules).toEqual([
         { model: "x/*", activeContextTokens: 1_000, compactionModels: ["r/one", "r/two"] },
         { model: "y/*", activeContextTokens: 1_000, compactionModels: [] },
       ]);
       expect(resolveConfig({}).compactionModels).toEqual([]);
-      // The cap warning is reported once, not on every load.
-      resolveConfig({ compactionModel: ["a/one:low", "b/two", "c/three", "d/four"] });
-      expect(error).toHaveBeenCalledTimes(1);
+      // Resolution returns diagnostics without emitting terminal output.
+      expect(
+        resolveConfig({ compactionModel: ["a/one:low", "b/two", "c/three", "d/four"] }).diagnostics,
+      ).toEqual(config.diagnostics);
+      expect(error).not.toHaveBeenCalled();
     } finally {
       error.mockRestore();
     }

@@ -233,6 +233,95 @@ describe("extension wiring", () => {
     }
   });
 
+  it.each([true, false])(
+    "routes proactive diagnostics without corrupting UI (hasUI=%s)",
+    (hasUI) => {
+      const { emit } = harness();
+      const compact = vi.fn();
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+      fs.mkdirSync(path.join(temp, ".pi"));
+      fs.writeFileSync(
+        path.join(temp, ".pi", "settings.json"),
+        JSON.stringify({ "model-aware-compaction": { enabled: true, debug: true } }),
+      );
+      try {
+        const ctx = { ...context(120_000, compact), cwd: temp, hasUI };
+        emit("agent_settled", ctx);
+        const options = compact.mock.calls[0]?.[0] as {
+          onComplete: () => void;
+          onError: (error: Error) => void;
+        };
+        options.onComplete();
+        emit("model_select", ctx);
+        emit("agent_settled", ctx);
+        options.onError(new Error("provider unavailable"));
+        if (hasUI) {
+          expect(error).not.toHaveBeenCalled();
+          expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("started"), "info");
+          expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("completed"), "info");
+          expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("failed"), "error");
+        } else {
+          expect(error).toHaveBeenCalledWith(expect.stringContaining("triggered"));
+          expect(error).toHaveBeenCalledWith(expect.stringContaining("completed"));
+          expect(error).toHaveBeenCalledWith(expect.stringContaining("failed"));
+          expect(ctx.ui.notify).not.toHaveBeenCalled();
+        }
+      } finally {
+        error.mockRestore();
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    { hasUI: true, problem: "chain" },
+    { hasUI: false, problem: "chain" },
+    { hasUI: true, problem: "parse" },
+    { hasUI: false, problem: "parse" },
+    { hasUI: true, problem: "read" },
+    { hasUI: false, problem: "read" },
+  ])(
+    "routes and deduplicates config diagnostics ($problem, hasUI=$hasUI)",
+    ({ hasUI, problem }) => {
+      const { emit } = harness();
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+      fs.mkdirSync(path.join(temp, ".pi"));
+      const settingsPath = path.join(temp, ".pi", "settings.json");
+      if (problem === "read") fs.mkdirSync(settingsPath);
+      else
+        fs.writeFileSync(
+          settingsPath,
+          problem === "parse"
+            ? "{"
+            : JSON.stringify({
+                "model-aware-compaction": {
+                  compactionModel: ["a/one", "b/two", "c/three", "d/four"],
+                },
+              }),
+        );
+      try {
+        const ctx = { ...context(0), cwd: temp, hasUI };
+        emit("agent_settled", ctx);
+        emit("agent_settled", ctx);
+        const message = expect.stringContaining(
+          problem === "chain" ? "only the first 3" : `Failed to parse ${settingsPath}`,
+        );
+        if (hasUI) {
+          expect(error).not.toHaveBeenCalled();
+          expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(message, "warning");
+        } else {
+          expect(error).toHaveBeenCalledExactlyOnceWith(message);
+          expect(ctx.ui.notify).not.toHaveBeenCalled();
+        }
+      } finally {
+        error.mockRestore();
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("treats an already-compacted callback as an idempotent outcome", () => {
     const { emit } = harness();
     const compact = vi.fn();
@@ -1069,34 +1158,45 @@ describe("fallback chain", () => {
     return { ctx, compact, commands, api, modelRegistry, cleanup };
   }
 
-  it("advances past a failing provider and records which entry produced the summary", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { compact, cleanup } = chainHarness(
-      ["test/primary", "test/secondary"],
-      [modelFor("primary"), modelFor("secondary")],
-    );
-    selectedCompact
-      .mockRejectedValueOnce(new Error("429 rate limited"))
-      .mockResolvedValueOnce(result);
-    try {
-      expect(await compact()).toEqual({ compaction: result });
-      expect(selectedCompact).toHaveBeenCalledTimes(2);
-      expect(selectedCompact.mock.calls[0][0]).toMatchObject({
-        model: modelFor("primary"),
-        selector: "test/primary",
-      });
-      expect(selectedCompact.mock.calls[1][0]).toMatchObject({
-        model: modelFor("secondary"),
-        selector: "test/secondary",
-      });
-      expect(error).toHaveBeenCalledWith(
-        expect.stringContaining("fell back to test/secondary after test/primary: 429 rate limited"),
+  it.each([true, false])(
+    "routes fallback diagnostics safely with debug disabled (hasUI=%s)",
+    async (hasUI) => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { ctx, compact, cleanup } = chainHarness(
+        ["test/primary", "test/secondary"],
+        [modelFor("primary"), modelFor("secondary")],
       );
-    } finally {
-      error.mockRestore();
-      cleanup();
-    }
-  });
+      ctx.hasUI = hasUI;
+      selectedCompact
+        .mockRejectedValueOnce(new Error("429 rate limited"))
+        .mockResolvedValueOnce(result);
+      try {
+        expect(await compact()).toEqual({ compaction: result });
+        expect(selectedCompact).toHaveBeenCalledTimes(2);
+        expect(selectedCompact.mock.calls[0][0]).toMatchObject({
+          model: modelFor("primary"),
+          selector: "test/primary",
+        });
+        expect(selectedCompact.mock.calls[1][0]).toMatchObject({
+          model: modelFor("secondary"),
+          selector: "test/secondary",
+        });
+        const report = expect.stringContaining(
+          "fell back to test/secondary after test/primary: 429 rate limited",
+        );
+        if (hasUI) {
+          expect(error).not.toHaveBeenCalled();
+          expect(ctx.ui.notify).toHaveBeenCalledWith(report, "info");
+        } else {
+          expect(error).toHaveBeenCalledWith(report);
+          expect(ctx.ui.notify).not.toHaveBeenCalled();
+        }
+      } finally {
+        error.mockRestore();
+        cleanup();
+      }
+    },
+  );
 
   it("skips entries whose window cannot hold the history or that are unavailable, without a request", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -1138,18 +1238,22 @@ describe("fallback chain", () => {
     }
   });
 
-  it("fails closed naming every entry when the whole chain fails", async () => {
+  it.each([true, false])("routes exhausted-chain errors safely (hasUI=%s)", async (hasUI) => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { compact, cleanup } = chainHarness(
+    const { ctx, compact, cleanup } = chainHarness(
       ["test/primary", "test/secondary"],
       [modelFor("primary"), modelFor("secondary")],
     );
+    ctx.hasUI = hasUI;
     selectedCompact
       .mockRejectedValueOnce(new Error("primary down"))
       .mockRejectedValueOnce(new Error("secondary down"));
     try {
       expect(await compact()).toEqual({ cancel: true });
-      const messages = error.mock.calls.map(([message]) => String(message)).join("\n");
+      if (hasUI) expect(error).not.toHaveBeenCalled();
+      else expect(ctx.ui.notify).not.toHaveBeenCalled();
+      const calls = hasUI ? vi.mocked(ctx.ui.notify).mock.calls : error.mock.calls;
+      const messages = calls.map(([message]) => String(message)).join("\n");
       expect(messages).toContain("every compaction model failed");
       expect(messages).toContain("test/primary: primary down");
       expect(messages).toContain("test/secondary: secondary down");

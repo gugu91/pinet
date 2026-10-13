@@ -1803,147 +1803,166 @@ describe("slack-bridge top-level shutdown", () => {
     }
   });
 
-  it("warns and reports status when live Slack scope drift is detected at startup", async () => {
-    const settingsPath = `${process.env.HOME}/.pi/agent/settings.json`;
-    fs.mkdirSync(`${process.env.HOME}/.pi/agent`, { recursive: true });
-    fs.writeFileSync(settingsPath, JSON.stringify({ "slack-bridge": { runtimeMode: "single" } }));
+  it.each([true, false])(
+    "routes Slack scope drift diagnostics safely (hasUI=%s)",
+    async (hasUI) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const settingsPath = `${process.env.HOME}/.pi/agent/settings.json`;
+      fs.mkdirSync(`${process.env.HOME}/.pi/agent`, { recursive: true });
+      fs.writeFileSync(settingsPath, JSON.stringify({ "slack-bridge": { runtimeMode: "single" } }));
 
-    const commands = new Map<string, CommandDefinition>();
-    const events = new Map<string, EventHandler>();
-    const FakeWebSocket = createFakeWebSocketClass();
+      const commands = new Map<string, CommandDefinition>();
+      const events = new Map<string, EventHandler>();
+      const FakeWebSocket = createFakeWebSocketClass();
 
-    const pi = {
-      appendEntry: vi.fn(),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
-        commands.set(name, definition);
-      }),
-      on: vi.fn((eventName: string, handler: EventHandler) => {
-        events.set(eventName, handler);
-      }),
-      sendUserMessage: vi.fn(),
-    } as unknown as ExtensionAPI;
+      const pi = {
+        appendEntry: vi.fn(),
+        registerTool: vi.fn(),
+        registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
+          commands.set(name, definition);
+        }),
+        on: vi.fn((eventName: string, handler: EventHandler) => {
+          events.set(eventName, handler);
+        }),
+        sendUserMessage: vi.fn(),
+      } as unknown as ExtensionAPI;
 
-    const setStatus = vi.fn();
-    const notify = vi.fn();
-    const ctx = {
-      cwd: process.cwd(),
-      hasUI: true,
-      isIdle: () => true,
-      ui: {
-        theme: {
-          fg: (_color: string, text: string) => text,
+      const setStatus = vi.fn();
+      const notify = vi.fn();
+      const ctx = {
+        cwd: process.cwd(),
+        hasUI,
+        isIdle: () => true,
+        ui: {
+          theme: {
+            fg: (_color: string, text: string) => text,
+          },
+          notify,
+          setStatus,
         },
-        notify,
-        setStatus,
-      },
-      sessionManager: {
-        getEntries: () => [],
-        getHeader: () => null,
-        getLeafId: () => "single-scope-drift-leaf",
-        getSessionFile: () => "/tmp/slack-bridge-single-scope-drift-session.json",
-      },
-    } as unknown as ExtensionContext;
+        sessionManager: {
+          getEntries: () => [],
+          getHeader: () => null,
+          getLeafId: () => "single-scope-drift-leaf",
+          getSessionFile: () => "/tmp/slack-bridge-single-scope-drift-session.json",
+        },
+      } as unknown as ExtensionContext;
 
-    const fetchSpy = vi.fn(async (input) => {
-      const url = String(input);
-      if (url === "https://slack.com/api/apps.connections.open") {
-        return new Response(JSON.stringify({ ok: true, url: "wss://slack.example/socket" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (url === "https://slack.com/api/files.info") {
-        return new Response(
-          JSON.stringify({ ok: false, error: "missing_scope", needed: "files:read" }),
-          {
+      const fetchSpy = vi.fn(async (input) => {
+        const url = String(input);
+        if (url === "https://slack.com/api/apps.connections.open") {
+          return new Response(JSON.stringify({ ok: true, url: "wss://slack.example/socket" }), {
             status: 200,
             headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      if (url === "https://slack.com/api/files.completeUploadExternal") {
-        return new Response(
-          JSON.stringify({ ok: false, error: "missing_scope", needed: "files:write" }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      if (url === "https://slack.com/api/bookmarks.list") {
-        return new Response(
-          JSON.stringify({ ok: false, error: "missing_scope", needed: "bookmarks:read" }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      if (url === "https://slack.com/api/bookmarks.remove") {
-        return new Response(
-          JSON.stringify({ ok: false, error: "missing_scope", needed: "bookmarks:write" }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      if (url === "https://slack.com/api/pins.list") {
-        return new Response(
-          JSON.stringify({ ok: false, error: "missing_scope", needed: "pins:read" }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      if (url === "https://slack.com/api/pins.add") {
-        return new Response(
-          JSON.stringify({ ok: false, error: "missing_scope", needed: "pins:write" }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      throw new Error(`unexpected fetch url: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchSpy as unknown as typeof fetch);
-    vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
+          });
+        }
+        if (url === "https://slack.com/api/files.info") {
+          return new Response(
+            JSON.stringify({ ok: false, error: "missing_scope", needed: "files:read" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        if (url === "https://slack.com/api/files.completeUploadExternal") {
+          return new Response(
+            JSON.stringify({ ok: false, error: "missing_scope", needed: "files:write" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        if (url === "https://slack.com/api/bookmarks.list") {
+          return new Response(
+            JSON.stringify({ ok: false, error: "missing_scope", needed: "bookmarks:read" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        if (url === "https://slack.com/api/bookmarks.remove") {
+          return new Response(
+            JSON.stringify({ ok: false, error: "missing_scope", needed: "bookmarks:write" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        if (url === "https://slack.com/api/pins.list") {
+          return new Response(
+            JSON.stringify({ ok: false, error: "missing_scope", needed: "pins:read" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        if (url === "https://slack.com/api/pins.add") {
+          return new Response(
+            JSON.stringify({ ok: false, error: "missing_scope", needed: "pins:write" }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        throw new Error(`unexpected fetch url: ${url}`);
+      });
+      vi.stubGlobal("fetch", fetchSpy as unknown as typeof fetch);
+      vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
 
-    slackBridge(pi);
+      slackBridge(pi);
 
-    const sessionStart = events.get("session_start");
-    const sessionShutdown = events.get("session_shutdown");
-    const pinetStatus = commands.get("pinet");
+      const sessionStart = events.get("session_start");
+      const sessionShutdown = events.get("session_shutdown");
+      const pinetStatus = commands.get("pinet");
 
-    await sessionStart?.({}, ctx);
-    await vi.waitFor(() => {
+      await sessionStart?.({}, ctx);
+      await vi.waitFor(() => {
+        if (hasUI) {
+          expect(notify).toHaveBeenCalledWith(
+            expect.stringContaining("Slack scope drift detected:"),
+            "warning",
+          );
+          expect(warn).not.toHaveBeenCalledWith(
+            expect.stringContaining("Slack scope drift detected:"),
+          );
+        } else {
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining("Slack scope drift detected:"));
+          expect(notify).not.toHaveBeenCalledWith(
+            expect.stringContaining("Slack scope drift detected:"),
+            "warning",
+          );
+        }
+      });
+      if (!hasUI) {
+        await sessionShutdown?.({}, ctx);
+        warn.mockRestore();
+        return;
+      }
+      await pinetStatus?.handler("status", ctx);
+
       expect(notify).toHaveBeenCalledWith(
         expect.stringContaining(
           "Slack scope drift detected: missing bookmarks:read, bookmarks:write, files:read, files:write, pins:read, pins:write.",
         ),
         "warning",
       );
-    });
-    await pinetStatus?.handler("status", ctx);
+      expect(notify).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Slack tool health: scope drift — missing bookmarks:read, bookmarks:write, files:read, files:write, pins:read, pins:write",
+        ),
+        "info",
+      );
 
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "Slack scope drift detected: missing bookmarks:read, bookmarks:write, files:read, files:write, pins:read, pins:write.",
-      ),
-      "warning",
-    );
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "Slack tool health: scope drift — missing bookmarks:read, bookmarks:write, files:read, files:write, pins:read, pins:write",
-      ),
-      "info",
-    );
-
-    await sessionShutdown?.({}, ctx);
-  });
+      await sessionShutdown?.({}, ctx);
+      warn.mockRestore();
+    },
+  );
 
   it("transitions from single runtime mode to broker mode without leaving the direct Slack socket open", async () => {
     const settingsPath = `${process.env.HOME}/.pi/agent/settings.json`;
