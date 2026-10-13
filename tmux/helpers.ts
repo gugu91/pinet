@@ -7,6 +7,8 @@ export interface Activity {
   outcome: Outcome;
   unread: boolean;
   resumeUnread: boolean;
+  /** Background subagent runs this Pi is still waiting on. */
+  background: number;
 }
 export type Event =
   | { type: "start" }
@@ -18,7 +20,8 @@ export type Event =
   | { type: "unread" }
   | { type: "refresh" }
   | { type: "compact-start" }
-  | { type: "compact-end"; failed: boolean; aborted: boolean };
+  | { type: "compact-end"; failed: boolean; aborted: boolean }
+  | { type: "background"; count: number };
 export const INITIAL: Activity = {
   base: "idle",
   compacting: false,
@@ -26,6 +29,7 @@ export const INITIAL: Activity = {
   outcome: "completed",
   unread: false,
   resumeUnread: false,
+  background: 0,
 };
 export const ORDER: State[] = ["blocked", "error", "compacting", "working", "done", "idle"];
 interface CompactionNotice {
@@ -41,7 +45,28 @@ export function compactionNoticeMatches(data: object, sessionFile: string | unde
   );
 }
 export function visibleState(activity: Activity): State {
-  return activity.prompts > 0 ? "blocked" : activity.compacting ? "compacting" : activity.base;
+  if (activity.prompts > 0) return "blocked";
+  if (activity.compacting) return "compacting";
+  // An idle parent waiting on its own background subagents is still working.
+  return activity.background > 0 ? "working" : activity.base;
+}
+/** Completion attention is deferred until background subagents finish. */
+export function visibleUnread(activity: Activity): boolean {
+  return activity.unread && visibleState(activity) !== "working";
+}
+interface BackgroundRunNotice {
+  id?: string;
+  runId?: string;
+  pid?: number;
+}
+/** pi-subagents `subagent:async-started`/`subagent:async-complete` payloads. */
+export function backgroundRun(data: object): { id: string; pid?: number } | undefined {
+  const notice = data as BackgroundRunNotice;
+  const id = typeof notice.runId === "string" ? notice.runId : notice.id;
+  if (typeof id !== "string" || !id) return undefined;
+  return Number.isSafeInteger(notice.pid) && Number(notice.pid) > 0
+    ? { id, pid: notice.pid }
+    : { id };
 }
 export function reduce(activity: Activity, event: Event): Activity {
   switch (event.type) {
@@ -92,6 +117,8 @@ export function reduce(activity: Activity, event: Event): Activity {
       return { ...activity, unread: true, resumeUnread: true };
     case "refresh":
       return activity;
+    case "background":
+      return { ...activity, background: event.count };
     case "compact-start":
       return { ...activity, compacting: true };
     case "compact-end":
@@ -168,7 +195,7 @@ export function isInteraction(data: string): boolean {
 export function attentionChanged(before: Activity, after: Activity): boolean {
   const state = visibleState(after);
   return (
-    after.unread &&
+    visibleUnread(after) &&
     !(
       before.compacting &&
       !after.compacting &&
@@ -176,6 +203,6 @@ export function attentionChanged(before: Activity, after: Activity): boolean {
       before.prompts === after.prompts
     ) &&
     (state === "blocked" || state === "done" || state === "error") &&
-    (visibleState(before) !== state || !before.unread)
+    (visibleState(before) !== state || !visibleUnread(before))
   );
 }

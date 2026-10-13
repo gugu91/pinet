@@ -81,6 +81,9 @@ A pane becomes unread when Pi finishes a run (`done` or `error`), asks for input
 that pane or typing in Pi clears it. If you're already in the pane when Pi
 finishes, it stays unread until you type or come back.
 
+While Pi waits on its own background subagents, the pane shows `working`, and the
+unread mark appears only once they've finished.
+
 ## Examples
 
 Use these as starting points; nothing is applied automatically.

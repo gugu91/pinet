@@ -7,6 +7,8 @@ import {
   reduce,
   attentionChanged,
   visibleState,
+  visibleUnread,
+  backgroundRun,
   type PaneRecord,
 } from "./helpers.ts";
 const record: PaneRecord = {
@@ -87,6 +89,25 @@ test("attention generation changes on alerts, not repeats, acknowledgements or c
   assert.equal(aborted.base, "idle");
   assert.equal(aborted.unread, false);
   assert.equal(attentionChanged(working, aborted), false);
+});
+test("an idle parent waiting on background subagents stays working; attention follows them", () => {
+  const settled = reduce(reduce(INITIAL, { type: "start" }), { type: "settled", aborted: false });
+  const waiting = reduce(settled, { type: "background", count: 2 });
+  assert.equal(visibleState(waiting), "working");
+  assert.equal(visibleUnread(waiting), false);
+  assert.equal(attentionChanged(settled, waiting), false);
+  const finished = reduce(waiting, { type: "background", count: 0 });
+  assert.equal(visibleState(finished), "done");
+  assert.equal(visibleUnread(finished), true);
+  assert.equal(attentionChanged(waiting, finished), true);
+  // Questions still outrank background work.
+  assert.equal(visibleState(reduce(waiting, { type: "prompt-start" })), "blocked");
+});
+test("background run notices accept start ids and completion runIds", () => {
+  assert.deepEqual(backgroundRun({ id: "run-1", pid: 42 }), { id: "run-1", pid: 42 });
+  assert.deepEqual(backgroundRun({ id: "child", runId: "run-2" }), { id: "run-2" });
+  assert.equal(backgroundRun({ id: "" }), undefined);
+  assert.deepEqual(backgroundRun({ id: "run-3", pid: -1 }), { id: "run-3" });
 });
 test("records roundtrip and invalid/untrusted option values are discarded", () => {
   assert.deepEqual(parseRecord(encode(record)), record);

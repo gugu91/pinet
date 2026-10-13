@@ -72,6 +72,13 @@ active work await its eventual outcome; idle/manual failures are errors.
 dependence between these two packages. Other custom compaction handlers that await
 work before our observer must emit that notice for immediate tracking.
 
+Background subagents count as work. While [pi-subagents](https://github.com/nicobailon/pi-subagents)
+async runs are active (its `subagent:async-started`/`subagent:async-complete`
+events), an idle parent shows `working`, and its done/error attention waits until
+they finish. Runs whose runner process has exited are dropped, so a missed
+completion event cannot pin the pane to `working`. Without pi-subagents, nothing
+changes.
+
 Returning focus or interacting with Pi clears unread. Terminal replies and
 focus-out do not count; input is observed, never consumed. The companion's tmux
 focus hook additionally acknowledges pane returns when Pi is not receiving input.

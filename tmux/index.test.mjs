@@ -148,6 +148,19 @@ test("publisher is TUI-only, owns only pane data, settles correctly and never cu
     await emit("session_before_compact");
     await emit("session_compact_failed", { aborted: false });
     assert.equal((await state()).state, "error");
+    // Background subagents (pi-subagents lifecycle events) keep an idle parent working.
+    await emit("agent_start");
+    bus.get("subagent:async-started")({ id: "run-a", pid: process.pid });
+    bus.get("subagent:async-started")({ id: "run-dead", pid: 2147483647 });
+    await emit("agent_settled", { aborted: false });
+    assert.deepEqual(
+      [(await state()).state, (await state()).unread],
+      ["working", false],
+      "waiting on a live background run; the exited runner is dropped",
+    );
+    bus.get("subagent:async-complete")({ runId: "run-a" });
+    await commands.get("tmux").handler("", ctx);
+    assert.deepEqual([(await state()).state, (await state()).unread], ["done", true]);
     await commands.get("tmux").handler("setup", ctx);
     assert.ok(notices.at(-1).startsWith("Usage: /tmux"));
     await emit("session_shutdown");

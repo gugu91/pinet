@@ -8,6 +8,8 @@ import {
   isInteraction,
   attentionChanged,
   visibleState,
+  visibleUnread,
+  backgroundRun,
   compactionNoticeMatches,
   type Outcome,
   type Activity,
@@ -28,6 +30,10 @@ export default function tmuxPi(pi: ExtensionAPI) {
   let attention = randomUUID();
   let unsubscribeInput: (() => void) | undefined;
   let unsubscribeCompaction: (() => void) | undefined;
+  let unsubscribeBackground: (() => void)[] = [];
+  /** Background subagent run IDs and runner PIDs (pi-subagents lifecycle events). */
+  const background = new Map<string, number | undefined>();
+  let backgroundSweep: ReturnType<typeof setInterval> | undefined;
 
   function serialize(work: () => Promise<void>, ctx: ExtensionContext): Promise<void> {
     queue = queue.then(work).catch((error: Error) => {
@@ -48,7 +54,7 @@ export default function tmuxPi(pi: ExtensionAPI) {
       if (
         event.type !== "unread" &&
         record.state === state &&
-        record.unread === activity.unread &&
+        record.unread === visibleUnread(activity) &&
         name === nextName
       )
         return;
@@ -57,7 +63,7 @@ export default function tmuxPi(pi: ExtensionAPI) {
         event.type === "unread"
       )
         attention = randomUUID();
-      const next = { ...record, state, unread: activity.unread };
+      const next = { ...record, state, unread: visibleUnread(activity) };
       if (!(await tmux.publish(pane, next, { name: nextName, attention }))) {
         record = undefined;
         return;
@@ -65,6 +71,34 @@ export default function tmuxPi(pi: ExtensionAPI) {
       record = next;
       name = nextName;
     }, ctx);
+  }
+
+  function syncBackground(ctx: ExtensionContext): void {
+    // A missed completion event must not pin the pane to "working": drop runs whose runner exited.
+    for (const [id, pid] of background) {
+      if (pid === undefined || pid === process.pid) continue;
+      try {
+        process.kill(pid, 0);
+      } catch {
+        background.delete(id);
+      }
+    }
+    if (background.size && !backgroundSweep) {
+      backgroundSweep = setInterval(() => syncBackground(ctx), 15_000);
+      backgroundSweep.unref();
+    } else if (!background.size && backgroundSweep) {
+      clearInterval(backgroundSweep);
+      backgroundSweep = undefined;
+    }
+    if (background.size !== activity.background)
+      void transition({ type: "background", count: background.size }, ctx);
+  }
+  function stopBackground(): void {
+    for (const unsubscribe of unsubscribeBackground) unsubscribe();
+    unsubscribeBackground = [];
+    background.clear();
+    clearInterval(backgroundSweep);
+    backgroundSweep = undefined;
   }
 
   pi.on("session_start", (_event, ctx) =>
@@ -88,6 +122,20 @@ export default function tmuxPi(pi: ExtensionAPI) {
       name = safeName(pi.getSessionName() || basename(ctx.cwd) || "Pi");
       attention = randomUUID();
       await tmux.claim(pane, record, { name, attention });
+      stopBackground();
+      unsubscribeBackground = [
+        pi.events?.on("subagent:async-started", (data) => {
+          const run = data && typeof data === "object" ? backgroundRun(data) : undefined;
+          if (!run) return;
+          background.set(run.id, run.pid);
+          syncBackground(ctx);
+        }),
+        pi.events?.on("subagent:async-complete", (data) => {
+          const run = data && typeof data === "object" ? backgroundRun(data) : undefined;
+          if (!run || !background.delete(run.id)) return;
+          syncBackground(ctx);
+        }),
+      ].filter((unsubscribe) => unsubscribe !== undefined);
       unsubscribeCompaction?.();
       unsubscribeCompaction = pi.events?.on("pinet:compaction-start", (data) => {
         if (
@@ -130,6 +178,7 @@ export default function tmuxPi(pi: ExtensionAPI) {
       unsubscribeInput = undefined;
       unsubscribeCompaction?.();
       unsubscribeCompaction = undefined;
+      stopBackground();
       const old = record;
       record = undefined;
       if (old && pane) await tmux.release(pane, old.owner);
