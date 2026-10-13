@@ -9,6 +9,8 @@ export interface Activity {
   resumeUnread: boolean;
   /** Background subagent runs this Pi is still waiting on. */
   background: number;
+  /** Unread was requested with `/unread`, not derived from completion. */
+  explicit: boolean;
 }
 export type Event =
   | { type: "start" }
@@ -30,6 +32,7 @@ export const INITIAL: Activity = {
   unread: false,
   resumeUnread: false,
   background: 0,
+  explicit: false,
 };
 export const ORDER: State[] = ["blocked", "error", "compacting", "working", "done", "idle"];
 interface CompactionNotice {
@@ -50,9 +53,11 @@ export function visibleState(activity: Activity): State {
   // An idle parent waiting on its own background subagents is still working.
   return activity.background > 0 ? "working" : activity.base;
 }
-/** Completion attention is deferred until background subagents finish. */
+/** Completion attention waits for background subagents; questions and `/unread` never wait. */
 export function visibleUnread(activity: Activity): boolean {
-  return activity.unread && visibleState(activity) !== "working";
+  return (
+    activity.unread && (activity.explicit || activity.prompts > 0 || activity.background === 0)
+  );
 }
 interface BackgroundRunNotice {
   id?: string;
@@ -77,6 +82,7 @@ export function reduce(activity: Activity, event: Event): Activity {
         outcome: "completed",
         unread: activity.prompts > 0 && activity.unread,
         resumeUnread: false,
+        explicit: activity.prompts > 0 && activity.explicit,
       };
     case "outcome":
       return { ...activity, outcome: event.outcome };
@@ -112,9 +118,9 @@ export function reduce(activity: Activity, event: Event): Activity {
             unread: activity.prompts > 1 ? activity.unread : activity.resumeUnread,
           };
     case "ack":
-      return { ...activity, unread: false, resumeUnread: false };
+      return { ...activity, unread: false, resumeUnread: false, explicit: false };
     case "unread":
-      return { ...activity, unread: true, resumeUnread: true };
+      return { ...activity, unread: true, resumeUnread: true, explicit: true };
     case "refresh":
       return activity;
     case "background":

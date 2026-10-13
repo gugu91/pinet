@@ -44,9 +44,11 @@ export default function tmuxPi(pi: ExtensionAPI) {
     });
     return queue;
   }
-  function transition(event: Event, ctx: ExtensionContext): Promise<void> {
+  /** Lazy events are built when their turn in the queue comes, from then-current state. */
+  function transition(input: Event | (() => Event), ctx: ExtensionContext): Promise<void> {
     return serialize(async () => {
       if (!record || !pane) return;
+      const event = typeof input === "function" ? input() : input;
       const before = activity;
       activity = reduce(activity, event);
       const state = visibleState(activity);
@@ -90,8 +92,8 @@ export default function tmuxPi(pi: ExtensionAPI) {
       clearInterval(backgroundSweep);
       backgroundSweep = undefined;
     }
-    if (background.size !== activity.background)
-      void transition({ type: "background", count: background.size }, ctx);
+    // Read the run count when this update runs, not now: earlier queued updates may be pending.
+    void transition(() => ({ type: "background", count: background.size }), ctx);
   }
   function stopBackground(): void {
     for (const unsubscribe of unsubscribeBackground) unsubscribe();

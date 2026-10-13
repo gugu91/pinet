@@ -161,6 +161,11 @@ test("publisher is TUI-only, owns only pane data, settles correctly and never cu
     bus.get("subagent:async-complete")({ runId: "run-a" });
     await commands.get("tmux").handler("", ctx);
     assert.deepEqual([(await state()).state, (await state()).unread], ["done", true]);
+    // A run that starts and finishes before its queued update publishes leaves no work behind.
+    bus.get("subagent:async-started")({ id: "run-quick", pid: process.pid });
+    bus.get("subagent:async-complete")({ runId: "run-quick" });
+    await commands.get("tmux").handler("", ctx);
+    assert.equal((await state()).state, "done", "rapid start/complete must not stick at working");
     await commands.get("tmux").handler("setup", ctx);
     assert.ok(notices.at(-1).startsWith("Usage: /tmux"));
     await emit("session_shutdown");

@@ -100,8 +100,20 @@ test("an idle parent waiting on background subagents stays working; attention fo
   assert.equal(visibleState(finished), "done");
   assert.equal(visibleUnread(finished), true);
   assert.equal(attentionChanged(waiting, finished), true);
-  // Questions still outrank background work.
-  assert.equal(visibleState(reduce(waiting, { type: "prompt-start" })), "blocked");
+  // Questions still outrank background work, and their attention shows immediately.
+  const asking = reduce(waiting, { type: "prompt-start" });
+  assert.deepEqual([visibleState(asking), visibleUnread(asking)], ["blocked", true]);
+  assert.equal(visibleUnread(reduce(asking, { type: "prompt-end" })), false);
+  // Compaction does not expose completion attention still waiting on background runs.
+  assert.equal(visibleUnread(reduce(waiting, { type: "compact-start" })), false);
+});
+test("/unread shows during foreground and background work until acknowledged", () => {
+  const working = reduce(INITIAL, { type: "start" });
+  const marked = reduce(working, { type: "unread" });
+  assert.deepEqual([visibleState(marked), visibleUnread(marked)], ["working", true]);
+  const background = reduce(marked, { type: "background", count: 1 });
+  assert.equal(visibleUnread(background), true);
+  assert.equal(visibleUnread(reduce(background, { type: "ack" })), false);
 });
 test("background run notices accept start ids and completion runIds", () => {
   assert.deepEqual(backgroundRun({ id: "run-1", pid: 42 }), { id: "run-1", pid: 42 });
