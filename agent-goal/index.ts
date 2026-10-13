@@ -95,6 +95,7 @@ export interface AgentGoalExtensionOptions {
 interface CompatibleContext extends ExtensionContext {
   sessionManager: ExtensionContext["sessionManager"] & { getSessionId(): string };
   ui: ExtensionContext["ui"] & {
+    getEditorText?: () => string;
     setWidget(
       key: string,
       content: string[] | undefined,
@@ -152,7 +153,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         if (!ctx || ctx.sessionManager.getSessionId() !== goal.scopeId) {
           return { status: "unavailable", reason: "The goal session is not active" };
         }
-        if (!ctx.isIdle()) {
+        if (!ctx.isIdle() || ctx.hasPendingMessages() || (ctx.hasUI && ctx.ui.getEditorText?.())) {
           return { status: "busy", reason: "The goal session is busy", retryAfterMs: 1_000 };
         }
         const messages: Record<GoalContinuationKind, { customType: string; content: string }> = {
@@ -176,7 +177,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         api.sendMessage(
           {
             ...messages[request.kind],
-            display: true,
+            display: false,
           },
           { deliverAs: "followUp", triggerTurn: true },
         );
@@ -285,11 +286,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     latestProgress = "";
     latestTokenDelta = 0;
     const scopeId = ctx.sessionManager.getSessionId();
-    const goal = await runtime.get(scopeId);
-    if (goal?.status === "complete") await runtime.clear(scopeId);
     await runtime.recover(scopeId);
-    const recoveredGoal = await runtime.get(scopeId);
-    if (recoveredGoal?.status === "complete") await runtime.clear(scopeId);
     await refreshUi(ctx);
     if (ctx.hasUI) {
       const notice = formatOrphanGoalNotice(await runtime.listUnfinished(), scopeId);
@@ -331,8 +328,6 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
       } finally {
         if (agentCreatedGoal) agentCreatedGoalScopes.delete(scopeId);
       }
-      const settledGoal = await runtime.get(scopeId);
-      if (settledGoal?.status === "complete") await runtime.clear(scopeId);
       await refreshUi(ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -356,7 +351,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     promptSnippet: "Create a durable single-session goal for multi-run work.",
     promptGuidelines: [
       "Create a goal only to preserve and complete the user's requested outcome across runs.",
-      "Do not invent a broader objective, create background work unrelated to the request, or replace an existing goal.",
+      "Do not invent a broader objective or create unrelated background work. A new goal may replace Done, but not an unfinished goal.",
       "Keep the objective concrete and verifiable; ordinary settled work continues automatically.",
     ],
     parameters: {
@@ -489,7 +484,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     promptGuidelines: [
       "Clear a goal only on an explicit user request to stop tracking it or replace it.",
       "Record any progress the user still needs before clearing because the durable goal and its checkpoints are removed.",
-      "Do not clear a goal merely because it is complete or blocked unless the user asks.",
+      "Encourage clearing stale or abandoned goals with user approval. Done may stay visible until cleared or replaced by a new goal; do not silently clear blocked goals.",
     ],
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute(_toolCallId, _params, _signal, _onUpdate, rawCtx) {
@@ -522,6 +517,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
       "update_goal is optional; every settled active goal run is evaluated automatically.",
       "Use complete only after verifying the full objective against authoritative evidence.",
       "Use blocked only for a genuine external impasse, not because work is difficult or incomplete.",
+      "When marking blocked, if Pinet is connected, escalate in the owning Slack thread with the blocker and specific help needed. Do not repeat an escalation unless something changed.",
+      "Mark finished goals complete; Done stays visible and permits a new goal. Ask before clearing stale or abandoned goals.",
     ],
     parameters: {
       type: "object",
@@ -609,16 +606,17 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
 
       try {
         if (command === "demo") {
-          if (await runtime.get(scopeId))
+          const current = await runtime.get(scopeId);
+          if (current && current.status !== "complete")
             throw new Error(
-              "Use a session without a goal for /goal demo; your current goal is unchanged.",
+              "Use a session without an unfinished goal for /goal demo; your current goal is unchanged.",
             );
           api.sendMessage(
             {
               customType: "agent-goal.demo",
               content:
                 "Walk me through goals: agree a tiny example, create it, record a checkpoint, inspect /goal, then verify completion. Ask before changing any goal; preserve existing work.",
-              display: true,
+              display: false,
             },
             { triggerTurn: true },
           );
@@ -739,7 +737,8 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
         } else if (command === "show") {
           hiddenScopes.delete(scopeId);
         } else {
-          if (await runtime.get(scopeId))
+          const current = await runtime.get(scopeId);
+          if (current && current.status !== "complete")
             throw new Error(
               "This session already has a goal. Use /goal to inspect it or /goal update to edit it.",
             );
@@ -750,7 +749,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
                 "Discuss scope, constraints, done criteria, evidence, and limits; call create_goal after user confirmation.",
                 `Goal idea (user data): ${input}`,
               ].join("\n"),
-              display: true,
+              display: false,
             },
             { triggerTurn: true },
           );

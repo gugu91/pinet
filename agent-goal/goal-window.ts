@@ -151,7 +151,8 @@ export class GoalWindow implements Component {
       return;
     }
     if (key === "l") this.onAction("links");
-    else if (key === "e") this.openTextForm("edit");
+    else if (key === "n" && this.goal.status === "complete") this.openTextForm("create");
+    else if (key === "e" && this.goal.status !== "complete") this.openTextForm("edit");
     else if (key === "b" && this.goal.status !== "complete") this.openBudgetForm();
     else if (key === "s" && this.goal.status !== "complete") {
       this.mode = "snooze";
@@ -406,7 +407,9 @@ export class GoalWindow implements Component {
     const goal = this.goal!;
     const status = goal.snoozedUntil
       ? `SNOOZED UNTIL ${goal.snoozedUntil}`
-      : goal.status.toUpperCase();
+      : goal.status === "complete"
+        ? "DONE"
+        : goal.status.toUpperCase();
     lines.push(
       row(
         ` ${this.theme.fg(goal.status === "complete" ? "success" : "accent", `${goalStatusEmoji(goal)} ${status}`)}`,
@@ -457,7 +460,7 @@ export class GoalWindow implements Component {
     const footer = this.confirmClose
       ? "x again to close goal · esc cancel"
       : goal.status === "complete"
-        ? "x close goal · esc close overlay"
+        ? "n new goal · x clear Done · esc close overlay"
         : "e edit · b limits · s snooze · x close goal · esc close overlay";
     lines.push(row(), row(` ${this.theme.fg("dim", footer)}`));
     this.finish(lines, row, border, innerWidth);

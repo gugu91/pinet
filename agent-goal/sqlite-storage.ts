@@ -968,6 +968,7 @@ export class SqliteGoalStorage implements GoalStorage {
   async replaceContinuationClaim(
     claim: GoalContinuationClaim,
     expectedClaimId: string,
+    recoverAt?: string,
   ): Promise<boolean> {
     const result = this.db
       .prepare(
@@ -977,7 +978,7 @@ export class SqliteGoalStorage implements GoalStorage {
          last_error = ?, updated_at = ? WHERE scope_id = ? AND claim_id = ?
          AND goal_id = ? AND EXISTS (
            SELECT 1 FROM agent_goals WHERE scope_id = ? AND id = ? AND status = 'active'
-         )`,
+         ) AND (? IS NULL OR expires_at <= ? OR (state = 'deferred' AND available_at <= ?))`,
       )
       .run(
         claim.goalId,
@@ -997,6 +998,9 @@ export class SqliteGoalStorage implements GoalStorage {
         claim.goalId,
         claim.scopeId,
         claim.goalId,
+        recoverAt ?? null,
+        recoverAt ?? null,
+        recoverAt ?? null,
       );
     return result.changes === 1;
   }
@@ -1048,6 +1052,23 @@ export class SqliteGoalStorage implements GoalStorage {
       .prepare("DELETE FROM agent_goal_continuations WHERE scope_id = ? AND claim_id = ?")
       .run(scopeId, expectedClaimId);
     return result.changes === 1;
+  }
+
+  async deleteObsoleteContinuationClaim(
+    scopeId: string,
+    expectedClaimId: string,
+  ): Promise<boolean> {
+    return (
+      this.db
+        .prepare(
+          `DELETE FROM agent_goal_continuations
+      WHERE scope_id = ? AND claim_id = ? AND NOT EXISTS (
+        SELECT 1 FROM agent_goals WHERE scope_id = agent_goal_continuations.scope_id
+          AND id = agent_goal_continuations.goal_id AND version = agent_goal_continuations.goal_version
+      )`,
+        )
+        .run(scopeId, expectedClaimId).changes === 1
+    );
   }
 
   close(): void {

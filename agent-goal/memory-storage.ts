@@ -267,6 +267,7 @@ export class MemoryGoalStorage implements GoalStorage {
   async replaceContinuationClaim(
     claim: GoalContinuationClaim,
     expectedClaimId: string,
+    recoverAt?: string,
   ): Promise<boolean> {
     const current = this.claims.get(claim.scopeId);
     const goal = this.goals.get(claim.scopeId);
@@ -280,6 +281,12 @@ export class MemoryGoalStorage implements GoalStorage {
     ) {
       return false;
     }
+    if (
+      recoverAt &&
+      Date.parse(current.expiresAt) > Date.parse(recoverAt) &&
+      !(current.state === "deferred" && Date.parse(current.availableAt) <= Date.parse(recoverAt))
+    )
+      return false;
     this.claims.set(claim.scopeId, { ...claim, goalVersion: goal.version });
     return true;
   }
@@ -307,6 +314,17 @@ export class MemoryGoalStorage implements GoalStorage {
   async deleteContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean> {
     const current = this.claims.get(scopeId);
     if (!current || current.claimId !== expectedClaimId) return false;
+    return this.claims.delete(scopeId);
+  }
+
+  async deleteObsoleteContinuationClaim(
+    scopeId: string,
+    expectedClaimId: string,
+  ): Promise<boolean> {
+    const claim = this.claims.get(scopeId);
+    if (!claim || claim.claimId !== expectedClaimId) return false;
+    const goal = this.goals.get(scopeId);
+    if (goal?.id === claim.goalId && goal.version === claim.goalVersion) return false;
     return this.claims.delete(scopeId);
   }
 
