@@ -164,7 +164,11 @@ export interface GoalStorage {
   deleteTerminalCandidate(scopeId: string, expectedCandidateId: string): Promise<boolean>;
   getContinuationClaim(scopeId: string): Promise<GoalContinuationClaim | undefined>;
   createContinuationClaim(claim: GoalContinuationClaim): Promise<boolean>;
-  replaceContinuationClaim(claim: GoalContinuationClaim, expectedClaimId: string): Promise<boolean>;
+  replaceContinuationClaim(
+    claim: GoalContinuationClaim,
+    expectedClaimId: string,
+    recoverAt?: string,
+  ): Promise<boolean>;
   acknowledgeContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean>;
   deleteContinuationClaim(scopeId: string, expectedClaimId: string): Promise<boolean>;
   close(): void;

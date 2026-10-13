@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentGoal, GoalEvaluation, GoalStorage } from "./domain.js";
 import { MemoryGoalStorage } from "./memory-storage.js";
 import { SqliteGoalStorage } from "./sqlite-storage.js";
-import { BLOCKED_RECHECK_INTERVAL_MS, GoalRuntime } from "./runtime.js";
+import { BLOCKED_RECHECK_INTERVAL_MS, GoalRuntime, type GoalRuntimeOptions } from "./runtime.js";
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -25,7 +25,7 @@ describe.each(["memory", "sqlite"])("blocked recovery races (%s)", (backend) => 
   const schedule = vi.fn();
   const scheduler = { schedule, cancel: vi.fn(), close: vi.fn() };
 
-  const makeRuntime = (): GoalRuntime => {
+  const makeRuntime = (options: GoalRuntimeOptions = {}): GoalRuntime => {
     const runtime = new GoalRuntime(
       storage,
       { evaluate },
@@ -33,6 +33,7 @@ describe.each(["memory", "sqlite"])("blocked recovery races (%s)", (backend) => 
       () => new Date(now),
       {
         wakeScheduler: scheduler,
+        ...options,
       },
     );
     runtimes.push(runtime);
@@ -161,5 +162,95 @@ describe.each(["memory", "sqlite"])("blocked recovery races (%s)", (backend) => 
       state: "started",
       claimId: continueIfIdle.mock.calls[0][1].claimId,
     });
+  });
+
+  it.each(["live", "expired"])(
+    "fences dispatch while the creator of a %s claim is stalled",
+    async (lease) => {
+      const observed = deferred<void>();
+      const release = deferred<void>();
+      const first = makeRuntime({
+        claimTtlMs: 1_000,
+        eventSink: {
+          record: async (event) => {
+            if (event.type === "goal.continuation_claimed") {
+              observed.resolve();
+              await release.promise;
+            }
+          },
+        },
+      });
+      const second = makeRuntime({ claimTtlMs: 1_000 });
+      await first.create("session", "ship");
+      await first.settle("session", { latestOutput: "waiting" });
+      now += BLOCKED_RECHECK_INTERVAL_MS;
+      const recovering = first.recover("session");
+      await observed.promise;
+      const original = await storage.getContinuationClaim("session");
+      if (lease === "expired") now += 1_000;
+      await second.recover("session");
+      expect(continueIfIdle).toHaveBeenCalledTimes(lease === "live" ? 0 : 1);
+      if (lease === "expired")
+        expect((await storage.getContinuationClaim("session"))?.claimId).not.toBe(
+          original?.claimId,
+        );
+      release.resolve();
+      await recovering;
+      expect(continueIfIdle).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("reschedules a benign version change after blocked reactivation", async () => {
+    const observed = deferred<void>();
+    const release = deferred<void>();
+    const runtime = makeRuntime({
+      eventSink: {
+        record: async (event) => {
+          if (event.type === "goal.status_changed" && event.previousStatus === "blocked") {
+            observed.resolve();
+            await release.promise;
+          }
+        },
+      },
+    });
+    await runtime.create("session", "ship");
+    await runtime.settle("session", { latestOutput: "waiting" });
+    now += BLOCKED_RECHECK_INTERVAL_MS;
+    schedule.mockClear();
+    const recovering = runtime.recover("session");
+    await observed.promise;
+    await runtime.updateBudget("session", { maxIterations: 3 });
+    release.resolve();
+    await recovering;
+    expect(schedule).toHaveBeenCalledWith(
+      "session",
+      new Date(now).toISOString(),
+      expect.any(Function),
+    );
+    const wake = schedule.mock.calls.at(-1)?.[2] as () => void;
+    wake();
+    await vi.waitFor(() => expect(continueIfIdle).toHaveBeenCalledTimes(1));
+  });
+
+  it("reschedules when budget expansion defeats the budget-limited CAS", async () => {
+    const runtime = makeRuntime();
+    await runtime.create("session", "ship", { maxIterations: 1 });
+    await runtime.settle("session", { latestOutput: "waiting" });
+    now += BLOCKED_RECHECK_INTERVAL_MS;
+    schedule.mockClear();
+    const replace = storage.replace.bind(storage);
+    vi.spyOn(storage, "replace").mockImplementationOnce(async (goal, version) => {
+      await runtime.updateBudget("session", { maxIterations: 2 });
+      return replace(goal, version);
+    });
+    await runtime.recover("session");
+    expect(schedule).toHaveBeenLastCalledWith(
+      "session",
+      new Date(now + BLOCKED_RECHECK_INTERVAL_MS).toISOString(),
+      expect.any(Function),
+    );
+    now += BLOCKED_RECHECK_INTERVAL_MS;
+    await runtime.recover("session");
+    expect(continueIfIdle).toHaveBeenCalledTimes(1);
   });
 });

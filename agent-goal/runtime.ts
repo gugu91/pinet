@@ -502,8 +502,9 @@ export class GoalRuntime {
       let goal = await this.storage.get(scopeId);
       while (goal?.status === "blocked") {
         if (this.budgetExhausted(goal)) {
-          await this.markBudgetLimited(goal);
-          return;
+          if (await this.markBudgetLimited(goal)) return;
+          goal = await this.storage.get(scopeId);
+          continue;
         }
         const wakeAt = this.blockedWakeAt(goal);
         if (Date.parse(wakeAt) > this.now().getTime()) {
@@ -563,7 +564,7 @@ export class GoalRuntime {
       }
       if (claim) {
         const claimIsLive = Date.parse(claim.expiresAt) > now;
-        if (claimIsLive && claim.state === "started") {
+        if (claimIsLive && (claim.state === "started" || claim.state === "claimed")) {
           this.scheduleRecovery(scopeId, claim.expiresAt);
           return;
         }
@@ -571,8 +572,33 @@ export class GoalRuntime {
           this.scheduleRecovery(scopeId, claim.availableAt);
           return;
         }
+        const recoveredClaim: GoalContinuationClaim = {
+          ...claim,
+          claimId: randomUUID(),
+          state: "claimed",
+          expiresAt: new Date(now + this.claimTtlMs).toISOString(),
+          updatedAt: this.now().toISOString(),
+        };
+        if (
+          !(await this.storage.replaceContinuationClaim(
+            recoveredClaim,
+            claim.claimId,
+            this.now().toISOString(),
+          ))
+        ) {
+          const latestClaim = await this.storage.getContinuationClaim(scopeId);
+          this.scheduleRecovery(
+            scopeId,
+            latestClaim
+              ? latestClaim.state === "deferred"
+                ? latestClaim.availableAt
+                : latestClaim.expiresAt
+              : this.now().toISOString(),
+          );
+          return;
+        }
         await this.record({ type: "goal.recovered", goal });
-        await this.runContinuationClaim(goal, claim);
+        await this.runContinuationClaim(goal, recoveredClaim);
         return;
       }
       await this.record({ type: "goal.recovered", goal });
@@ -847,13 +873,11 @@ export class GoalRuntime {
     const lifecycleKind = goal.nextContinuationKind ?? kind;
     const existingClaim = await this.storage.getContinuationClaim(goal.scopeId);
     const currentGoal = await this.storage.get(goal.scopeId);
-    if (
-      !currentGoal ||
-      currentGoal.id !== goal.id ||
-      currentGoal.version !== goal.version ||
-      currentGoal.status !== "active"
-    )
+    if (!currentGoal || currentGoal.id !== goal.id || currentGoal.status !== "active") return;
+    if (currentGoal.version !== goal.version) {
+      this.scheduleRecovery(goal.scopeId, currentGoal.snoozedUntil ?? this.now().toISOString());
       return;
+    }
     if (existingClaim) {
       if (existingClaim.goalId === goal.id && existingClaim.goalVersion >= goal.version) {
         return;
@@ -916,6 +940,10 @@ export class GoalRuntime {
       }
       const waitMs = Date.parse(claim.availableAt) - this.now().getTime();
       if (waitMs > 0) await this.delay(waitMs);
+      if (Date.parse(claim.expiresAt) <= this.now().getTime()) {
+        this.scheduleRecovery(goal.scopeId, this.now().toISOString());
+        return;
+      }
       let result;
       try {
         result = await this.continuation.continueIfIdle(goal, {
@@ -1033,7 +1061,7 @@ export class GoalRuntime {
     );
   }
 
-  private async markBudgetLimited(goal: AgentGoal): Promise<void> {
+  private async markBudgetLimited(goal: AgentGoal): Promise<boolean> {
     const next: AgentGoal = {
       ...goal,
       status: "budget_limited",
@@ -1044,7 +1072,10 @@ export class GoalRuntime {
     if (await this.storage.replace(next, goal.version)) {
       this.wakeScheduler.cancel(goal.scopeId);
       await this.record({ type: "goal.status_changed", goal: next, previousStatus: goal.status });
+      return true;
     }
+    this.scheduleRecovery(goal.scopeId, this.now().toISOString());
+    return false;
   }
 
   private blockedWakeAt(goal: AgentGoal): string {
