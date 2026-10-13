@@ -31,8 +31,9 @@ pnpm --filter @pinet/tmux build
 pi install ./tmux          # or try once: pi -e ./tmux/dist/index.js
 ```
 
-Rebuild after pulling. Run `/reload` in already-open Pi sessions; each session
-starts publishing once reloaded. Check with `/tmux status`.
+Rebuild after pulling, then **restart** open Pi sessions (e.g. exit and `pi -c`).
+`/reload` is enough for a first install, but after an update it can keep running
+the previously loaded code. Check with `/tmux status`.
 
 Don't run this alongside another Pi/tmux state extension in the same pane.
 

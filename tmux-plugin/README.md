@@ -20,7 +20,8 @@ step is needed for this plugin.
 ## Quick start
 
 1. **Install the Pi publisher** (see [its README](../tmux/README.md#install)),
-   then run `/reload` in each open Pi session (or restart it).
+   then run `/reload` in each open Pi session. After _updating_ the publisher,
+   restart Pi sessions instead; `/reload` can keep the previous code.
 2. **Install this plugin** with TPM by adding it to your plugin list:
 
    ```tmux
@@ -114,13 +115,13 @@ helper from your own script; see
 
 ## Troubleshooting
 
-| Symptom                                       | Likely cause and fix                                                                                                               |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Literal `#{pi_…}` text in the status bar      | Plugin ran before the format was defined, or the theme regenerated it. Load the plugin after your theme, then reload.              |
-| Placeholders render empty in Pi windows       | Publisher not loaded in that Pi. Install it and run `/reload`; `/tmux status` in Pi should list the pane.                          |
-| `pane-focus-in[1079] is occupied` on load     | Another plugin uses that hook slot. Nothing was changed; free the slot or remove the other hook.                                   |
-| Stopped working after switching Node versions | The Node path is captured at load. Reload tmux config with Node 24+ on tmux's `PATH`.                                              |
-| State is not cleared when you return          | Ensure the plugin loaded (it enables `focus-events` and installs the hook). Check with `tmux show-hooks -g 'pane-focus-in[1079]'`. |
+| Symptom                                       | Likely cause and fix                                                                                                                 |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Literal `#{pi_…}` text in the status bar      | Plugin ran before the format was defined, or the theme regenerated it. Load the plugin after your theme, then reload.                |
+| Placeholders render empty in Pi windows       | Publisher not loaded, or still running pre-update code. Install it, then restart that Pi; `/tmux status` in Pi should list the pane. |
+| `pane-focus-in[1079] is occupied` on load     | Another plugin uses that hook slot. Nothing was changed; free the slot or remove the other hook.                                     |
+| Stopped working after switching Node versions | The Node path is captured at load. Reload tmux config with Node 24+ on tmux's `PATH`.                                                |
+| State is not cleared when you return          | Ensure the plugin loaded (it enables `focus-events` and installs the hook). Check with `tmux show-hooks -g 'pane-focus-in[1079]'`.   |
 
 ## Focus acknowledgement
 
