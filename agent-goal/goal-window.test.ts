@@ -31,6 +31,17 @@ const checkpoints: GoalCheckpoint[] = [1, 2, 3, 4].map((number) => ({
 }));
 
 describe("GoalWindow", () => {
+  it("offers a new goal from Done instead of editing the completed objective", () => {
+    const done = vi.fn();
+    const window = new GoalWindow({ ...goal, status: "complete" }, undefined, theme, done);
+    expect(window.render(66).join("\n")).toContain("n new goal");
+    window.handleInput("e");
+    expect(window.render(66).join("\n")).toContain("✅ DONE");
+    window.handleInput("n");
+    expect(window.render(66).join("\n")).not.toContain("✅ DONE");
+    expect(window.render(66).join("\n")).not.toContain(goal.objective);
+    window.dispose();
+  });
   it("exposes a current-goal links shortcut without hijacking form input", () => {
     const done = vi.fn();
     const window = new GoalWindow(goal, undefined, theme, done);
@@ -317,7 +328,7 @@ describe("GoalWindow", () => {
     ["paused", "⏸️ PAUSED"],
     ["blocked", "⛔ BLOCKED"],
     ["budget_limited", "⏱️ BUDGET_LIMITED"],
-    ["complete", "✅ COMPLETE"],
+    ["complete", "✅ DONE"],
   ] as const)("renders %s status with its emoji", (status, expected) => {
     const window = new GoalWindow({ ...goal, status }, undefined, theme, vi.fn());
     expect(window.render(60).join("\n")).toContain(expected);

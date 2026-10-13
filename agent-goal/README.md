@@ -41,7 +41,9 @@ Name changes are visible immediately. Objective changes are fenced from stale ev
 
 Goals are session-scoped: a goal only continues while its own Pi session is running. When another session still holds an unfinished goal, session start shows a short notice and `/goal list` prints each unfinished goal with its status, accounted turns, last settle time, and the `pi --session <id>` command that resumes it.
 
-Only one current goal may exist per Pi session. A verified completion clears that current goal so another can be created; `/goal close` records completion before clearing, while `/goal clear` removes it immediately. Clearing removes its persisted checkpoints as well.
+Only one unfinished goal may exist per Pi session. Verified completion leaves a visible **✅ Done** result and checkpoints; Done never continues automatically and does not prevent creating a new goal. Starting a new goal replaces Done (and its checkpoints), while saved session links remain. Press `n` in the Done overlay to create the next goal. `/goal close` records completion before clearing; `/goal clear` removes the current goal immediately, including its checkpoints.
+
+Blocked goals get an ordinary prompted recheck every **15 minutes**, including after session restart. The prompt asks the agent to recheck, continue if resolved, otherwise try to unblock or escalate with precise help needed. If Pinet is connected, escalate in the owning Slack thread; do not repeat an escalation unless something changed. This is prompt guidance, not an automatic Slack post or blocker classifier. The recheck uses the usual continuation claim and limits; clearing, completion, snooze, and shutdown prevent the old blocked wake from continuing. Ask before clearing stale or abandoned goals.
 
 ## Agent tools and checkpoints
 

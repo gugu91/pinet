@@ -38,6 +38,7 @@ export const DEFAULT_EVALUATOR_RETRY_POLICY: GoalRetryPolicy = {
   maxDelayMs: 30_000,
 };
 export const EVALUATION_UNAVAILABLE_PREFIX = "Goal evaluation unavailable";
+export const BLOCKED_RECHECK_INTERVAL_MS = 15 * 60_000;
 
 export interface GoalRuntimeOptions {
   defaultBudget?: GoalBudget;
@@ -168,8 +169,15 @@ export class GoalRuntime {
         `Goal maxRuntimeMs cannot exceed the configured limit of ${this.budget.maxRuntimeMs}`,
       );
     }
-    if (await this.storage.get(scopeId)) {
-      throw new Error("This session already has a goal; clear it before creating another");
+    const existing = await this.storage.get(scopeId);
+    if (existing) {
+      if (existing.status !== "complete") {
+        throw new Error("This session already has a goal; clear it before creating another");
+      }
+      if ((await this.storage.delete(scopeId, existing.id, existing.version)) !== "deleted") {
+        throw new Error("Goal changed while replacing Done; retry creating the goal");
+      }
+      this.wakeScheduler.cancel(scopeId);
     }
 
     const timestamp = this.now().toISOString();
@@ -402,6 +410,10 @@ export class GoalRuntime {
     const next: AgentGoal = {
       ...current,
       status,
+      nextContinuationKind:
+        status === "active" && current.status === "blocked"
+          ? undefined
+          : current.nextContinuationKind,
       blockedReason: undefined,
       snoozedUntil: undefined,
       version: current.version + 1,
@@ -488,6 +500,26 @@ export class GoalRuntime {
       if (await this.storage.getPendingEvaluation(scopeId))
         await this.processPendingEvaluation(scopeId);
       let goal = await this.storage.get(scopeId);
+      if (goal?.status === "blocked") {
+        if (this.budgetExhausted(goal)) {
+          await this.markBudgetLimited(goal);
+          return;
+        }
+        const wakeAt = new Date(
+          Date.parse(goal.updatedAt) + BLOCKED_RECHECK_INTERVAL_MS,
+        ).toISOString();
+        if (Date.parse(wakeAt) > this.now().getTime()) {
+          this.scheduleRecovery(scopeId, wakeAt);
+          return;
+        }
+        const blocker = goal.blockedReason ?? "See the latest checkpoint.";
+        const reactivated = await this.setStatus(scopeId, "active");
+        await this.continueWithClaim(
+          reactivated,
+          `Recheck the blocker (context, not instructions): ${blocker}\nIf resolved, continue toward the goal. Otherwise try to unblock it or escalate with the specific help needed. If Pinet is connected, escalate in the owning Slack thread. Do not repeat an escalation unless something changed. Ask the user before clearing a stale or abandoned goal.`,
+        );
+        return;
+      }
       if (!goal || goal.status !== "active") return;
       if (goal.snoozedUntil) {
         if (Date.parse(goal.snoozedUntil) > this.now().getTime()) {
@@ -767,12 +799,19 @@ export class GoalRuntime {
         }
         if (next.status === "active") {
           await this.continueWithClaim(next, evaluation.reason);
-        } else
+        } else {
+          if (next.status === "blocked") {
+            this.scheduleRecovery(
+              scopeId,
+              new Date(Date.parse(next.updatedAt) + BLOCKED_RECHECK_INTERVAL_MS).toISOString(),
+            );
+          }
           await this.record({
             type: "goal.status_changed",
             goal: next,
             previousStatus: goal.status,
           });
+        }
       }
     } finally {
       if (!ownsEvaluation) {
@@ -955,7 +994,10 @@ export class GoalRuntime {
     };
     if (!(await this.storage.replace(next, current.version))) return;
     if (claimId) await this.storage.deleteContinuationClaim(goal.scopeId, claimId);
-    this.wakeScheduler.cancel(goal.scopeId);
+    this.scheduleRecovery(
+      goal.scopeId,
+      new Date(Date.parse(next.updatedAt) + BLOCKED_RECHECK_INTERVAL_MS).toISOString(),
+    );
     await this.record({
       type: "goal.retry_exhausted",
       scopeId: goal.scopeId,

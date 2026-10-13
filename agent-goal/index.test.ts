@@ -243,7 +243,7 @@ describe("registerAgentGoal", () => {
     expect(setStatus).toHaveBeenCalledTimes(callsBeforeShutdown);
   });
 
-  it("clears a goal completed while recovering a pending evaluation", async () => {
+  it("retains Done after recovering a pending evaluation", async () => {
     const handlers = new Map<string, GoalEventHandler>();
     const pi = {
       on(name: string, handler: GoalEventHandler) {
@@ -293,7 +293,7 @@ describe("registerAgentGoal", () => {
 
     await handlers.get("session_start")?.({}, context);
 
-    expect(await storage.get("session-1")).toBeUndefined();
+    expect(await storage.get("session-1")).toMatchObject({ status: "complete" });
   });
 
   it.each([true, false])(
@@ -369,7 +369,7 @@ describe("registerAgentGoal", () => {
             })
           : expect.objectContaining({ terminalCandidate: undefined }),
       );
-      expect(await storage.get("session-1")).toBeUndefined();
+      expect(await storage.get("session-1")).toMatchObject({ status: "complete" });
     },
   );
 
@@ -1188,15 +1188,13 @@ describe("registerAgentGoal", () => {
       expect(await storage.listLinks("session-1")).toEqual([
         expect.objectContaining({ title: "Deliverable", goalName: "Finish task" }),
       ]);
-      if (outcome === "complete") expect(await storage.get("session-1")).toBeUndefined();
-      else
-        expect(await storage.get("session-1")).toMatchObject({
-          objective: "finish the approved task",
-          status: "blocked",
-          name: "Finish task",
-          budget: { maxIterations: 8 },
-          usage: { iterations: 0, tokens: 0 },
-        });
+      expect(await storage.get("session-1")).toMatchObject({
+        objective: "finish the approved task",
+        status: outcome,
+        name: "Finish task",
+        budget: { maxIterations: 8 },
+        usage: { iterations: 0, tokens: 0 },
+      });
       expect(continuation.continueIfIdle).not.toHaveBeenCalled();
       expect(inspected.content[0]).toMatchObject({ type: "text" });
     },
