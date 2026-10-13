@@ -32,7 +32,7 @@ Plan: create the package at the never-published `0.2.25` from the **pre-bump com
    pnpm bootstrap:npm                              # dry-run: full-set build, metadata, types, npm publish --dry-run
    cd tmux && npm publish --access public          # prepack rebuilds dist/
    npm view @pinet/tmux@0.2.25 version             # verify
-   cd ../.. && git worktree remove .worktrees/bootstrap-tmux-0.2.25
+   cd ~/src/gugu910/extensions && git worktree remove .worktrees/bootstrap-tmux-0.2.25
    ```
 
    `@pinet/tmux` has no `@pinet/*` dependencies, so no workspace specifier rewrite is needed.
