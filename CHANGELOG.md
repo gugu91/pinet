@@ -41,7 +41,12 @@ Pinet v0.2.26 introduces `@pinet/tmux`, an optional Pi pane-state publisher for 
 - No configuration or database migration is required.
 - `@pinet/tmux` is opt-in: install `npm:@pinet/tmux` in Pi, and optionally the companion TPM plugin `gugu91/pinet`, then add placeholders to your own tmux status formats. See `tmux/README.md` and `tmux-plugin/README.md`.
 - After publication, update installed packages and **restart** Pi sessions (`/reload` keeps already-loaded package modules). Preparing or merging this release PR does not update existing installations.
-- `@pinet/agent-goal` custom runtime storage/continuation adapters must honor the supplied commit/dispatch `AbortSignal` immediately before their side effect, as the built-in Memory/SQLite adapters and provider evaluator do, so a cancelled network-recovery attempt cannot commit or dispatch.
+- `@pinet/agent-goal` custom runtime adapters need migration; the built-in Memory/SQLite storage and provider evaluator already comply. Custom `GoalStorage` adapters must:
+  - implement the new `deleteObsoleteContinuationClaim(scopeId, expectedClaimId)`: delete the claim only if it matches `expectedClaimId` and no longer belongs to the stored goal's current id and version; otherwise return `false`;
+  - honor `replaceContinuationClaim(claim, expectedClaimId, recoverAt?)`: when `recoverAt` is given, replace only if the current claim has expired by then, or is deferred and already available by then;
+  - honor `commitEvaluation(goal, version, evaluationId, options?)`: return `false` without writing if `options.signal` is aborted, and persist the goal's `snoozedUntil` and `nextContinuationKind` only when `options.statusTransition` is `true` (otherwise keep the stored values).
+
+  Custom `GoalEvaluator`s receive an optional `signal` as `evaluate`'s third argument, and continuation senders receive `GoalContinuationRequest.signal`; both should check it immediately before side effects so a cancelled network-recovery attempt cannot commit or dispatch.
 
 ### Included pull requests
 
