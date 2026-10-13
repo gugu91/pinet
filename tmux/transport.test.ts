@@ -17,6 +17,19 @@ test("CLI decoding is capability-gated and preserves literal slashes and trailin
   assert.equal(decodeOutput(raw + "\n", false), raw);
 });
 
+test("process identity ignores the caller's locale and timezone", async () => {
+  const original = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL };
+  try {
+    Object.assign(process.env, { TZ: "UTC", LC_ALL: "C" });
+    const reference = await processIdentity(process.pid);
+    Object.assign(process.env, { TZ: "Pacific/Kiritimati", LC_ALL: "fr_FR.UTF-8" });
+    assert.equal(await processIdentity(process.pid), reference);
+  } finally {
+    for (const [key, value] of Object.entries(original))
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+  }
+});
 test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-tmux-test-"));
   const tmux = new Tmux(join(dir, "socket"));
@@ -60,6 +73,11 @@ test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async 
       state: "working",
       unread: false,
     };
+    // tmux treats a trailing ";" in argv as a command separator; names must survive claim verbatim.
+    for (const name of ["normal;", ";"]) {
+      await tmux.claim(pane1, record, { name, attention: record.owner });
+      assert.equal(await tmux.run(["show-options", "-pqv", "-t", pane1, "@pi_name"]), name);
+    }
     await tmux.claim(pane1, record);
     await tmux.claim(pane2, {
       ...record,

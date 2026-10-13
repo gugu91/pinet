@@ -55,6 +55,10 @@ session summary.
 | `#{pi_window_summary}`  | Plain text, e.g. `api + 2 others · working 1 · done 2 · unread 1`              |
 | `#{pi_session_summary}` | The same summary across the whole session                                      |
 
+Each placeholder becomes a `#(…)` status job that reads the global option
+`@pi_query` (the plugin's Node and query paths), so install paths never appear
+inside your formats. Jobs refresh at your `status-interval`.
+
 In windows with no Pi, text placeholders are empty and counts are `0`, so they
 work as tmux conditionals: `#{?#{pi_count},…,…}`. Placeholders can be nested inside
 conditionals and comparisons.
@@ -127,7 +131,7 @@ only Pi-owned panes and leaves other hook slots alone. Reloading is idempotent.
    bash /absolute/path/to/pinet/pinet.tmux uninstall
    ```
 
-   This removes only the hook the plugin installed. `focus-events` stays enabled
+   This removes only the hook the plugin installed, and `@pi_query`. `focus-events` stays enabled
    because other plugins may rely on it.
 
 3. Remove the plugin line, reload tmux config and run TPM's clean

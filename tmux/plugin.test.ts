@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { configure, expand, HOOK } from "../tmux-plugin/plugin.ts";
+import { configure, expand, HOOK, QUERY } from "../tmux-plugin/plugin.ts";
 import { Tmux, processIdentity } from "./transport.ts";
 const exec = promisify(execFile);
 
@@ -30,8 +30,12 @@ test(
         "sleep 120",
       ]);
       const before = await tmux.run(["show-options", "-g"]);
-      const query = fileURLToPath(new URL("./status.ts", import.meta.url));
-      await configure(tmux, process.execPath, query);
+      // Format-significant characters in install paths must not reach tmux's format parser.
+      const node = join(dir, "node,a}b");
+      await symlink(process.execPath, node);
+      const query = join(dir, "status,c}d.ts");
+      await symlink(fileURLToPath(new URL("./status.ts", import.meta.url)), query);
+      await configure(tmux, node, query);
       // No explicit placeholders: nothing in the actual layout should change.
       for (const line of before
         .split("\n")
@@ -45,15 +49,12 @@ test(
       await tmux.run(["set-option", "-g", "status-right", right]);
       await tmux.run(["set-option", "-w", "-t", pane, "window-status-current-format", local]);
       await tmux.run(["set-hook", "-g", "pane-focus-in[123]", "display-message retained"]);
-      await configure(tmux, process.execPath, query);
+      await configure(tmux, node, query);
       assert.equal(await tmux.run(["show-options", "-gqv", "window-status-format"]), normal);
-      assert.equal(
-        await tmux.run(["show-options", "-gqv", "status-right"]),
-        expand(right, process.execPath, query),
-      );
+      assert.equal(await tmux.run(["show-options", "-gqv", "status-right"]), expand(right));
       assert.equal(
         await tmux.run(["show-options", "-wqv", "-t", pane, "window-status-current-format"]),
-        expand(local, process.execPath, query),
+        expand(local),
       );
       // Parse through tmux itself: nested conditionals must not leak command fragments into the label.
       assert.equal(
@@ -61,18 +62,19 @@ test(
         await tmux.run(["display-message", "-p", "-t", pane, "#[bold] #I #W #F"]),
       );
       const configured = await tmux.run(["show-options", "-g"]);
-      await configure(tmux, process.execPath, query);
+      await configure(tmux, node, query);
       assert.equal(await tmux.run(["show-options", "-g"]), configured);
       const hook = await tmux.run(["show-hooks", "-g", HOOK]);
       assert.ok(hook.includes("@pi_unread"));
-      await configure(tmux, process.execPath, query, true);
+      await configure(tmux, node, query, true);
       assert.equal((await tmux.run(["show-hooks", "-g", HOOK])).trim(), HOOK);
+      assert.equal(await tmux.run(["show-options", "-gqv", QUERY]), "");
       assert.ok((await tmux.run(["show-hooks", "-g", "pane-focus-in[123]"])).includes("retained"));
       await tmux.run(["set-hook", "-g", HOOK, "display-message user-owned"]);
       const after = await tmux.run(["show-options", "-g"]);
-      await assert.rejects(() => configure(tmux, process.execPath, query), /occupied/);
+      await assert.rejects(() => configure(tmux, node, query), /occupied/);
       assert.equal(await tmux.run(["show-options", "-g"]), after);
-      await configure(tmux, process.execPath, query, true);
+      await configure(tmux, node, query, true);
       assert.ok((await tmux.run(["show-hooks", "-g", HOOK])).includes("user-owned"));
     } finally {
       await tmux.run(["kill-server"]);
@@ -123,11 +125,10 @@ test(
         { ...record, state: "error" },
         { name: "other", attention: record.owner },
       );
-      const node = join(dir, "node ' $literal (space)");
+      const node = join(dir, "node ' $literal, (space)}");
       await symlink(process.execPath, node);
       const query = fileURLToPath(new URL("./status.ts", import.meta.url));
-      const window = await tmux.run(["display-message", "-p", "-t", pane, "#{window_id}"]);
-      const session = await tmux.run(["display-message", "-p", "-t", pane, "#{session_id}"]);
+      await configure(tmux, node, query);
       for (const [placeholder, expected] of [
         ["pi_state", "working"],
         ["pi_name", "ship it"],
@@ -135,13 +136,17 @@ test(
         ["pi_unread", "0"],
         ["pi_session_summary", "ship it · working"],
       ]) {
-        const job = expand(`#{${placeholder}}`, node, query)
-          .slice(2, -1)
-          .replace("#{window_id}", window)
-          .replace("#{session_id}", session);
+        // tmux format-expands a job's command before running it; reproduce that step with tmux itself.
+        const job = await tmux.run([
+          "display-message",
+          "-p",
+          "-t",
+          pane,
+          expand(`#{${placeholder}}`).slice(2, -1),
+        ]);
         assert.equal(
           (
-            await exec("bash", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,-1` } })
+            await exec("sh", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,-1` } })
           ).stdout.trim(),
           expected,
         );

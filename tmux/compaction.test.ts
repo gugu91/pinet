@@ -14,7 +14,7 @@ test("compaction overlays an active run and returns to working, without completi
   assert.equal(attentionChanged(compacting, complete), false);
 });
 test("manual compaction restores idle/done; failure becomes error; abort is not failure", () => {
-  const done = reduce(reduce(INITIAL, { type: "start" }), { type: "settled" });
+  const done = reduce(reduce(INITIAL, { type: "start" }), { type: "settled", aborted: false });
   for (const prior of [INITIAL, done]) {
     const compacting = reduce(prior, { type: "compact-start" });
     const complete = reduce(compacting, {

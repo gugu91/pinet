@@ -22,13 +22,15 @@ export function shellQuote(text: string): string {
     throw new Error("Unsupported executable/package path");
   return `'${text.replaceAll("'", `'"'"'`)}'`;
 }
-export function expand(format: string, node: string, query: string): string {
+/** Holds the shell-quoted node/query paths; jobs reference it so paths never reach tmux's format parser. */
+export const QUERY = "@pi_query";
+export function expand(format: string): string {
   let result = format;
   for (const [placeholder, [scope, mode]] of Object.entries(PLACEHOLDERS)) {
     const target = scope === "window" ? "#{window_id}" : "#{session_id}";
     result = result.replaceAll(
       `#{${placeholder}}`,
-      `#(${shellQuote(node)} ${shellQuote(query)} env ${scope} '${target}' ${mode})`,
+      `#(#{${QUERY}} env ${scope} '${target}' ${mode})`,
     );
   }
   return result;
@@ -45,6 +47,7 @@ export async function configure(
   if (remove) {
     if (saved && saved === current) await tmux.run(["set-hook", "-gu", HOOK]);
     await tmux.run(["set-option", "-gu", SAVED_HOOK]);
+    await tmux.run(["set-option", "-gu", QUERY]);
     return;
   }
   if (current.trim() !== HOOK && (!saved || saved !== current))
@@ -53,9 +56,10 @@ export async function configure(
   await tmux.run(["set-option", "-g", "focus-events", "on"]);
   await tmux.run(["set-hook", "-g", HOOK, FOCUS_HOOK]);
   await tmux.run(["set-option", "-g", SAVED_HOOK, await tmux.run(["show-hooks", "-g", HOOK])]);
+  await tmux.run(["set-option", "-g", QUERY, `${shellQuote(node)} ${shellQuote(query)}`]);
   for (const option of OPTIONS) {
     const original = await tmux.run(["show-options", "-gqv", option]);
-    const replacement = expand(original, node, query);
+    const replacement = expand(original);
     if (replacement !== original) await tmux.run(["set-option", "-g", option, replacement]);
   }
   // Preserve window-local overrides, including their themes, and expand only their explicit tokens.
@@ -63,7 +67,7 @@ export async function configure(
   for (const window of new Set(windows.split("\n").filter(Boolean))) {
     for (const option of OPTIONS.slice(2)) {
       const original = await tmux.run(["show-options", "-wqv", "-t", window, option]);
-      const replacement = expand(original, node, query);
+      const replacement = expand(original);
       if (replacement !== original)
         await tmux.run(["set-option", "-w", "-t", window, option, replacement]);
     }

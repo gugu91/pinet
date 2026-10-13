@@ -116,7 +116,9 @@ export default function tmuxPi(pi: ExtensionAPI) {
   pi.on("agent_before_settle", (event: { outcome: Outcome }, ctx) =>
     transition({ type: "outcome", outcome: event.outcome }, ctx),
   );
-  pi.on("agent_settled", (_event, ctx) => transition({ type: "settled" }, ctx));
+  pi.on("agent_settled", (event: { aborted: boolean }, ctx) =>
+    transition({ type: "settled", aborted: event.aborted }, ctx),
+  );
   pi.on("ui_prompt_start", (_event, ctx) => transition({ type: "prompt-start" }, ctx));
   pi.on("ui_prompt_end", (_event, ctx) => transition({ type: "prompt-end" }, ctx));
   pi.on("input", async (_event, ctx) => {

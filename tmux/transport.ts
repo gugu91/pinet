@@ -19,9 +19,14 @@ export interface Metadata {
   attention: string;
 }
 
+/** Start-time text is localized; publisher and queries may run under different locales/zones. */
+function psEnvironment(): NodeJS.ProcessEnv {
+  return { ...process.env, LC_ALL: "C", TZ: "UTC" };
+}
 export async function processIdentity(pid: number): Promise<string> {
   const { stdout } = await exec("ps", ["-p", String(pid), "-o", "lstart="], {
     timeout: 2000,
+    env: psEnvironment(),
   });
   if (!stdout.trim()) throw new Error("Process start time unavailable");
   return Buffer.from(stdout.trim()).toString("base64");
@@ -99,7 +104,8 @@ export class Tmux {
       "-t",
       pane,
       DISPLAY_NAME,
-      metadata.name,
+      // A trailing ";" in an argv element is tmux's command separator; "\\;" is its literal escape.
+      metadata.name.replace(/;$/, "\\;"),
       ";",
       "set-option",
       "-p",
@@ -163,6 +169,7 @@ export class Tmux {
     // Batch liveness check; matching start time also rejects a recycled PID. Do not mutate stale records here.
     const { stdout } = await exec("ps", ["-axo", "pid=,lstart="], {
       timeout: 2000,
+      env: psEnvironment(),
       maxBuffer: 4 * 1024 * 1024,
     });
     const processes = new Map<number, string>();

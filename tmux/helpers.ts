@@ -11,7 +11,7 @@ export interface Activity {
 export type Event =
   | { type: "start" }
   | { type: "outcome"; outcome: Outcome }
-  | { type: "settled" }
+  | { type: "settled"; aborted: boolean }
   | { type: "prompt-start" }
   | { type: "prompt-end" }
   | { type: "ack" }
@@ -57,8 +57,13 @@ export function reduce(activity: Activity, event: Event): Activity {
       return { ...activity, outcome: event.outcome };
     case "settled": {
       if (activity.base !== "working") return activity;
+      // Pi skips agent_before_settle on cancellation; settlement's flag is authoritative.
       const base =
-        activity.outcome === "aborted" ? "idle" : activity.outcome === "error" ? "error" : "done";
+        event.aborted || activity.outcome === "aborted"
+          ? "idle"
+          : activity.outcome === "error"
+            ? "error"
+            : "done";
       return {
         ...activity,
         base,

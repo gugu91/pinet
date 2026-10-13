@@ -128,20 +128,20 @@ test("publisher is TUI-only, owns only pane data, settles correctly and never cu
     assert.equal((await state()).state, "working");
     await emit("agent_before_settle", { outcome: "error" });
     assert.equal((await state()).state, "working");
-    await emit("agent_settled");
+    await emit("agent_settled", { aborted: false });
     assert.equal((await state()).state, "error");
     await Promise.all([
       emit("agent_start"),
       emit("agent_before_settle", { outcome: "completed" }),
-      emit("agent_settled"),
+      emit("agent_settled", { aborted: false }),
     ]);
     assert.equal((await state()).state, "done");
     await commands.get("tmux").handler("ack", ctx);
     assert.equal((await state()).unread, false);
     await emit("agent_start");
-    await emit("agent_before_settle", { outcome: "aborted" });
-    await emit("agent_settled");
+    await emit("agent_settled", { aborted: true });
     assert.equal((await state()).state, "idle");
+    assert.equal((await state()).unread, false);
     await emit("session_before_compact");
     await emit("session_compact_failed", { aborted: true });
     assert.equal((await state()).state, "idle");

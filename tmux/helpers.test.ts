@@ -26,7 +26,7 @@ test("completion waits for settlement, error and cancellation stay distinct", ()
   ] as const) {
     const pending = reduce(working, { type: "outcome", outcome });
     assert.equal(visibleState(pending), "working");
-    const settled = reduce(pending, { type: "settled" });
+    const settled = reduce(pending, { type: "settled", aborted: false });
     assert.equal(visibleState(settled), state);
     assert.equal(settled.unread, outcome !== "aborted");
   }
@@ -35,7 +35,7 @@ test("retry success supersedes a transient error", () => {
   let activity = reduce(INITIAL, { type: "start" });
   activity = reduce(activity, { type: "outcome", outcome: "error" });
   activity = reduce(activity, { type: "outcome", outcome: "completed" });
-  assert.equal(reduce(activity, { type: "settled" }).base, "done");
+  assert.equal(reduce(activity, { type: "settled", aborted: false }).base, "done");
 });
 test("nested dialogs stay blocked until all close; ack does not unblock", () => {
   let activity = reduce(INITIAL, { type: "start" });
@@ -52,7 +52,7 @@ test("nested dialogs stay blocked until all close; ack does not unblock", () => 
   assert.deepEqual(reduce(activity, { type: "prompt-end" }), activity);
 });
 test("dialogs restore idle or acknowledged completion without inventing an alert", () => {
-  const done = reduce(reduce(INITIAL, { type: "start" }), { type: "settled" });
+  const done = reduce(reduce(INITIAL, { type: "start" }), { type: "settled", aborted: false });
   for (const initial of [INITIAL, reduce(done, { type: "ack" })]) {
     const result = reduce(reduce(initial, { type: "prompt-start" }), {
       type: "prompt-end",
@@ -65,7 +65,7 @@ test("settlement behind a dialog preserves blocked state then reveals completion
   let activity = reduce(reduce(INITIAL, { type: "start" }), {
     type: "prompt-start",
   });
-  activity = reduce(activity, { type: "settled" });
+  activity = reduce(activity, { type: "settled", aborted: false });
   assert.equal(visibleState(activity), "blocked");
   activity = reduce(activity, { type: "prompt-end" });
   assert.equal(visibleState(activity), "done");
@@ -74,17 +74,18 @@ test("settlement behind a dialog preserves blocked state then reveals completion
 test("attention generation changes on alerts, not repeats, acknowledgements or cancellation", () => {
   const working = reduce(INITIAL, { type: "start" });
   const blocked = reduce(working, { type: "prompt-start" });
-  const done = reduce(working, { type: "settled" });
+  const done = reduce(working, { type: "settled", aborted: false });
   assert.equal(attentionChanged(working, blocked), true);
   assert.equal(attentionChanged(working, done), true);
   assert.equal(attentionChanged(blocked, reduce(blocked, { type: "prompt-start" })), false);
-  assert.equal(attentionChanged(done, reduce(done, { type: "settled" })), false);
+  assert.equal(attentionChanged(done, reduce(done, { type: "settled", aborted: false })), false);
   const acked = reduce(done, { type: "ack" });
   assert.equal(attentionChanged(done, acked), false);
-  assert.deepEqual(reduce(acked, { type: "settled" }), acked);
-  const aborted = reduce(reduce(working, { type: "outcome", outcome: "aborted" }), {
-    type: "settled",
-  });
+  assert.deepEqual(reduce(acked, { type: "settled", aborted: false }), acked);
+  // Real Pi cancellation: no agent_before_settle, only settlement's aborted flag.
+  const aborted = reduce(working, { type: "settled", aborted: true });
+  assert.equal(aborted.base, "idle");
+  assert.equal(aborted.unread, false);
   assert.equal(attentionChanged(working, aborted), false);
 });
 test("records roundtrip and invalid/untrusted option values are discarded", () => {
