@@ -9,6 +9,38 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.25] - 2026-10-13
+
+Pinet v0.2.25 prevents extension diagnostics from overwriting Pi's interactive editor. This entry describes the release candidate, not a completed publication.
+
+### Version verification
+
+- `pi-extensions` — `0.2.25` (private repo package)
+- `@pinet/transport-core` — `0.2.25`
+- `@pinet/broker-core` — `0.2.25`
+- `@pinet/pinet-core` — `0.2.25`
+- `@pinet/imessage-bridge` — `0.2.25`
+- `@pinet/slack-bridge` — `0.2.25`
+- `@pinet/model-aware-compaction` — `0.2.25`
+- `@pinet/agent-goal` — `0.2.25`
+
+### Fixed
+
+- `@pinet/model-aware-compaction`: debug completion, failure, fallback, and configuration diagnostics use Pi UI notifications when UI is available, rather than raw stderr output that could overwrite the input area. Headless sessions retain stderr diagnostics; configuration warnings are deduplicated per extension instance. Failures and fallback notices remain visible with debug disabled.
+- `@pinet/slack-bridge`: Slack scope-drift warnings use either UI notifications or headless stderr, not both.
+- The other five packages ship at the aligned version without additional functional changes.
+
+### Upgrade notes
+
+- No configuration or database migration is required. Debug mode can remain enabled.
+- After publication, update the installed packages and reload or restart Pi to load the corrected extension code. Preparing or merging this release PR does not update existing installations.
+
+### Included pull requests
+
+- [#1083](https://github.com/gugu91/pinet/pull/1083) — prevent extension diagnostics from corrupting the Pi editor
+
+See the [release checklist](plans/next-release.md) for readiness and publication gates. Tagging and publishing require separate maintainer approval.
+
 ## [0.2.24] - 2026-10-09
 
 Pinet v0.2.24 adds durable session links and pull-request pickers, a compact unseen-link footer, and a five-minute default goal snooze, alongside updated compaction prompt compatibility.
