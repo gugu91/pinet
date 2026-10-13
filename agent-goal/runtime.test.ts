@@ -683,11 +683,17 @@ describe("GoalRuntime", () => {
     const evaluator = { evaluate: vi.fn().mockRejectedValue(new Error("offline")) };
     const continuation = startedContinuation();
     const delay = vi.fn().mockResolvedValue(undefined);
-    const runtime = new GoalRuntime(new MemoryGoalStorage(), evaluator, continuation, undefined, {
-      evaluatorRetryPolicy: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 5_000 },
-      delay,
-      eventSink: { record: (event) => void events.push(event) },
-    });
+    const runtime = new GoalRuntime(
+      new MemoryGoalStorage(),
+      evaluator,
+      continuation,
+      () => new Date("2026-01-01T00:00:00Z"),
+      {
+        evaluatorRetryPolicy: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 5_000 },
+        delay,
+        eventSink: { record: (event) => void events.push(event) },
+      },
+    );
     await runtime.create("session-1", "ship");
 
     await runtime.settle("session-1", {
@@ -744,7 +750,7 @@ describe("GoalRuntime", () => {
       new MemoryGoalStorage(),
       evaluator,
       startedContinuation(),
-      undefined,
+      () => new Date("2026-01-01T00:00:00Z"),
       {
         delay,
       },
