@@ -873,10 +873,17 @@ export class GoalRuntime {
       this.scheduleRecovery(goal.scopeId, goal.snoozedUntil);
       return;
     }
+    if (this.closed) return;
     const lifecycleKind = goal.nextContinuationKind ?? kind;
     const existingClaim = await this.storage.getContinuationClaim(goal.scopeId);
     const currentGoal = await this.storage.get(goal.scopeId);
-    if (!currentGoal || currentGoal.id !== goal.id || currentGoal.status !== "active") return;
+    if (
+      this.closed ||
+      !currentGoal ||
+      currentGoal.id !== goal.id ||
+      currentGoal.status !== "active"
+    )
+      return;
     if (currentGoal.version !== goal.version) {
       this.scheduleRecovery(goal.scopeId, currentGoal.snoozedUntil ?? this.now().toISOString());
       return;
@@ -914,6 +921,7 @@ export class GoalRuntime {
 
   private async runContinuationClaim(goal: AgentGoal, claim: GoalContinuationClaim): Promise<void> {
     for (let attempt = claim.attempt + 1; attempt <= this.retryPolicy.maxAttempts; attempt += 1) {
+      if (this.closed) return;
       const currentGoal = await this.storage.get(goal.scopeId);
       const currentClaim = await this.storage.getContinuationClaim(goal.scopeId);
       if (
@@ -948,6 +956,7 @@ export class GoalRuntime {
       }
       const waitMs = Date.parse(claim.availableAt) - this.now().getTime();
       if (waitMs > 0) await this.delay(waitMs);
+      if (this.closed) return;
       if (Date.parse(claim.expiresAt) <= this.now().getTime()) {
         this.scheduleRecovery(goal.scopeId, this.now().toISOString());
         return;

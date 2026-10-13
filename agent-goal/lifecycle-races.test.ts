@@ -232,6 +232,31 @@ describe.each(["memory", "sqlite"])("blocked recovery races (%s)", (backend) => 
     await vi.waitFor(() => expect(continueIfIdle).toHaveBeenCalledTimes(1));
   });
 
+  it("shutdown stops an undispatched claimed continuation while preserving storage", async () => {
+    const observed = deferred<void>();
+    const release = deferred<void>();
+    const runtime = makeRuntime({
+      eventSink: {
+        record: async (event) => {
+          if (event.type === "goal.continuation_claimed") {
+            observed.resolve();
+            await release.promise;
+          }
+        },
+      },
+    });
+    await runtime.create("session", "ship");
+    await runtime.settle("session", { latestOutput: "waiting" });
+    now += BLOCKED_RECHECK_INTERVAL_MS;
+    const recovering = runtime.recover("session");
+    await observed.promise;
+    runtime.close(false);
+    release.resolve();
+    await recovering;
+    expect(continueIfIdle).not.toHaveBeenCalled();
+    expect(await storage.getContinuationClaim("session")).toMatchObject({ state: "claimed" });
+  });
+
   it("preserves a live rebound lease when recovery holds an older goal snapshot", async () => {
     const created = deferred<void>();
     const dispatch = deferred<void>();
