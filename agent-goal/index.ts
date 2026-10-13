@@ -167,6 +167,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     options.continuation ??
     ({
       async continueIfIdle(goal, request) {
+        if (request.signal?.aborted) return { status: "busy", reason: "Goal recovery cancelled" };
         const ctx = activeContext;
         if (!ctx || ctx.sessionManager.getSessionId() !== goal.scopeId) {
           return { status: "unavailable", reason: "The goal session is not active" };
@@ -333,6 +334,7 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     latestProgress = "";
     latestTokenDelta = 0;
     const scopeId = ctx.sessionManager.getSessionId();
+    runtime.releaseDeferredSettlement(scopeId);
     await runtime.recover(scopeId);
     await refreshUi(ctx);
     if (ctx.hasUI) {

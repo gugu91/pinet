@@ -6,6 +6,7 @@ import type {
   GoalDeleteResult,
   GoalPendingEvaluation,
   GoalStorage,
+  GoalEvaluationCommitOptions,
   GoalTerminalCandidateRecord,
 } from "./domain.js";
 
@@ -192,7 +193,9 @@ export class MemoryGoalStorage implements GoalStorage {
     goal: AgentGoal,
     expectedGoalVersion: number,
     expectedEvaluationId: string,
+    options: GoalEvaluationCommitOptions = {},
   ): Promise<boolean> {
+    if (options.signal?.aborted) return false;
     const current = this.goals.get(goal.scopeId);
     const pending = this.pendingEvaluations.get(goal.scopeId);
     if (
@@ -208,8 +211,10 @@ export class MemoryGoalStorage implements GoalStorage {
       name: current.name,
       objective: current.objective,
       budget: { ...current.budget },
-      snoozedUntil: current.snoozedUntil,
-      nextContinuationKind: current.nextContinuationKind,
+      snoozedUntil: options.statusTransition ? goal.snoozedUntil : current.snoozedUntil,
+      nextContinuationKind: options.statusTransition
+        ? goal.nextContinuationKind
+        : current.nextContinuationKind,
     });
     const claim = this.claims.get(goal.scopeId);
     if (claim?.goalId === goal.id && claim.goalVersion === expectedGoalVersion) {

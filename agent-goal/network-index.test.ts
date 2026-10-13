@@ -180,6 +180,19 @@ describe("goal outage integration", () => {
     expect(f.continueIfIdle).not.toHaveBeenCalled();
   });
 
+  it("session reactivation authorizes new recovery without reviving the cancelled callback", async () => {
+    const f = await fixture();
+    await f.outage();
+    const old = f.recovery();
+    f.type();
+    await f.emit("session_start");
+    expect(f.evaluate).toHaveBeenCalledTimes(1);
+    expect(f.continueIfIdle).toHaveBeenCalledTimes(1);
+    expect(await old.canResume()).toBe(false);
+    await old.resume();
+    expect(f.continueIfIdle).toHaveBeenCalledTimes(1);
+  });
+
   it("typing during recovery evaluation prevents its stale result from continuing", async () => {
     const f = await fixture();
     await f.outage();

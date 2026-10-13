@@ -128,6 +128,11 @@ export interface GoalContinuationClaim {
 
 export type GoalDeleteResult = "deleted" | "missing" | "conflict";
 
+export interface GoalEvaluationCommitOptions {
+  signal?: AbortSignal;
+  statusTransition?: boolean;
+}
+
 export interface GoalStorage {
   get(scopeId: string): Promise<AgentGoal | undefined>;
   /** Unfinished goals across every scope, newest activity first. */
@@ -158,6 +163,7 @@ export interface GoalStorage {
     goal: AgentGoal,
     expectedGoalVersion: number,
     expectedEvaluationId: string,
+    options?: GoalEvaluationCommitOptions,
   ): Promise<boolean>;
   getTerminalCandidate(scopeId: string): Promise<GoalTerminalCandidateRecord | undefined>;
   putTerminalCandidate(candidate: GoalTerminalCandidateRecord): Promise<boolean>;
@@ -176,7 +182,7 @@ export interface GoalStorage {
 }
 
 export interface GoalEvaluator {
-  evaluate(goal: AgentGoal, progress: GoalProgress): Promise<GoalEvaluation>;
+  evaluate(goal: AgentGoal, progress: GoalProgress, signal?: AbortSignal): Promise<GoalEvaluation>;
 }
 
 export type GoalContinuationResult =
@@ -184,6 +190,7 @@ export type GoalContinuationResult =
   | { status: "busy" | "unavailable" | "rejected"; reason: string; retryAfterMs?: number };
 
 export interface GoalContinuationRequest {
+  signal?: AbortSignal;
   claimId: string;
   kind: GoalContinuationKind;
   idempotencyKey: string;

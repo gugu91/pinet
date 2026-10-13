@@ -11,6 +11,7 @@ import type {
   GoalPendingEvaluation,
   GoalStatus,
   GoalStorage,
+  GoalEvaluationCommitOptions,
   GoalTerminalCandidateRecord,
 } from "./domain.js";
 
@@ -797,7 +798,9 @@ export class SqliteGoalStorage implements GoalStorage {
     goal: AgentGoal,
     expectedGoalVersion: number,
     expectedEvaluationId: string,
+    options: GoalEvaluationCommitOptions = {},
   ): Promise<boolean> {
+    if (options.signal?.aborted) return false;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const updated = this.db
@@ -805,6 +808,8 @@ export class SqliteGoalStorage implements GoalStorage {
           `UPDATE agent_goals SET status = ?, blocked_reason = ?, iterations_used = ?,
            tokens_used = ?, last_settled_at = ?, last_evaluation_id = ?,
            last_evaluation_outcome = ?, last_evaluation_reason = ?, last_evaluation_at = ?,
+           snoozed_until = CASE WHEN ? THEN ? ELSE snoozed_until END,
+           next_continuation_kind = CASE WHEN ? THEN ? ELSE next_continuation_kind END,
            version = ?, updated_at = ?
            WHERE scope_id = ? AND id = ? AND version = ? AND EXISTS (
              SELECT 1 FROM agent_goal_pending_evaluations
@@ -821,6 +826,10 @@ export class SqliteGoalStorage implements GoalStorage {
           goal.lastEvaluation?.outcome ?? null,
           goal.lastEvaluation?.reason ?? null,
           goal.lastEvaluation?.at ?? null,
+          options.statusTransition ? 1 : 0,
+          goal.snoozedUntil ?? null,
+          options.statusTransition ? 1 : 0,
+          goal.nextContinuationKind ?? null,
           goal.version,
           goal.updatedAt,
           goal.scopeId,
