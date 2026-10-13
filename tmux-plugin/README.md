@@ -8,6 +8,12 @@ publisher writes each Pi pane's state, and this plugin reads, aggregates and
 exposes it as placeholders. Neither layer installs a theme, icons, colors,
 layout, bells or notifications. You decide where and how state appears.
 
+![Two tmux windows: one with four finished Pi sessions and unread attention, one with a failed Pi session](docs/status-bar.png)
+
+_A custom theme: window 1 runs four Pi sessions, all done (✅4), at least one
+unread (🔔); window 2's Pi ended with an error (❌). This look uses a custom
+formatter (see [Examples](#examples)); the plugin itself prescribes none._
+
 Requirements: tmux 3.2+, Node 24+, local macOS/Linux. No `pnpm install` or build
 step is needed for this plugin.
 
