@@ -3,6 +3,8 @@ export interface GoalProgressMessage {
   content?: string | Array<{ type: string; text?: string }>;
   toolName?: string;
   isError?: boolean;
+  stopReason?: string;
+  errorMessage?: string;
   usage?: {
     totalTokens?: number;
     input?: number;

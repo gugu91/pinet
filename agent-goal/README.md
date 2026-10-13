@@ -88,6 +88,16 @@ The `/goal` overlay includes an `l` shortcut to its associated links. This devel
 
 ![Goal overlay with checkpoints and the links shortcut](https://raw.githubusercontent.com/gugu91/pinet/main/agent-goal/images/goal-links-shortcut.png)
 
+## Active-goal network recovery
+
+After Pi exhausts its native retries and emits final `agent_settled`, an **active, unsnoozed goal** can wait for an explicitly recognized connectivity failure from the last assistant request. Successful requests, tool errors, aborts/cancellation, authentication, billing/quota/rate limits, and application/server errors do not arm this recovery. A valid HTTP(S) `ctx.model.baseUrl` is required; there is no global internet probe or fallback retry policy for sessions without goals.
+
+While waiting, failed-turn progress and usage are persisted without calling the evaluator or sending another model request. Every **15 seconds**, a cancellable TCP probe checks only the configured endpoint host and port (4-second timeout). It sends no HTTP request, credentials, or conversation data. Reachability does not prove the provider API is healthy: after reconnection, normal evaluation and the existing fenced continuation claim decide whether another turn is permitted.
+
+Typing/Escape, user/RPC input, model selection, session switch/fork/tree navigation, and shutdown cancel the wait. Clearing, pausing, snoozing, replacing or editing the goal also invalidates its captured id/version; a late recovery cannot evaluate or continue a different goal. Cancellation during recovery evaluation suppresses its stale result. Saved failed-turn usage is aggregated once with the next ordinary settlement. Goal limits and continuation ownership remain authoritative.
+
+The waiting status is `🌐 Waiting for model endpoint`. Each wait is bounded to **30 minutes**, with at most **20 automatic reconnection resumes per loaded extension instance**. Expiry or recovery failure stops polling and asks the user to send a prompt to retry; it does not classify the objective as blocked or post to Slack. Waiting is live-session state and is not restored on reload; durable pending progress still follows ordinary goal recovery on a new extension instance. This adds no new tools, configuration schema, or always-present model prompt surface.
+
 ## Optional continuation limits
 
 New goals are unlimited by default. Turns and runtime limits are opt-in and only decide whether a future continuation may start; they never interrupt in-flight work. Existing usage is preserved when limits change or are disabled. Configured environment values remain hard ceilings/defaults when present:

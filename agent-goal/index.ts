@@ -33,6 +33,8 @@ import {
 import { GoalRuntime } from "./runtime.js";
 import { SqliteGoalStorage } from "./sqlite-storage.js";
 import { registerGoalLinks } from "./links.js";
+import { hasGoalNetworkFailure, parseGoalNetworkTarget } from "./network-helpers.js";
+import { GoalNetworkRecovery } from "./network-recovery.js";
 
 export type {
   AgentGoal,
@@ -93,9 +95,11 @@ export interface AgentGoalExtensionOptions {
 }
 
 interface CompatibleContext extends ExtensionContext {
+  model?: ExtensionContext["model"] & { baseUrl?: string };
   sessionManager: ExtensionContext["sessionManager"] & { getSessionId(): string };
   ui: ExtensionContext["ui"] & {
     getEditorText?: () => string;
+    onTerminalInput?: (handler: (data: string) => undefined) => () => void;
     setWidget(
       key: string,
       content: string[] | undefined,
@@ -117,6 +121,14 @@ interface AgentEndEvent {
   messages: GoalProgressMessage[];
 }
 
+interface GoalSettledEvent {
+  aborted?: boolean;
+}
+
+interface GoalInputEvent {
+  source?: "interactive" | "rpc" | "extension";
+}
+
 const STATUS_KEY = "agent-goal";
 const WIDGET_KEY = "agent-goal";
 
@@ -125,6 +137,12 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   let activeContext: CompatibleContext | undefined;
   let latestProgress = "";
   let latestTokenDelta = 0;
+  let latestNetworkFailure = false;
+  let networkCancelled = false;
+  let networkGeneration = 0;
+  let deferredNetworkScope: string | undefined;
+  let removeTerminalInput: (() => void) | undefined;
+  const networkRecovery = new GoalNetworkRecovery();
   let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   let uiRefreshGeneration = 0;
   const hiddenScopes = new Set<string>();
@@ -198,6 +216,27 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   });
 
   const showLinks = registerGoalLinks(pi, storage);
+
+  const cancelNetworkRecovery = (): void => {
+    networkGeneration += 1;
+    networkCancelled = true;
+    networkRecovery.cancel();
+    if (deferredNetworkScope) {
+      runtime.holdDeferredSettlement(deferredNetworkScope);
+      activeContext?.ui.setStatus("agent-goal-network", undefined);
+    }
+    deferredNetworkScope = undefined;
+  };
+
+  pi.on("model_select", cancelNetworkRecovery);
+  pi.on("session_before_switch", cancelNetworkRecovery);
+  pi.on("session_before_fork", cancelNetworkRecovery);
+  pi.on("session_before_tree", cancelNetworkRecovery);
+
+  pi.on("input", (rawEvent) => {
+    const event = rawEvent as GoalInputEvent;
+    if (event.source !== "extension") cancelNetworkRecovery();
+  });
 
   const stopStatusRefresh = (): void => {
     if (!statusRefreshTimer) return;
@@ -282,7 +321,15 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
 
   pi.on("session_start", async (_event, rawCtx) => {
     const ctx = rawCtx as CompatibleContext;
+    cancelNetworkRecovery();
+    removeTerminalInput?.();
     activeContext = ctx;
+    networkCancelled = false;
+    latestNetworkFailure = false;
+    removeTerminalInput = ctx.ui.onTerminalInput?.(() => {
+      cancelNetworkRecovery();
+      return undefined;
+    });
     latestProgress = "";
     latestTokenDelta = 0;
     const scopeId = ctx.sessionManager.getSessionId();
@@ -295,6 +342,9 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   });
 
   pi.on("agent_start", async (_event, rawCtx) => {
+    cancelNetworkRecovery();
+    networkCancelled = false;
+    latestNetworkFailure = false;
     const ctx = rawCtx as CompatibleContext;
     activeContext = ctx;
     const scopeId = ctx.sessionManager.getSessionId();
@@ -308,15 +358,94 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
     activeContext = rawCtx as CompatibleContext;
     latestProgress = formatGoalProgress(event.messages);
     latestTokenDelta = countGoalProgressTokens(event.messages);
+    latestNetworkFailure = hasGoalNetworkFailure(event.messages);
   });
 
-  pi.on("agent_settled", async (_event, rawCtx) => {
+  pi.on("agent_settled", async (rawEvent, rawCtx) => {
     const ctx = rawCtx as CompatibleContext;
     activeContext = ctx;
     try {
       const scopeId = ctx.sessionManager.getSessionId();
       const agentCreatedGoal = agentCreatedGoalScopes.has(scopeId);
       try {
+        const event = rawEvent as GoalSettledEvent;
+        const endpoint = ctx.model?.baseUrl;
+        const modelId = ctx.model?.id;
+        const modelProvider = ctx.model?.provider;
+        const target = parseGoalNetworkTarget(endpoint);
+        const goal = await runtime.get(scopeId);
+        if (latestNetworkFailure && target && goal?.status === "active" && !goal.snoozedUntil) {
+          const generation = ++networkGeneration;
+          deferredNetworkScope = scopeId;
+          await runtime.settle(
+            scopeId,
+            {
+              latestOutput: `${latestProgress}\nThe last request failed because of connectivity. When connectivity returns, continue from the preserved context rather than treating the outage as a human blocker.`,
+              tokenDelta: latestTokenDelta,
+            },
+            { accountUsage: !agentCreatedGoal, deferEvaluation: true },
+          );
+          if (generation !== networkGeneration || networkCancelled || event.aborted) {
+            runtime.holdDeferredSettlement(scopeId);
+            if (generation === networkGeneration) deferredNetworkScope = undefined;
+            return;
+          }
+          ctx.ui.setStatus("agent-goal-network", "🌐 Waiting for model endpoint");
+          const started = networkRecovery.start({
+            target,
+            canResume: async () => {
+              const current = await runtime.get(scopeId);
+              return (
+                generation === networkGeneration &&
+                activeContext === ctx &&
+                ctx.sessionManager.getSessionId() === scopeId &&
+                current?.id === goal.id &&
+                current.version === goal.version &&
+                current.status === "active" &&
+                !current.snoozedUntil &&
+                ctx.model?.baseUrl === endpoint &&
+                ctx.model?.id === modelId &&
+                ctx.model?.provider === modelProvider &&
+                ctx.isIdle() &&
+                !ctx.hasPendingMessages()
+              );
+            },
+            resume: async () => {
+              if (
+                generation !== networkGeneration ||
+                activeContext !== ctx ||
+                ctx.model?.baseUrl !== endpoint ||
+                ctx.model?.id !== modelId ||
+                ctx.model?.provider !== modelProvider
+              )
+                return;
+              await runtime.resumeDeferredSettlement(scopeId, goal);
+              if (generation === networkGeneration) {
+                deferredNetworkScope = undefined;
+                await refreshUi(ctx);
+              }
+            },
+            stopped: (reason) => {
+              if (generation !== networkGeneration) return;
+              runtime.releaseDeferredSettlement(scopeId);
+              deferredNetworkScope = undefined;
+              ctx.ui.setStatus("agent-goal-network", undefined);
+              if ((reason === "expired" || reason === "failed") && ctx.hasUI)
+                ctx.ui.notify("Goal network recovery stopped; send a prompt to retry.", "warning");
+            },
+          });
+          if (!started) {
+            runtime.releaseDeferredSettlement(scopeId);
+            deferredNetworkScope = undefined;
+            ctx.ui.setStatus("agent-goal-network", undefined);
+            if (ctx.hasUI)
+              ctx.ui.notify(
+                "Goal network recovery limit reached; send a prompt to retry.",
+                "warning",
+              );
+          }
+          return;
+        }
         await runtime.settle(
           scopeId,
           {
@@ -337,6 +466,9 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
   });
 
   pi.on("session_shutdown", () => {
+    cancelNetworkRecovery();
+    removeTerminalInput?.();
+    removeTerminalInput = undefined;
     activeContext = undefined;
     uiRefreshGeneration += 1;
     stopStatusRefresh();
