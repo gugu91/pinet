@@ -11,6 +11,8 @@ export interface Activity {
   background: number;
   /** Unread was requested with `/unread`, not derived from completion. */
   explicit: boolean;
+  /** A done/error alert raised but not yet shown: overlays (dialogs, compaction, background runs) defer it. */
+  pending: boolean;
 }
 export type Event =
   | { type: "start" }
@@ -33,6 +35,7 @@ export const INITIAL: Activity = {
   resumeUnread: false,
   background: 0,
   explicit: false,
+  pending: false,
 };
 export const ORDER: State[] = ["blocked", "error", "compacting", "working", "done", "idle"];
 interface CompactionNotice {
@@ -73,6 +76,22 @@ export function backgroundRun(data: object): { id: string; pid?: number } | unde
     ? { id, pid: notice.pid }
     : { id };
 }
+/**
+ * Applies an event and reports whether it raises a new alert (fresh attention token).
+ * Dialog alerts fire when the first dialog opens; completion alerts fire once, when
+ * done/error first becomes visible, however long overlays deferred it.
+ */
+export function step(activity: Activity, event: Event): { activity: Activity; alert: boolean } {
+  const reduced = reduce(activity, event);
+  // `/unread` provenance never outlives the unread mark it explains.
+  const next = reduced.unread || !reduced.explicit ? reduced : { ...reduced, explicit: false };
+  const state = visibleState(next);
+  const completion = next.pending && visibleUnread(next) && (state === "done" || state === "error");
+  return {
+    activity: completion ? { ...next, pending: false } : next,
+    alert: event.type === "unread" || (activity.prompts === 0 && next.prompts > 0) || completion,
+  };
+}
 export function reduce(activity: Activity, event: Event): Activity {
   switch (event.type) {
     case "start":
@@ -83,6 +102,7 @@ export function reduce(activity: Activity, event: Event): Activity {
         unread: activity.prompts > 0 && activity.unread,
         resumeUnread: false,
         explicit: activity.prompts > 0 && activity.explicit,
+        pending: false,
       };
     case "outcome":
       return { ...activity, outcome: event.outcome };
@@ -100,6 +120,7 @@ export function reduce(activity: Activity, event: Event): Activity {
         base,
         unread: activity.prompts > 0 ? activity.unread : base !== "idle",
         resumeUnread: base !== "idle",
+        pending: base !== "idle",
       };
     }
     case "prompt-start":
@@ -118,7 +139,7 @@ export function reduce(activity: Activity, event: Event): Activity {
             unread: activity.prompts > 1 ? activity.unread : activity.resumeUnread,
           };
     case "ack":
-      return { ...activity, unread: false, resumeUnread: false, explicit: false };
+      return { ...activity, unread: false, resumeUnread: false, explicit: false, pending: false };
     case "unread":
       return { ...activity, unread: true, resumeUnread: true, explicit: true };
     case "refresh":
@@ -132,7 +153,7 @@ export function reduce(activity: Activity, event: Event): Activity {
         ...activity,
         compacting: false,
         ...(event.failed && !event.aborted && activity.base !== "working"
-          ? { base: "error" as const, unread: true, resumeUnread: true }
+          ? { base: "error" as const, unread: true, resumeUnread: true, pending: true }
           : {}),
       };
   }
@@ -197,18 +218,4 @@ export function isInteraction(data: string): boolean {
   if (!data || data.startsWith("\x1b]") || data.startsWith("\x1bP")) return false;
   // eslint-disable-next-line no-control-regex -- Filter terminal replies and focus-out, not actual user input.
   return data.replace(/\x1b\[[?=>\d;]*[cnRt]|\x1b\[O/g, "").length > 0;
-}
-export function attentionChanged(before: Activity, after: Activity): boolean {
-  const state = visibleState(after);
-  return (
-    visibleUnread(after) &&
-    !(
-      before.compacting &&
-      !after.compacting &&
-      before.base === after.base &&
-      before.prompts === after.prompts
-    ) &&
-    (state === "blocked" || state === "done" || state === "error") &&
-    (visibleState(before) !== state || !visibleUnread(before))
-  );
 }

@@ -5,7 +5,9 @@ import {
   encode,
   parseRecord,
   reduce,
-  attentionChanged,
+  step,
+  type Activity,
+  type Event,
   visibleState,
   visibleUnread,
   backgroundRun,
@@ -73,33 +75,85 @@ test("settlement behind a dialog preserves blocked state then reveals completion
   assert.equal(visibleState(activity), "done");
   assert.equal(activity.unread, true);
 });
+/** Runs events through step(), as the publisher does, collecting alerts. */
+function run(start: Activity, ...events: Event[]): { activity: Activity; alerts: boolean[] } {
+  let activity = start;
+  const alerts: boolean[] = [];
+  for (const event of events) {
+    const result = step(activity, event);
+    activity = result.activity;
+    alerts.push(result.alert);
+  }
+  return { activity, alerts };
+}
 test("attention generation changes on alerts, not repeats, acknowledgements or cancellation", () => {
   const working = reduce(INITIAL, { type: "start" });
-  const blocked = reduce(working, { type: "prompt-start" });
-  const done = reduce(working, { type: "settled", aborted: false });
-  assert.equal(attentionChanged(working, blocked), true);
-  assert.equal(attentionChanged(working, done), true);
-  assert.equal(attentionChanged(blocked, reduce(blocked, { type: "prompt-start" })), false);
-  assert.equal(attentionChanged(done, reduce(done, { type: "settled", aborted: false })), false);
-  const acked = reduce(done, { type: "ack" });
-  assert.equal(attentionChanged(done, acked), false);
-  assert.deepEqual(reduce(acked, { type: "settled", aborted: false }), acked);
+  assert.deepEqual(run(working, { type: "prompt-start" }, { type: "prompt-start" }).alerts, [
+    true,
+    false,
+  ]);
+  const done = run(working, { type: "settled", aborted: false });
+  assert.deepEqual(done.alerts, [true]);
+  assert.deepEqual(run(done.activity, { type: "settled", aborted: false }).alerts, [false]);
+  const acked = run(done.activity, { type: "ack" }, { type: "settled", aborted: false });
+  assert.deepEqual(acked.alerts, [false, false]);
   // Real Pi cancellation: no agent_before_settle, only settlement's aborted flag.
-  const aborted = reduce(working, { type: "settled", aborted: true });
-  assert.equal(aborted.base, "idle");
-  assert.equal(aborted.unread, false);
-  assert.equal(attentionChanged(working, aborted), false);
+  const aborted = run(working, { type: "settled", aborted: true });
+  assert.equal(aborted.activity.base, "idle");
+  assert.equal(aborted.activity.unread, false);
+  assert.deepEqual(aborted.alerts, [false]);
+});
+test("completion hidden behind an overlay alerts once it becomes visible", () => {
+  const working = reduce(INITIAL, { type: "start" });
+  const compaction = run(
+    working,
+    { type: "compact-start" },
+    { type: "settled", aborted: false },
+    { type: "compact-end", failed: false, aborted: false },
+  );
+  assert.deepEqual(compaction.alerts, [false, false, true]);
+  assert.equal(visibleState(compaction.activity), "done");
+  const dialog = run(
+    working,
+    { type: "prompt-start" },
+    { type: "settled", aborted: false },
+    { type: "prompt-end" },
+  );
+  assert.deepEqual(dialog.alerts, [true, false, true]);
+  assert.deepEqual(
+    run(
+      dialog.activity,
+      { type: "compact-start" },
+      { type: "compact-end", failed: false, aborted: false },
+    ).alerts,
+    [false, false],
+  );
+});
+test("/unread provenance is discarded with the unread mark it explained", () => {
+  const { activity } = run(
+    INITIAL,
+    { type: "unread" },
+    { type: "prompt-start" },
+    { type: "start" },
+    { type: "prompt-end" },
+  );
+  assert.deepEqual([activity.unread, activity.explicit], [false, false]);
+  const waiting = run(
+    activity,
+    { type: "background", count: 1 },
+    { type: "settled", aborted: false },
+  ).activity;
+  assert.deepEqual([visibleState(waiting), visibleUnread(waiting)], ["working", false]);
 });
 test("an idle parent waiting on background subagents stays working; attention follows them", () => {
   const settled = reduce(reduce(INITIAL, { type: "start" }), { type: "settled", aborted: false });
   const waiting = reduce(settled, { type: "background", count: 2 });
   assert.equal(visibleState(waiting), "working");
   assert.equal(visibleUnread(waiting), false);
-  assert.equal(attentionChanged(settled, waiting), false);
-  const finished = reduce(waiting, { type: "background", count: 0 });
+  const { activity: finished, alerts } = run(waiting, { type: "background", count: 0 });
   assert.equal(visibleState(finished), "done");
   assert.equal(visibleUnread(finished), true);
-  assert.equal(attentionChanged(waiting, finished), true);
+  assert.deepEqual(alerts, [true]);
   // Questions still outrank background work, and their attention shows immediately.
   const asking = reduce(waiting, { type: "prompt-start" });
   assert.deepEqual([visibleState(asking), visibleUnread(asking)], ["blocked", true]);

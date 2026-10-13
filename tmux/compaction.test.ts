@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { INITIAL, reduce, visibleState, attentionChanged } from "./helpers.ts";
+import { INITIAL, reduce, step, visibleState } from "./helpers.ts";
 test("compaction overlays an active run and returns to working, without completion bell", () => {
   const working = reduce(INITIAL, { type: "start" });
   const compacting = reduce(working, { type: "compact-start" });
@@ -11,10 +11,17 @@ test("compaction overlays an active run and returns to working, without completi
     aborted: false,
   });
   assert.equal(visibleState(complete), "working");
-  assert.equal(attentionChanged(compacting, complete), false);
+  assert.equal(
+    step(compacting, { type: "compact-end", failed: false, aborted: false }).alert,
+    false,
+  );
 });
 test("manual compaction restores idle/done; failure becomes error; abort is not failure", () => {
-  const done = reduce(reduce(INITIAL, { type: "start" }), { type: "settled", aborted: false });
+  // As published: the completion alert was already shown before compaction started.
+  const done = step(reduce(INITIAL, { type: "start" }), {
+    type: "settled",
+    aborted: false,
+  }).activity;
   for (const prior of [INITIAL, done]) {
     const compacting = reduce(prior, { type: "compact-start" });
     const complete = reduce(compacting, {
@@ -24,7 +31,7 @@ test("manual compaction restores idle/done; failure becomes error; abort is not 
     });
     assert.equal(visibleState(complete), prior.base);
     assert.equal(
-      attentionChanged(compacting, complete),
+      step(compacting, { type: "compact-end", failed: false, aborted: false }).alert,
       false,
       "restored completion must not notify again",
     );

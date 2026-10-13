@@ -3,10 +3,9 @@ import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   INITIAL,
-  reduce,
+  step,
   safeName,
   isInteraction,
-  attentionChanged,
   visibleState,
   visibleUnread,
   backgroundRun,
@@ -49,22 +48,18 @@ export default function tmuxPi(pi: ExtensionAPI) {
     return serialize(async () => {
       if (!record || !pane) return;
       const event = typeof input === "function" ? input() : input;
-      const before = activity;
-      activity = reduce(activity, event);
+      const result = step(activity, event);
+      activity = result.activity;
       const state = visibleState(activity);
       const nextName = safeName(pi.getSessionName() || basename(ctx.cwd) || "Pi");
       if (
-        event.type !== "unread" &&
+        !result.alert &&
         record.state === state &&
         record.unread === visibleUnread(activity) &&
         name === nextName
       )
         return;
-      if (
-        (event.type !== "unread" && attentionChanged(before, activity)) ||
-        event.type === "unread"
-      )
-        attention = randomUUID();
+      if (result.alert) attention = randomUUID();
       const next = { ...record, state, unread: visibleUnread(activity) };
       if (!(await tmux.publish(pane, next, { name: nextName, attention }))) {
         record = undefined;

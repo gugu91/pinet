@@ -166,6 +166,23 @@ test("publisher is TUI-only, owns only pane data, settles correctly and never cu
     bus.get("subagent:async-complete")({ runId: "run-quick" });
     await commands.get("tmux").handler("", ctx);
     assert.equal((await state()).state, "done", "rapid start/complete must not stick at working");
+    // Completion during compaction alerts afresh even after an earlier focus acknowledgement.
+    const acknowledge = async () =>
+      tmux.run([
+        "set-option",
+        "-p",
+        "-t",
+        pane,
+        "@pi_rollup_ack",
+        await tmux.run(["show-options", "-pqv", "-t", pane, "@pi_rollup_attention"]),
+      ]);
+    await acknowledge();
+    assert.equal((await state()).unread, false);
+    await emit("agent_start");
+    bus.get("pinet:compaction-start")({ phase: "start", sessionFile: "/tmp/current-session.json" });
+    await emit("agent_settled", { aborted: false });
+    await emit("session_compact");
+    assert.deepEqual([(await state()).state, (await state()).unread], ["done", true]);
     await commands.get("tmux").handler("setup", ctx);
     assert.ok(notices.at(-1).startsWith("Usage: /tmux"));
     await emit("session_shutdown");
