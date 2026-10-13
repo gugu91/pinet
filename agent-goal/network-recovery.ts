@@ -4,7 +4,7 @@ import { probeGoalNetwork, type GoalNetworkTarget } from "./network-helpers.js";
 export interface GoalNetworkRecoveryRequest {
   target: GoalNetworkTarget;
   canResume(): Promise<boolean>;
-  resume(): Promise<void>;
+  resume(): Promise<"busy" | "cancelled" | "resumed">;
   stopped(reason: "cancelled" | "expired" | "resumed" | "failed"): void;
 }
 
@@ -52,7 +52,12 @@ export class GoalNetworkRecovery {
         if (!(await this.probe(request.target, controller.signal))) continue;
         if (controller.signal.aborted || !(await request.canResume())) return;
         this.resumes += 1;
-        await request.resume();
+        const result = await request.resume();
+        if (result === "busy") {
+          this.resumes -= 1;
+          continue;
+        }
+        if (result === "cancelled") return;
         reason = "resumed";
         return;
       }

@@ -204,6 +204,41 @@ describe.each(["memory", "sqlite"])("network cancellation boundaries (%s)", (bac
     });
   });
 
+  it("a second outage reports busy until the cancelled evaluator releases ownership", async () => {
+    const evaluation = deferred<GoalEvaluation>();
+    evaluate.mockImplementationOnce(() => evaluation.promise);
+    const runtime = makeRuntime();
+    const goal = await runtime.create("session", "ship");
+    await runtime.settle(
+      "session",
+      { latestOutput: "outage A", tokenDelta: 3 },
+      { deferEvaluation: true },
+    );
+    const recoveringA = runtime.resumeDeferredSettlement("session", goal);
+    await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
+    runtime.holdDeferredSettlement("session");
+    await runtime.settle(
+      "session",
+      { latestOutput: "outage B", tokenDelta: 4 },
+      { deferEvaluation: true },
+    );
+    expect(await runtime.resumeDeferredSettlement("session", goal)).toBe("busy");
+    evaluation.resolve({ outcome: "complete", reason: "cancelled A result" });
+    expect(await recoveringA).toBe("cancelled");
+    expect(await storage.getPendingEvaluation("session")).toMatchObject({
+      iterationsDelta: 2,
+      progress: { tokenDelta: 7 },
+    });
+    expect(await runtime.resumeDeferredSettlement("session", goal)).toBe("resumed");
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    expect(continueIfIdle).toHaveBeenCalledTimes(1);
+    expect(await runtime.get("session")).toMatchObject({
+      status: "active",
+      usage: { iterations: 2, tokens: 7 },
+    });
+    expect(await storage.getPendingEvaluation("session")).toBeUndefined();
+  });
+
   it("a new normal settlement drains after a cancelled network evaluator exits", async () => {
     const evaluation = deferred<GoalEvaluation>();
     evaluate

@@ -1,9 +1,12 @@
+import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAgentGoal } from "./index.js";
 import { MemoryGoalStorage } from "./memory-storage.js";
 import { GoalNetworkRecovery, type GoalNetworkRecoveryRequest } from "./network-recovery.js";
 import type { GoalProgressMessage } from "./progress.js";
+
+vi.mock("@earendil-works/pi-ai", () => ({ completeSimple: vi.fn() }));
 
 interface TestEvent {
   messages?: GoalProgressMessage[];
@@ -17,7 +20,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function fixture() {
+async function fixture(builtInEvaluator = false) {
   const handlers = new Map<string, Handler>();
   let request: GoalNetworkRecoveryRequest | undefined;
   const start = vi.spyOn(GoalNetworkRecovery.prototype, "start").mockImplementation((value) => {
@@ -39,7 +42,8 @@ async function fixture() {
     hasUI: true,
     isIdle: () => true,
     hasPendingMessages: () => false,
-    model: { provider: "test", id: "model", baseUrl: "https://endpoint.example/v1" },
+    model: { api: "test", provider: "test", id: "model", baseUrl: "https://endpoint.example/v1" },
+    modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true }) },
     sessionManager: { getSessionId: () => "session" },
     ui: {
       setStatus: vi.fn(),
@@ -52,7 +56,11 @@ async function fixture() {
     },
   };
   const ctx = data as object as ExtensionContext;
-  registerAgentGoal(pi, { storage, evaluator: { evaluate }, continuation: { continueIfIdle } });
+  registerAgentGoal(pi, {
+    storage,
+    ...(builtInEvaluator ? {} : { evaluator: { evaluate } }),
+    continuation: { continueIfIdle },
+  });
   const emit = async (name: string, event: TestEvent = {}): Promise<void> => {
     const handler = handlers.get(name);
     if (!handler) throw new Error(`Missing ${name}`);
@@ -105,6 +113,47 @@ async function fixture() {
 }
 
 describe("goal outage integration", () => {
+  it("a second model recovery remains waiting behind a cancelled credential lookup", async () => {
+    vi.mocked(completeSimple).mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "CONTINUE: keep working" }],
+    });
+    const f = await fixture(true);
+    let finishAuth!: (auth: { ok: true }) => void;
+    const auth = f.data.modelRegistry.getApiKeyAndHeaders;
+    auth.mockImplementationOnce(
+      () =>
+        new Promise<{ ok: true }>((resolve) => {
+          finishAuth = resolve;
+        }),
+    );
+    await f.outage();
+    const recoveringA = f.recovery().resume();
+    await vi.waitFor(() => expect(auth).toHaveBeenCalledTimes(1));
+    f.data.model.id = "model-B";
+    await f.emit("model_select");
+    await f.outage();
+    const requestB = f.recovery();
+    expect(await requestB.canResume()).toBe(true);
+    expect(await requestB.resume()).toBe("busy");
+    expect(
+      f.data.ui.setStatus.mock.calls.filter(([name]) => name === "agent-goal-network").at(-1),
+    ).toEqual(["agent-goal-network", "🌐 Waiting for model endpoint"]);
+    finishAuth({ ok: true });
+    expect(await recoveringA).toBe("cancelled");
+    expect(await requestB.canResume()).toBe(true);
+    expect(await requestB.resume()).toBe("resumed");
+    expect(auth).toHaveBeenCalledTimes(2);
+    expect(completeSimple).toHaveBeenCalledTimes(1);
+    expect(f.continueIfIdle).toHaveBeenCalledTimes(1);
+    expect(await f.storage.get("session")).toMatchObject({ usage: { iterations: 2, tokens: 6 } });
+    expect(await f.storage.getPendingEvaluation("session")).toBeUndefined();
+    requestB.stopped("resumed");
+    expect(
+      f.data.ui.setStatus.mock.calls.filter(([name]) => name === "agent-goal-network").at(-1),
+    ).toEqual(["agent-goal-network", undefined]);
+  });
+
   it("arms only at final native settlement and resumes through one normal claim", async () => {
     const f = await fixture();
     await f.emit("agent_start");

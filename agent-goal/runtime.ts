@@ -527,14 +527,20 @@ export class GoalRuntime {
   async resumeDeferredSettlement(
     scopeId: string,
     expected: Pick<AgentGoal, "id" | "version">,
-  ): Promise<void> {
-    if (this.closed) return;
+  ): Promise<"busy" | "cancelled" | "resumed"> {
+    if (this.closed) return "cancelled";
+    if (this.evaluatingScopes.has(scopeId)) return "busy";
     this.deferredAttempts.get(scopeId)?.abort();
     const attempt = new AbortController();
     this.deferredAttempts.set(scopeId, attempt);
     this.deferredScopes.delete(scopeId);
     try {
       await this.processPendingEvaluation(scopeId, false, expected, attempt.signal);
+      const pending = await this.storage.getPendingEvaluation(scopeId);
+      const current = await this.storage.get(scopeId);
+      return this.closed || attempt.signal.aborted || pending || current?.id !== expected.id
+        ? "cancelled"
+        : "resumed";
     } finally {
       if (this.deferredAttempts.get(scopeId) === attempt) this.deferredAttempts.delete(scopeId);
     }

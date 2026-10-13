@@ -25,7 +25,7 @@ describe("bounded goal network recovery", () => {
     request = {
       target: { hostname: "example.com", port: 443 },
       canResume: vi.fn().mockResolvedValue(true),
-      resume: vi.fn().mockResolvedValue(undefined),
+      resume: vi.fn().mockResolvedValue("resumed"),
       stopped: vi.fn(),
     };
   });
@@ -33,9 +33,12 @@ describe("bounded goal network recovery", () => {
 
   const tick = async (): Promise<void> => {
     now += 15_000;
+    const previousStops = vi.mocked(request.stopped).mock.calls.length;
     wakes.shift()?.();
     await vi.waitFor(() =>
-      expect(wakes.length > 0 || vi.mocked(request.stopped).mock.calls.length > 0).toBe(true),
+      expect(wakes.length > 0 || vi.mocked(request.stopped).mock.calls.length > previousStops).toBe(
+        true,
+      ),
     );
   };
 
@@ -49,6 +52,47 @@ describe("bounded goal network recovery", () => {
     await tick();
     expect(request.resume).toHaveBeenCalledTimes(1);
     expect(request.stopped).toHaveBeenCalledWith("resumed");
+  });
+
+  it("keeps polling busy ownership without stopping or consuming the resume cap", async () => {
+    vi.mocked(request.resume).mockResolvedValue("busy");
+    recovery.start(request);
+    for (let attempt = 0; attempt < 21; attempt += 1) await tick();
+    expect(request.stopped).not.toHaveBeenCalled();
+    vi.mocked(request.resume).mockResolvedValue("resumed");
+    await tick();
+    expect(request.stopped).toHaveBeenCalledWith("resumed");
+    for (let attempt = 0; attempt < 19; attempt += 1) {
+      expect(recovery.start(request)).toBe(true);
+      await tick();
+    }
+    expect(recovery.start(request)).toBe(false);
+  });
+
+  it("busy ownership still expires at the thirty-minute deadline", async () => {
+    vi.mocked(request.resume).mockResolvedValue("busy");
+    recovery.start(request);
+    await tick();
+    now = 30 * 60_000;
+    await tick();
+    expect(request.stopped).toHaveBeenCalledWith("expired");
+    expect(request.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancelling a busy recovery prevents later polling from reviving it", async () => {
+    vi.mocked(request.resume).mockResolvedValue("busy");
+    recovery.start(request);
+    await tick();
+    recovery.cancel();
+    await vi.waitFor(() => expect(request.stopped).toHaveBeenCalledWith("cancelled"));
+    expect(request.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("a cancelled resume is not reported as recovered", async () => {
+    vi.mocked(request.resume).mockResolvedValue("cancelled");
+    recovery.start(request);
+    await tick();
+    expect(request.stopped).toHaveBeenCalledWith("cancelled");
   });
 
   it("cancels pending waits without probing or resuming", async () => {

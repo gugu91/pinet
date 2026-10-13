@@ -420,12 +420,13 @@ export function registerAgentGoal(pi: ExtensionAPI, options: AgentGoalExtensionO
                 ctx.model?.id !== modelId ||
                 ctx.model?.provider !== modelProvider
               )
-                return;
-              await runtime.resumeDeferredSettlement(scopeId, goal);
-              if (generation === networkGeneration) {
+                return "cancelled";
+              const result = await runtime.resumeDeferredSettlement(scopeId, goal);
+              if (result !== "busy" && generation === networkGeneration) {
                 deferredNetworkScope = undefined;
                 await refreshUi(ctx);
               }
+              return result;
             },
             stopped: (reason) => {
               if (generation !== networkGeneration) return;
