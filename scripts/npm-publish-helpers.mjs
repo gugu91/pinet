@@ -11,6 +11,7 @@ export const publishPackages = Object.freeze([
   { directory: "slack-bridge", packageName: "@pinet/slack-bridge" },
   { directory: "model-aware-compaction", packageName: "@pinet/model-aware-compaction" },
   { directory: "agent-goal", packageName: "@pinet/agent-goal" },
+  { directory: "tmux", packageName: "@pinet/tmux" },
 ]);
 
 export const publishPackageDirectories = Object.freeze(

@@ -53,6 +53,7 @@ function harness() {
       eventHandlers.push(handler);
       handlers.set(event, eventHandlers);
     },
+    events: { emit: vi.fn(), on: vi.fn() },
     registerCommand: vi.fn(
       (
         name: string,
@@ -662,6 +663,11 @@ describe("extension wiring", () => {
         ctx,
       );
       expect(hookResult).toMatchObject({ compaction: { summary: "summary" } });
+      expect(api.events?.emit).toHaveBeenCalledWith("pinet:compaction-start", {
+        phase: "start",
+        sessionFile: undefined,
+      });
+      expect(api.events?.emit).toHaveBeenCalledBefore(selectedCompact);
       // A level rides Pi's simple-stream transport with registry credentials,
       // not the registry's raw complete(), which ignores `reasoning`.
       expect(modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledWith(selectedModel);

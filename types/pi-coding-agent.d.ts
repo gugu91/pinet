@@ -26,6 +26,7 @@ declare module "@earendil-works/pi-coding-agent" {
   export interface ExtensionUI {
     theme: any;
     notify(message: string, level?: string): void;
+    onTerminalInput(handler: (data: string) => undefined): () => void;
     setStatus(id: string, value?: any): void;
     select(title: string, options: string[]): Promise<string | undefined>;
     custom<T>(
@@ -245,6 +246,11 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface ExtensionAPI {
+    getSessionName(): string | undefined;
+    events?: {
+      on(event: string, handler: (data: object) => void): () => void;
+      emit(event: string, data: object): void;
+    };
     on(event: string, handler: (event: any, ctx: ExtensionContext) => any): void;
     registerTool(definition: ToolDefinition): void;
     registerCommand(name: string, options: CommandDefinition): void;

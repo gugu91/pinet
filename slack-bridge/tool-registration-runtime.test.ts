@@ -87,6 +87,7 @@ describe("createToolRegistrationRuntime", () => {
       sendUserMessage: vi.fn(),
       sendMessage: vi.fn(),
       appendEntry: vi.fn(),
+      getSessionName: vi.fn(),
       getActiveTools: vi.fn(() => [
         "read",
         "slack",
