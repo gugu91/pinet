@@ -559,7 +559,10 @@ export class GoalRuntime {
       let claim = await this.storage.getContinuationClaim(scopeId);
       const now = this.now().getTime();
       if (claim && (claim.goalId !== goal.id || claim.goalVersion !== goal.version)) {
-        await this.storage.deleteContinuationClaim(scopeId, claim.claimId);
+        if (!(await this.storage.deleteObsoleteContinuationClaim(scopeId, claim.claimId))) {
+          this.scheduleRecovery(scopeId, this.now().toISOString());
+          return;
+        }
         claim = undefined;
       }
       if (claim) {
@@ -882,7 +885,12 @@ export class GoalRuntime {
       if (existingClaim.goalId === goal.id && existingClaim.goalVersion >= goal.version) {
         return;
       }
-      await this.storage.deleteContinuationClaim(goal.scopeId, existingClaim.claimId);
+      if (
+        !(await this.storage.deleteObsoleteContinuationClaim(goal.scopeId, existingClaim.claimId))
+      ) {
+        this.scheduleRecovery(goal.scopeId, this.now().toISOString());
+        return;
+      }
     }
     const timestamp = this.now().toISOString();
     const claim: GoalContinuationClaim = {
@@ -934,7 +942,7 @@ export class GoalRuntime {
         currentClaim?.claimId !== claim.claimId
       ) {
         if (currentClaim?.claimId === claim.claimId) {
-          await this.storage.deleteContinuationClaim(goal.scopeId, claim.claimId);
+          await this.storage.deleteObsoleteContinuationClaim(goal.scopeId, claim.claimId);
         }
         return;
       }

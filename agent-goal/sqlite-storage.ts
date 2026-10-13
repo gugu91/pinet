@@ -1054,6 +1054,23 @@ export class SqliteGoalStorage implements GoalStorage {
     return result.changes === 1;
   }
 
+  async deleteObsoleteContinuationClaim(
+    scopeId: string,
+    expectedClaimId: string,
+  ): Promise<boolean> {
+    return (
+      this.db
+        .prepare(
+          `DELETE FROM agent_goal_continuations
+      WHERE scope_id = ? AND claim_id = ? AND NOT EXISTS (
+        SELECT 1 FROM agent_goals WHERE scope_id = agent_goal_continuations.scope_id
+          AND id = agent_goal_continuations.goal_id AND version = agent_goal_continuations.goal_version
+      )`,
+        )
+        .run(scopeId, expectedClaimId).changes === 1
+    );
+  }
+
   close(): void {
     this.db.close();
   }

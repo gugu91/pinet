@@ -317,5 +317,16 @@ export class MemoryGoalStorage implements GoalStorage {
     return this.claims.delete(scopeId);
   }
 
+  async deleteObsoleteContinuationClaim(
+    scopeId: string,
+    expectedClaimId: string,
+  ): Promise<boolean> {
+    const claim = this.claims.get(scopeId);
+    if (!claim || claim.claimId !== expectedClaimId) return false;
+    const goal = this.goals.get(scopeId);
+    if (goal?.id === claim.goalId && goal.version === claim.goalVersion) return false;
+    return this.claims.delete(scopeId);
+  }
+
   close(): void {}
 }

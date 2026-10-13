@@ -232,6 +232,54 @@ describe.each(["memory", "sqlite"])("blocked recovery races (%s)", (backend) => 
     await vi.waitFor(() => expect(continueIfIdle).toHaveBeenCalledTimes(1));
   });
 
+  it("preserves a live rebound lease when recovery holds an older goal snapshot", async () => {
+    const created = deferred<void>();
+    const dispatch = deferred<void>();
+    const first = makeRuntime({
+      eventSink: {
+        record: async (event) => {
+          if (event.type === "goal.continuation_claimed") {
+            created.resolve();
+            await dispatch.promise;
+          }
+        },
+      },
+    });
+    const second = makeRuntime();
+    await first.create("session", "ship");
+    await first.settle("session", { latestOutput: "waiting" });
+    now += BLOCKED_RECHECK_INTERVAL_MS;
+    const creator = first.recover("session");
+    await created.promise;
+    const observed = deferred<void>();
+    const resume = deferred<void>();
+    const get = storage.get.bind(storage);
+    vi.spyOn(storage, "get").mockImplementationOnce(async (scope) => {
+      const snapshot = await get(scope);
+      observed.resolve();
+      await resume.promise;
+      return snapshot;
+    });
+    const recovery = second.recover("session");
+    await observed.promise;
+    const updated = await first.updateBudget("session", { maxIterations: 3 });
+    dispatch.resolve();
+    await creator;
+    expect(continueIfIdle).toHaveBeenCalledTimes(1);
+    expect(continueIfIdle.mock.calls[0][1].idempotencyKey).toBe(`${updated.id}:${updated.version}`);
+    const live = await storage.getContinuationClaim("session");
+    expect(live).toMatchObject({ state: "started", goalVersion: updated.version });
+    resume.resolve();
+    await recovery;
+    expect(await storage.getContinuationClaim("session")).toEqual(live);
+    const wake = schedule.mock.calls.at(-1)?.[2] as () => void;
+    wake();
+    await vi.waitFor(() =>
+      expect(schedule).toHaveBeenLastCalledWith("session", live?.expiresAt, expect.any(Function)),
+    );
+    expect(continueIfIdle).toHaveBeenCalledTimes(1);
+  });
+
   it("reschedules when budget expansion defeats the budget-limited CAS", async () => {
     const runtime = makeRuntime();
     await runtime.create("session", "ship", { maxIterations: 1 });
