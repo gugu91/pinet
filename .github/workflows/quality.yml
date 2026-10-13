@@ -150,6 +150,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Install tmux for isolated integration tests
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
       - name: Run tests
         run: pnpm test
         env:

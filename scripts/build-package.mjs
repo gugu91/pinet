@@ -87,6 +87,14 @@ const packageConfigs = {
     vendorDirs: [],
     importRewrites: [],
   },
+  tmux: {
+    declaration: true,
+    excludeDirs: new Set(["dist", "node_modules", ".turbo"]),
+    excludeFiles: new Set(),
+    excludePrefixes: [],
+    vendorDirs: [],
+    importRewrites: [],
+  },
   "agent-goal": {
     declaration: true,
     excludeDirs: new Set(["dist", "node_modules", ".turbo"]),

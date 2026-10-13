@@ -1,6 +1,6 @@
 {
   "name": "pi-extensions",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -59,7 +59,8 @@
     "neon-psql",
     "openai-execution-shaping",
     "model-aware-compaction",
-    "agent-goal"
+    "agent-goal",
+    "tmux"
   ],
   "dependencies": {
     "typescript": "^5.7.3"

@@ -77,6 +77,8 @@ The repository includes these extensions:
 | [`neon-psql`](neon-psql/)             | Neon Postgres tunnel                                    |
 | [`agent-goal`](agent-goal/)           | Standalone durable goals, checkpoints, and saved links  |
 | [`types`](types/)                     | Shared type declarations                                |
+| [`tmux`](tmux/)                       | Optional Pi pane state/compaction/unread publisher      |
+| [`tmux-plugin`](tmux-plugin/)         | Separate TPM format integration; no prescribed theme    |
 
 Recent updates include:
 

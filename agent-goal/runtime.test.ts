@@ -687,7 +687,8 @@ describe("GoalRuntime", () => {
       new MemoryGoalStorage(),
       evaluator,
       continuation,
-      () => new Date("2026-01-01T00:00:00Z"),
+      // Frozen clock: the retry wait is computed from two clock reads and must be exact.
+      () => new Date("2026-01-01T00:00:00.000Z"),
       {
         evaluatorRetryPolicy: { maxAttempts: 2, baseDelayMs: 1_000, maxDelayMs: 5_000 },
         delay,

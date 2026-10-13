@@ -53,6 +53,7 @@ test("getPublishPackages returns the full publish set in dependency order", () =
     "slack-bridge",
     "model-aware-compaction",
     "agent-goal",
+    "tmux",
   ]);
 });
 
