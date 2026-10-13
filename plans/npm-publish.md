@@ -13,7 +13,7 @@ The publish workflow always validates or publishes the full npm org `pinet` pack
 5. `@pinet/slack-bridge` from `slack-bridge/`
 6. `@pinet/model-aware-compaction` from `model-aware-compaction/`
 7. `@pinet/agent-goal` from `agent-goal/`
-8. `@pinet/tmux` from `tmux/` (optional Pi extension; introduced by #1079, no live release authorized)
+8. `@pinet/tmux` from `tmux/` (optional Pi extension; introduced by #1079, first released in v0.2.26 after a one-time local bootstrap — see [next-release.md](next-release.md))
 
 There is intentionally no workflow target selector or script target flag. Real releases always attempt the shared core packages, bridges, and standalone extensions in dependency order so dependency versions stay aligned. npm publishes are sequential rather than atomic, so operators must verify the full package set after any real publish and treat a late failure as a partial-release recovery task.
 

@@ -9,6 +9,48 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.26] - 2026-10-13
+
+Pinet v0.2.26 introduces `@pinet/tmux`, an optional Pi pane-state publisher for tmux, and teaches agent goals to keep completed results, recheck blocked goals and recover after network outages. This entry describes the release candidate, not a completed publication.
+
+### Version verification
+
+- `pi-extensions` — `0.2.26` (private repo package)
+- `@pinet/transport-core` — `0.2.26`
+- `@pinet/broker-core` — `0.2.26`
+- `@pinet/pinet-core` — `0.2.26`
+- `@pinet/imessage-bridge` — `0.2.26`
+- `@pinet/slack-bridge` — `0.2.26`
+- `@pinet/model-aware-compaction` — `0.2.26`
+- `@pinet/agent-goal` — `0.2.26`
+- `@pinet/tmux` — `0.2.26` (first release in the coordinated set)
+
+### Added
+
+- `@pinet/tmux` (new package): publishes each interactive Pi pane's state (`idle`, `working`, `compacting`, `blocked`, `done`, `error`), session name and unread attention as tmux pane options. It changes no tmux layout, theme or Pi footer. A companion TPM plugin in this repository (`pinet.tmux`, `tmux-plugin/`) expands placeholders users add to their own status formats, aggregates multiple Pi panes per window, and acknowledges attention on pane focus. An idle Pi waiting on its own pi-subagents background runs stays `working` until they finish. Includes `/tmux` and `/unread` commands and an opt-in Rex OSC 7501 summary relay.
+- `@pinet/model-aware-compaction`: emits a scoped `pinet:compaction-start` notice before awaiting its summary, so state observers track compaction regardless of extension load order.
+- `@pinet/agent-goal`: verified completion stays visible as Done, with an `n` new-goal shortcut. A new goal replaces Done but never an unfinished goal. Blocked goals are rechecked through the normal prompted continuation every 15 minutes, within existing limits.
+- `@pinet/agent-goal`: after a turn fails on a recognized network connectivity error, an active goal waits for the configured model endpoint to become reachable (TCP probes every 15 seconds, up to 30 minutes, at most 20 automatic resumes per extension instance) and resumes through its normal evaluation. Typing, Escape, new input, model changes, navigation and shutdown cancel the wait. Authentication, quota, rate-limit, cancellation and tool failures are excluded.
+
+### Fixed
+
+- `@pinet/agent-goal`: a timing-dependent evaluator-retry test now uses a fixed clock.
+
+### Upgrade notes
+
+- No configuration or database migration is required.
+- `@pinet/tmux` is opt-in: install `npm:@pinet/tmux` in Pi, and optionally the companion TPM plugin `gugu91/pinet`, then add placeholders to your own tmux status formats. See `tmux/README.md` and `tmux-plugin/README.md`.
+- After publication, update installed packages and **restart** Pi sessions (`/reload` keeps already-loaded package modules). Preparing or merging this release PR does not update existing installations.
+- `@pinet/agent-goal` custom runtime storage/continuation adapters must honor the supplied commit/dispatch `AbortSignal` immediately before their side effect, as the built-in Memory/SQLite adapters and provider evaluator do, so a cancelled network-recovery attempt cannot commit or dispatch.
+
+### Included pull requests
+
+- [#1081](https://github.com/gugu91/pinet/pull/1081) — `@pinet/tmux` pane-state publisher and companion TPM plugin
+- [#1087](https://github.com/gugu91/pinet/pull/1087) — agent-goal: retain Done and recheck blocked goals
+- [#1089](https://github.com/gugu91/pinet/pull/1089) — agent-goal: recover active goals after network outages
+
+See the [release checklist](plans/next-release.md) for readiness, the one-time `@pinet/tmux` bootstrap and publication gates. Tagging and publishing require separate maintainer approval.
+
 ## [0.2.25] - 2026-10-13
 
 Pinet v0.2.25 prevents extension diagnostics from overwriting Pi's interactive editor. This entry describes the release candidate, not a completed publication.
