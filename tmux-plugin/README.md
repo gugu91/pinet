@@ -1,110 +1,143 @@
 # Pinet companion tmux plugin
 
-A separately installed **TPM plugin**, not a Pi extension or npm package.
-It adapts [the Pi state publisher](../tmux/README.md) to tmux's normal format-plugin
-convention: users explicitly insert placeholders into their own theme/layout.
+Shows Pi state in **your own** tmux status line. It is a separately installed
+**TPM plugin**, not a Pi extension or npm package.
 
-**No theme, icons, colors, window renaming, default layout, footer, config-file
-rewriting, bells or Rex polling are installed.** The only behavioral integration
-is focus acknowledgement. Native Node 24+ and tmux 3.2+ on local macOS/Linux are
-required; the checkout runs without `pnpm install`, npm runtime deps or a build.
+It needs the [Pi state publisher](../tmux/README.md) running inside Pi: the
+publisher writes each Pi pane's state, and this plugin reads, aggregates and
+exposes it as placeholders. Neither layer installs a theme, icons, colors,
+layout, bells or notifications. You decide where and how state appears.
 
-## Install independently
+Requirements: tmux 3.2+, Node 24+, local macOS/Linux. No `pnpm install` or build
+step is needed for this plugin.
 
-After this PR is merged, add to your existing TPM plugin list:
+## Quick start
+
+1. **Install the Pi publisher** (see [its README](../tmux/README.md#install)),
+   then run `/reload` in each open Pi session (or restart it).
+2. **Install this plugin** with TPM by adding it to your plugin list:
+
+   ```tmux
+   set -g @plugin 'gugu91/pinet'
+   ```
+
+   Then press `prefix + I`. Without TPM, add this line instead:
+
+   ```tmux
+   run-shell '/absolute/path/to/pinet/pinet.tmux'
+   ```
+
+3. **Add a placeholder** to a status format you already have, e.g. append
+   `#{pi_window_summary}` to your `window-status-format`. See the
+   [examples](#examples).
+4. **Reload tmux config** (`tmux source-file ~/.tmux.conf`, or your theme's
+   reload binding).
+
+Expected result: windows running Pi show a summary such as `my-session · working`;
+other windows look exactly as before.
+
+**Load order matters.** Placeholders are expanded once, when the plugin loads.
+Define your formats (or load your theme) **before** the plugin. TPM's loader
+normally runs last, so this is usually automatic. Themes that regenerate formats
+later need the plugin to run again afterwards.
+
+## Placeholders
+
+All placeholders are **per window** (all Pi panes in that window), except the
+session summary.
+
+| Placeholder             | Value                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `#{pi_state}`           | Most urgent state: `blocked`, `error`, `compacting`, `working`, `done`, `idle` |
+| `#{pi_name}`            | Active Pi's session name (else first Pi)                                       |
+| `#{pi_unread}`          | Number of Pi panes needing attention (`0` if none)                             |
+| `#{pi_count}`           | Number of Pi panes (`0` if none)                                               |
+| `#{pi_window_summary}`  | Plain text, e.g. `api + 2 others · working 1 · done 2 · unread 1`              |
+| `#{pi_session_summary}` | The same summary across the whole session                                      |
+
+In windows with no Pi, text placeholders are empty and counts are `0`, so they
+work as tmux conditionals: `#{?#{pi_count},…,…}`. Placeholders can be nested inside
+conditionals and comparisons.
+
+State priority is blocked → error → compacting → working → done → idle. Unread
+is separate from state: `done` stays `done` after you look at it; only the unread
+count drops.
+
+### When does unread appear?
+
+A pane becomes unread when Pi finishes a run (`done` or `error`), asks for input
+(`blocked`), or when you run `/unread` in Pi. Cancelled runs don't mark it. Entering
+that pane or typing in Pi clears it. If you're already in the pane when Pi
+finishes, it stays unread until you type or come back.
+
+## Examples
+
+Use these as starting points; nothing is applied automatically.
+
+Plain tmux, keeping the window name for non-Pi windows:
 
 ```tmux
-set -g @plugin 'gugu91/pinet'
+set -g window-status-format '#I #{?#{pi_count},#{pi_window_summary},#W}'
+set -g window-status-current-format '#I #{?#{pi_count},#{pi_window_summary},#W}'
 ```
 
-TPM discovers the repository-root `pinet.tmux` entry and loads only this companion.
-It does **not** start Pi, enable Slack, install npm packages or run repository
-bootstrap scripts. While testing this PR, use `gugu91/pinet#feat/pinet-tmux-1079`.
-Use TPM's normal install command (`prefix + I`). Ensure Node 24+ is on tmux's PATH.
-
-For manual installation/a source checkout:
+State emoji plus name, with a bell for unread:
 
 ```tmux
-run-shell '/absolute/path/to/pinet/pinet.tmux'
+set -g window-status-format '#I #{?#{pi_count},#{?#{==:#{pi_state},blocked},🙋,#{?#{==:#{pi_state},error},❌,#{?#{==:#{pi_state},compacting},🗜️,#{?#{==:#{pi_state},working},⚙️,#{?#{==:#{pi_state},done},✅,💤}}}}} #{pi_name},#W}#{?#{pi_unread}, 🔔,}'
 ```
 
-Run it **after your theme and format definitions**, or place TPM's loader after
-those definitions. Theme regeneration may overwrite formats; rerun the plugin
-entry after regenerating them. The Pi publisher is installed/loaded independently.
-
-## Placeholders (window aggregates, not just the current pane)
-
-| Placeholder             | Value                                                        |
-| ----------------------- | ------------------------------------------------------------ |
-| `#{pi_state}`           | Highest-priority live state in this window, empty without Pi |
-| `#{pi_name}`            | Active Pi's name, otherwise first Pi, empty without Pi       |
-| `#{pi_unread}`          | Number of unread live Pi panes in this window                |
-| `#{pi_count}`           | Number of live Pi panes in this window                       |
-| `#{pi_window_summary}`  | Optional plain-text name/states/counts summary               |
-| `#{pi_session_summary}` | Same summary across the targeted client's session            |
-
-These are plugin placeholders, expanded into `#(...)` query jobs when the plugin
-loads. They are not additional built-in tmux format variables. The adapter scans
-`status-left`, `status-right`, normal/current window formats, plus window-local
-format overrides. It preserves all content except explicit placeholder tokens.
-It does not create/add tokens itself. Theme custom text fields work when the theme
-expands them into those format options **before** this plugin loads.
-
-Queries reuse the publisher's shared helper. Stale/recycled owners are filtered,
-linked panes deduplicated and acknowledgement applied. Names cannot inject tmux
-formatting or terminal controls. Jobs resolve their server from `TMUX` inside the
-Node helper; window/session targets are explicit. No shell parameter expressions
-are embedded in nested tmux formats. Multiple attached clients do not accidentally
-query the server's latest session.
-The user's existing status interval controls refresh; no interval is changed.
-
-## Optional examples — choose/edit these yourself
-
-A minimal plain-tmux window format (no styles):
+Session summary on the right, keeping existing modules:
 
 ```tmux
-set -g window-status-format '#I #W #{pi_state}'
-set -g window-status-current-format '#I #W #{pi_state}'
+set -ga status-right ' #{pi_session_summary}'
 ```
 
-A summary instead of the regular name:
+For themes (gpakosz/.tmux, Catppuccin, etc.), put the placeholder in the theme's
+own window/status text option rather than overriding the final tmux option. Keep
+its index, flags and styles. The [optional setup prompt](setup-prompt.md) can help
+an agent adapt this to your config, with your confirmation before any edit.
 
-```tmux
-set -g window-status-format '#I #{pi_window_summary}'
-```
+Fully custom labels (e.g. emoji-only counts) can call the publisher's query
+helper from your own script; see
+[Shared query helper](../tmux/README.md#shared-query-helper).
 
-The second example is Pi-only: non-Pi windows yield an empty summary. Preserve `#W`
-if you want a shell-window fallback. Likewise, a window with several Pi panes shows
-a plain-text aggregate, not just the current pane. No preset is applied implicitly.
+## Troubleshooting
 
-For an existing theme, place the desired token into its documented text field or
-append it to your existing format; preserve the theme's index, flags, styles and
-other status modules. Use the [optional setup prompt](setup-prompt.md) if you want
-an agent to adapt that integration to your particular configuration.
+| Symptom                                       | Likely cause and fix                                                                                                               |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Literal `#{pi_…}` text in the status bar      | Plugin ran before the format was defined, or the theme regenerated it. Load the plugin after your theme, then reload.              |
+| Placeholders render empty in Pi windows       | Publisher not loaded in that Pi. Install it and run `/reload`; `/tmux status` in Pi should list the pane.                          |
+| `pane-focus-in[1079] is occupied` on load     | Another plugin uses that hook slot. Nothing was changed; free the slot or remove the other hook.                                   |
+| Stopped working after switching Node versions | The Node path is captured at load. Reload tmux config with Node 24+ on tmux's `PATH`.                                              |
+| State is not cleared when you return          | Ensure the plugin loaded (it enables `focus-events` and installs the hook). Check with `tmux show-hooks -g 'pane-focus-in[1079]'`. |
 
-## Focus acknowledgement and uninstall
+## Focus acknowledgement
 
-The plugin enables `focus-events` and installs only `pane-focus-in[1079]`. It
-acknowledges only Pi-owned panes by copying their attention-generation marker and
-setting public unread to zero. An occupied hook slot belonging to another plugin
-fails **before any changes**. Other hook slots are preserved. Repeated loading is
-idempotent. Do not redefine our slot while the plugin is in use.
+The plugin enables `focus-events` and installs a single hook,
+`pane-focus-in[1079]`, which clears unread when you enter a Pi pane. It touches
+only Pi-owned panes and leaves other hook slots alone. Reloading is idempotent.
 
-To remove the behavioral hook:
+## Uninstall
 
-```sh
-bash /absolute/path/to/pinet/pinet.tmux uninstall
-```
+1. Remove the placeholders from your formats.
+2. From inside tmux, remove the hook:
 
-Only the exact recorded owned hook is removed; a replacement is preserved.
-`focus-events` remains enabled because other plugins may depend on it.
-Remove our placeholders from your own formats, remove the plugin line, and reload
-your config before deleting the checkout/using TPM's uninstall. This restores your
-chosen layout; the plugin does not keep backups or rewrite your config files.
-Remove the Pi publisher separately with `pi remove npm:@pinet/tmux` if desired.
+   ```sh
+   bash /absolute/path/to/pinet/pinet.tmux uninstall
+   ```
 
-## Experimental Rex
+   This removes only the hook the plugin installed. `focus-events` stays enabled
+   because other plugins may rely on it.
 
-This plugin never forwards terminal reports or installs an invisible relay job.
-The publisher package's optional `rex-cli.js` adapter is separately opt-in. See its
-README for protocol/ownership limitations. No automatic desktop notifications.
+3. Remove the plugin line, reload tmux config and run TPM's clean
+   (`prefix + alt + u`), or delete the checkout.
+
+The plugin keeps no backups and never edits config files. Remove the Pi
+publisher separately (see its README).
+
+## Rex
+
+This plugin never forwards terminal reports or installs background jobs. The
+publisher's experimental Rex adapter is a separate, explicit opt-in; see its
+README.

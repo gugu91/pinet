@@ -4,9 +4,11 @@ Optional Pi extension publishing **data, not a theme**. No Slack/broker, runtime
 npm dependencies, agent-callable tools, footer changes, status-line customization,
 configuration edits, bells or desktop notifications.
 
-The separate [companion tmux plugin](https://github.com/gugu91/pinet/tree/main/tmux-plugin) provides format
-placeholders, shared aggregation and a focus-acknowledgement hook. Use either layer
-independently. This PR prepares distribution; no npm release is implied.
+To show state in tmux, also install the separate
+[companion tmux plugin](https://github.com/gugu91/pinet/tree/main/tmux-plugin): it
+provides status-line placeholders and clears unread when you enter a pane. Its
+README has the end-to-end quick start. Without it, you can read the raw pane
+variables below directly.
 
 ## Install
 
@@ -14,19 +16,25 @@ Requires **Pi 1.1+**, **Node 24+**, **tmux 3.2+** and local macOS/Linux with `ps
 Tested on macOS/tmux 3.6b and Linux CI. No Windows, nested-tmux or remote-process
 monitoring support is promised.
 
-Once a maintainer-approved npm release is published:
+From npm (once a release including `@pinet/tmux` is published):
 
 ```sh
 pi install npm:@pinet/tmux
 ```
 
-For this PR checkout, without changing your installed Pi packages:
+From a source checkout (until then, or to track `main`):
 
 ```sh
+git clone https://github.com/gugu91/pinet.git && cd pinet
 pnpm install --frozen-lockfile
 pnpm --filter @pinet/tmux build
-pi -e ./tmux/dist/index.js
+pi install ./tmux          # or try once: pi -e ./tmux/dist/index.js
 ```
+
+Rebuild after pulling. Run `/reload` in already-open Pi sessions; each session
+starts publishing once reloaded. Check with `/tmux status`.
+
+Don't run this alongside another Pi/tmux state extension in the same pane.
 
 Only interactive TUI Pi with a terminal inside tmux claims its pane. RPC, print,
 JSON and headless children do not overwrite a parent's state. The publisher does
@@ -77,8 +85,7 @@ Commands:
 - `/tmux ack`: acknowledge this pane explicitly.
 
 There are no `/tmux setup`, theme, footer or Rex commands. Presentation belongs to
-user configuration/the companion plugin. The private legacy prototype remains
-separate; do not load two interactive publishers in one pane.
+your tmux configuration and the companion plugin.
 
 ## Shared query helper
 
