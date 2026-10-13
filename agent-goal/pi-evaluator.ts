@@ -50,13 +50,19 @@ export function parseGoalEvaluation(text: string): GoalEvaluation {
 export class PiGoalEvaluator implements GoalEvaluator {
   constructor(private readonly getContext: () => ExtensionContext | undefined) {}
 
-  async evaluate(goal: AgentGoal, progress: GoalProgress): Promise<GoalEvaluation> {
+  async evaluate(
+    goal: AgentGoal,
+    progress: GoalProgress,
+    signal?: AbortSignal,
+  ): Promise<GoalEvaluation> {
+    if (signal?.aborted) throw new GoalEvaluatorUnavailableError("Goal recovery cancelled");
     const ctx = this.getContext() as CompatibleContext | undefined;
     if (!ctx?.model) {
       throw new GoalEvaluatorUnavailableError("No active model is available to evaluate the goal");
     }
     const model = ctx.model as EvaluatorModel;
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (signal?.aborted) throw new GoalEvaluatorUnavailableError("Goal recovery cancelled");
     if (!auth.ok) throw new GoalEvaluatorUnavailableError(auth.error);
 
     const response = await completeSimple(
@@ -93,6 +99,7 @@ export class PiGoalEvaluator implements GoalEvaluator {
         ],
       },
       {
+        signal,
         apiKey: auth.apiKey,
         headers: auth.headers,
         cacheRetention: "none",

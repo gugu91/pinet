@@ -34,6 +34,7 @@ declare module "@earendil-works/pi-ai" {
       }>;
     },
     options: {
+      signal?: AbortSignal;
       apiKey?: string;
       headers?: Record<string, string>;
       cacheRetention: "none";
