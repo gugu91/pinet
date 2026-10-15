@@ -131,57 +131,32 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-interface BrokerRpcRequestError extends Error {
-  code?: number;
-  data?: unknown;
-  method?: string;
-}
+class BrokerRpcRequestError extends Error {
+  readonly code: number;
+  readonly data: NonNullable<JsonRpcResponse["error"]>["data"];
+  readonly reason: string | null;
 
-function createRpcRequestError(
-  method: string,
-  error: { code: number; message: string; data?: unknown },
-): BrokerRpcRequestError {
-  const err = new Error(error.message) as BrokerRpcRequestError;
-  err.name = "BrokerRpcRequestError";
-  err.code = error.code;
-  err.data = error.data;
-  err.method = method;
-  return err;
+  constructor(
+    readonly method: string,
+    error: NonNullable<JsonRpcResponse["error"]>,
+  ) {
+    super(error.message);
+    this.name = "BrokerRpcRequestError";
+    this.code = error.code;
+    this.data = error.data;
+    const data = error.data;
+    this.reason =
+      data && typeof data === "object" && "code" in data && typeof data.code === "string"
+        ? data.code
+        : null;
+  }
 }
 
 function isRpcMethodNotFoundError(err: unknown, method: string): boolean {
-  if (!(err instanceof Error)) {
-    return false;
-  }
-
-  const rpcErr = err as BrokerRpcRequestError;
-  if (rpcErr.method !== method) {
-    return false;
-  }
-
-  return rpcErr.code === RPC_METHOD_NOT_FOUND || err.message === `Unknown method: ${method}`;
-}
-
-function isRpcAgentNameConflictError(err: unknown): err is BrokerRpcRequestError {
-  if (!(err instanceof Error)) {
-    return false;
-  }
-
-  const rpcErr = err as BrokerRpcRequestError;
-  if (rpcErr.code === RPC_AGENT_NAME_CONFLICT) {
-    return true;
-  }
-
-  if (typeof rpcErr.data !== "object" || rpcErr.data == null) {
-    return false;
-  }
-
-  return (rpcErr.data as { code?: unknown }).code === "AGENT_NAME_CONFLICT";
-}
-
-function getMeshAuthCompatibilityError(): Error {
-  return new Error(
-    "Broker does not support Pinet mesh auth (`auth`). Upgrade the broker or disable follower mesh auth when connecting to older/no-auth brokers.",
+  return (
+    err instanceof BrokerRpcRequestError &&
+    err.method === method &&
+    (err.code === RPC_METHOD_NOT_FOUND || err.message === `Unknown method: ${method}`)
   );
 }
 
@@ -213,14 +188,6 @@ interface RegistrationResult {
   metadata?: Record<string, unknown> | null;
 }
 
-function getErrorCode(err: unknown): string | null {
-  if (typeof err !== "object" || err == null || !("code" in err)) {
-    return null;
-  }
-  const code = (err as { code?: unknown }).code;
-  return typeof code === "string" ? code : null;
-}
-
 export interface AgentBroadcastResult {
   channel: string;
   messageIds: number[];
@@ -231,12 +198,9 @@ export interface AgentBroadcastResult {
 
 export type BrokerConnectOpts = { path: string } | { host: string; port: number };
 
-export interface BrokerClientAuthOptions {
-  meshSecret?: string;
-  meshSecretPath?: string;
-  /** Broker-issued worker key; logs in as that worker instead of with the mesh secret. */
-  workerKey?: string;
-}
+export type BrokerClientAuthOptions =
+  | { meshSecret?: string; meshSecretPath?: string; workerKey?: never }
+  | { workerKey: string; meshSecret?: never; meshSecretPath?: never };
 
 export interface BrokerClientTimingOptions {
   /** @internal Allows tests to exercise reconnect behavior without waiting for production backoff. */
@@ -278,27 +242,9 @@ export class BrokerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private buffer = "";
 
-  constructor(opts?: string | BrokerClientOptions) {
-    this.reconnectDelayMs =
-      typeof opts === "object" && opts !== null
-        ? (opts.reconnectDelayMs ?? computeReconnectDelay)
-        : computeReconnectDelay;
-
-    if (opts === undefined) {
-      this.connectOpts = { path: DEFAULT_SOCKET_PATH };
-      this.meshSecret = null;
-      this.meshSecretPath = null;
-      this.workerKey = null;
-      return;
-    }
-
-    if (typeof opts === "string") {
-      this.connectOpts = { path: opts };
-      this.meshSecret = null;
-      this.meshSecretPath = null;
-      this.workerKey = null;
-      return;
-    }
+  constructor(options: string | BrokerClientOptions = DEFAULT_SOCKET_PATH) {
+    const opts = typeof options === "string" ? { path: options } : options;
+    this.reconnectDelayMs = opts.reconnectDelayMs ?? computeReconnectDelay;
 
     if ("path" in opts) {
       this.connectOpts = { path: opts.path };
@@ -307,10 +253,8 @@ export class BrokerClient {
       this.connectOpts = { host: opts.host, port: opts.port };
     }
 
-    const meshSecret = opts.meshSecret?.trim();
-    this.meshSecret = meshSecret && meshSecret.length > 0 ? meshSecret : null;
-    const meshSecretPath = opts.meshSecretPath?.trim();
-    this.meshSecretPath = meshSecretPath && meshSecretPath.length > 0 ? meshSecretPath : null;
+    this.meshSecret = opts.meshSecret?.trim() || null;
+    this.meshSecretPath = opts.meshSecretPath?.trim() || null;
     this.workerKey = opts.workerKey ?? null;
   }
 
@@ -378,7 +322,7 @@ export class BrokerClient {
       try {
         return readMeshSecret(this.meshSecretPath);
       } catch (err) {
-        if (getErrorCode(err) === "ENOENT") {
+        if (err instanceof Error && "code" in err && err.code === "ENOENT") {
           throw new Error(
             `Configured Pinet mesh secret file not found: ${this.meshSecretPath}. Set slack-bridge.meshSecretPath to an existing file, provide slack-bridge.meshSecret directly, or leave both unset to disable shared-secret auth.`,
           );
@@ -406,7 +350,9 @@ export class BrokerClient {
       await this.request("auth", { secret: meshSecret });
     } catch (err) {
       if (isRpcMethodNotFoundError(err, "auth")) {
-        throw getMeshAuthCompatibilityError();
+        throw new Error(
+          "Broker does not support Pinet mesh auth (`auth`). Upgrade the broker or disable follower mesh auth when connecting to older/no-auth brokers.",
+        );
       }
       throw err;
     }
@@ -874,7 +820,7 @@ export class BrokerClient {
     this.pending.delete(msg.id);
 
     if (msg.error) {
-      entry.reject(createRpcRequestError(entry.method, msg.error));
+      entry.reject(new BrokerRpcRequestError(entry.method, msg.error));
     } else {
       entry.resolve(msg.result);
     }
@@ -1030,12 +976,12 @@ export class BrokerClient {
       } catch {
         /* ignore */
       }
-      // A rejected worker key stays rejected: it was revoked or rotated.
-      const workerKeyRejected =
-        (reconnectError as BrokerRpcRequestError).data != null &&
-        ((reconnectError as BrokerRpcRequestError).data as { code?: string }).code ===
-          "WORKER_KEY_REJECTED";
-      if (isRpcAgentNameConflictError(reconnectError) || workerKeyRejected) {
+      if (
+        reconnectError instanceof BrokerRpcRequestError &&
+        (reconnectError.code === RPC_AGENT_NAME_CONFLICT ||
+          reconnectError.reason === "AGENT_NAME_CONFLICT" ||
+          reconnectError.reason === "WORKER_KEY_REJECTED")
+      ) {
         this.reconnectAttempt = 0;
         this.reconnectFailedHandler?.(reconnectError);
         return;

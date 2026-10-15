@@ -164,3 +164,27 @@ it("follows at startup under the worker key from --pinet-join, even when headles
     metadata: { role: "worker", pinetWorker: { hostId: "studio", workerId: "w1" } },
   });
 }, 20_000);
+
+it.each([null, {}, { version: 1, socket: 42, key: "key" }])(
+  "rejects malformed join data %j without falling back to mesh auth",
+  async (data) => {
+    const { root, socket, db } = await startBroker();
+    const joinFile = path.join(root, "invalid.join.json");
+    fs.writeFileSync(joinFile, JSON.stringify(data), { mode: 0o600 });
+    const worker = loadExtension(root, { joinFile });
+    await worker.events.get("session_start")!({}, worker.context);
+    expect(worker.notify).toHaveBeenCalledWith(expect.stringContaining("must contain"), "error");
+
+    await worker.commands.get("pinet")!.handler("follow", worker.context);
+    expect(db.getAgents()).toHaveLength(0);
+    expect(worker.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining("Pinet follow failed:"),
+      "error",
+    );
+
+    const { key } = db.workerKeys.issue({ hostId: "studio", workerId: "w1" });
+    fs.writeFileSync(joinFile, JSON.stringify({ version: 1, socket, key }));
+    await worker.commands.get("pinet")!.handler("follow", worker.context);
+    expect(db.getAgents()).toMatchObject([{ stableId: "studio:worker:w1" }]);
+  },
+);

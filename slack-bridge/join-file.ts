@@ -14,10 +14,11 @@ export function readJoinFile(filePath: string): JoinFile {
     if (!stat.isFile() || (stat.mode & 0o077) !== 0) {
       throw new Error(`${filePath} must be a file only you can read (chmod 600).`);
     }
-    const parsed = JSON.parse(fs.readFileSync(fd, "utf8")) as Partial<JoinFile> & {
-      version?: number;
-    };
+    const parsed = JSON.parse(fs.readFileSync(fd, "utf8")) as
+      | (Partial<JoinFile> & { version?: number })
+      | null;
     if (
+      !parsed ||
       parsed.version !== 1 ||
       typeof parsed.socket !== "string" ||
       typeof parsed.key !== "string"

@@ -2,28 +2,19 @@ import * as crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 /** Broker-assigned worker identity. Labels are slugs, so the stable ID always parses with kind "worker". */
-export interface WorkerIdentity {
+export type WorkerIdentity = {
   hostId: string;
   workerId: string;
-}
+};
 
 /** The identity a live key authenticates as. */
-export interface WorkerKeyPrincipal extends WorkerIdentity {
+export type WorkerKeyPrincipal = WorkerIdentity & {
   keyId: string;
-}
+};
 
-export interface WorkerKeyRecord extends WorkerKeyPrincipal {
+export type WorkerKeyRecord = WorkerKeyPrincipal & {
   createdAt: string;
   revokedAt: string | null;
-}
-
-type WorkerKeyRow = {
-  id: string;
-  host_id: string;
-  worker_id: string;
-  secret_sha256: string;
-  created_at: string;
-  revoked_at: string | null;
 };
 
 const LABEL = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -83,11 +74,13 @@ export class WorkerKeys {
     if (!match) return null;
     const [, keyId, secret] = match;
     const row = this.db
-      .prepare("SELECT * FROM worker_keys WHERE id = ? AND revoked_at IS NULL")
-      .get(keyId) as WorkerKeyRow | undefined;
-    if (!row || !crypto.timingSafeEqual(Buffer.from(row.secret_sha256, "hex"), sha256(secret)))
-      return null;
-    return { keyId, hostId: row.host_id, workerId: row.worker_id };
+      .prepare(
+        `SELECT host_id AS hostId, worker_id AS workerId, secret_sha256 AS hash
+         FROM worker_keys WHERE id = ? AND revoked_at IS NULL`,
+      )
+      .get(keyId) as (WorkerIdentity & { hash: string }) | undefined;
+    if (!row || !crypto.timingSafeEqual(Buffer.from(row.hash, "hex"), sha256(secret))) return null;
+    return { keyId, hostId: row.hostId, workerId: row.workerId };
   }
 
   /** Returns whether the identity had a live key. */
@@ -102,16 +95,13 @@ export class WorkerKeys {
   }
 
   list(): WorkerKeyRecord[] {
-    const rows = this.db
-      .prepare("SELECT * FROM worker_keys ORDER BY host_id, worker_id, created_at")
-      .all() as WorkerKeyRow[];
-    return rows.map((row) => ({
-      keyId: row.id,
-      hostId: row.host_id,
-      workerId: row.worker_id,
-      createdAt: row.created_at,
-      revokedAt: row.revoked_at,
-    }));
+    return this.db
+      .prepare(
+        `SELECT id AS keyId, host_id AS hostId, worker_id AS workerId,
+                created_at AS createdAt, revoked_at AS revokedAt
+         FROM worker_keys ORDER BY host_id, worker_id, created_at`,
+      )
+      .all() as WorkerKeyRecord[];
   }
 
   private revokeLive(identity: WorkerIdentity, now: string): number {
