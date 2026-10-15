@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { configure, expand, HOOK, QUERY } from "../tmux-plugin/plugin.ts";
+import { configure, expand, HOOK, PUBLISH_JOB, QUERY } from "../tmux-plugin/plugin.ts";
 import { Tmux, processIdentity } from "./transport.ts";
 const exec = promisify(execFile);
 
@@ -51,7 +51,12 @@ test(
       await tmux.run(["set-hook", "-g", "pane-focus-in[123]", "display-message retained"]);
       await configure(tmux, node, query);
       assert.equal(await tmux.run(["show-options", "-gqv", "window-status-format"]), normal);
-      assert.equal(await tmux.run(["show-options", "-gqv", "status-right"]), expand(right));
+      // #1095: window formats read options; the only job is one publisher outside the window list.
+      assert.ok(!expand(local).includes("#("));
+      assert.equal(
+        await tmux.run(["show-options", "-gqv", "status-right"]),
+        expand(right) + PUBLISH_JOB,
+      );
       assert.equal(
         await tmux.run(["show-options", "-wqv", "-t", pane, "window-status-current-format"]),
         expand(local),
@@ -67,6 +72,7 @@ test(
       const hook = await tmux.run(["show-hooks", "-g", HOOK]);
       assert.ok(hook.includes("@pi_unread"));
       await configure(tmux, node, query, true);
+      assert.equal(await tmux.run(["show-options", "-gqv", "status-right"]), expand(right));
       assert.equal((await tmux.run(["show-hooks", "-g", HOOK])).trim(), HOOK);
       assert.equal(await tmux.run(["show-options", "-gqv", QUERY]), "");
       assert.ok((await tmux.run(["show-hooks", "-g", "pane-focus-in[123]"])).includes("retained"));
@@ -129,28 +135,38 @@ test(
       await symlink(process.execPath, node);
       const query = fileURLToPath(new URL("./status.ts", import.meta.url));
       await configure(tmux, node, query);
+      // Formats from a pre-#1095 load are upgraded in place on reload.
+      const legacy = `#I #(#{${QUERY}} env window '#{window_id}' count)`;
+      await tmux.run(["set-option", "-g", "window-status-format", legacy]);
+      await tmux.run(["set-option", "-g", "status-right", "#{pi_session_summary}"]);
+      await configure(tmux, node, query);
+      assert.equal(
+        await tmux.run(["show-options", "-gqv", "window-status-format"]),
+        `#I ${expand("#{pi_count}")}`,
+      );
+      const render = (placeholder: string, target = pane) =>
+        tmux.run(["display-message", "-p", "-t", target, expand(`#{${placeholder}}`)]);
+      assert.equal(await render("pi_count"), "0", "counts render 0 before the first publish");
+      // tmux format-expands a job's command before running it; reproduce that step with tmux itself.
+      const job = await tmux.run(["display-message", "-p", "-t", pane, PUBLISH_JOB.slice(2, -1)]);
+      const run = () =>
+        exec("sh", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,-1` } });
+      assert.equal((await run()).stdout, "", "the publisher prints nothing into the status line");
       for (const [placeholder, expected] of [
         ["pi_state", "working"],
         ["pi_name", "ship it"],
         ["pi_count", "1"],
         ["pi_unread", "0"],
+        ["pi_window_summary", "ship it · working"],
         ["pi_session_summary", "ship it · working"],
-      ]) {
-        // tmux format-expands a job's command before running it; reproduce that step with tmux itself.
-        const job = await tmux.run([
-          "display-message",
-          "-p",
-          "-t",
-          pane,
-          expand(`#{${placeholder}}`).slice(2, -1),
-        ]);
-        assert.equal(
-          (
-            await exec("sh", ["-c", job], { env: { ...process.env, TMUX: `${socket},0,-1` } })
-          ).stdout.trim(),
-          expected,
-        );
-      }
+      ])
+        assert.equal(await render(placeholder), expected, placeholder);
+      assert.equal(await render("pi_state", second), "error", "each window gets its own aggregate");
+      await tmux.release(pane, record.owner);
+      await run();
+      assert.equal(await render("pi_count"), "0", "a released pane clears its window");
+      assert.equal(await render("pi_state"), "");
+      assert.equal(await render("pi_session_summary"), "");
       // The actual TPM root entry runs native TS; neither node_modules nor dist is used by this path.
       await exec("bash", [fileURLToPath(new URL("../pinet.tmux", import.meta.url))], {
         env: { ...process.env, TMUX: `${socket},0,-1`, TMUX_PANE: pane },

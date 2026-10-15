@@ -6,7 +6,14 @@ import { summarize } from "./query.ts";
 const [socketArgument, scope, target, mode = "summary"] = process.argv.slice(2);
 const socket =
   socketArgument === "env" ? process.env.TMUX?.match(/^(.*),\d+,-?\d+$/)?.[1] : socketArgument;
-if (
+if (socket && scope === "publish" && target === undefined) {
+  // The companion's status job: prints nothing, writes every aggregate as tmux options.
+  try {
+    await new Tmux(socket).rollup();
+  } catch {
+    process.exitCode = 1;
+  }
+} else if (
   !socket ||
   (scope !== "session" && scope !== "window") ||
   !target ||
@@ -14,7 +21,7 @@ if (
   !["json", "summary", "state", "name", "unread", "count", "aggregate"].includes(mode)
 ) {
   console.error(
-    "Usage: node status.ts SOCKET|env session|window TARGET [json|aggregate|summary|state|name|unread|count]",
+    "Usage: node status.ts SOCKET|env publish\n       node status.ts SOCKET|env session|window TARGET [json|aggregate|summary|state|name|unread|count]",
   );
   process.exitCode = 2;
 } else {

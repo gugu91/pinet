@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { encode, parseRecord, type PaneRecord, type PaneStatus } from "./helpers.ts";
+import { summarize } from "./query.ts";
 const exec = promisify(execFile);
 export const OPTION = "@pi_rollup";
 export const OWNER = "@pi_rollup_owner";
@@ -10,6 +11,15 @@ export const ACK = "@pi_rollup_ack";
 export const STATE = "@pi_state";
 export const DISPLAY_NAME = "@pi_name";
 export const UNREAD = "@pi_unread";
+/** Companion-owned aggregates. Distinct from pane options: window formats resolve the active pane's options first. */
+export const WINDOW_ROLLUP = {
+  state: "@pi_window_state",
+  name: "@pi_window_name",
+  unread: "@pi_window_unread",
+  count: "@pi_window_count",
+  summary: "@pi_window_summary",
+} as const;
+export const SESSION_ROLLUP = { summary: "@pi_session_summary" } as const;
 export const FOCUS_HOOK = `if-shell -F '#{!=:#{${OWNER}},}' "set-option -p -F ${ACK} '#{${ATTENTION}}' ; set-option -p ${UNREAD} 0"`;
 export function quoteTmuxValue(text: string): string {
   return JSON.stringify(text).replaceAll("$", "\\$");
@@ -144,25 +154,120 @@ export class Tmux {
   }
   async snapshot(target: string, scope: "session" | "window" = "session"): Promise<PaneStatus[]> {
     // Explicit target: a status-right command must use its client's session, not the server's latest client.
-    const rows = await this.run([
-      "list-panes",
-      ...(scope === "session" ? ["-s"] : []),
-      "-t",
-      target,
-      "-F",
-      `#{pane_id}\t#{window_id}\t#{${OPTION}}\t#{${OWNER}}\t#{${NAME}}\t#{pane_active}\t#{${ATTENTION}}\t#{${ACK}}`,
-    ]);
-    const candidates: PaneStatus[] = [];
+    return (
+      await this.live(
+        await this.run([
+          "list-panes",
+          ...(scope === "session" ? ["-s"] : []),
+          "-t",
+          target,
+          "-F",
+          PANE_FORMAT,
+        ]),
+      )
+    ).map(({ status }) => status);
+  }
+  /**
+   * Writes every window's and session's aggregate as companion options in one pass:
+   * one read, one liveness check and at most one write, however many windows exist.
+   * Only changed values are written, so an unchanged tick causes no redraw.
+   */
+  async rollup(): Promise<void> {
+    const windowNames = Object.values(WINDOW_ROLLUP);
+    const rows = (
+      await this.run([
+        "list-panes",
+        "-a",
+        "-F",
+        `p\t${PANE_FORMAT}`,
+        ";",
+        "list-windows",
+        "-a",
+        "-F",
+        `w\t#{window_id}\t${windowNames.map((option) => `#{${option}}`).join("\t")}`,
+        ";",
+        "list-sessions",
+        "-F",
+        `s\t#{session_id}\t#{${SESSION_ROLLUP.summary}}`,
+      ])
+    ).split("\n");
+    const panes = await this.live(
+      rows.flatMap((row) => (row.startsWith("p\t") ? [row.slice(2)] : [])).join("\n"),
+    );
+    const byWindow = new Map<string, PaneStatus[]>();
+    const bySession = new Map<string, PaneStatus[]>();
+    for (const { status, session } of panes) {
+      byWindow.set(status.window, [...(byWindow.get(status.window) ?? []), status]);
+      bySession.set(session, [...(bySession.get(session) ?? []), status]);
+    }
+    const commands: string[][] = [];
+    // Window options take -w; session options take no scope flag (-s would mean server).
+    const write = (scope: "-w" | "", target: string, option: string, from = "", to = "") => {
+      if (from === to) return;
+      commands.push([
+        "set-option",
+        ...(to ? (scope ? [scope] : []) : [`${scope || "-"}u`]),
+        "-t",
+        target,
+        option,
+        ...(to ? [to.replace(/;$/, "\\;")] : []),
+      ]);
+    };
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const [kind, target, ...current] = row.split("\t");
+      // Linked windows are listed once per session; write each window once.
+      if (kind === "p" || !target || seen.has(target)) continue;
+      seen.add(target);
+      if (kind === "w") {
+        const summary = summarize(byWindow.get(target) ?? []);
+        // Empty means unset, so windows without Pi carry no data; placeholders render counts as 0.
+        const next = {
+          state: summary.state,
+          name: summary.name,
+          unread: summary.count ? String(summary.unread) : "",
+          count: summary.count ? String(summary.count) : "",
+          summary: summary.text,
+        };
+        Object.entries(WINDOW_ROLLUP).forEach(([key, option], index) =>
+          write("-w", target, option, current[index], next[key as keyof typeof next]),
+        );
+      } else if (kind === "s")
+        write(
+          "",
+          target,
+          SESSION_ROLLUP.summary,
+          current[0],
+          summarize(bySession.get(target) ?? []).text,
+        );
+    }
+    if (commands.length)
+      await this.run(commands.flatMap((command, index) => (index ? [";", ...command] : command)));
+  }
+  private async live(rows: string): Promise<{ status: PaneStatus; session: string }[]> {
+    const candidates: { status: PaneStatus; session: string }[] = [];
     for (const row of rows.split("\n")) {
-      const [pane, window, text = "", owner, encodedName = "", active, attention, ack] =
-        row.split("\t");
+      const [
+        pane,
+        window,
+        text = "",
+        owner,
+        encodedName = "",
+        active,
+        attention,
+        ack,
+        session = "",
+      ] = row.split("\t");
       const record = parseRecord(text);
       if (record && record.owner === owner) {
         if (attention && attention === ack) record.unread = false;
         const name = /^[A-Za-z0-9+/=]{0,2048}$/.test(encodedName)
           ? Buffer.from(encodedName, "base64").toString("utf8")
           : "Pi";
-        candidates.push({ pane, window, record, name, active: active === "1" });
+        candidates.push({
+          status: { pane, window, record, name, active: active === "1" },
+          session,
+        });
       }
     }
     if (!candidates.length) return [];
@@ -177,6 +282,9 @@ export class Tmux {
       const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
       if (match) processes.set(Number(match[1]), Buffer.from(match[2]).toString("base64"));
     }
-    return candidates.filter(({ record }) => processes.get(record.pid) === record.started);
+    return candidates.filter(
+      ({ status }) => processes.get(status.record.pid) === status.record.started,
+    );
   }
 }
+const PANE_FORMAT = `#{pane_id}\t#{window_id}\t#{${OPTION}}\t#{${OWNER}}\t#{${NAME}}\t#{pane_active}\t#{${ATTENTION}}\t#{${ACK}}\t#{session_id}`;

@@ -62,9 +62,19 @@ session summary.
 | `#{pi_window_summary}`  | Plain text, e.g. `api + 2 others · working 1 · done 2 · unread 1`              |
 | `#{pi_session_summary}` | The same summary across the whole session                                      |
 
-Each placeholder becomes a `#(…)` status job that reads the global option
-`@pi_query` (the plugin's Node and query paths), so install paths never appear
-inside your formats. Jobs refresh at your `status-interval`.
+Placeholders become plain reads of tmux options (`@pi_window_state`,
+`@pi_window_name`, `@pi_window_unread`, `@pi_window_count`,
+`@pi_window_summary` on each window, and `@pi_session_summary` on each session),
+so drawing a window label starts no process. When any placeholder is in use, the
+plugin appends one hidden job, `#(#{@pi_query} env publish)`, to `status-right`.
+It prints nothing. Each `status-interval` it reads every Pi pane once, works out
+every window and session aggregate, and writes only the values that changed.
+That is one Node process per attached client per tick, however many windows you
+have. Values are at most one `status-interval` old.
+
+`@pi_query` holds the plugin's Node and query paths, so install paths never
+appear inside your formats. Formats expanded by an older version of the plugin
+(one `#(…)` job per placeholder per window) are rewritten when it loads again.
 
 In windows with no Pi, text placeholders are empty and counts are `0`, so they
 work as tmux conditionals: `#{?#{pi_count},…,…}`. Placeholders can be nested inside
@@ -118,13 +128,14 @@ helper from your own script; see
 
 ## Troubleshooting
 
-| Symptom                                       | Likely cause and fix                                                                                                                 |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Literal `#{pi_…}` text in the status bar      | Plugin ran before the format was defined, or the theme regenerated it. Load the plugin after your theme, then reload.                |
-| Placeholders render empty in Pi windows       | Publisher not loaded, or still running pre-update code. Install it, then restart that Pi; `/tmux status` in Pi should list the pane. |
-| `pane-focus-in[1079] is occupied` on load     | Another plugin uses that hook slot. Nothing was changed; free the slot or remove the other hook.                                     |
-| Stopped working after switching Node versions | The Node path is captured at load. Reload tmux config with Node 24+ on tmux's `PATH`.                                                |
-| State is not cleared when you return          | Ensure the plugin loaded (it enables `focus-events` and installs the hook). Check with `tmux show-hooks -g 'pane-focus-in[1079]'`.   |
+| Symptom                                       | Likely cause and fix                                                                                                                    |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Literal `#{pi_…}` text in the status bar      | Plugin ran before the format was defined, or the theme regenerated it. Load the plugin after your theme, then reload.                   |
+| Placeholders never fill in                    | The publisher job runs from `status-right`. If a theme rebuilt `status-right` after the plugin loaded, load the plugin after the theme. |
+| Placeholders render empty in Pi windows       | Publisher not loaded, or still running pre-update code. Install it, then restart that Pi; `/tmux status` in Pi should list the pane.    |
+| `pane-focus-in[1079] is occupied` on load     | Another plugin uses that hook slot. Nothing was changed; free the slot or remove the other hook.                                        |
+| Stopped working after switching Node versions | The Node path is captured at load. Reload tmux config with Node 24+ on tmux's `PATH`.                                                   |
+| State is not cleared when you return          | Ensure the plugin loaded (it enables `focus-events` and installs the hook). Check with `tmux show-hooks -g 'pane-focus-in[1079]'`.      |
 
 ## Focus acknowledgement
 
@@ -141,7 +152,8 @@ only Pi-owned panes and leaves other hook slots alone. Reloading is idempotent.
    bash /absolute/path/to/pinet/pinet.tmux uninstall
    ```
 
-   This removes only the hook the plugin installed, and `@pi_query`. `focus-events` stays enabled
+   This removes only the hook the plugin installed, `@pi_query`, and the
+   publisher job from `status-right`. `focus-events` stays enabled
    because other plugins may rely on it.
 
 3. Remove the plugin line, reload tmux config and run TPM's clean
