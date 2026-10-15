@@ -103,6 +103,7 @@ import { createAgentPromptGuidance } from "./agent-prompt-guidance.js";
 import { createAgentEventRuntime } from "./agent-event-runtime.js";
 import { createSessionUiRuntime } from "./session-ui-runtime.js";
 import { createSlackRequestRuntime, type SlackRequestCall } from "./slack-request-runtime.js";
+import { readJoinFile } from "./join-file.js";
 import { getSlackMessageAgeMs, isStaleSlackMessage } from "./stale-slack-messages.js";
 import {
   formatSlackAgentsDashboard,
@@ -145,6 +146,16 @@ export default function (pi: ExtensionAPI) {
   let appToken = settings.appToken ?? process.env.SLACK_APP_TOKEN;
   // Followers need no Slack tokens; only the broker and single-player mode talk to the Slack app.
   const hasSlackTokens = () => Boolean(botToken && appToken);
+
+  pi.registerFlag("pinet-join", {
+    description: "Join a Pinet broker as a worker using this join file (from pinet-worker issue)",
+    type: "string",
+  });
+  // A flag, not an env var: child pi processes must not inherit this worker's identity.
+  const joinFilePath = () => {
+    const value = pi.getFlag("pinet-join");
+    return typeof value === "string" && value ? value : null;
+  };
 
   const slackRequestRuntime = createSlackRequestRuntime();
   // An empty token means "no local Slack app": a follower then calls Slack through the broker.
@@ -1730,6 +1741,10 @@ export default function (pi: ExtensionAPI) {
   }
 
   const followerRuntime = createFollowerRuntime({
+    getJoinFile: () => {
+      const joinPath = joinFilePath();
+      return joinPath ? readJoinFile(joinPath) : null;
+    },
     getSettings: () => settings,
     refreshSettings,
     getPinetEnabled: () => pinetEnabled,
@@ -1897,7 +1912,20 @@ export default function (pi: ExtensionAPI) {
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.prepareForSessionStart(ctx);
-    const pinetRegistrationBlocked = pinetRegistrationGate.evaluateSessionStart(ctx);
+    // A valid join file is deliberate membership, so it also applies to headless sessions.
+    const joinPath = joinFilePath();
+    let joinFileValid = false;
+    if (joinPath) {
+      try {
+        readJoinFile(joinPath);
+        joinFileValid = true;
+        pinetRegistrationGate.reset();
+      } catch (error) {
+        ctx.ui.notify(`Pinet join file rejected: ${msg(error)}`, "error");
+      }
+    }
+    const pinetRegistrationBlocked =
+      !joinFileValid && pinetRegistrationGate.evaluateSessionStart(ctx);
     // Restore persisted thread state (always restore, even before /pinet)
     restorePersistedRuntimeState(ctx);
 
@@ -1911,10 +1939,14 @@ export default function (pi: ExtensionAPI) {
 
     refreshSettings();
     maybeWarnSlackUserAccess(ctx);
-    const configuredMode = resolveSlackBridgeStartupRuntimeMode(settings, {
-      brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
-      brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
-    });
+    const configuredMode = joinPath
+      ? joinFileValid
+        ? "follower"
+        : "off"
+      : resolveSlackBridgeStartupRuntimeMode(settings, {
+          brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
+          brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+        });
     const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {

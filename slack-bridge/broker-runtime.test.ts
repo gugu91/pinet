@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { BrokerControlPlaneDashboardSnapshot } from "./broker/control-plane-dashboard.js";
@@ -9,6 +12,7 @@ import {
 import type { SlackActivityLogger } from "./activity-log.js";
 import type { MessageAdapter } from "./broker/types.js";
 import * as brokerModule from "./broker/index.js";
+import { BrokerClient } from "./broker/client.js";
 
 function createDeps(overrides: Partial<BrokerRuntimeDeps> = {}): BrokerRuntimeDeps {
   return {
@@ -160,6 +164,60 @@ describe("broker-runtime", () => {
       expect(runtime.isConnected()).toBe(false);
     } finally {
       startBroker.mockRestore();
+    }
+  });
+
+  it("ignores control commands from worker-key agents but obeys trusted followers", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pinet-broker-control-"));
+    const socketPath = path.join(root, "broker.sock");
+    const meshSecret = "test-mesh-secret";
+    const realStartBroker = brokerModule.startBroker;
+    const startBroker = vi.spyOn(brokerModule, "startBroker").mockImplementation(() =>
+      realStartBroker({
+        dbPath: path.join(root, "broker.db"),
+        socketPath,
+        lockPath: path.join(root, "broker.lock"),
+        meshSecret,
+      }),
+    );
+    const deps = createDeps();
+    const runtime = createBrokerRuntime(deps);
+    const notify = vi.fn();
+    const ctx = {
+      sessionManager: { getLeafId: () => "broker-self" },
+      ui: { notify },
+    } as never as ExtensionContext;
+    const clients: BrokerClient[] = [];
+    const connect = async (options: { meshSecret: string } | { workerKey: string }) => {
+      const client = new BrokerClient({ path: socketPath, ...options });
+      clients.push(client);
+      await client.connect();
+      return client;
+    };
+
+    try {
+      await runtime.connect(ctx);
+      const admin = await connect({ meshSecret });
+      const { key } = await admin.issueWorkerKey({ hostId: "studio", workerId: "w1" });
+      const worker = await connect({ workerKey: key });
+      await worker.register("", "", {}, "studio:worker:w1");
+      await worker.sendAgentMessage("broker-self", "/exit");
+      await worker.sendAgentMessage("broker-self", "status update", {
+        kind: "pinet_control",
+        command: "reload",
+      });
+      expect(deps.requestRemoteControl).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith("Ignored exit from a worker-key agent.", "warning");
+
+      const trusted = await connect({ meshSecret });
+      await trusted.register("", "", {}, "local:session:/tmp/trusted.jsonl");
+      await trusted.sendAgentMessage("broker-self", "/exit");
+      expect(deps.requestRemoteControl).toHaveBeenCalledWith("exit", ctx);
+    } finally {
+      for (const client of clients) client.disconnect();
+      await runtime.disconnect();
+      startBroker.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

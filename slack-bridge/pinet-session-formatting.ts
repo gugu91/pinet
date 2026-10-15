@@ -59,7 +59,11 @@ export function parsePinetStableId(
   const rawKind = value.slice(firstColon + 1, secondColon);
   const locator = value.slice(secondColon + 1);
   const kind: AgentSessionKind =
-    rawKind === "session" || rawKind === "leaf" || rawKind === "cwd" || rawKind === "broker"
+    rawKind === "session" ||
+    rawKind === "leaf" ||
+    rawKind === "cwd" ||
+    rawKind === "broker" ||
+    rawKind === "worker"
       ? rawKind
       : "unknown";
   return {

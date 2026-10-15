@@ -81,6 +81,8 @@ describe("createToolRegistrationRuntime", () => {
     const setActiveTools = vi.fn();
     const pi: ExtensionAPI = {
       on: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerTool: vi.fn(),
       registerCommand: vi.fn(),
       registerMessageRenderer: vi.fn(),

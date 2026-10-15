@@ -1,5 +1,6 @@
 import * as net from "node:net";
 import type { SlackResult } from "../slack-api.js";
+import type { WorkerIdentity, WorkerKeyRecord } from "./worker-keys.js";
 import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
 import { readMeshSecret } from "./auth.js";
 import { DEFAULT_SOCKET_PATH as PINET_DEFAULT_SOCKET_PATH } from "./paths.js";
@@ -233,6 +234,8 @@ export type BrokerConnectOpts = { path: string } | { host: string; port: number 
 export interface BrokerClientAuthOptions {
   meshSecret?: string;
   meshSecretPath?: string;
+  /** Broker-issued worker key; logs in as that worker instead of with the mesh secret. */
+  workerKey?: string;
 }
 
 export interface BrokerClientTimingOptions {
@@ -250,6 +253,8 @@ export class BrokerClient {
   private readonly connectOpts: BrokerConnectOpts;
   private readonly meshSecret: string | null;
   private readonly meshSecretPath: string | null;
+  private readonly workerKey: string | null;
+  private assignedStableId: string | null = null;
   private readonly reconnectDelayMs: (attempt: number) => number;
   private socket: net.Socket | null = null;
   private connectingSocket: net.Socket | null = null;
@@ -283,6 +288,7 @@ export class BrokerClient {
       this.connectOpts = { path: DEFAULT_SOCKET_PATH };
       this.meshSecret = null;
       this.meshSecretPath = null;
+      this.workerKey = null;
       return;
     }
 
@@ -290,6 +296,7 @@ export class BrokerClient {
       this.connectOpts = { path: opts };
       this.meshSecret = null;
       this.meshSecretPath = null;
+      this.workerKey = null;
       return;
     }
 
@@ -304,6 +311,12 @@ export class BrokerClient {
     this.meshSecret = meshSecret && meshSecret.length > 0 ? meshSecret : null;
     const meshSecretPath = opts.meshSecretPath?.trim();
     this.meshSecretPath = meshSecretPath && meshSecretPath.length > 0 ? meshSecretPath : null;
+    this.workerKey = opts.workerKey ?? null;
+  }
+
+  /** The stable ID the broker assigned to this client's worker key, known after connect(). */
+  get workerStableId(): string | null {
+    return this.assignedStableId;
   }
 
   // ─── Connection ──────────────────────────────────────
@@ -377,6 +390,13 @@ export class BrokerClient {
   }
 
   private async authenticateIfNeeded(): Promise<void> {
+    if (this.workerKey) {
+      const result = (await this.request("auth", { workerKey: this.workerKey })) as {
+        stableId: string;
+      };
+      this.assignedStableId = result.stableId;
+      return;
+    }
     const meshSecret = this.resolveMeshSecret();
     if (!meshSecret) {
       return;
@@ -598,6 +618,33 @@ export class BrokerClient {
       threadId: result.threadId,
       fireAt: result.fireAt,
     };
+  }
+
+  // ─── Worker keys (trusted connections only) ──────────
+
+  /** Rotates the identity's key; the returned key is never retrievable again. */
+  async issueWorkerKey(
+    identity: WorkerIdentity,
+  ): Promise<{ keyId: string; key: string; stableId: string }> {
+    return (await this.request("admin.workerKey.issue", { ...identity })) as {
+      keyId: string;
+      key: string;
+      stableId: string;
+    };
+  }
+
+  async revokeWorkerKey(identity: WorkerIdentity): Promise<{ revoked: boolean; stableId: string }> {
+    return (await this.request("admin.workerKey.revoke", { ...identity })) as {
+      revoked: boolean;
+      stableId: string;
+    };
+  }
+
+  async listWorkerKeys(): Promise<Array<WorkerKeyRecord & { connected: boolean }>> {
+    const result = (await this.request("admin.workerKey.list")) as {
+      keys: Array<WorkerKeyRecord & { connected: boolean }>;
+    };
+    return result.keys;
   }
 
   async listLanes(options: PinetLaneListOptions = {}): Promise<PinetLaneInfo[]> {
@@ -983,7 +1030,12 @@ export class BrokerClient {
       } catch {
         /* ignore */
       }
-      if (isRpcAgentNameConflictError(reconnectError)) {
+      // A rejected worker key stays rejected: it was revoked or rotated.
+      const workerKeyRejected =
+        (reconnectError as BrokerRpcRequestError).data != null &&
+        ((reconnectError as BrokerRpcRequestError).data as { code?: string }).code ===
+          "WORKER_KEY_REJECTED";
+      if (isRpcAgentNameConflictError(reconnectError) || workerKeyRejected) {
         this.reconnectAttempt = 0;
         this.reconnectFailedHandler?.(reconnectError);
         return;

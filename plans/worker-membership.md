@@ -85,7 +85,7 @@ type ConnectionAuth =
 Everything else stays as for any follower. Each block is enforced in one place:
 
 - **Identity:** `register` must use the assigned stable ID, checked before the registration resolver or wake fences run. The worker's registration and ownership token use the `stableId` from the login reply.
-- **Metadata:** on `register` and on every `heartbeat` (including `metadata: null`), the broker rewrites the worker's metadata: `role` is `worker`, `capabilities.role` is removed, `brokerManaged`, `brokerManagedBy` and `pinetBrokerManaged` are removed, and `pinetWorker: { hostId, workerId }` is set by the broker.
+- **Metadata:** on `register` and on every `heartbeat` (including `metadata: null`), the broker rewrites the worker's metadata: `role` and `capabilities.role` (if present) are `worker`, `brokerManaged`, `brokerManagedBy` and `pinetBrokerManaged` are removed, and `pinetWorker: { hostId, workerId }` is set by the broker.
 - **Process ID:** the broker records `pid: 0` for worker connections. The ghost reaper already refuses PIDs of 0 or 1, and a worker's process is never broker-owned, even when it runs on the same machine.
 - **Broker control:** when the broker finds a control command in its inbox, it ignores it if the message's broker-recorded sender is a worker connection's agent. This one check covers every delivery route. Ordinary messages and reports to the broker are still delivered. (The broker must use the stored sender ID, not `metadata.senderAgent`, which callers can set on some routes.)
 - **Admin:** `admin.*` requires a `trusted` connection.

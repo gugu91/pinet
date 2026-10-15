@@ -7,6 +7,7 @@ import {
   type TaskAssignmentAwaitingReplyInfo,
 } from "@pinet/broker-core/schema";
 import type { RalphCycleRecord } from "../helpers.js";
+import { WorkerKeys } from "./worker-keys.js";
 
 interface RalphCycleRow {
   id: number;
@@ -56,9 +57,17 @@ export {
 export type { TaskAssignmentAwaitingReplyInfo };
 
 export class BrokerDB extends CoreBrokerDB {
+  private keys: WorkerKeys | null = null;
+
   override initialize(): void {
     super.initialize();
     ensureRalphCycleTable(this.getDb());
+    this.keys = new WorkerKeys(this.getDb());
+  }
+
+  get workerKeys(): WorkerKeys {
+    if (!this.keys) throw new Error("BrokerDB is not initialized");
+    return this.keys;
   }
 
   recordRalphCycle(record: Omit<RalphCycleRecord, "id">): number {

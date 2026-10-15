@@ -159,6 +159,10 @@ How it works:
 - brokers create the secret file if it does not exist
 - followers need an existing file or will show an error
 
+### Worker keys
+
+To run workers outside the broker's shell or on another machine, give each one its own revocable key with `pinet-worker issue`, then start it with `pi --pinet-join <file>`. See [docs/worker-keys.md](docs/worker-keys.md).
+
 ### Require mentions in channels
 
 Make Pinet respond only when mentioned in specific channels:
