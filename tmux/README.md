@@ -100,7 +100,13 @@ your tmux configuration and the companion plugin.
 ```sh
 node /path/to/installed/package/dist/status.js SOCKET window WINDOW_ID aggregate
 node /path/to/installed/package/dist/status.js SOCKET session SESSION_ID aggregate
+node /path/to/installed/package/dist/status.js SOCKET publish
 ```
+
+`publish` prints nothing. It writes every window's and session's aggregate as
+tmux options in one pass (the companion plugin runs it once per status tick).
+Prefer reading those options to running a query per window: each query starts a
+Node process.
 
 Modes: `json` (validated pane records), `aggregate` (counts/name/state as JSON),
 `summary` (plain text, no styles/icons), `state`, `name`, `unread`, `count`.
