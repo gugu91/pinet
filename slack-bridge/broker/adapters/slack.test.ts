@@ -1621,21 +1621,24 @@ describe("SlackAdapter — allowlist filtering", () => {
   it.each([
     {
       name: "suppresses legacy assistant-thread DM replies when durable context is missing",
-      root: { subtype: "assistant_app_thread" },
+      messages: [{ type: "message", user: "U_BOT", ts: "1.1", subtype: "assistant_app_thread" }],
+      routed: false,
+    },
+    {
+      name: "suppresses context-less DM replies when the thread root cannot be read",
+      messages: [],
       routed: false,
     },
     {
       name: "routes replies in agent-started DM threads that never had assistant context",
-      root: { bot_id: "B_BOT" },
+      messages: [{ type: "message", user: "U_BOT", ts: "1.1", bot_id: "B_BOT" }],
       routed: true,
     },
-  ])("$name", async ({ root, routed }) => {
+  ])("$name", async ({ messages, routed }) => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url.endsWith("/conversations.replies")) {
-        return mockSlackResponse({
-          messages: [{ type: "message", user: "U_BOT", ts: "1.1", ...root }],
-        });
+        return mockSlackResponse({ messages });
       }
       if (url.endsWith("/users.info")) {
         return mockSlackResponse({ user: { real_name: "Alice Example" } });

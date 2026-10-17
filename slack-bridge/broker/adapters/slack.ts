@@ -905,14 +905,15 @@ export class SlackAdapter implements MessageAdapter {
 
     // Only Slack assistant threads can lose the context this guard protects.
     // A DM thread an agent started with its own post never had assistant
-    // context, so replies to it route normally.
+    // context, so replies to it route normally. Stay suppressed when the root
+    // cannot be read.
     const response = await this.callSlack("conversations.replies", this.config.botToken, {
       channel: known.channelId,
       ts: threadTs,
       limit: 1,
     });
     const root = Array.isArray(response.messages) ? response.messages[0] : undefined;
-    return root?.subtype === "assistant_app_thread";
+    return !root || root.subtype === "assistant_app_thread";
   }
 
   private getThread(threadTs: string): SlackThreadInfo | undefined {
