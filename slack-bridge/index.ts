@@ -1,3 +1,4 @@
+import "./module-reload.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -138,6 +139,14 @@ import {
 } from "./slack-scope-diagnostics.js";
 
 // Settings and helpers imported from ./helpers.js
+
+// Process-wide because /reload evaluates a fresh copy of this module (see module-reload.ts).
+const RUNTIME_MODE_ACROSS_RELOAD: unique symbol = Symbol.for("pinet.runtimeModeAcrossReload");
+const runtimeModeAcrossReload = ((
+  globalThis as typeof globalThis & {
+    [RUNTIME_MODE_ACROSS_RELOAD]?: { mode?: SlackBridgeRuntimeMode };
+  }
+)[RUNTIME_MODE_ACROSS_RELOAD] ??= {});
 
 export default function (pi: ExtensionAPI) {
   let settings = loadSettingsFromFile();
@@ -1914,7 +1923,9 @@ export default function (pi: ExtensionAPI) {
 
   // ─── Lifecycle ──────────────────────────────────────
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    const reloadedMode = event.reason === "reload" ? runtimeModeAcrossReload.mode : undefined;
+    delete runtimeModeAcrossReload.mode;
     await cancelPendingStartup();
     compactionGate.reset();
     singlePlayerRuntime.resetShutdownState();
@@ -1957,11 +1968,12 @@ export default function (pi: ExtensionAPI) {
     const brokerSocketPath = resolveBrokerSocketPath();
     const configuredMode = startupJoinFile
       ? "follower"
-      : resolveSlackBridgeStartupRuntimeMode(settings, {
+      : (reloadedMode ??
+        resolveSlackBridgeStartupRuntimeMode(settings, {
           brokerSocketExists: fs.existsSync(brokerSocketPath),
           brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
           processFollowRequested: followRequested,
-        });
+        }));
     const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {
@@ -2082,7 +2094,11 @@ export default function (pi: ExtensionAPI) {
     compactionGate.end();
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    // /reload restarts Pinet in the mode it was running, not the startup default.
+    if (event.reason === "reload" && currentRuntimeMode !== "off") {
+      runtimeModeAcrossReload.mode = currentRuntimeMode;
+    }
     compactionGate.reset();
     resetRemoteControlState();
     resetPendingRemoteControlAcks();

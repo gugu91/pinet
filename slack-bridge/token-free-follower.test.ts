@@ -153,6 +153,24 @@ it("joins a real broker without Slack tokens and calls Slack through the broker"
   expect(db.getAgents()[0].disconnectedAt).toBeFalsy();
 }, 20_000);
 
+it("rejoins the broker after /reload in the mode it was running", async () => {
+  const { root, db } = await startBroker();
+  const connectedAgents = () => db.getAgents().filter((agent) => !agent.disconnectedAt).length;
+
+  const before = loadExtension(root);
+  await before.events.get("session_start")!({ reason: "startup" }, before.context);
+  await before.commands.get("pinet")!.handler("follow", before.context);
+  await expect.poll(connectedAgents, { timeout: 10_000 }).toBe(1);
+  await before.events.get("session_shutdown")!({ reason: "reload" }, before.context);
+  expect(connectedAgents()).toBe(0);
+
+  // Settings alone would start this token-free session with Pinet off.
+  const after = loadExtension(root);
+  await after.events.get("session_start")!({ reason: "reload" }, after.context);
+  await expect.poll(connectedAgents, { timeout: 10_000 }).toBe(1);
+  expect(after.pi.getActiveTools()).toEqual(expect.arrayContaining(["pinet", "slack"]));
+}, 20_000);
+
 it("makes worker-key tools ready for an immediate task, even when headless", async () => {
   const { root, socket, db, slackCalls } = await startBroker();
   const { key } = db.workerKeys.issue({ hostId: "studio", workerId: "w1" });
