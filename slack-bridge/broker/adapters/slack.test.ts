@@ -1618,9 +1618,29 @@ describe("SlackAdapter — allowlist filtering", () => {
     });
   });
 
-  it("suppresses legacy broker-known threaded DMs when durable context is missing", async () => {
-    fetchMock.mockImplementation(async () => {
-      throw new Error("legacy suppressed path should not call Slack APIs");
+  it.each([
+    {
+      name: "suppresses legacy assistant-thread DM replies when durable context is missing",
+      root: { subtype: "assistant_app_thread" },
+      routed: false,
+    },
+    {
+      name: "routes replies in agent-started DM threads that never had assistant context",
+      root: { bot_id: "B_BOT" },
+      routed: true,
+    },
+  ])("$name", async ({ root, routed }) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/conversations.replies")) {
+        return mockSlackResponse({
+          messages: [{ type: "message", user: "U_BOT", ts: "1.1", ...root }],
+        });
+      }
+      if (url.endsWith("/users.info")) {
+        return mockSlackResponse({ user: { real_name: "Alice Example" } });
+      }
+      return mockSlackResponse();
     });
 
     const adapter = new SlackAdapter({
@@ -1642,15 +1662,23 @@ describe("SlackAdapter — allowlist filtering", () => {
     await adapterPort.onMessage({
       type: "message",
       user: "U_ALLOWED",
-      text: "legacy reply after restart",
+      text: "reply after restart",
       channel: "D1",
       channel_type: "im",
       thread_ts: "1.1",
       ts: "1.2",
     });
 
-    expect(handler).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
+    if (routed) {
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "1.1", channel: "D1", text: "reply after restart" }),
+      );
+    } else {
+      expect(handler).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+        "https://slack.com/api/conversations.replies",
+      ]);
+    }
   });
 
   it("rehydrates known Slack thread context into inbound scope after cache eviction", async () => {
