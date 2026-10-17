@@ -1,3 +1,4 @@
+import "./module-reload.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -138,6 +139,14 @@ import {
 } from "./slack-scope-diagnostics.js";
 
 // Settings and helpers imported from ./helpers.js
+
+// Process-wide because /reload evaluates a fresh copy of this module (see module-reload.ts).
+const RUNTIME_MODE_ACROSS_RELOAD: unique symbol = Symbol.for("pinet.runtimeModeAcrossReload");
+const runtimeModeAcrossReload = ((
+  globalThis as typeof globalThis & {
+    [RUNTIME_MODE_ACROSS_RELOAD]?: { mode?: SlackBridgeRuntimeMode };
+  }
+)[RUNTIME_MODE_ACROSS_RELOAD] ??= {});
 
 export default function (pi: ExtensionAPI) {
   let settings = loadSettingsFromFile();
@@ -1914,7 +1923,9 @@ export default function (pi: ExtensionAPI) {
 
   // ─── Lifecycle ──────────────────────────────────────
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    const reloadedMode = event.reason === "reload" ? runtimeModeAcrossReload.mode : undefined;
+    delete runtimeModeAcrossReload.mode;
     await cancelPendingStartup();
     compactionGate.reset();
     singlePlayerRuntime.resetShutdownState();
@@ -1955,17 +1966,19 @@ export default function (pi: ExtensionAPI) {
     // Process-scoped: overrides runtimeMode for this process only and never edits settings.
     const followRequested = pi.getFlag("pinet-follow") === true;
     const brokerSocketPath = resolveBrokerSocketPath();
-    const configuredMode = startupJoinFile
-      ? "follower"
-      : resolveSlackBridgeStartupRuntimeMode(settings, {
-          brokerSocketExists: fs.existsSync(brokerSocketPath),
-          brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
-          processFollowRequested: followRequested,
-        });
+    const configuredMode =
+      reloadedMode ??
+      (startupJoinFile
+        ? "follower"
+        : resolveSlackBridgeStartupRuntimeMode(settings, {
+            brokerSocketExists: fs.existsSync(brokerSocketPath),
+            brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+            processFollowRequested: followRequested,
+          }));
     const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {
-      if (followRequested && !startupJoinFile) {
+      if (followRequested && !startupJoinFile && !reloadedMode) {
         const failure = `--pinet-follow found no broker socket at ${brokerSocketPath}. Slack, Pinet and iMessage tools stay off. Start the broker or set PINET_SOCKET_PATH, then restart this process.`;
         console.error(`[slack-bridge] ${failure}`);
         ctx.ui.notify(failure, "warning");
@@ -2082,13 +2095,18 @@ export default function (pi: ExtensionAPI) {
     compactionGate.end();
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    // /reload replaces Pinet's code, not its state: keep this agent's identity, threads and
+    // inbox, and restart the mode it was in, including off. A startup still in progress has
+    // no settled mode, so the reload starts from the defaults instead.
+    const reloading = event.reason === "reload";
+    if (reloading && !pendingStartup) runtimeModeAcrossReload.mode = currentRuntimeMode;
     compactionGate.reset();
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.cleanupForSessionShutdown();
     await cancelPendingStartup();
-    await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: true }));
+    await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: !reloading }));
     pinetRegistrationGate.reset();
   });
 }

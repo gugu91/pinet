@@ -153,6 +153,51 @@ it("joins a real broker without Slack tokens and calls Slack through the broker"
   expect(db.getAgents()[0].disconnectedAt).toBeFalsy();
 }, 20_000);
 
+it("rejoins the broker after /reload as the same agent, keeping its threads", async () => {
+  const { root, db } = await startBroker();
+  const connectedAgents = () => db.getAgents().filter((agent) => !agent.disconnectedAt);
+
+  const before = loadExtension(root);
+  await before.events.get("session_start")!({ reason: "startup" }, before.context);
+  await before.commands.get("pinet")!.handler("follow", before.context);
+  await expect.poll(() => connectedAgents().length, { timeout: 10_000 }).toBe(1);
+  const [agent] = connectedAgents();
+  db.claimThread("1712345678.000100", agent.id, "slack", "C0TEST");
+  await before.events.get("session_shutdown")!({ reason: "reload" }, before.context);
+
+  // Settings alone would start this token-free session with Pinet off.
+  const after = loadExtension(root);
+  await after.events.get("session_start")!({ reason: "reload" }, after.context);
+  await expect
+    .poll(() => after.pi.getActiveTools(), { timeout: 10_000 })
+    .toEqual(expect.arrayContaining(["pinet", "slack"]));
+  expect(connectedAgents().map(({ id }) => id)).toEqual([agent.id]);
+  expect(db.getThread("1712345678.000100")?.ownerAgent).toBe(agent.id);
+}, 20_000);
+
+it("stays off after /reload when the session left the broker", async () => {
+  const { root, db } = await startBroker();
+  fs.writeFileSync(
+    path.join(root, ".pi", "agent", "settings.json"),
+    JSON.stringify({ "slack-bridge": { runtimeMode: "follower", allowAllWorkspaceUsers: true } }),
+  );
+  const connectedAgents = () => db.getAgents().filter((agent) => !agent.disconnectedAt).length;
+
+  const before = loadExtension(root);
+  await before.events.get("session_start")!({ reason: "startup" }, before.context);
+  await expect.poll(connectedAgents, { timeout: 10_000 }).toBe(1);
+  await before.commands.get("pinet")!.handler("unfollow", before.context);
+  expect(connectedAgents()).toBe(0);
+  await before.events.get("session_shutdown")!({ reason: "reload" }, before.context);
+
+  const after = loadExtension(root);
+  await after.events.get("session_start")!({ reason: "reload" }, after.context);
+  // A follower start would connect to this socket within milliseconds.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  expect(connectedAgents()).toBe(0);
+  expect(after.pi.getActiveTools()).toEqual(["read"]);
+}, 20_000);
+
 it("makes worker-key tools ready for an immediate task, even when headless", async () => {
   const { root, socket, db, slackCalls } = await startBroker();
   const { key } = db.workerKeys.issue({ hostId: "studio", workerId: "w1" });
