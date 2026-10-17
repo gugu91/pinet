@@ -185,6 +185,68 @@ it("makes worker-key tools ready for an immediate task, even when headless", asy
   ]);
 }, 20_000);
 
+/** A worker machine may have its own Slack app, for example the owner's personal workspace. */
+function giveWorkerItsOwnSlackApp(root: string) {
+  fs.writeFileSync(
+    path.join(root, ".pi", "agent", "settings.json"),
+    JSON.stringify({
+      "slack-bridge": {
+        runtimeMode: "broker",
+        allowAllWorkspaceUsers: true,
+        botToken: "xoxb-other-workspace",
+        appToken: "xapp-other-workspace",
+      },
+    }),
+  );
+  return vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("direct Slack call"));
+}
+
+it("sends a worker's Slack calls through its broker, never with local Slack tokens", async () => {
+  const { root, socket, db, slackCalls } = await startBroker();
+  const directSlack = giveWorkerItsOwnSlackApp(root);
+  const { key } = db.workerKeys.issue({ hostId: "laptop", workerId: "w1" });
+  const joinFile = path.join(root, "w1.join.json");
+  writeJoinFile(joinFile, { socket, key });
+
+  const worker = loadExtension(root, { joinFile });
+  await worker.events.get("session_start")!({}, worker.context);
+  await worker.tools.get("slack")!.execute!(
+    "call-1",
+    {
+      action: "react",
+      args: { emoji: "eyes", timestamp: "1712345678.000100", channel: "C0TEST" },
+    },
+    undefined,
+    undefined,
+    worker.context,
+  );
+  expect(slackCalls).toEqual([
+    {
+      method: "reactions.add",
+      params: { channel: "C0TEST", timestamp: "1712345678.000100", name: "eyes" },
+    },
+  ]);
+  expect(directSlack).not.toHaveBeenCalled();
+}, 20_000);
+
+it("does not let a rejected worker start a broker with local Slack tokens", async () => {
+  const { root, socket, db } = await startBroker();
+  const directSlack = giveWorkerItsOwnSlackApp(root);
+  const { key } = db.workerKeys.issue({ hostId: "laptop", workerId: "w1" });
+  const joinFile = path.join(root, "w1.join.json");
+  writeJoinFile(joinFile, { socket, key });
+  fs.chmodSync(joinFile, 0o644);
+
+  const worker = loadExtension(root, { joinFile });
+  await worker.events.get("session_start")!({}, worker.context);
+  await worker.commands.get("pinet")!.handler("start", worker.context);
+  expect(worker.notify).toHaveBeenLastCalledWith(
+    expect.stringContaining("needs SLACK_BOT_TOKEN"),
+    "error",
+  );
+  expect(directSlack).not.toHaveBeenCalled();
+}, 20_000);
+
 it.each([null, {}, { version: 1, socket: 42, key: "key" }])(
   "rejects malformed join data %j without falling back to mesh auth",
   async (data) => {
