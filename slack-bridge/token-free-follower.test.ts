@@ -68,6 +68,7 @@ function loadExtension(root: string, options: { joinFile?: string; headless?: bo
   const events = new Map<string, Handler>();
   const commands = new Map<string, CommandDefinition>();
   const tools = new Map<string, ToolDefinition>();
+  let activeTools = ["read", "slack", "pinet"];
   const pi = {
     registerFlag: vi.fn(),
     getFlag: (name: string) => (name === "pinet-join" ? options.joinFile : undefined),
@@ -79,8 +80,10 @@ function loadExtension(root: string, options: { joinFile?: string; headless?: bo
     appendEntry: vi.fn(),
     sendMessage: vi.fn(),
     sendUserMessage: vi.fn(),
-    getActiveTools: () => ["read", "slack", "pinet"],
-    setActiveTools: vi.fn(),
+    getActiveTools: () => activeTools,
+    setActiveTools: (names: string[]) => {
+      activeTools = names;
+    },
     getSessionName: () => undefined,
   } as ExtensionAPI;
   const notify = vi.fn();
@@ -107,7 +110,7 @@ function loadExtension(root: string, options: { joinFile?: string; headless?: bo
   cleanups.push(async () => {
     await events.get("session_shutdown")?.({}, context);
   });
-  return { events, commands, tools, notify, context };
+  return { pi, events, commands, tools, notify, context };
 }
 
 it("joins a real broker without Slack tokens and calls Slack through the broker", async () => {
@@ -142,8 +145,8 @@ it("joins a real broker without Slack tokens and calls Slack through the broker"
   expect(db.getAgents()[0].disconnectedAt).toBeFalsy();
 }, 20_000);
 
-it("follows at startup under the worker key from --pinet-join, even when headless", async () => {
-  const { root, socket, db } = await startBroker();
+it("makes worker-key tools ready for an immediate task, even when headless", async () => {
+  const { root, socket, db, slackCalls } = await startBroker();
   const { key } = db.workerKeys.issue({ hostId: "studio", workerId: "w1" });
   const looseFile = path.join(root, "loose.join.json");
   writeJoinFile(looseFile, { socket, key });
@@ -158,11 +161,28 @@ it("follows at startup under the worker key from --pinet-join, even when headles
   writeJoinFile(joinFile, { socket, key });
   const worker = loadExtension(root, { joinFile, headless: true });
   await worker.events.get("session_start")!({}, worker.context);
-  await expect.poll(() => db.getAgents().length, { timeout: 10_000 }).toBe(1);
+  expect(worker.pi.getActiveTools()).toEqual(expect.arrayContaining(["pinet", "slack"]));
+  expect(db.getAgents()).toHaveLength(1);
   expect(db.getAgents()[0]).toMatchObject({
     stableId: "studio:worker:w1",
     metadata: { role: "worker", pinetWorker: { hostId: "studio", workerId: "w1" } },
   });
+  await worker.tools.get("slack")!.execute!(
+    "first-task",
+    {
+      action: "react",
+      args: { emoji: "eyes", timestamp: "1712345678.000100", channel: "C0TEST" },
+    },
+    undefined,
+    undefined,
+    worker.context,
+  );
+  expect(slackCalls).toEqual([
+    {
+      method: "reactions.add",
+      params: { channel: "C0TEST", timestamp: "1712345678.000100", name: "eyes" },
+    },
+  ]);
 }, 20_000);
 
 it.each([null, {}, { version: 1, socket: 42, key: "key" }])(

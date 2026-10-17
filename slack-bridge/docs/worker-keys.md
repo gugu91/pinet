@@ -44,7 +44,13 @@ Any launcher works, for example:
 rex run --focus=false --cwd ~/projects/pinet -- pi --pinet-join ~/.pi/agent/pinet/w1.join.json
 ```
 
-The worker follows the broker at startup and needs no Slack tokens. The join file must be readable only by you (`chmod 600`). There is deliberately no environment variable for this, so child `pi` processes do not join under the parent's key.
+The worker follows the broker at startup and needs no Slack tokens. For a successful join, Pi waits until the Pinet and Slack tools are enabled before starting a supplied task. No launcher readiness wait is needed:
+
+```sh
+pi --pinet-join ~/.pi/agent/pinet/w1.join.json --print "Use pinet to list the agents."
+```
+
+The join file must be readable only by you (`chmod 600`). There is deliberately no environment variable for this, so child `pi` processes do not join under the parent's key.
 
 ## Workers on another machine
 

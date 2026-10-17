@@ -1985,6 +1985,8 @@ export default function (pi: ExtensionAPI) {
       console.error(`[slack-bridge] background runtime start failed: ${msg(error)}`);
     });
     pendingStartup = { controller, promise: startupPromise };
+    // Explicit workers need their tools enabled before Pi builds the first prompt.
+    if (joinPath) await startupPromise;
   });
 
   // ─── Agent event wiring ──────────────────────────────
