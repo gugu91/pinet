@@ -156,6 +156,8 @@ describe("slack-bridge top-level shutdown", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -256,6 +258,8 @@ describe("slack-bridge top-level shutdown", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -411,6 +415,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -558,6 +564,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -675,6 +683,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -818,6 +828,8 @@ describe("slack-bridge top-level shutdown", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -932,6 +944,8 @@ describe("slack-bridge top-level shutdown", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -1089,6 +1103,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -1199,6 +1215,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn((eventName: string, handler: EventHandler) => {
         events.set(eventName, handler);
@@ -1290,6 +1308,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn((eventName: string, handler: EventHandler) => {
         events.set(eventName, handler);
@@ -1330,6 +1350,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn((eventName: string, handler: EventHandler) => {
         events.set(eventName, handler);
@@ -1490,6 +1512,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -1581,6 +1605,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -1712,6 +1738,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -1818,6 +1846,8 @@ describe("slack-bridge top-level shutdown", () => {
       const pi = {
         appendEntry: vi.fn(),
         registerTool: vi.fn(),
+        registerFlag: vi.fn(),
+        getFlag: vi.fn(),
         registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
           commands.set(name, definition);
         }),
@@ -1979,6 +2009,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -2102,6 +2134,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn((eventName: string, handler: EventHandler) => {
         events.set(eventName, handler);
@@ -2239,6 +2273,8 @@ describe("slack-bridge top-level shutdown", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn((eventName: string, handler: EventHandler) => {
         events.set(eventName, handler);
@@ -2426,6 +2462,8 @@ describe("slack-bridge top-level shutdown", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -2590,6 +2628,8 @@ describe("slack-bridge Pinet reconnect", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -2779,6 +2819,8 @@ describe("slack-bridge Pinet reconnect", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -2952,6 +2994,8 @@ describe("slack-bridge Pinet reconnect", () => {
         registerTool: vi.fn((definition: ToolDefinition) => {
           tools.set(definition.name, definition);
         }),
+        registerFlag: vi.fn(),
+        getFlag: vi.fn(),
         registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
           commands.set(name, definition);
         }),
@@ -3167,6 +3211,8 @@ describe("slack-bridge Pinet reconnect", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -3326,6 +3372,8 @@ describe("slack-bridge Pinet reconnect", () => {
       const pi = {
         appendEntry: vi.fn(),
         registerTool: vi.fn(),
+        registerFlag: vi.fn(),
+        getFlag: vi.fn(),
         registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
           commands.set(name, definition);
         }),
@@ -3455,6 +3503,8 @@ describe("slack-bridge Pinet reconnect", () => {
           }
         }),
         registerTool: vi.fn(),
+        registerFlag: vi.fn(),
+        getFlag: vi.fn(),
         registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
           commands.set(name, definition);
         }),
@@ -3587,6 +3637,8 @@ describe("slack-bridge Pinet reconnect", () => {
       const pi = {
         appendEntry: vi.fn(),
         registerTool: vi.fn(),
+        registerFlag: vi.fn(),
+        getFlag: vi.fn(),
         registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
           commands.set(name, definition);
         }),
@@ -3659,6 +3711,8 @@ describe("slack-bridge Pinet reconnect", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -3783,6 +3837,8 @@ describe("slack-bridge Pinet reconnect", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -3932,6 +3988,8 @@ describe("slack-bridge Pinet reconnect", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -4080,6 +4138,8 @@ describe("slack-bridge Pinet reconnect", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -4226,6 +4286,8 @@ describe("slack-bridge Pinet reconnect", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -4384,6 +4446,8 @@ describe("slack-bridge broker startup backlog recovery", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -4530,6 +4594,8 @@ describe("slack-bridge broker startup backlog recovery", () => {
       registerTool: vi.fn((definition: ToolDefinition) => {
         tools.set(definition.name, definition);
       }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),
@@ -4731,6 +4797,8 @@ describe("slack-bridge broker startup backlog recovery", () => {
     const pi = {
       appendEntry: vi.fn(),
       registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
         commands.set(name, definition);
       }),

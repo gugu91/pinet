@@ -4,6 +4,12 @@ import * as path from "node:path";
 
 import * as crypto from "node:crypto";
 import type { BrokerDB } from "./schema.js";
+import {
+  parseWorkerIdentity,
+  workerStableId,
+  type WorkerIdentity,
+  type WorkerKeyPrincipal,
+} from "./worker-keys.js";
 import { DEFAULT_SOCKET_PATH } from "./paths.js";
 import { MessageRouter } from "./router.js";
 import { dispatchDirectAgentMessage } from "./agent-messaging.js";
@@ -91,11 +97,42 @@ export interface BrokerSocketServerOptions {
 
 // ─── Connection state ────────────────────────────────────
 
+/**
+ * How a connection logged in. "trusted" is the mesh secret (or no secret configured);
+ * a worker connection is bound to one broker-assigned key until it closes or is revoked.
+ */
+type ConnectionAuth =
+  | { kind: "pending" }
+  | { kind: "trusted" }
+  | ({ kind: "worker" } & WorkerKeyPrincipal)
+  | { kind: "revoked" };
+
 interface ConnectionState {
   agentId: string | null;
   buffer: string;
-  authenticated: boolean;
+  auth: ConnectionAuth;
   authTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const WORKER_KEY_REJECTED = "WORKER_KEY_REJECTED";
+
+/** Role and principal of a worker agent come from its key, never from what the worker reports. */
+function workerMetadata(
+  worker: WorkerIdentity,
+  metadata: AgentInfo["metadata"] | undefined,
+): NonNullable<AgentInfo["metadata"]> {
+  const next = { ...metadata };
+  delete next.brokerManaged;
+  delete next.brokerManagedBy;
+  delete next.pinetBrokerManaged;
+  if (next.capabilities && typeof next.capabilities === "object") {
+    next.capabilities = { ...next.capabilities, role: "worker" };
+  }
+  return {
+    ...next,
+    role: "worker",
+    pinetWorker: { hostId: worker.hostId, workerId: worker.workerId },
+  };
 }
 
 /**
@@ -218,6 +255,12 @@ export class BrokerSocketServer {
   }
 
   async start(): Promise<void> {
+    // Without a mesh secret every connection is trusted, so a revoked worker could just skip logging in.
+    if (!this.meshSecret && this.db.workerKeys.hasLiveKeys()) {
+      throw new Error(
+        "This broker has live worker keys but no mesh secret. Configure a mesh secret or revoke the keys.",
+      );
+    }
     // Clean up stale socket file for Unix mode
     if (this.target.type === "unix") {
       if (fs.existsSync(this.target.path)) {
@@ -376,7 +419,7 @@ export class BrokerSocketServer {
 
   private startAuthTimer(socket: net.Socket, state: ConnectionState): void {
     this.clearAuthTimer(state);
-    if (state.authenticated || !this.meshSecret) {
+    if (state.auth.kind !== "pending") {
       return;
     }
 
@@ -422,7 +465,7 @@ export class BrokerSocketServer {
     const state: ConnectionState = {
       agentId: null,
       buffer: "",
-      authenticated: this.meshSecret == null,
+      auth: this.meshSecret ? { kind: "pending" } : { kind: "trusted" },
       authTimer: null,
     };
     this.connections.set(socket, state);
@@ -470,21 +513,9 @@ export class BrokerSocketServer {
         continue;
       }
 
-      void this.dispatchRequest(parsed, state, socket);
-    }
-  }
-
-  private async dispatchRequest(
-    req: JsonRpcRequest,
-    state: ConnectionState,
-    socket: net.Socket,
-  ): Promise<void> {
-    try {
-      const response = await this.handleRequest(req, state, socket);
-      this.send(socket, response);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.send(socket, rpcError(req.id, RPC_INTERNAL_ERROR, message));
+      void this.handleRequest(parsed, state, socket).then((response) =>
+        this.send(socket, response),
+      );
     }
   }
 
@@ -504,12 +535,27 @@ export class BrokerSocketServer {
     socket: net.Socket,
   ): Promise<JsonRpcResponse> {
     try {
-      if (!state.authenticated && req.method !== "auth") {
+      if (state.auth.kind === "revoked") {
+        return rpcError(req.id, RPC_AUTH_REQUIRED, "Worker key revoked.", {
+          code: WORKER_KEY_REJECTED,
+        });
+      }
+      if (state.auth.kind === "pending" && req.method !== "auth") {
         setImmediate(() => socket.destroy());
         return rpcError(
           req.id,
           RPC_AUTH_REQUIRED,
           "Authentication required before calling broker methods.",
+        );
+      }
+      if (
+        state.auth.kind === "worker" &&
+        (req.method.startsWith("admin.") || req.method === "agent.sessions.search")
+      ) {
+        return rpcError(
+          req.id,
+          RPC_AUTH_REQUIRED,
+          `${req.method} is not available to worker-key connections.`,
         );
       }
 
@@ -570,6 +616,10 @@ export class BrokerSocketServer {
           return this.handleStatusUpdate(req, state);
         case "admin.shutdown":
           return this.handleAdminShutdown(req);
+        case "admin.workerKey.issue":
+        case "admin.workerKey.revoke":
+        case "admin.workerKey.list":
+          return this.handleWorkerKeyAdmin(req);
         case "adapter.capability":
           return await this.handleAdapterCapability(req, state);
         case "slack.proxy":
@@ -590,27 +640,78 @@ export class BrokerSocketServer {
     state: ConnectionState,
     socket: net.Socket,
   ): JsonRpcResponse {
+    const params = req.params ?? {};
+    const reject = (message: string, data?: { code: string }) => {
+      setImmediate(() => socket.destroy());
+      return rpcError(req.id, RPC_AUTH_REQUIRED, message, data);
+    };
     if (!this.meshSecret) {
-      state.authenticated = true;
+      // Every connection is already trusted, and start() guarantees no worker key is live.
+      return "workerKey" in params
+        ? reject("Invalid or revoked worker key.", { code: WORKER_KEY_REJECTED })
+        : rpcOk(req.id, { ok: true });
+    }
+    if (state.auth.kind !== "pending")
+      return reject("Already logged in; reconnect to log in again.");
+
+    if ("workerKey" in params) {
+      const principal =
+        typeof params.workerKey === "string" ? this.db.workerKeys.verify(params.workerKey) : null;
+      if (!principal)
+        return reject("Invalid or revoked worker key.", { code: WORKER_KEY_REJECTED });
+      state.auth = { kind: "worker", ...principal };
       this.clearAuthTimer(state);
-      return rpcOk(req.id, { ok: true });
+      return rpcOk(req.id, { ok: true, stableId: workerStableId(principal) });
+    }
+
+    const providedSecret = typeof params.secret === "string" ? params.secret.trim() : "";
+    if (!providedSecret) return reject("Mesh secret is required.");
+    const digest = (value: string) => crypto.createHash("sha256").update(value).digest();
+    if (!crypto.timingSafeEqual(digest(providedSecret), digest(this.meshSecret)))
+      return reject("Invalid mesh secret.");
+
+    state.auth = { kind: "trusted" };
+    this.clearAuthTimer(state);
+    return rpcOk(req.id, { ok: true });
+  }
+
+  private handleWorkerKeyAdmin(req: JsonRpcRequest): JsonRpcResponse {
+    if (!this.meshSecret) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "Worker keys need a mesh secret on the broker.");
+    }
+    const keys = this.db.workerKeys;
+    if (req.method === "admin.workerKey.list") {
+      const connected = new Set(
+        [...this.connections.values()].flatMap((connection) =>
+          connection.auth.kind === "worker" && connection.agentId ? [connection.auth.keyId] : [],
+        ),
+      );
+      return rpcOk(req.id, {
+        keys: keys.list().map((key) => ({ ...key, connected: connected.has(key.keyId) })),
+      });
     }
 
     const params = req.params ?? {};
-    const providedSecret = typeof params.secret === "string" ? params.secret.trim() : "";
-    if (!providedSecret) {
-      setImmediate(() => socket.destroy());
-      return rpcError(req.id, RPC_AUTH_REQUIRED, "Mesh secret is required.");
+    if (typeof params.hostId !== "string" || typeof params.workerId !== "string") {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "hostId and workerId must be strings.");
     }
-
-    if (providedSecret !== this.meshSecret) {
-      setImmediate(() => socket.destroy());
-      return rpcError(req.id, RPC_AUTH_REQUIRED, "Invalid mesh secret.");
+    const identity = parseWorkerIdentity(params.hostId, params.workerId);
+    const result =
+      req.method === "admin.workerKey.issue"
+        ? keys.issue(identity)
+        : { revoked: keys.revoke(identity) };
+    // Issuing rotates, so both actions cut off every connection that used this identity's old key.
+    for (const [socket, connection] of this.connections) {
+      if (
+        connection.auth.kind === "worker" &&
+        connection.auth.hostId === identity.hostId &&
+        connection.auth.workerId === identity.workerId
+      ) {
+        connection.auth = { kind: "revoked" };
+        socket.destroy();
+      }
     }
-
-    state.authenticated = true;
-    this.clearAuthTimer(state);
-    return rpcOk(req.id, { ok: true });
+    return rpcOk(req.id, { ...result, stableId: workerStableId(identity) });
   }
 
   /**
@@ -787,10 +888,19 @@ export class BrokerSocketServer {
     socket: net.Socket,
   ): JsonRpcResponse {
     const params = req.params ?? {};
+    const worker = state.auth.kind === "worker" ? state.auth : null;
     const requestedName = typeof params.name === "string" ? params.name.trim() : "";
     const requestedEmoji = typeof params.emoji === "string" ? params.emoji : "";
-    const pid = typeof params.pid === "number" ? params.pid : 0;
+    // A worker's process is never broker-owned, so it gets no PID the ghost reaper could act on.
+    const pid = !worker && typeof params.pid === "number" ? params.pid : 0;
     const stableId = typeof params.stableId === "string" ? params.stableId : undefined;
+    if (worker && stableId !== workerStableId(worker)) {
+      return rpcError(
+        req.id,
+        RPC_AUTH_REQUIRED,
+        `This worker key registers as "${workerStableId(worker)}".`,
+      );
+    }
     const rawMetadata =
       params.metadata && typeof params.metadata === "object"
         ? (params.metadata as Record<string, unknown>)
@@ -803,7 +913,7 @@ export class BrokerSocketServer {
       rawMetadata?.runtimeKind === "herdr" ||
       launchSource === "broker-herdr" ||
       launchSource === "subtree-broker-herdr";
-    const metadata =
+    const reportedMetadata =
       legacyTmuxSession && !explicitlyHerdr && typeof rawMetadata?.runtimeLocator !== "string"
         ? {
             ...rawMetadata,
@@ -811,6 +921,7 @@ export class BrokerSocketServer {
             runtimeLocator: legacyTmuxSession,
           }
         : rawMetadata;
+    const metadata = worker ? workerMetadata(worker, reportedMetadata) : reportedMetadata;
 
     if (stableId) {
       const liveStableIdConflict = this.findLiveStableIdConflict(stableId, socket);
@@ -873,7 +984,9 @@ export class BrokerSocketServer {
     const finalEmoji = explicitNameRequest
       ? requestedEmoji.trim() || resolved?.emoji?.trim() || ""
       : (resolved?.emoji ?? requestedEmoji).trim();
-    const finalMetadata = resolved?.metadata ?? metadata;
+    const finalMetadata = worker
+      ? workerMetadata(worker, resolved?.metadata ?? metadata)
+      : (resolved?.metadata ?? metadata);
 
     if (explicitNameRequest) {
       const conflict = this.db.findAgentNameConflict(finalName, candidateId, stableId);
@@ -969,7 +1082,11 @@ export class BrokerSocketServer {
 
     this.db.heartbeatAgent(state.agentId);
     if (metadata !== undefined) {
-      this.db.updateAgentMetadata(state.agentId, metadata as Record<string, unknown> | null);
+      const reported = metadata as AgentInfo["metadata"];
+      this.db.updateAgentMetadata(
+        state.agentId,
+        state.auth.kind === "worker" ? workerMetadata(state.auth, reported) : reported,
+      );
     }
     return rpcOk(req.id, { ok: true });
   }
@@ -1141,6 +1258,14 @@ export class BrokerSocketServer {
           ];
         })
       : undefined;
+    if (state.auth.kind === "worker" && files?.length) {
+      // Attachment paths are read from the broker's disk; a worker uploads its own files via Slack.
+      return rpcError(
+        req.id,
+        RPC_AUTH_REQUIRED,
+        "Worker-key connections cannot attach files by path; upload them through Slack instead.",
+      );
+    }
     let content: NormalizedMessageContent | undefined;
     if (params.content !== undefined) {
       if (!params.content || typeof params.content !== "object" || Array.isArray(params.content)) {
@@ -1509,7 +1634,12 @@ export class BrokerSocketServer {
       purpose: typeof params.purpose === "string" ? params.purpose : "",
       ttlMs: typeof params.ttlMs === "number" ? params.ttlMs : Number(params.ttlMs),
       ownerAgentId: state.agentId,
-      ...(typeof params.host === "string" ? { host: params.host } : {}),
+      // Leases from a worker host must not collide with the broker host's own 127.0.0.1 leases.
+      ...(state.auth.kind === "worker"
+        ? { host: state.auth.hostId }
+        : typeof params.host === "string"
+          ? { host: params.host }
+          : {}),
       ...(typeof params.port === "number" ? { port: params.port } : {}),
       ...(typeof params.minPort === "number" ? { minPort: params.minPort } : {}),
       ...(typeof params.maxPort === "number" ? { maxPort: params.maxPort } : {}),
@@ -1789,6 +1919,13 @@ export class BrokerSocketServer {
     state: ConnectionState,
     errorPrefix = `${adapterName}.${capability}`,
   ): Promise<JsonRpcResponse> {
+    if (state.auth.kind === "worker" && !(adapterName === "slack" && capability === "api.call")) {
+      return rpcError(
+        id,
+        RPC_AUTH_REQUIRED,
+        `${errorPrefix} is not available to worker-key connections.`,
+      );
+    }
     const adapter = this.outboundMessageAdapters.find(
       (candidate) => candidate.name === adapterName,
     );

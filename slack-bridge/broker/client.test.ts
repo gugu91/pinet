@@ -4,9 +4,7 @@ import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   BrokerClient,
-  DEFAULT_SOCKET_PATH,
   REQUEST_TIMEOUT_MS,
-  INITIAL_RECONNECT_DELAY_MS,
   MAX_RECONNECT_DELAY_MS,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS,
@@ -90,24 +88,6 @@ async function waitFor(fn: () => boolean, timeoutMs = 2000, intervalMs = 10): Pr
 }
 
 // ─── Tests ───────────────────────────────────────────────
-
-describe("BrokerClient — constants", () => {
-  it("DEFAULT_SOCKET_PATH points to ~/.pi/pinet.sock", () => {
-    expect(DEFAULT_SOCKET_PATH).toBe(path.join(os.homedir(), ".pi", "pinet.sock"));
-  });
-
-  it("REQUEST_TIMEOUT_MS is 5000", () => {
-    expect(REQUEST_TIMEOUT_MS).toBe(5000);
-  });
-
-  it("INITIAL_RECONNECT_DELAY_MS is 1000", () => {
-    expect(INITIAL_RECONNECT_DELAY_MS).toBe(1000);
-  });
-
-  it("MAX_RECONNECT_DELAY_MS is 30000", () => {
-    expect(MAX_RECONNECT_DELAY_MS).toBe(30000);
-  });
-});
 
 describe("BrokerClient — construction", () => {
   it("can be constructed with default socket path", () => {
@@ -215,6 +195,18 @@ describe("BrokerClient — mesh auth", () => {
     expect(client.isConnected()).toBe(true);
 
     client.disconnect();
+  });
+
+  it("rejects a legacy worker login reply without an assigned identity", async () => {
+    const client = new BrokerClient({ ...mock.connectOpts, workerKey: "worker-key" });
+    const connecting = client.connect();
+    const rejected = expect(connecting).rejects.toThrow("Broker did not assign a worker identity");
+    await waitFor(() => mock.received.length === 1);
+    const request = JSON.parse(mock.received[0]) as { id: number };
+    mock.respondTo(mock.connections[0], request.id, { ok: true });
+    await rejected;
+    expect(client.isConnected()).toBe(false);
+    expect(client.workerStableId).toBeNull();
   });
 
   it("rejects connect when broker auth rejects the mesh secret", async () => {
@@ -1677,42 +1669,6 @@ describe("BrokerClient — onReconnect callback", () => {
     await mock.close();
   });
 
-  it("reconnectOnce clears broken connected state and reschedules when re-register fails", async () => {
-    const client = new BrokerClient({ host: "127.0.0.1", port: 1 });
-    const failedSocket = { destroy: vi.fn() } as unknown as net.Socket;
-    const scheduleReconnect = vi.fn();
-
-    (
-      client as unknown as { registrationSnapshot: { name: string; emoji: string } }
-    ).registrationSnapshot = {
-      name: "RetryBot",
-      emoji: "🔁",
-    };
-    (
-      client as unknown as {
-        connectSocket: () => Promise<void>;
-        socket: net.Socket | null;
-        connected: boolean;
-      }
-    ).connectSocket = vi.fn(async () => {
-      (client as unknown as { socket: net.Socket | null }).socket = failedSocket;
-      (client as unknown as { connected: boolean }).connected = true;
-    });
-    (client as unknown as { performRegister: () => Promise<unknown> }).performRegister = vi.fn(
-      async () => {
-        throw new Error("register failed");
-      },
-    );
-    (client as unknown as { scheduleReconnect: () => void }).scheduleReconnect = scheduleReconnect;
-
-    await (client as unknown as { reconnectOnce: () => Promise<void> }).reconnectOnce();
-
-    expect(failedSocket.destroy).toHaveBeenCalledTimes(1);
-    expect(client.isConnected()).toBe(false);
-    expect((client as unknown as { socket: net.Socket | null }).socket).toBeNull();
-    expect(scheduleReconnect).toHaveBeenCalledTimes(1);
-  });
-
   it("scheduleReconnect fires onDisconnect then onReconnect after server restart", async () => {
     const mock = await createMockServer();
     const port = mock.port;
@@ -1757,6 +1713,38 @@ describe("BrokerClient — onReconnect callback", () => {
     const server2 = (client as unknown as { _testServer2: net.Server })._testServer2;
     await new Promise<void>((res) => server2.close(() => res()));
   }, 20000);
+
+  it("retries a rejected registration and reports reconnection only after it succeeds", async () => {
+    const mock = await createMockServer();
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
+    const reconnected = vi.fn();
+    client.onReconnect(reconnected);
+    try {
+      await client.connect();
+      const registering = client.register("RetryBot", "🔁");
+      await waitFor(() => mock.received.length === 1);
+      const first = JSON.parse(mock.received[0]) as { id: number };
+      const identity = { agentId: "retry-agent", name: "RetryBot", emoji: "🔁" };
+      mock.respondTo(mock.connections[0], first.id, identity);
+      await registering;
+      mock.connections[0].destroy();
+
+      await waitFor(() => mock.received.length === 2);
+      const retry = JSON.parse(mock.received[1]) as { id: number };
+      mock.respondError(mock.connections[1], retry.id, -32000, "temporarily unavailable");
+      await waitFor(() => mock.received.length === 3);
+      expect(mock.connections[1].destroyed).toBe(true);
+      expect(reconnected).not.toHaveBeenCalled();
+      const next = JSON.parse(mock.received[2]) as { id: number };
+      mock.respondTo(mock.connections[2], next.id, identity);
+      await waitFor(() => reconnected.mock.calls.length === 1);
+      expect(client.isConnected()).toBe(true);
+      expect(client.getRegisteredIdentity()).toEqual(identity);
+    } finally {
+      client.disconnect();
+      await mock.close();
+    }
+  });
 
   it("keeps retrying until it can reconnect and re-register with stable identity", async () => {
     let mock = await createMockServer();

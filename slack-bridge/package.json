@@ -14,6 +14,9 @@
     "access": "public"
   },
   "main": "./dist/index.js",
+  "bin": {
+    "pinet-worker": "./dist/worker-cli.js"
+  },
   "exports": {
     ".": "./dist/index.js",
     "./package.json": "./package.json"

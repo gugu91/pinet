@@ -335,7 +335,7 @@ export interface AgentInfo {
   pendingInboxCount?: number;
 }
 
-export type AgentSessionKind = "session" | "leaf" | "cwd" | "broker" | "unknown";
+export type AgentSessionKind = "session" | "leaf" | "cwd" | "broker" | "worker" | "unknown";
 
 export interface AgentSessionSummary {
   kind: AgentSessionKind;

@@ -31,6 +31,7 @@ import {
   resetFollowerDeliveryState,
 } from "./follower-delivery.js";
 import { BrokerClient, DEFAULT_SOCKET_PATH } from "./broker/client.js";
+import type { JoinFile } from "./join-file.js";
 
 export function resolveBrokerSocketPath(): string {
   const envPath = process.env.PINET_SOCKET_PATH?.trim();
@@ -48,6 +49,8 @@ type SharedFollowerThreadState = Pick<
 >;
 
 export interface FollowerRuntimeDeps {
+  /** Set when the session was started with --pinet-join: follow under that worker key. */
+  getJoinFile: () => JoinFile | null;
   getSettings: () => SlackBridgeSettings;
   refreshSettings: () => void;
   getPinetEnabled: () => boolean;
@@ -210,11 +213,16 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
     signal?.throwIfAborted();
     deps.refreshSettings();
     const meshAuth = resolvePinetMeshAuth(deps.getSettings());
-    const client = new BrokerClient({
-      path: resolveBrokerSocketPath(),
-      ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
-      ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
-    });
+    const join = deps.getJoinFile();
+    const client = new BrokerClient(
+      join
+        ? { path: join.socket, workerKey: join.key }
+        : {
+            path: resolveBrokerSocketPath(),
+            ...(meshAuth.meshSecret ? { meshSecret: meshAuth.meshSecret } : {}),
+            ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
+          },
+    );
     const abortConnect = () => {
       client.disconnect();
     };
@@ -235,12 +243,14 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
         Boolean(settings.agentName?.trim() && settings.agentEmoji?.trim()) ||
         Boolean(process.env.PI_NICKNAME?.trim());
 
-      deps.setAgentOwnerToken(buildPinetOwnerToken(deps.getAgentStableId()));
+      // A worker key fixes the identity; otherwise it comes from this session.
+      const stableId = client.workerStableId ?? deps.getAgentStableId();
+      deps.setAgentOwnerToken(buildPinetOwnerToken(stableId));
       const registration = await client.register(
         hasExplicitIdentityRequest ? workerIdentity.name : "",
         hasExplicitIdentityRequest ? workerIdentity.emoji : "",
         await deps.getAgentMetadata("worker", signal),
-        deps.getAgentStableId(),
+        stableId,
       );
       deps.applyRegistrationIdentity(registration);
       await deps.onRegistrationIdentityApplied();

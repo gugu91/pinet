@@ -314,9 +314,21 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
       })),
     );
 
+    // Worker-key agents collaborate but may not control the broker. Use the broker-recorded
+    // sender ID, not metadata.senderAgent, which callers can set on some routes.
+    const workerSentInboxIds = new Set(
+      pending.flatMap((item) =>
+        db.getAgentById(item.message.sender)?.metadata?.pinetWorker ? [item.entry.id] : [],
+      ),
+    );
     const handledInboxIds = new Set<number>();
     const commandsToStart: PinetControlCommand[] = [];
     for (const entry of synced.controlEntries) {
+      if (workerSentInboxIds.has(entry.inboxId)) {
+        handledInboxIds.add(entry.inboxId);
+        ctx.ui.notify(`Ignored ${entry.command} from a worker-key agent.`, "warning");
+        continue;
+      }
       try {
         const queued = deps.requestRemoteControl(entry.command, ctx);
         if (queued.ackDisposition === "immediate") {

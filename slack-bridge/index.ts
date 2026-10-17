@@ -103,6 +103,7 @@ import { createAgentPromptGuidance } from "./agent-prompt-guidance.js";
 import { createAgentEventRuntime } from "./agent-event-runtime.js";
 import { createSessionUiRuntime } from "./session-ui-runtime.js";
 import { createSlackRequestRuntime, type SlackRequestCall } from "./slack-request-runtime.js";
+import { readJoinFile, type JoinFile } from "./join-file.js";
 import { getSlackMessageAgeMs, isStaleSlackMessage } from "./stale-slack-messages.js";
 import {
   formatSlackAgentsDashboard,
@@ -145,6 +146,17 @@ export default function (pi: ExtensionAPI) {
   let appToken = settings.appToken ?? process.env.SLACK_APP_TOKEN;
   // Followers need no Slack tokens; only the broker and single-player mode talk to the Slack app.
   const hasSlackTokens = () => Boolean(botToken && appToken);
+
+  pi.registerFlag("pinet-join", {
+    description: "Join a Pinet broker as a worker using this join file (from pinet-worker issue)",
+    type: "string",
+  });
+  // A flag, not an env var: child pi processes must not inherit this worker's identity.
+  let startupJoinFile: JoinFile | null = null;
+  const joinFilePath = () => {
+    const value = pi.getFlag("pinet-join");
+    return typeof value === "string" && value ? value : null;
+  };
 
   const slackRequestRuntime = createSlackRequestRuntime();
   // An empty token means "no local Slack app": a follower then calls Slack through the broker.
@@ -1730,6 +1742,13 @@ export default function (pi: ExtensionAPI) {
   }
 
   const followerRuntime = createFollowerRuntime({
+    getJoinFile: () => {
+      const validated = startupJoinFile;
+      startupJoinFile = null;
+      if (validated) return validated;
+      const joinPath = joinFilePath();
+      return joinPath ? readJoinFile(joinPath) : null;
+    },
     getSettings: () => settings,
     refreshSettings,
     getPinetEnabled: () => pinetEnabled,
@@ -1897,11 +1916,24 @@ export default function (pi: ExtensionAPI) {
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.prepareForSessionStart(ctx);
-    const pinetRegistrationBlocked = pinetRegistrationGate.evaluateSessionStart(ctx);
     // Restore persisted thread state (always restore, even before /pinet)
     restorePersistedRuntimeState(ctx);
+    const pinetRegistrationBlocked = pinetRegistrationGate.evaluateSessionStart(ctx);
+    const joinPath = joinFilePath();
+    startupJoinFile = null;
+    if (joinPath) {
+      try {
+        startupJoinFile = readJoinFile(joinPath);
+        // Explicit membership also applies to headless sessions.
+        pinetRegistrationGate.reset();
+      } catch (error) {
+        ctx.ui.notify(`Pinet join file rejected: ${msg(error)}`, "error");
+        await transitionToRuntimeMode(ctx, "off");
+        return;
+      }
+    }
 
-    if (pinetRegistrationBlocked) {
+    if (!startupJoinFile && pinetRegistrationBlocked) {
       console.log("[slack-bridge] detected local subagent context; skipping Pinet registration");
       currentRuntimeMode = "off";
       setExtStatus(ctx, "off");
@@ -1911,10 +1943,12 @@ export default function (pi: ExtensionAPI) {
 
     refreshSettings();
     maybeWarnSlackUserAccess(ctx);
-    const configuredMode = resolveSlackBridgeStartupRuntimeMode(settings, {
-      brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
-      brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
-    });
+    const configuredMode = startupJoinFile
+      ? "follower"
+      : resolveSlackBridgeStartupRuntimeMode(settings, {
+          brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
+          brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+        });
     const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {
@@ -1951,6 +1985,8 @@ export default function (pi: ExtensionAPI) {
       console.error(`[slack-bridge] background runtime start failed: ${msg(error)}`);
     });
     pendingStartup = { controller, promise: startupPromise };
+    // Explicit workers need their tools enabled before Pi builds the first prompt.
+    if (joinPath) await startupPromise;
   });
 
   // ─── Agent event wiring ──────────────────────────────

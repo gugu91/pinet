@@ -1,5 +1,7 @@
 import * as net from "node:net";
+import assert from "node:assert/strict";
 import type { SlackResult } from "../slack-api.js";
+import type { WorkerIdentity, WorkerKeyRecord } from "./worker-keys.js";
 import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
 import { readMeshSecret } from "./auth.js";
 import { DEFAULT_SOCKET_PATH as PINET_DEFAULT_SOCKET_PATH } from "./paths.js";
@@ -130,57 +132,32 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-interface BrokerRpcRequestError extends Error {
-  code?: number;
-  data?: unknown;
-  method?: string;
-}
+class BrokerRpcRequestError extends Error {
+  readonly code: number;
+  readonly data: NonNullable<JsonRpcResponse["error"]>["data"];
+  readonly reason: string | null;
 
-function createRpcRequestError(
-  method: string,
-  error: { code: number; message: string; data?: unknown },
-): BrokerRpcRequestError {
-  const err = new Error(error.message) as BrokerRpcRequestError;
-  err.name = "BrokerRpcRequestError";
-  err.code = error.code;
-  err.data = error.data;
-  err.method = method;
-  return err;
+  constructor(
+    readonly method: string,
+    error: NonNullable<JsonRpcResponse["error"]>,
+  ) {
+    super(error.message);
+    this.name = "BrokerRpcRequestError";
+    this.code = error.code;
+    this.data = error.data;
+    const data = error.data;
+    this.reason =
+      data && typeof data === "object" && "code" in data && typeof data.code === "string"
+        ? data.code
+        : null;
+  }
 }
 
 function isRpcMethodNotFoundError(err: unknown, method: string): boolean {
-  if (!(err instanceof Error)) {
-    return false;
-  }
-
-  const rpcErr = err as BrokerRpcRequestError;
-  if (rpcErr.method !== method) {
-    return false;
-  }
-
-  return rpcErr.code === RPC_METHOD_NOT_FOUND || err.message === `Unknown method: ${method}`;
-}
-
-function isRpcAgentNameConflictError(err: unknown): err is BrokerRpcRequestError {
-  if (!(err instanceof Error)) {
-    return false;
-  }
-
-  const rpcErr = err as BrokerRpcRequestError;
-  if (rpcErr.code === RPC_AGENT_NAME_CONFLICT) {
-    return true;
-  }
-
-  if (typeof rpcErr.data !== "object" || rpcErr.data == null) {
-    return false;
-  }
-
-  return (rpcErr.data as { code?: unknown }).code === "AGENT_NAME_CONFLICT";
-}
-
-function getMeshAuthCompatibilityError(): Error {
-  return new Error(
-    "Broker does not support Pinet mesh auth (`auth`). Upgrade the broker or disable follower mesh auth when connecting to older/no-auth brokers.",
+  return (
+    err instanceof BrokerRpcRequestError &&
+    err.method === method &&
+    (err.code === RPC_METHOD_NOT_FOUND || err.message === `Unknown method: ${method}`)
   );
 }
 
@@ -212,14 +189,6 @@ interface RegistrationResult {
   metadata?: Record<string, unknown> | null;
 }
 
-function getErrorCode(err: unknown): string | null {
-  if (typeof err !== "object" || err == null || !("code" in err)) {
-    return null;
-  }
-  const code = (err as { code?: unknown }).code;
-  return typeof code === "string" ? code : null;
-}
-
 export interface AgentBroadcastResult {
   channel: string;
   messageIds: number[];
@@ -230,10 +199,9 @@ export interface AgentBroadcastResult {
 
 export type BrokerConnectOpts = { path: string } | { host: string; port: number };
 
-export interface BrokerClientAuthOptions {
-  meshSecret?: string;
-  meshSecretPath?: string;
-}
+export type BrokerClientAuthOptions =
+  | { meshSecret?: string; meshSecretPath?: string; workerKey?: never }
+  | { workerKey: string; meshSecret?: never; meshSecretPath?: never };
 
 export interface BrokerClientTimingOptions {
   /** @internal Allows tests to exercise reconnect behavior without waiting for production backoff. */
@@ -248,8 +216,8 @@ export type BrokerClientOptions = BrokerConnectOpts &
 
 export class BrokerClient {
   private readonly connectOpts: BrokerConnectOpts;
-  private readonly meshSecret: string | null;
-  private readonly meshSecretPath: string | null;
+  private readonly auth: BrokerClientAuthOptions;
+  private assignedStableId: string | null = null;
   private readonly reconnectDelayMs: (attempt: number) => number;
   private socket: net.Socket | null = null;
   private connectingSocket: net.Socket | null = null;
@@ -273,25 +241,9 @@ export class BrokerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private buffer = "";
 
-  constructor(opts?: string | BrokerClientOptions) {
-    this.reconnectDelayMs =
-      typeof opts === "object" && opts !== null
-        ? (opts.reconnectDelayMs ?? computeReconnectDelay)
-        : computeReconnectDelay;
-
-    if (opts === undefined) {
-      this.connectOpts = { path: DEFAULT_SOCKET_PATH };
-      this.meshSecret = null;
-      this.meshSecretPath = null;
-      return;
-    }
-
-    if (typeof opts === "string") {
-      this.connectOpts = { path: opts };
-      this.meshSecret = null;
-      this.meshSecretPath = null;
-      return;
-    }
+  constructor(options: string | BrokerClientOptions = DEFAULT_SOCKET_PATH) {
+    const opts = typeof options === "string" ? { path: options } : options;
+    this.reconnectDelayMs = opts.reconnectDelayMs ?? computeReconnectDelay;
 
     if ("path" in opts) {
       this.connectOpts = { path: opts.path };
@@ -300,10 +252,12 @@ export class BrokerClient {
       this.connectOpts = { host: opts.host, port: opts.port };
     }
 
-    const meshSecret = opts.meshSecret?.trim();
-    this.meshSecret = meshSecret && meshSecret.length > 0 ? meshSecret : null;
-    const meshSecretPath = opts.meshSecretPath?.trim();
-    this.meshSecretPath = meshSecretPath && meshSecretPath.length > 0 ? meshSecretPath : null;
+    this.auth = { ...opts };
+  }
+
+  /** The stable ID the broker assigned to this client's worker key, known after connect(). */
+  get workerStableId(): string | null {
+    return this.assignedStableId;
   }
 
   // ─── Connection ──────────────────────────────────────
@@ -357,27 +311,35 @@ export class BrokerClient {
     return this.connected;
   }
 
-  private resolveMeshSecret(): string | null {
-    if (this.meshSecret) {
-      return this.meshSecret;
+  private async authenticateIfNeeded(): Promise<void> {
+    const auth = this.auth;
+    if (auth.workerKey !== undefined) {
+      const result = await this.request("auth", { workerKey: auth.workerKey });
+      assert(
+        result &&
+          typeof result === "object" &&
+          "stableId" in result &&
+          typeof result.stableId === "string" &&
+          result.stableId.length > 0,
+        "Broker did not assign a worker identity. Upgrade the broker to support worker keys.",
+      );
+      this.assignedStableId = result.stableId;
+      return;
     }
-    if (this.meshSecretPath) {
+    let meshSecret = auth.meshSecret?.trim();
+    const meshSecretPath = auth.meshSecretPath?.trim();
+    if (!meshSecret && meshSecretPath) {
       try {
-        return readMeshSecret(this.meshSecretPath);
+        meshSecret = readMeshSecret(meshSecretPath);
       } catch (err) {
-        if (getErrorCode(err) === "ENOENT") {
+        if (err instanceof Error && "code" in err && err.code === "ENOENT") {
           throw new Error(
-            `Configured Pinet mesh secret file not found: ${this.meshSecretPath}. Set slack-bridge.meshSecretPath to an existing file, provide slack-bridge.meshSecret directly, or leave both unset to disable shared-secret auth.`,
+            `Configured Pinet mesh secret file not found: ${meshSecretPath}. Set slack-bridge.meshSecretPath to an existing file, provide slack-bridge.meshSecret directly, or leave both unset to disable shared-secret auth.`,
           );
         }
         throw err;
       }
     }
-    return null;
-  }
-
-  private async authenticateIfNeeded(): Promise<void> {
-    const meshSecret = this.resolveMeshSecret();
     if (!meshSecret) {
       return;
     }
@@ -386,7 +348,9 @@ export class BrokerClient {
       await this.request("auth", { secret: meshSecret });
     } catch (err) {
       if (isRpcMethodNotFoundError(err, "auth")) {
-        throw getMeshAuthCompatibilityError();
+        throw new Error(
+          "Broker does not support Pinet mesh auth (`auth`). Upgrade the broker or disable follower mesh auth when connecting to older/no-auth brokers.",
+        );
       }
       throw err;
     }
@@ -598,6 +562,33 @@ export class BrokerClient {
       threadId: result.threadId,
       fireAt: result.fireAt,
     };
+  }
+
+  // ─── Worker keys (trusted connections only) ──────────
+
+  /** Rotates the identity's key; the returned key is never retrievable again. */
+  async issueWorkerKey(
+    identity: WorkerIdentity,
+  ): Promise<{ keyId: string; key: string; stableId: string }> {
+    return (await this.request("admin.workerKey.issue", { ...identity })) as {
+      keyId: string;
+      key: string;
+      stableId: string;
+    };
+  }
+
+  async revokeWorkerKey(identity: WorkerIdentity): Promise<{ revoked: boolean; stableId: string }> {
+    return (await this.request("admin.workerKey.revoke", { ...identity })) as {
+      revoked: boolean;
+      stableId: string;
+    };
+  }
+
+  async listWorkerKeys(): Promise<Array<WorkerKeyRecord & { connected: boolean }>> {
+    const result = (await this.request("admin.workerKey.list")) as {
+      keys: Array<WorkerKeyRecord & { connected: boolean }>;
+    };
+    return result.keys;
   }
 
   async listLanes(options: PinetLaneListOptions = {}): Promise<PinetLaneInfo[]> {
@@ -827,7 +818,7 @@ export class BrokerClient {
     this.pending.delete(msg.id);
 
     if (msg.error) {
-      entry.reject(createRpcRequestError(entry.method, msg.error));
+      entry.reject(new BrokerRpcRequestError(entry.method, msg.error));
     } else {
       entry.resolve(msg.result);
     }
@@ -983,7 +974,12 @@ export class BrokerClient {
       } catch {
         /* ignore */
       }
-      if (isRpcAgentNameConflictError(reconnectError)) {
+      if (
+        reconnectError instanceof BrokerRpcRequestError &&
+        (reconnectError.code === RPC_AGENT_NAME_CONFLICT ||
+          reconnectError.reason === "AGENT_NAME_CONFLICT" ||
+          reconnectError.reason === "WORKER_KEY_REJECTED")
+      ) {
         this.reconnectAttempt = 0;
         this.reconnectFailedHandler?.(reconnectError);
         return;
