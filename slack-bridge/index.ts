@@ -337,12 +337,14 @@ export default function (pi: ExtensionAPI) {
       settings = nextSettings;
     },
     getBotToken: () => botToken,
+    // A --pinet-join worker reaches Slack only through its broker. Local tokens may belong to
+    // another Slack app, such as the worker machine owner's own workspace.
     setBotToken: (token) => {
-      botToken = token;
+      botToken = joinFilePath() ? undefined : token;
     },
     getAppToken: () => appToken,
     setAppToken: (token) => {
-      appToken = token;
+      appToken = joinFilePath() ? undefined : token;
     },
     getAllowedUsers: () => allowedUsers,
     setAllowedUsers: (users) => {
@@ -1922,6 +1924,9 @@ export default function (pi: ExtensionAPI) {
     const joinPath = joinFilePath();
     startupJoinFile = null;
     if (joinPath) {
+      // Tokens loaded before flags were parsed; a worker must not use them (see setBotToken).
+      botToken = undefined;
+      appToken = undefined;
       try {
         startupJoinFile = readJoinFile(joinPath);
         // Explicit membership also applies to headless sessions.
