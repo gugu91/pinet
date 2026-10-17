@@ -102,7 +102,7 @@ import { consumePinetReadConfirmationReplies } from "./pinet-confirmation-replie
 import { createAgentPromptGuidance } from "./agent-prompt-guidance.js";
 import { createAgentEventRuntime } from "./agent-event-runtime.js";
 import { createSessionUiRuntime } from "./session-ui-runtime.js";
-import { createSlackRequestRuntime } from "./slack-request-runtime.js";
+import { createSlackRequestRuntime, type SlackRequestCall } from "./slack-request-runtime.js";
 import { getSlackMessageAgeMs, isStaleSlackMessage } from "./stale-slack-messages.js";
 import {
   formatSlackAgentsDashboard,
@@ -143,11 +143,17 @@ export default function (pi: ExtensionAPI) {
 
   let botToken = settings.botToken ?? process.env.SLACK_BOT_TOKEN;
   let appToken = settings.appToken ?? process.env.SLACK_APP_TOKEN;
-
-  if (!botToken || !appToken) return;
+  // Followers need no Slack tokens; only the broker and single-player mode talk to the Slack app.
+  const hasSlackTokens = () => Boolean(botToken && appToken);
 
   const slackRequestRuntime = createSlackRequestRuntime();
-  const { slack } = slackRequestRuntime;
+  // An empty token means "no local Slack app": a follower then calls Slack through the broker.
+  const slack: SlackRequestCall = async (method, token, body) => {
+    if (token) return slackRequestRuntime.slack(method, token, body);
+    if (brokerRole === "follower" && brokerClient)
+      return brokerClient.client.slackProxy(method, body ?? {});
+    throw new Error("Slack bot token is not configured.");
+  };
 
   // allowedUsers / allowAllWorkspaceUsers: settings.json takes priority, env vars as fallback
   let allowedUsers = buildAllowlist(
@@ -455,13 +461,13 @@ export default function (pi: ExtensionAPI) {
   let isSinglePlayerConnected = () => false;
   const slackThreadStatuses = new SlackThreadStatusManager({
     slack,
-    getBotToken: () => botToken!,
+    getBotToken: () => botToken ?? "",
     formatError: msg,
     logger: console,
   });
   const slackRuntimeAccess = createSlackRuntimeAccess({
     slack,
-    getBotToken: () => botToken!,
+    getBotToken: () => botToken ?? "",
     userNames,
     channelCache,
     persistState,
@@ -1217,6 +1223,11 @@ export default function (pi: ExtensionAPI) {
   ): Promise<void> {
     return runPinetLifecycle(async () => {
       signal?.throwIfAborted();
+      if (mode !== "off" && mode !== "follower" && !hasSlackTokens()) {
+        throw new Error(
+          `Pinet ${mode} mode needs SLACK_BOT_TOKEN and SLACK_APP_TOKEN. Without them, join a running broker with /pinet follow.`,
+        );
+      }
       if (currentRuntimeMode === mode) {
         if (mode === "off") {
           setExtStatus(ctx, "off");
@@ -1327,7 +1338,7 @@ export default function (pi: ExtensionAPI) {
     const reloadWork = runPinetLifecycle(async () => {
       let reloadBrokerInPlace = false;
       const validateRefreshedState = () => {
-        if (!botToken || !appToken) {
+        if (brokerRole !== "follower" && !hasSlackTokens()) {
           throw new Error("Slack tokens are not configured after reload.");
         }
         if (brokerRole === "broker") {
@@ -1405,12 +1416,7 @@ export default function (pi: ExtensionAPI) {
   const toolRegistrationRuntime = createToolRegistrationRuntime({
     buildPromptGuidelines: agentPromptGuidance.buildPromptGuidelines,
     slackTools: {
-      getBotToken: () => {
-        if (!botToken) {
-          throw new Error("Slack bot token is not configured.");
-        }
-        return botToken;
-      },
+      getBotToken: () => botToken ?? "",
       getDefaultChannel: () => settings.defaultChannel,
       getSecurityPrompt: () => securityPrompt,
       inbox,
@@ -1905,10 +1911,11 @@ export default function (pi: ExtensionAPI) {
 
     refreshSettings();
     maybeWarnSlackUserAccess(ctx);
-    const startupMode = resolveSlackBridgeStartupRuntimeMode(settings, {
+    const configuredMode = resolveSlackBridgeStartupRuntimeMode(settings, {
       brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
       brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
     });
+    const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {
       await transitionToRuntimeMode(ctx, startupMode);

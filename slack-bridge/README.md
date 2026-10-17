@@ -94,6 +94,8 @@ export SLACK_APP_TOKEN="xapp-..."
 
 Settings in `settings.json` override environment variables.
 
+Only the broker (and single-player mode) needs Slack tokens. A worker that joins a running broker with `/pinet follow` can run without them; it makes its Slack calls through the broker. Downloading Slack files is the exception and still needs a local bot token.
+
 ## Control who can use Pinet
 
 Slack access is default-deny. Configure one of these:

@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import type { SlackResult } from "../slack-api.js";
 import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
 import { readMeshSecret } from "./auth.js";
 import { DEFAULT_SOCKET_PATH as PINET_DEFAULT_SOCKET_PATH } from "./paths.js";
@@ -717,19 +718,27 @@ export class BrokerClient {
    * The broker RPC boundary remains adapter-neutral; Slack-specific payloads are
    * interpreted inside the Slack adapter's api.call capability.
    */
-  async slackProxy(
-    method: string,
-    params: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    try {
-      return await this.invokeAdapterCapability("slack", "api.call", { method, params });
-    } catch (err) {
-      if (!isRpcMethodNotFoundError(err, "adapter.capability")) {
-        throw err;
-      }
+  async slackProxy(method: string, params: Record<string, unknown>): Promise<SlackResult> {
+    const result = await this.invokeAdapterCapability("slack", "api.call", {
+      method,
+      params,
+    }).catch((err) => {
+      if (!isRpcMethodNotFoundError(err, "adapter.capability")) throw err;
+      return this.request("slack.proxy", { method, params });
+    });
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      !("ok" in result) ||
+      typeof result.ok !== "boolean"
+    ) {
+      throw new Error("Invalid Slack proxy response: expected a boolean ok field.");
     }
-
-    return (await this.request("slack.proxy", { method, params })) as Record<string, unknown>;
+    const error = "error" in result ? result.error : undefined;
+    if (error !== undefined && typeof error !== "string") {
+      throw new Error("Invalid Slack proxy response: expected a string error field.");
+    }
+    return { ...result, ok: result.ok, error };
   }
 
   // ─── Events ──────────────────────────────────────────
