@@ -260,6 +260,10 @@ export async function fetchSlackFileToCache(
   if (!trimmedFileId) {
     throw new Error("file_id is required.");
   }
+  // Private file URLs need the bot token itself; the broker's Slack proxy cannot fetch bytes.
+  if (!deps.token) {
+    throw new Error("Downloading Slack files needs a local Slack bot token; this worker has none.");
+  }
 
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now?.() ?? new Date();

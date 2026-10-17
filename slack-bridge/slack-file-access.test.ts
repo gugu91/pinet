@@ -168,6 +168,16 @@ describe("fetchSlackFileToCache", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("refuses to download without a bot token instead of fetching a login page", async () => {
+    const slack = vi.fn();
+    const fetchImpl = vi.fn();
+
+    await expect(
+      fetchSlackFileToCache("F123", {}, { slack, token: "", fetchImpl }),
+    ).rejects.toThrow("needs a local Slack bot token");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("rejects files above the configured safe size limit before downloading", async () => {
     const cacheDir = await makeTempDir();
     const slack = vi.fn(
