@@ -64,14 +64,22 @@ async function startBroker() {
 }
 
 /** Loads the extension as pi would; a headless session looks like a subagent to Pinet's guard. */
-function loadExtension(root: string, options: { joinFile?: string; headless?: boolean } = {}) {
+function loadExtension(
+  root: string,
+  options: { joinFile?: string; follow?: boolean; headless?: boolean } = {},
+) {
   const events = new Map<string, Handler>();
   const commands = new Map<string, CommandDefinition>();
   const tools = new Map<string, ToolDefinition>();
   let activeTools = ["read", "slack", "pinet"];
   const pi = {
     registerFlag: vi.fn(),
-    getFlag: (name: string) => (name === "pinet-join" ? options.joinFile : undefined),
+    getFlag: (name: string) =>
+      name === "pinet-join"
+        ? options.joinFile
+        : name === "pinet-follow"
+          ? options.follow
+          : undefined,
     registerCommand: (name: string, definition: CommandDefinition) =>
       commands.set(name, definition),
     registerTool: (definition: ToolDefinition) => tools.set(definition.name, definition),
@@ -183,6 +191,58 @@ it("makes worker-key tools ready for an immediate task, even when headless", asy
       params: { channel: "C0TEST", timestamp: "1712345678.000100", name: "eyes" },
     },
   ]);
+}, 20_000);
+
+it("follows from --pinet-follow in this process only, ready for an immediate task", async () => {
+  const { root, db, slackCalls } = await startBroker();
+  const settingsPath = path.join(root, ".pi", "agent", "settings.json");
+  const settingsBefore = fs.readFileSync(settingsPath, "utf8");
+
+  const follower = loadExtension(root, { follow: true });
+  await follower.events.get("session_start")!({}, follower.context);
+  expect(follower.pi.getActiveTools()).toEqual(expect.arrayContaining(["pinet", "slack"]));
+  expect(db.getAgents()).toHaveLength(1);
+  await follower.tools.get("slack")!.execute!(
+    "first-task",
+    {
+      action: "react",
+      args: { emoji: "eyes", timestamp: "1712345678.000100", channel: "C0TEST" },
+    },
+    undefined,
+    undefined,
+    follower.context,
+  );
+  expect(slackCalls).toHaveLength(1);
+  expect(fs.readFileSync(settingsPath, "utf8")).toBe(settingsBefore);
+}, 20_000);
+
+it("keeps --pinet-follow visibly off when there is no broker socket", async () => {
+  const { root, db } = await startBroker();
+  const missingSocket = path.join(root, "missing", "pinet.sock");
+  vi.stubEnv("PINET_SOCKET_PATH", missingSocket);
+
+  const follower = loadExtension(root, { follow: true });
+  await follower.events.get("session_start")!({}, follower.context);
+  expect(follower.notify).toHaveBeenCalledWith(
+    expect.stringContaining(`--pinet-follow found no broker socket at ${missingSocket}`),
+    "warning",
+  );
+  expect(follower.pi.getActiveTools()).toEqual(["read"]);
+  expect(db.getAgents()).toHaveLength(0);
+}, 20_000);
+
+it("keeps --pinet-follow visibly off when the broker rejects its login", async () => {
+  const { root, db } = await startBroker();
+  vi.stubEnv("PINET_MESH_SECRET", "wrong-secret");
+
+  const follower = loadExtension(root, { follow: true });
+  await follower.events.get("session_start")!({}, follower.context);
+  expect(follower.notify).toHaveBeenCalledWith(
+    expect.stringContaining("Pinet could not join the broker"),
+    "warning",
+  );
+  expect(follower.pi.getActiveTools()).toEqual(["read"]);
+  expect(db.getAgents()).toHaveLength(0);
 }, 20_000);
 
 /** A worker machine may have its own Slack app, for example the owner's personal workspace. */

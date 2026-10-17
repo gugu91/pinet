@@ -24,6 +24,8 @@ export function isPinetRuntimeMode(mode: SlackBridgeRuntimeMode): boolean {
 export interface ResolveSlackBridgeStartupRuntimeModeOptions {
   brokerSocketExists?: boolean;
   brokerManagedFollowerLaunch?: boolean;
+  /** --pinet-follow: this process follows the broker whatever the persistent settings say. */
+  processFollowRequested?: boolean;
 }
 
 export function isBrokerManagedFollowerLaunch(env = process.env): boolean {
@@ -41,6 +43,10 @@ export function resolveSlackBridgeStartupRuntimeMode(
 ): SlackBridgeRuntimeMode {
   const explicitMode = normalizeSlackBridgeRuntimeMode(settings.runtimeMode);
   const brokerSocketExists = options.brokerSocketExists ?? true;
+
+  if (options.processFollowRequested) {
+    return brokerSocketExists ? "follower" : "off";
+  }
 
   if (options.brokerManagedFollowerLaunch) {
     if (explicitMode === "follower" || (!explicitMode && settings.autoFollow)) {
