@@ -779,17 +779,17 @@ export class SlackAdapter implements MessageAdapter {
     const { threadTs, channel, userId, text, isDM, isChannelMention, messageTs, metadata } =
       classified;
 
-    if (
-      isDM &&
-      typeof evt.thread_ts === "string" &&
-      this.shouldSuppressLegacyThreadedDm(threadTs)
-    ) {
-      return;
-    }
-
     // Check the allowlist before recording any thread state so unauthorized
     // traffic can never mint known-thread/affinity side effects (#812).
     if (!isSlackUserAllowed(this.allowlist, userId)) return;
+
+    if (
+      isDM &&
+      typeof evt.thread_ts === "string" &&
+      (await this.shouldSuppressLegacyThreadedDm(threadTs))
+    ) {
+      return;
+    }
 
     if (
       !this.messageMentionsBot(evt) &&
@@ -897,12 +897,23 @@ export class SlackAdapter implements MessageAdapter {
     });
   }
 
-  private shouldSuppressLegacyThreadedDm(threadTs: string): boolean {
-    const cached = this.threads.get(threadTs);
-    if (cached) return false;
+  private async shouldSuppressLegacyThreadedDm(threadTs: string): Promise<boolean> {
+    if (this.threads.get(threadTs)) return false;
 
     const known = this.config.getKnownThread?.(threadTs);
-    return !!known && known.channelId.startsWith("D") && !known.context;
+    if (!known || !known.channelId.startsWith("D") || known.context) return false;
+
+    // Only Slack assistant threads can lose the context this guard protects.
+    // A DM thread an agent started with its own post never had assistant
+    // context, so replies to it route normally. Stay suppressed when the root
+    // cannot be read.
+    const response = await this.callSlack("conversations.replies", this.config.botToken, {
+      channel: known.channelId,
+      ts: threadTs,
+      limit: 1,
+    });
+    const root = Array.isArray(response.messages) ? response.messages[0] : undefined;
+    return !root || root.subtype === "assistant_app_thread";
   }
 
   private getThread(threadTs: string): SlackThreadInfo | undefined {
