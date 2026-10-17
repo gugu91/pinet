@@ -1966,18 +1966,19 @@ export default function (pi: ExtensionAPI) {
     // Process-scoped: overrides runtimeMode for this process only and never edits settings.
     const followRequested = pi.getFlag("pinet-follow") === true;
     const brokerSocketPath = resolveBrokerSocketPath();
-    const configuredMode = startupJoinFile
-      ? "follower"
-      : (reloadedMode ??
-        resolveSlackBridgeStartupRuntimeMode(settings, {
-          brokerSocketExists: fs.existsSync(brokerSocketPath),
-          brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
-          processFollowRequested: followRequested,
-        }));
+    const configuredMode =
+      reloadedMode ??
+      (startupJoinFile
+        ? "follower"
+        : resolveSlackBridgeStartupRuntimeMode(settings, {
+            brokerSocketExists: fs.existsSync(brokerSocketPath),
+            brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+            processFollowRequested: followRequested,
+          }));
     const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {
-      if (followRequested && !startupJoinFile) {
+      if (followRequested && !startupJoinFile && !reloadedMode) {
         const failure = `--pinet-follow found no broker socket at ${brokerSocketPath}. Slack, Pinet and iMessage tools stay off. Start the broker or set PINET_SOCKET_PATH, then restart this process.`;
         console.error(`[slack-bridge] ${failure}`);
         ctx.ui.notify(failure, "warning");
@@ -2095,16 +2096,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
-    // /reload restarts Pinet in the mode it was running, not the startup default.
-    if (event.reason === "reload" && currentRuntimeMode !== "off") {
-      runtimeModeAcrossReload.mode = currentRuntimeMode;
-    }
+    // /reload replaces Pinet's code, not its state: keep this agent's identity, threads and
+    // inbox, and restart the mode it was in, including off. A startup still in progress has
+    // no settled mode, so the reload starts from the defaults instead.
+    const reloading = event.reason === "reload";
+    if (reloading && !pendingStartup) runtimeModeAcrossReload.mode = currentRuntimeMode;
     compactionGate.reset();
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.cleanupForSessionShutdown();
     await cancelPendingStartup();
-    await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: true }));
+    await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: !reloading }));
     pinetRegistrationGate.reset();
   });
 }

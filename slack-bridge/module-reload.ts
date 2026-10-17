@@ -10,8 +10,10 @@ import * as nodeModule from "node:module";
 const LOAD_PARAM = "pinet-load";
 const SELF_URL = import.meta.url;
 const ENTRY_URL = new URL("./index.js", import.meta.url).href;
-// The repository for Git installs, or the npm scope directory for npm installs.
-const SCOPE_URL = new URL("../../", import.meta.url).href;
+// A Git install keeps every Pinet package in the repository; npm installs them as @pinet/*
+// packages, hoisted or nested, among third-party dependencies that keep their one copy.
+const REPOSITORY_URL = new URL("../../", import.meta.url).href;
+const NODE_MODULES = "/node_modules/";
 
 let reloadCount = 0;
 
@@ -21,14 +23,13 @@ if (typeof nodeModule.registerHooks === "function") {
     resolve(specifier, context, nextResolve) {
       const resolved = nextResolve(specifier, context);
       const { url } = resolved;
+      const nodeModulesAt = url.lastIndexOf(NODE_MODULES);
+      const pinetModule =
+        nodeModulesAt === -1
+          ? url.startsWith(REPOSITORY_URL)
+          : url.startsWith("@pinet/", nodeModulesAt + NODE_MODULES.length);
       // This module stays loaded once, so the process keeps a single hook.
-      if (
-        url === SELF_URL ||
-        !url.startsWith(SCOPE_URL) ||
-        url.includes("/node_modules/", SCOPE_URL.length - 1)
-      ) {
-        return resolved;
-      }
+      if (url === SELF_URL || !pinetModule) return resolved;
 
       if (url === ENTRY_URL) reloadCount += 1;
       return reloadCount > 0

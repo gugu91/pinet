@@ -18,8 +18,15 @@ it("evaluates Pinet's natively imported modules again on each extension load", (
   const repo = path.join(root, "repo");
   const dist = path.join(repo, "slack-bridge", "dist");
   const thirdParty = path.join(repo, "node_modules", "third-party");
+  // npm may nest a Pinet dependency under the package that needs it.
+  const nestedPinet = path.join(repo, "slack-bridge", "node_modules", "@pinet", "core");
   fs.mkdirSync(dist, { recursive: true });
   fs.mkdirSync(thirdParty, { recursive: true });
+  fs.mkdirSync(nestedPinet, { recursive: true });
+  fs.writeFileSync(
+    path.join(nestedPinet, "package.json"),
+    '{"name":"@pinet/core","type":"module","exports":"./index.js"}',
+  );
   fs.writeFileSync(path.join(repo, "slack-bridge", "package.json"), '{"type":"module"}');
   fs.writeFileSync(
     path.join(thirdParty, "package.json"),
@@ -40,20 +47,22 @@ it("evaluates Pinet's natively imported modules again on each extension load", (
   );
   fs.writeFileSync(
     path.join(dist, "index.js"),
-    'import "./module-reload.js";\nimport "third-party";\nexport { VERSION } from "./version.js";\n',
+    'import "./module-reload.js";\nimport "third-party";\nexport { VERSION } from "./version.js";\nexport { CORE_VERSION } from "@pinet/core";\n',
   );
   const host = path.join(root, "host.mjs");
   fs.writeFileSync(
     host,
     `import { writeFileSync } from "node:fs";
-const [entry, version] = process.argv.slice(2);
+const [entry, version, core] = process.argv.slice(2);
 const versions = [];
 for (const value of ["v1", "v2", "v3"]) {
   writeFileSync(
     version,
     \`globalThis.versionLoads = (globalThis.versionLoads ?? 0) + 1;\\nexport const VERSION = "\${value}";\\n\`,
   );
-  versions.push((await import(entry)).VERSION);
+  writeFileSync(core, \`export const CORE_VERSION = "\${value}";\\n\`);
+  const loaded = await import(entry);
+  versions.push(\`\${loaded.VERSION}/\${loaded.CORE_VERSION}\`);
   // jiti imports modules one at a time, so some arrive after the hook registers.
   if (value === "v1") await import(version);
 }
@@ -64,12 +73,17 @@ console.log(JSON.stringify({ versions, hookModuleLoads, thirdPartyLoads, version
 
   const output = execFileSync(
     process.execPath,
-    [host, path.join(dist, "index.js"), path.join(dist, "version.js")],
+    [
+      host,
+      path.join(dist, "index.js"),
+      path.join(dist, "version.js"),
+      path.join(nestedPinet, "index.js"),
+    ],
     { encoding: "utf8" },
   );
 
   expect(JSON.parse(output)).toEqual({
-    versions: ["v1", "v2", "v3"],
+    versions: ["v1/v1", "v2/v2", "v3/v3"],
     hookModuleLoads: 1,
     thirdPartyLoads: 1,
     versionLoads: 3,
