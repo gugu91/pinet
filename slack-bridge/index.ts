@@ -5,7 +5,6 @@ import { probeGitBranch, probeGitContext, type GitContext } from "./git-metadata
 import {
   type FollowerRuntimeDiagnostic,
   type InboxMessage,
-  type SlackResult,
   loadSettings as loadSettingsFromFile,
   buildAllowlist,
   resolvePinetMeshAuth,
@@ -152,7 +151,7 @@ export default function (pi: ExtensionAPI) {
   const slack: SlackRequestCall = async (method, token, body) => {
     if (token) return slackRequestRuntime.slack(method, token, body);
     if (brokerRole === "follower" && brokerClient)
-      return (await brokerClient.client.slackProxy(method, body ?? {})) as SlackResult;
+      return brokerClient.client.slackProxy(method, body ?? {});
     throw new Error("Slack bot token is not configured.");
   };
 

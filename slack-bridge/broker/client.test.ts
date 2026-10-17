@@ -1372,10 +1372,10 @@ describe("BrokerClient — adapter capabilities", () => {
     expect(req.params.params.method).toBe("conversations.history");
     expect((req.params.params.params as Record<string, unknown>).channel).toBe("C123");
 
-    mock.respondTo(mock.connections[0], req.id, { messages: [] });
+    mock.respondTo(mock.connections[0], req.id, { ok: true, messages: [] });
 
     const result = await proxyPromise;
-    expect(result).toEqual({ messages: [] });
+    expect(result).toEqual({ ok: true, messages: [] });
 
     client.disconnect();
   });
@@ -1409,13 +1409,32 @@ describe("BrokerClient — adapter capabilities", () => {
     expect(fallbackReq.params.method).toBe("conversations.history");
     expect(fallbackReq.params.params.channel).toBe("C123");
 
-    mock.respondTo(mock.connections[0], fallbackReq.id, { messages: [] });
+    mock.respondTo(mock.connections[0], fallbackReq.id, { ok: true, messages: [] });
 
     const result = await proxyPromise;
-    expect(result).toEqual({ messages: [] });
+    expect(result).toEqual({ ok: true, messages: [] });
 
     client.disconnect();
   });
+
+  it.each([null, {}, { ok: "true" }, { ok: false, error: 42 }])(
+    "rejects malformed Slack proxy response %j",
+    async (response) => {
+      const client = new BrokerClient(mock.connectOpts);
+      await client.connect();
+      try {
+        const result = expect(client.slackProxy("reactions.add", {})).rejects.toThrow(
+          "Invalid Slack proxy response",
+        );
+        await waitFor(() => mock.received.length > 0);
+        const request = JSON.parse(mock.received[0]);
+        mock.respondTo(mock.connections[0], request.id, response);
+        await result;
+      } finally {
+        client.disconnect();
+      }
+    },
+  );
 });
 
 describe("BrokerClient — error handling", () => {
