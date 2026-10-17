@@ -151,6 +151,10 @@ export default function (pi: ExtensionAPI) {
     description: "Join a Pinet broker as a worker using this join file (from pinet-worker issue)",
     type: "string",
   });
+  pi.registerFlag("pinet-follow", {
+    description: "Follow the running Pinet broker in this process only, without changing settings",
+    type: "boolean",
+  });
   // A flag, not an env var: child pi processes must not inherit this worker's identity.
   let startupJoinFile: JoinFile | null = null;
   const joinFilePath = () => {
@@ -1948,15 +1952,24 @@ export default function (pi: ExtensionAPI) {
 
     refreshSettings();
     maybeWarnSlackUserAccess(ctx);
+    // Process-scoped: overrides runtimeMode for this process only and never edits settings.
+    const followRequested = pi.getFlag("pinet-follow") === true;
+    const brokerSocketPath = resolveBrokerSocketPath();
     const configuredMode = startupJoinFile
       ? "follower"
       : resolveSlackBridgeStartupRuntimeMode(settings, {
-          brokerSocketExists: fs.existsSync(resolveBrokerSocketPath()),
+          brokerSocketExists: fs.existsSync(brokerSocketPath),
           brokerManagedFollowerLaunch: isBrokerManagedFollowerLaunch(),
+          processFollowRequested: followRequested,
         });
     const startupMode = configuredMode === "follower" || hasSlackTokens() ? configuredMode : "off";
 
     if (startupMode === "off") {
+      if (followRequested && !startupJoinFile) {
+        const failure = `--pinet-follow found no broker socket at ${brokerSocketPath}. Slack, Pinet and iMessage tools stay off. Start the broker or set PINET_SOCKET_PATH, then restart this process.`;
+        console.error(`[slack-bridge] ${failure}`);
+        ctx.ui.notify(failure, "warning");
+      }
       await transitionToRuntimeMode(ctx, startupMode);
       return;
     }
@@ -1975,6 +1988,12 @@ export default function (pi: ExtensionAPI) {
         const cancelled = controller.signal.aborted || isAbortError(error);
         if (!cancelled) {
           console.error(`[slack-bridge] runtime start (${startupMode}) failed: ${msg(error)}`);
+          if (joinPath || followRequested) {
+            ctx.ui.notify(
+              `Pinet could not join the broker: ${msg(error)}. Slack, Pinet and iMessage tools stay off.`,
+              "warning",
+            );
+          }
         }
         await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: !cancelled })).catch(
           (cleanupError) => {
@@ -1990,8 +2009,8 @@ export default function (pi: ExtensionAPI) {
       console.error(`[slack-bridge] background runtime start failed: ${msg(error)}`);
     });
     pendingStartup = { controller, promise: startupPromise };
-    // Explicit workers need their tools enabled before Pi builds the first prompt.
-    if (joinPath) await startupPromise;
+    // Explicit joins need their tools enabled before Pi builds the first prompt.
+    if (joinPath || followRequested) await startupPromise;
   });
 
   // ─── Agent event wiring ──────────────────────────────

@@ -159,6 +159,18 @@ How it works:
 - brokers create the secret file if it does not exist
 - followers need an existing file or will show an error
 
+### Start one process as a follower
+
+Use the process-scoped flag when one Pi process, including a headless or launchd process, must follow the running broker on this machine without changing shared settings:
+
+```bash
+pi --pinet-follow
+```
+
+`--pinet-follow` overrides `runtimeMode` and the legacy auto flags for that process only. It does not modify `settings.json`, bypass mesh authentication, or let local subagent sessions into the mesh. Set `PINET_SOCKET_PATH` when the broker uses a non-default socket.
+
+The follower registers with the broker before Pi builds its first prompt, so a task passed on the command line can use the Slack and Pinet tools straight away. If the socket is missing or the broker rejects the login, Pi shows a warning and continues with Slack, Pinet and iMessage tools off. It never falls back to running as a broker.
+
 ### Worker keys
 
 To run workers outside the broker's shell or on another machine, give each one its own revocable key with `pinet-worker issue`, then start it with `pi --pinet-join <file>`. See [docs/worker-keys.md](docs/worker-keys.md).
