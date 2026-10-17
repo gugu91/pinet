@@ -8,6 +8,10 @@ const packageDir = process.cwd();
 const packageName = path.basename(packageDir);
 const repoRoot = path.resolve(packageDir, "..");
 const distDir = path.join(packageDir, "dist");
+// Pi installs Git packages with `npm install --omit=dev` and suppresses peer installs, so host
+// packages such as @earendil-works/pi-ai are absent there. Pi loads only dist/*.js; declarations
+// are for npm publishing, which builds with dev dependencies installed.
+const piGitInstall = process.env.npm_config_omit?.includes("dev") ?? false;
 
 const packageConfigs = {
   "transport-core": {
@@ -192,7 +196,7 @@ async function collectAmbientDeclarations() {
 }
 
 async function emitDeclarations(sourceFiles) {
-  if (!config.declaration) return;
+  if (!config.declaration || piGitInstall) return;
 
   const rootNames = [
     ...sourceFiles.map((relativePath) => path.join(packageDir, relativePath)),
