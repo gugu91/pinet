@@ -513,21 +513,9 @@ export class BrokerSocketServer {
         continue;
       }
 
-      void this.dispatchRequest(parsed, state, socket);
-    }
-  }
-
-  private async dispatchRequest(
-    req: JsonRpcRequest,
-    state: ConnectionState,
-    socket: net.Socket,
-  ): Promise<void> {
-    try {
-      const response = await this.handleRequest(req, state, socket);
-      this.send(socket, response);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.send(socket, rpcError(req.id, RPC_INTERNAL_ERROR, message));
+      void this.handleRequest(parsed, state, socket).then((response) =>
+        this.send(socket, response),
+      );
     }
   }
 
@@ -657,19 +645,18 @@ export class BrokerSocketServer {
       setImmediate(() => socket.destroy());
       return rpcError(req.id, RPC_AUTH_REQUIRED, message, data);
     };
-    const workerKey = typeof params.workerKey === "string" ? params.workerKey : null;
-
     if (!this.meshSecret) {
       // Every connection is already trusted, and start() guarantees no worker key is live.
-      return workerKey
+      return "workerKey" in params
         ? reject("Invalid or revoked worker key.", { code: WORKER_KEY_REJECTED })
         : rpcOk(req.id, { ok: true });
     }
     if (state.auth.kind !== "pending")
       return reject("Already logged in; reconnect to log in again.");
 
-    if (workerKey) {
-      const principal = this.db.workerKeys.verify(workerKey);
+    if ("workerKey" in params) {
+      const principal =
+        typeof params.workerKey === "string" ? this.db.workerKeys.verify(params.workerKey) : null;
       if (!principal)
         return reject("Invalid or revoked worker key.", { code: WORKER_KEY_REJECTED });
       state.auth = { kind: "worker", ...principal };
@@ -705,10 +692,10 @@ export class BrokerSocketServer {
     }
 
     const params = req.params ?? {};
-    const identity = parseWorkerIdentity(
-      String(params.hostId ?? ""),
-      String(params.workerId ?? ""),
-    );
+    if (typeof params.hostId !== "string" || typeof params.workerId !== "string") {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "hostId and workerId must be strings.");
+    }
+    const identity = parseWorkerIdentity(params.hostId, params.workerId);
     const result =
       req.method === "admin.workerKey.issue"
         ? keys.issue(identity)
@@ -1271,7 +1258,7 @@ export class BrokerSocketServer {
           ];
         })
       : undefined;
-    if (state.auth.kind === "worker" && files && files.length > 0) {
+    if (state.auth.kind === "worker" && files?.length) {
       // Attachment paths are read from the broker's disk; a worker uploads its own files via Slack.
       return rpcError(
         req.id,

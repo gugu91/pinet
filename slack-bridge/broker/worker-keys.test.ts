@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import * as net from "node:net";
+import { createInterface } from "node:readline";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -145,6 +147,44 @@ describe("worker keys over the broker socket", () => {
     await admin.issueWorkerKey({ hostId: "studio", workerId: "w1" });
     const open = new BrokerSocketServer(db, path.join(root, "open.sock"));
     await expect(open.start()).rejects.toThrow("live worker keys but no mesh secret");
+  });
+
+  it.each([true, false])("rejects empty worker keys (mesh auth: %s)", async (meshAuth) => {
+    if (!meshAuth) {
+      await server.stop();
+      server = new BrokerSocketServer(db, socketPath);
+      await server.start();
+    }
+    await expect(workerClient("").connect()).rejects.toThrow("Invalid or revoked worker key");
+  });
+
+  it("rejects non-string identities at the RPC boundary", async () => {
+    const socket = net.createConnection(socketPath);
+    const lines = createInterface({ input: socket });
+    const replies = lines[Symbol.asyncIterator]();
+    try {
+      socket.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "auth", params: { secret: MESH_SECRET } }) +
+          "\n",
+      );
+      await replies.next();
+      socket.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "admin.workerKey.issue",
+          params: { hostId: 123, workerId: "w1" },
+        }) + "\n",
+      );
+      const reply = await replies.next();
+      expect(JSON.parse(reply.value!)).toMatchObject({
+        error: { code: -32602, message: "hostId and workerId must be strings." },
+      });
+      expect(await admin.listWorkerKeys()).toEqual([]);
+    } finally {
+      lines.close();
+      socket.destroy();
+    }
   });
 
   it("rejects malformed identities", async () => {

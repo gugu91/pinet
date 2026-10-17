@@ -1,4 +1,5 @@
 import * as net from "node:net";
+import assert from "node:assert/strict";
 import type { SlackResult } from "../slack-api.js";
 import type { WorkerIdentity, WorkerKeyRecord } from "./worker-keys.js";
 import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
@@ -215,9 +216,7 @@ export type BrokerClientOptions = BrokerConnectOpts &
 
 export class BrokerClient {
   private readonly connectOpts: BrokerConnectOpts;
-  private readonly meshSecret: string | null;
-  private readonly meshSecretPath: string | null;
-  private readonly workerKey: string | null;
+  private readonly auth: BrokerClientAuthOptions;
   private assignedStableId: string | null = null;
   private readonly reconnectDelayMs: (attempt: number) => number;
   private socket: net.Socket | null = null;
@@ -253,9 +252,7 @@ export class BrokerClient {
       this.connectOpts = { host: opts.host, port: opts.port };
     }
 
-    this.meshSecret = opts.meshSecret?.trim() || null;
-    this.meshSecretPath = opts.meshSecretPath?.trim() || null;
-    this.workerKey = opts.workerKey ?? null;
+    this.auth = { ...opts };
   }
 
   /** The stable ID the broker assigned to this client's worker key, known after connect(). */
@@ -314,34 +311,35 @@ export class BrokerClient {
     return this.connected;
   }
 
-  private resolveMeshSecret(): string | null {
-    if (this.meshSecret) {
-      return this.meshSecret;
+  private async authenticateIfNeeded(): Promise<void> {
+    const auth = this.auth;
+    if (auth.workerKey !== undefined) {
+      const result = await this.request("auth", { workerKey: auth.workerKey });
+      assert(
+        result &&
+          typeof result === "object" &&
+          "stableId" in result &&
+          typeof result.stableId === "string" &&
+          result.stableId.length > 0,
+        "Broker did not assign a worker identity. Upgrade the broker to support worker keys.",
+      );
+      this.assignedStableId = result.stableId;
+      return;
     }
-    if (this.meshSecretPath) {
+    let meshSecret = auth.meshSecret?.trim();
+    const meshSecretPath = auth.meshSecretPath?.trim();
+    if (!meshSecret && meshSecretPath) {
       try {
-        return readMeshSecret(this.meshSecretPath);
+        meshSecret = readMeshSecret(meshSecretPath);
       } catch (err) {
         if (err instanceof Error && "code" in err && err.code === "ENOENT") {
           throw new Error(
-            `Configured Pinet mesh secret file not found: ${this.meshSecretPath}. Set slack-bridge.meshSecretPath to an existing file, provide slack-bridge.meshSecret directly, or leave both unset to disable shared-secret auth.`,
+            `Configured Pinet mesh secret file not found: ${meshSecretPath}. Set slack-bridge.meshSecretPath to an existing file, provide slack-bridge.meshSecret directly, or leave both unset to disable shared-secret auth.`,
           );
         }
         throw err;
       }
     }
-    return null;
-  }
-
-  private async authenticateIfNeeded(): Promise<void> {
-    if (this.workerKey) {
-      const result = (await this.request("auth", { workerKey: this.workerKey })) as {
-        stableId: string;
-      };
-      this.assignedStableId = result.stableId;
-      return;
-    }
-    const meshSecret = this.resolveMeshSecret();
     if (!meshSecret) {
       return;
     }
