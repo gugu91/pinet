@@ -105,7 +105,9 @@ test, or CI check so the next agent gets the correction before review.
 ## GitHub
 
 - Remote: `github.com:gugu91/pinet.git`
-- Auth: `GH_TOKEN=$(gh auth token --user gugu91)` prefix for `gh` commands
+- Use the authenticated GitHub identity for authorized work, not the remote owner's account. Check `gh auth status` and `gh api user --jq .login` before writing.
+- Preserve an explicitly requested identity. Do not override token environment variables, switch accounts, or change credentials unless explicitly authorized.
+- If the identity is wrong or GitHub denies permission, report the blocker instead of silently trying another account. Authentication does not replace requester authorization.
 - Create PRs with `gh pr create`
 - Merge with `gh pr merge`
 - npm publish readiness lives in `.github/workflows/npm-publish.yml` and `plans/npm-publish.md`. Do not run real publishes, tag, or bump versions without explicit maintainer release approval.
