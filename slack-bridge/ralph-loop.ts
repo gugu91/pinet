@@ -63,6 +63,7 @@ export interface RalphLoopState {
   followUpSignature: string;
   taskAssignmentReportSignature: string;
   pendingTaskAssignmentReport: { message: string; signature: string } | null;
+  workSignature: string | null;
   snoozeUntilMs: number;
   snoozeReason: string | null;
   snoozeSource: RalphSnoozeSource | null;
@@ -83,6 +84,7 @@ export function createRalphLoopState(): RalphLoopState {
     followUpSignature: "",
     taskAssignmentReportSignature: "",
     pendingTaskAssignmentReport: null,
+    workSignature: null,
     snoozeUntilMs: 0,
     snoozeReason: null,
     snoozeSource: null,
@@ -106,6 +108,7 @@ export function resetRalphLoopState(state: RalphLoopState): void {
   state.followUpSignature = "";
   state.taskAssignmentReportSignature = "";
   state.pendingTaskAssignmentReport = null;
+  state.workSignature = null;
   clearRalphLoopSnooze(state);
 }
 
@@ -315,7 +318,8 @@ export async function runRalphLoopCycle(
     const now = Date.now();
     const recentGhostWindowMs = DEFAULT_HEARTBEAT_TIMEOUT_MS * 2;
 
-    const workloads = filterAgentsForMeshVisibility(db.getAllAgents(), {
+    const agents = db.getAllAgents();
+    const workloads = filterAgentsForMeshVisibility(agents, {
       now,
       includeGhosts: true,
       recentDisconnectWindowMs: recentGhostWindowMs,
@@ -397,6 +401,7 @@ export async function runRalphLoopCycle(
     let projectedAssignments: ResolvedTaskAssignment[] = [];
     let taskProgressChanged = false;
     const rawTrackedAssignments = db.listTaskAssignments();
+    const lanes = db.listPinetLanes({ includeDone: true });
     const trackedAssignmentSourceIds = [
       ...new Set(
         rawTrackedAssignments
@@ -419,6 +424,8 @@ export async function runRalphLoopCycle(
       const resolvedAssignments = await resolveTaskAssignments(
         trackedAssignments as TaskAssignmentInfo[],
         process.cwd(),
+        undefined,
+        { lanes, agents },
       );
       const changedAssignments = resolvedAssignments.filter(hasTaskAssignmentStatusChange);
       taskProgressChanged = changedAssignments.length > 0;
@@ -515,7 +522,40 @@ export async function runRalphLoopCycle(
       (lastMaintenance?.anomalies.length ?? 0) === 0 &&
       state.pendingTaskAssignmentReport == null &&
       !taskProgressChanged;
-    const shouldWakeSnooze = snoozeStatusBefore.active && !emptyCycle;
+    const workSignature = JSON.stringify({
+      workers: workloads
+        .filter((workload) => workload.id !== selfId)
+        .map((workload) =>
+          JSON.stringify([
+            workload.id,
+            workload.status,
+            workload.pendingInboxCount,
+            workload.ownedThreadCount,
+          ]),
+        )
+        .sort(),
+      inbox: workloads.find((workload) => workload.id === selfId)?.pendingInboxCount ?? 0,
+      assignments: projectedAssignments
+        .map((assignment) =>
+          JSON.stringify([
+            assignment.id,
+            assignment.status,
+            assignment.prNumber,
+            assignment.branch,
+            assignment.issueState,
+          ]),
+        )
+        .sort(),
+      backlog: pendingBacklogCount,
+      ghosts: [...visibleEvaluation.ghostAgentIds].sort(),
+      anomalies: [...ghostRewrite.nonGhostAnomalies].sort(),
+      maintenance: [...(lastMaintenance?.anomalies ?? [])].sort(),
+    });
+    const workChanged = state.workSignature !== null && state.workSignature !== workSignature;
+    state.workSignature = workSignature;
+    const shouldWakeSnooze =
+      snoozeStatusBefore.active &&
+      (snoozeStatusBefore.source === "manual" ? workChanged : !emptyCycle);
     if (shouldWakeSnooze) {
       clearRalphLoopSnooze(state);
       deps.logActivity({
@@ -556,7 +596,7 @@ export async function runRalphLoopCycle(
       snoozeStartedThisCycle = true;
     }
     const snoozeStatus = getRalphLoopSnoozeStatus(state, now);
-    const quietEmptyCycle = snoozeStatus.active && emptyCycle;
+    const quietCycle = snoozeStatus.active;
 
     const shouldWarn =
       ghostRewrite.newGhostIds.length > 0 ||
@@ -565,6 +605,7 @@ export async function runRalphLoopCycle(
       ghostRewrite.clearedGhostIds.length > 0 && visibleEvaluation.anomalies.length > 0;
 
     const shouldDeliverFollowUp =
+      !snoozeStatus.active &&
       followUpPrompt != null &&
       shouldDeliverRalphLoopFollowUp({
         signature: visibleSignature,
@@ -586,7 +627,7 @@ export async function runRalphLoopCycle(
     if (!hasOutstandingAnomalies) {
       state.followUpSignature = "";
     }
-    if (state.pendingTaskAssignmentReport && (ctx.isIdle?.() ?? true)) {
+    if (!snoozeStatus.active && state.pendingTaskAssignmentReport && (ctx.isIdle?.() ?? true)) {
       const reportToDeliver = state.pendingTaskAssignmentReport;
       deps.trySendFollowUp(reportToDeliver.message, () => {
         state.taskAssignmentReportSignature = reportToDeliver.signature;
@@ -630,7 +671,7 @@ export async function runRalphLoopCycle(
         ],
         tone: "success",
       });
-    } else if (quietEmptyCycle) {
+    } else if (quietCycle) {
       if (snoozeStartedThisCycle) {
         deps.logActivity({
           kind: "ralph_event",
@@ -716,7 +757,7 @@ export async function runRalphLoopCycle(
       evaluationOptions,
       maintenance: lastMaintenance,
       assignments: projectedAssignments,
-      lanes: db.listPinetLanes({ includeDone: true }),
+      lanes,
       recentCycles: recentRalphCycles,
       cycleStartedAt,
       cycleDurationMs: Date.now() - cycleStartMs,

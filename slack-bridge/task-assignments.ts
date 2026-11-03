@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
   AgentInfo,
+  PinetLaneInfo,
   TaskAssignmentInfo,
   TaskAssignmentKind,
   TaskAssignmentStatus,
@@ -535,6 +536,10 @@ export async function resolveTaskAssignments(
   assignments: TaskAssignmentInfo[],
   cwd = process.cwd(),
   runner: CommandRunner = execFileAsync as CommandRunner,
+  laneContext: {
+    lanes: readonly PinetLaneInfo[];
+    agents: ReadonlyArray<Pick<AgentInfo, "id" | "laneId">>;
+  } = { lanes: [], agents: [] },
 ): Promise<ResolvedTaskAssignment[]> {
   if (assignments.length === 0) {
     return [];
@@ -618,20 +623,35 @@ export async function resolveTaskAssignments(
   return Promise.all(
     assignments.map(async (assignment) => {
       const { branchAheadCount, pr } = await resolveBranchProgress(assignment);
+      const workerLaneId = laneContext.agents.find(
+        (agent) => agent.id === assignment.agentId,
+      )?.laneId;
+      const lanePrs = new Set(
+        laneContext.lanes
+          .filter(
+            (lane) =>
+              lane.prNumber != null &&
+              lane.issueNumber === assignment.issueNumber &&
+              (lane.laneId === workerLaneId ||
+                lane.ownerAgentId === assignment.agentId ||
+                lane.implementationLeadAgentId === assignment.agentId ||
+                lane.participants.some(
+                  (participant) => participant.agentId === assignment.agentId,
+                )),
+          )
+          .map((lane) => lane.prNumber!),
+      );
+      const linkedPrNumber = assignment.prNumber ?? (lanePrs.size === 1 ? [...lanePrs][0] : null);
       const canResolveStoredPr =
         assignment.repoRoot != null ||
         (assignment.repoOwner != null && assignment.repoName != null);
       const resolvedPr =
-        pr == null && assignment.prNumber != null && canResolveStoredPr
-          ? await resolvePullRequestByNumber(
-              assignment.prNumber,
-              assignment,
-              assignment.repoRoot ?? cwd,
-            )
+        pr == null && linkedPrNumber != null && canResolveStoredPr
+          ? await resolvePullRequestByNumber(linkedPrNumber, assignment, assignment.repoRoot ?? cwd)
           : pr;
       const issueState = normalizeIssueState(await resolveIssueByNumber(assignment));
       const { nextStatus, nextPrNumber } = resolveTaskStatus(
-        assignment,
+        linkedPrNumber == null ? assignment : { ...assignment, prNumber: linkedPrNumber },
         branchAheadCount,
         resolvedPr,
       );
