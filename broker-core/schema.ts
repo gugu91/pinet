@@ -865,7 +865,9 @@ function requirePinetLaneState(value: unknown): PinetLaneState {
   if (typeof value === "string" && PINET_LANE_STATES.has(value as PinetLaneState)) {
     return value as PinetLaneState;
   }
-  throw new Error(`Invalid Pinet lane state: ${String(value)}`);
+  throw new Error(
+    `Invalid Pinet lane state: ${String(value)}. Accepted values: ${[...PINET_LANE_STATES].join(", ")}.`,
+  );
 }
 
 function normalizePinetLaneRole(
@@ -881,7 +883,9 @@ function requirePinetLaneRole(value: unknown): PinetLaneRole {
   if (typeof value === "string" && PINET_LANE_ROLES.has(value as PinetLaneRole)) {
     return value as PinetLaneRole;
   }
-  throw new Error(`Invalid Pinet lane role: ${String(value)}`);
+  throw new Error(
+    `Invalid Pinet lane role: ${String(value)}. Accepted values: ${[...PINET_LANE_ROLES].join(", ")}.`,
+  );
 }
 
 function normalizeLaneId(value: string): string {

@@ -8,7 +8,11 @@ import {
   type PinetToolsAgentRecord,
   type RegisterPinetToolsDeps,
 } from "./pinet-tools.js";
-import { BrokerDB, type AgentLifecycleStatus } from "@pinet/broker-core";
+import {
+  BrokerDB,
+  dispatchDirectAgentMessage,
+  type AgentLifecycleStatus,
+} from "@pinet/broker-core";
 import {
   SubtreeSpawnLaunchError,
   SubtreeSpawnRegistrationTimeoutError,
@@ -1185,7 +1189,71 @@ describe("registerPinetTools", () => {
     })) as { content: Array<{ text: string }> };
 
     expectJsonStatus(result.content[0]?.text, "failed");
-    expect(result.content[0]?.text).toContain('"to is required"');
+    expect(result.content[0]?.text).toContain("to or thread_id is required");
+  });
+
+  it("names accepted send fields and lane values in errors", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    try {
+      const tools = registerWithDeps(
+        createDeps({ upsertPinetLane: async (input) => db.upsertPinetLane(input) }),
+      );
+      const send = (await tools
+        .get("pinet")!
+        .execute("bad-send", { action: "send", args: { to: "worker", text: "hello" } })) as {
+        details: { errors: Array<{ message: string; hint: string }> };
+      };
+      expect(send.details.errors[0].message).toContain("message is required");
+      expect(send.details.errors[0].hint).toContain("message (not text)");
+      expect(send.details.errors[0].hint).toContain("thread_id");
+      const lane = (await tools.get("pinet")!.execute("bad-lane", {
+        action: "lanes",
+        args: { op: "upsert", lane_id: "one", state: "in_progress" },
+      })) as { details: { errors: Array<{ message: string; hint: string }> } };
+      expect(lane.details.errors[0].message).toContain(
+        "planned, active, blocked, review, ready, done, cancelled, detached",
+      );
+      expect(lane.details.errors[0].hint).toContain("lane_id");
+      expect(lane.details.errors[0].hint).toContain("state");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("sends to the other A2A party without to", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    try {
+      const parent = db.registerAgent("parent", "Parent", "P", 1);
+      const child = db.registerAgent("child", "Child", "C", 2);
+      const threadId = `a2a:${child.id}:${parent.id}`;
+      db.createThread(threadId, "agent", "", child.id);
+      const tools = registerWithDeps(
+        createDeps({
+          sendPinetAgentMessage: async (target, body, metadata) => {
+            const result = dispatchDirectAgentMessage(db, {
+              senderAgentId: parent.id,
+              senderAgentName: "parent",
+              target,
+              body,
+              metadata,
+            });
+            return { messageId: result.messageId, target: result.target.name };
+          },
+        }),
+      );
+      const result = (await tools.get("pinet")!.execute("thread-send", {
+        action: "send",
+        args: { thread_id: threadId, message: "follow up" },
+      })) as { details: { status: string } };
+      expect(result.details.status).toBe("succeeded");
+      expect(db.readInbox(child.id).messages.map(({ message }) => message)).toEqual([
+        expect.objectContaining({ threadId, body: "follow up" }),
+      ]);
+    } finally {
+      db.close();
+    }
   });
 
   it("preserves valid structured action output flags when a sibling output flag is invalid", async () => {

@@ -472,6 +472,11 @@ function classifyPinetError(message: string): PinetDispatcherError {
 
   if (
     message.includes("thread_id must be") ||
+    message.includes("thread_id must identify") ||
+    message.includes("to or thread_id is required") ||
+    message.includes("to must match") ||
+    message.includes("Invalid Pinet lane") ||
+    message.includes("lanes op=") ||
     message.includes("message is required") ||
     message.includes("target is required") ||
     message.includes("duration is required") ||
@@ -980,14 +985,15 @@ function runPinetSendAction(
 ): Promise<PinetToolResult> {
   return (async () => {
     const to = typeof params.to === "string" ? params.to.trim() : "";
+    const threadId = getMaybeString(params, "thread_id");
     const message = typeof params.message === "string" ? params.message : "";
     const transferThreadId =
       typeof params.transfer_thread_id === "string" && params.transfer_thread_id.trim().length > 0
         ? params.transfer_thread_id.trim()
         : undefined;
 
-    if (!to) {
-      throw new Error("to is required");
+    if (!to && !threadId) {
+      throw new Error("to or thread_id is required");
     }
     if (!message) {
       throw new Error("message is required");
@@ -996,8 +1002,12 @@ function runPinetSendAction(
     deps.requireToolPolicy(
       toolName,
       undefined,
-      `to=${to} | message=${message}${transferThreadId ? ` | transfer_thread_id=${transferThreadId}` : ""}`,
+      `to=${to} | message=${message}${threadId ? ` | thread_id=${threadId}` : ""}${transferThreadId ? ` | transfer_thread_id=${transferThreadId}` : ""}`,
     );
+
+    if (threadId && isBroadcastChannelTarget(to)) {
+      throw new Error("thread_id requires a direct agent target, not a broadcast channel.");
+    }
 
     if (transferThreadId && deps.brokerRole() !== "broker") {
       throw new Error("transfer_thread_id is broker-only and requires the broker role.");
@@ -1057,11 +1067,15 @@ function runPinetSendAction(
       };
     }
 
-    const result = transferThreadId
-      ? await deps.sendPinetAgentMessage(to, message, {
-          threadOwnershipTransfer: { mode: "transfer", threadId: transferThreadId },
-        })
-      : await deps.sendPinetAgentMessage(to, message);
+    const result =
+      transferThreadId || threadId
+        ? await deps.sendPinetAgentMessage(to, message, {
+            ...(threadId ? { threadId } : {}),
+            ...(transferThreadId
+              ? { threadOwnershipTransfer: { mode: "transfer", threadId: transferThreadId } }
+              : {}),
+          })
+        : await deps.sendPinetAgentMessage(to, message);
     const transferSuffix = result.transferredThreadId
       ? ` (${result.transferredThreadChannel})`
       : "";
@@ -2451,10 +2465,18 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
     description:
       "Send a queued message to a connected Pinet agent or broker-only broadcast channel. Prefix the body with /steer to interrupt a busy recipient with explicit steering.",
     parameters: Type.Object({
-      to: Type.String({
-        description:
-          "Target agent name/ID, or a broker-only broadcast channel like #extensions. Avoid #all for repo-specific issue/policy announcements.",
-      }),
+      to: Type.Optional(
+        Type.String({
+          description:
+            "Target agent name/ID, or a broker-only broadcast channel like #extensions. Optional when thread_id identifies the other A2A party. Avoid #all for repo-specific issue/policy announcements.",
+        }),
+      ),
+      thread_id: Type.Optional(
+        Type.String({
+          description:
+            "Existing A2A thread to continue; identifies the recipient when to is omitted.",
+        }),
+      ),
       message: Type.String({
         description:
           "Message body. Use /steer <instruction> only when you explicitly need to steer a busy recipient immediately; otherwise messages remain queued.",
@@ -2994,6 +3016,14 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
           throw error;
         }
         const message = getErrorMessage(error);
+        const classified = classifyPinetError(message);
+        if (classified.class === "input" && normalizedAction === "send") {
+          classified.hint =
+            "Accepted fields: to or thread_id, message (not text), transfer_thread_id, format, full. thread_id must identify an existing A2A thread.";
+        } else if (classified.class === "input" && normalizedAction === "lanes") {
+          classified.hint =
+            'Use action="help" with args={"topic":"lanes"} for the field schema. For upsert, provide lane_id and fields such as state, pr_number, owner_agent, or summary; for list, filter by lane_id, state, owner_agent, include_done.';
+        }
         const launchHandle =
           error instanceof SubtreeSpawnRegistrationTimeoutError ||
           error instanceof SubtreeSpawnLaunchError
@@ -3003,7 +3033,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
           buildPinetDispatcherEnvelope(
             "failed",
             launchHandle ? { action: definition.name, details: { launchHandle } } : null,
-            [classifyPinetError(message)],
+            [classified],
           ),
           output,
         );

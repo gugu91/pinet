@@ -119,6 +119,33 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(await client.listLanes({ laneId: "wanted", state: "active" })).toEqual([]);
   });
 
+  it("continues an A2A thread by inferred recipient without leaking to other parties", async () => {
+    const sender = await client.register("replying-worker", "R");
+    db.registerAgent("peer", "Peer", "P", 2);
+    db.registerAgent("outsider", "Outsider", "O", 3);
+    const threadId = `a2a:peer:${sender.agentId}`;
+    db.createThread(threadId, "agent", "", "peer");
+    await client.sendAgentMessage("", "inferred reply", { threadId });
+    await client.sendAgentMessage("peer", "explicit reply", { threadId });
+    expect(
+      db.readInbox("peer").messages.map(({ message }) => [message.threadId, message.body]),
+    ).toEqual([
+      [threadId, "inferred reply"],
+      [threadId, "explicit reply"],
+    ]);
+    await expect(client.sendAgentMessage("outsider", "wrong target", { threadId })).rejects.toThrow(
+      "other party",
+    );
+    db.createThread("a2a:peer:outsider", "agent", "", "peer");
+    await expect(
+      client.sendAgentMessage("", "not a member", { threadId: "a2a:peer:outsider" }),
+    ).rejects.toThrow("involving the sender");
+    await expect(
+      client.sendAgentMessage("", "missing thread", { threadId: `a2a:${sender.agentId}:outsider` }),
+    ).rejects.toThrow("existing A2A thread");
+    expect(db.readInbox("outsider").messages).toEqual([]);
+  });
+
   it("scopes port lease follower RPCs to the registered agent", async () => {
     const reg1 = await client.register("lease-owner", "🔌");
 

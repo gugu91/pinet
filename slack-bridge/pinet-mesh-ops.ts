@@ -391,7 +391,7 @@ export function createPinetMeshOps(deps: PinetMeshOpsDeps): PinetMeshOps {
       }
 
       const messageId = await client.sendAgentMessage(targetRef, finalBody, finalMetadata);
-      return { messageId, target: targetRef };
+      return { messageId, target: targetRef || `thread ${finalMetadata?.threadId}` };
     }
 
     throw new Error("Pinet is in an unexpected state.");
