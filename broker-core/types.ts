@@ -681,6 +681,7 @@ export interface PinetLaneParticipantUpsertInput {
 }
 
 export interface PinetLaneListOptions {
+  laneId?: string;
   state?: PinetLaneState;
   ownerAgentId?: string;
   includeDone?: boolean;

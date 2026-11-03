@@ -8,7 +8,7 @@ import {
   type PinetToolsAgentRecord,
   type RegisterPinetToolsDeps,
 } from "./pinet-tools.js";
-import type { AgentLifecycleStatus } from "@pinet/broker-core";
+import { BrokerDB, type AgentLifecycleStatus } from "@pinet/broker-core";
 import {
   SubtreeSpawnLaunchError,
   SubtreeSpawnRegistrationTimeoutError,
@@ -1441,6 +1441,30 @@ describe("registerPinetTools", () => {
       ["pinet:lanes", "123.456", "op=participant | format=cli"],
       ["pinet:lanes:write", "123.456", "op=participant | format=cli"],
     ]);
+  });
+
+  it("returns only the requested lane through the dispatcher", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    try {
+      db.upsertPinetLane({ laneId: "wanted", state: "done" });
+      db.upsertPinetLane({ laneId: "other", state: "active" });
+      const tools = registerWithDeps(
+        createDeps({ listPinetLanes: async (options) => db.listPinetLanes(options) }),
+      );
+      for (const [laneId, expected] of [
+        ["wanted", ["wanted"]],
+        ["missing", []],
+      ] as const) {
+        const result = (await tools.get("pinet")!.execute("lane-lookup", {
+          action: "lanes",
+          args: { lane_id: laneId, include_done: true, full: true },
+        })) as { details: { data: { details: { lanes: Array<{ laneId: string }> } } } };
+        expect(result.details.data.details.lanes.map((lane) => lane.laneId)).toEqual(expected);
+      }
+    } finally {
+      db.close();
+    }
   });
 
   it("updates durable PM lane metadata through the lanes dispatcher", async () => {

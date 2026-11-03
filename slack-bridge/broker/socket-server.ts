@@ -1515,6 +1515,7 @@ export class BrokerSocketServer {
 
     const params = req.params ?? {};
     const options: PinetLaneListOptions = {
+      ...(typeof params.laneId === "string" ? { laneId: params.laneId } : {}),
       ...(typeof params.state === "string" ? { state: params.state as PinetLaneState } : {}),
       ...(typeof params.ownerAgentId === "string" ? { ownerAgentId: params.ownerAgentId } : {}),
       ...(typeof params.includeDone === "boolean" ? { includeDone: params.includeDone } : {}),

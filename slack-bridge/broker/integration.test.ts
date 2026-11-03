@@ -107,6 +107,18 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     ).rejects.toThrow("Invalid Pinet lane role");
   });
 
+  it("filters one lane through follower RPC without changing list filters", async () => {
+    await client.register("lane-reader", "🧭");
+    await client.upsertLane({ laneId: "wanted", state: "done" });
+    await client.upsertLane({ laneId: "other", state: "active" });
+    expect(await client.listLanes({ laneId: "wanted", includeDone: true })).toEqual([
+      expect.objectContaining({ laneId: "wanted" }),
+    ]);
+    expect(await client.listLanes({ laneId: "missing", includeDone: true })).toEqual([]);
+    expect(await client.listLanes({ laneId: "wanted" })).toEqual([]);
+    expect(await client.listLanes({ laneId: "wanted", state: "active" })).toEqual([]);
+  });
+
   it("scopes port lease follower RPCs to the registered agent", async () => {
     const reg1 = await client.register("lease-owner", "🔌");
 

@@ -593,6 +593,7 @@ export class BrokerClient {
 
   async listLanes(options: PinetLaneListOptions = {}): Promise<PinetLaneInfo[]> {
     return (await this.request("lane.list", {
+      ...(options.laneId ? { laneId: options.laneId } : {}),
       ...(options.state ? { state: options.state } : {}),
       ...(options.ownerAgentId ? { ownerAgentId: options.ownerAgentId } : {}),
       ...(typeof options.includeDone === "boolean" ? { includeDone: options.includeDone } : {}),
