@@ -1514,45 +1514,62 @@ describe("registerSlackTools", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
-  it("sends slack_post_channel text and local files in one external upload", async () => {
-    const { slack, tools } = setup();
-    const dir = await mkdtemp(path.join(os.tmpdir(), "slack-post-channel-file-test-"));
-    const filePath = path.join(dir, "evidence.bin");
-    await writeFile(filePath, Buffer.from([4, 5, 6]));
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      text: async () => "",
-    }));
-    vi.stubGlobal("fetch", fetchImpl);
-    try {
-      const response = await tools.get("slack_post_channel")!.execute("tool-post-files", {
-        channel: "deployments",
-        text: "Deploy evidence",
-        files: [{ path: filePath, filename: "evidence.bin", title: "Evidence" }],
+  it.each([true, false])(
+    "reports accepted uploads with share timestamp: %s",
+    async (withTimestamp) => {
+      const { slack, tools, noteThreadReply } = setup();
+      const original = slack.getMockImplementation()!;
+      slack.mockImplementation(async (method, token, body) => {
+        if (method === "files.completeUploadExternal" && !withTimestamp) {
+          return { ok: true, files: [{ id: "F_UPLOAD" }] } as SlackResult;
+        }
+        return original(method, token, body);
       });
-      expect(response.details).toMatchObject({
-        channel: "resolved:deployments",
-        delivery: "slack",
-        filesCount: 1,
-      });
-    } finally {
-      vi.unstubAllGlobals();
-      await rm(dir, { recursive: true, force: true });
-    }
+      const dir = await mkdtemp(path.join(os.tmpdir(), "slack-post-channel-file-test-"));
+      const filePath = path.join(dir, "evidence.bin");
+      await writeFile(filePath, Buffer.from([4, 5, 6]));
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => "",
+      }));
+      vi.stubGlobal("fetch", fetchImpl);
+      try {
+        const response = await tools.get("slack_post_channel")!.execute("tool-post-files", {
+          channel: "deployments",
+          text: "Deploy evidence",
+          files: [{ path: filePath, filename: "evidence.bin", title: "Evidence" }],
+        });
+        expect(response.details).toMatchObject({
+          channel: "resolved:deployments",
+          delivery: "slack",
+          filesCount: 1,
+          fileIds: ["F_UPLOAD"],
+        });
+        if (!withTimestamp) {
+          expect(response.details).not.toHaveProperty("ts");
+          expect(response.details).not.toHaveProperty("thread_ts");
+          expect(response.content?.[0]?.text).toContain("F_UPLOAD");
+          expect(noteThreadReply).not.toHaveBeenCalled();
+        }
+      } finally {
+        vi.unstubAllGlobals();
+        await rm(dir, { recursive: true, force: true });
+      }
 
-    expect(slack).toHaveBeenCalledWith(
-      "files.completeUploadExternal",
-      "xoxb-initial",
-      expect.objectContaining({
-        channel_id: "resolved:deployments",
-        initial_comment: "Deploy evidence",
-        files: [{ id: "F_UPLOAD", title: "Evidence" }],
-      }),
-    );
-    expect(fetchImpl).toHaveBeenCalledOnce();
-  });
+      expect(slack).toHaveBeenCalledWith(
+        "files.completeUploadExternal",
+        "xoxb-initial",
+        expect.objectContaining({
+          channel_id: "resolved:deployments",
+          initial_comment: "Deploy evidence",
+          files: [{ id: "F_UPLOAD", title: "Evidence" }],
+        }),
+      );
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
 
   it("downloads Slack-hosted files through slack file action with safe descriptor output", async () => {
     const { tools, setFilesInfoResponse } = setup();

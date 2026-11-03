@@ -913,6 +913,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
     delivery: "pinet" | "slack";
     adapter?: string;
     messageId?: number;
+    fileIds?: string[];
   }> {
     const blocks = input.blocks ? normalizeSlackBlocksInput(input.blocks) : undefined;
 
@@ -975,6 +976,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       });
       const uploadTs = extractSlackUploadMessageTs(uploadResult.response, input.channel);
       return {
+        fileIds: uploadResult.fileIds,
         ...(uploadTs ? { ts: uploadTs } : {}),
         threadTs: input.threadTs ?? uploadTs,
         channel: input.channel,
@@ -2949,11 +2951,11 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       const ts = delivery.ts;
       const threadTs = params.thread_ts ?? delivery.threadTs;
       const actualTs = threadTs ?? ts;
-      if (!actualTs) {
+      if (!actualTs && !delivery.fileIds?.length) {
         throw new Error("Slack delivery did not return a message timestamp.");
       }
 
-      noteThreadReply(actualTs, channelId);
+      if (actualTs) noteThreadReply(actualTs, channelId);
 
       const channelLabel = params.channel ?? resolvedThreadChannel ?? channelInput ?? channelId;
       return {
@@ -2962,7 +2964,9 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
             type: "text",
             text: params.thread_ts
               ? `Replied in thread ${params.thread_ts} in channel ${channelLabel}.`
-              : `Posted to #${channelLabel} (ts: ${actualTs}).`,
+              : actualTs
+                ? `Posted to #${channelLabel} (ts: ${actualTs}).`
+                : `Uploaded to #${channelLabel} (files: ${delivery.fileIds!.join(", ")}). Slack accepted the upload but did not return a message timestamp.`,
           },
         ],
         details: {
@@ -2972,6 +2976,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
           blocksCount: delivery.blocksCount,
           delivery: delivery.delivery,
           filesCount: Array.isArray(params.files) ? params.files.length : 0,
+          ...(delivery.fileIds ? { fileIds: delivery.fileIds } : {}),
           ...(delivery.adapter ? { adapter: delivery.adapter } : {}),
           ...(delivery.messageId ? { messageId: delivery.messageId } : {}),
         },
