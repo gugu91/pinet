@@ -86,7 +86,11 @@ import {
   type ContextualThreadContextMessage,
 } from "./contextual-thread-context.js";
 import { SlackActivityLogger } from "./activity-log.js";
-import { createBrokerDeliveryState, queueBrokerInboxIds } from "./broker-delivery.js";
+import {
+  createBrokerDeliveryState,
+  queueBrokerInboxIds,
+  discardQueuedInboxMessages,
+} from "./broker-delivery.js";
 import { buildBrokerControlPlaneDashboardSnapshot } from "./broker/control-plane-dashboard.js";
 import { createPinetHomeTabs } from "./pinet-home-tabs.js";
 import { createPinetAgentStatus } from "./pinet-agent-status.js";
@@ -643,10 +647,8 @@ export default function (pi: ExtensionAPI) {
     pushInboxMessages: (messages) => {
       inbox.push(...messages);
     },
-    discardQueuedInboxMessages: () => {
-      for (let index = inbox.length - 1; index >= 0; index -= 1) {
-        if (inbox[index]?.brokerInboxOrigin === "subtree") inbox.splice(index, 1);
-      }
+    discardQueuedInboxMessages: (inboxIds) => {
+      discardQueuedInboxMessages(inbox, "subtree", inboxIds);
     },
     updateBadge,
     maybeDrainInboxIfIdle,
@@ -1198,6 +1200,11 @@ export default function (pi: ExtensionAPI) {
         throw new Error("Broker agent identity is unavailable.");
       }
       const result = db.readInbox(selfId, options);
+      if (result.markedReadIds.length > 0) {
+        brokerRuntime.markDelivered(result.markedReadIds);
+        discardQueuedInboxMessages(inbox, "broker", result.markedReadIds);
+        updateBadge();
+      }
       return consumePinetReadConfirmationReplies(
         {
           messages: result.messages.map((item) => ({
@@ -1221,6 +1228,12 @@ export default function (pi: ExtensionAPI) {
         return consumePinetReadConfirmationReplies(subtreeResult, consumeConfirmationReply);
       }
       const result = await brokerClient.client.readInbox(options);
+      if (result.markedReadIds.length > 0) {
+        markFollowerInboxIdsDelivered(followerDeliveryState, result.markedReadIds);
+        discardQueuedInboxMessages(inbox, "broker", result.markedReadIds);
+        updateBadge();
+        await followerRuntime.flushDeliveredAcks();
+      }
       return consumePinetReadConfirmationReplies(result, consumeConfirmationReply);
     }
 
