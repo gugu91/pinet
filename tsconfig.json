@@ -20,6 +20,7 @@
       "@pinet/transport-core/*": ["./transport-core/*.ts"]
     }
   },
+  "exclude": ["**/node_modules/**", "**/dist/**"],
   "include": [
     "transport-core/**/*.ts",
     "broker-core/**/*.ts",
