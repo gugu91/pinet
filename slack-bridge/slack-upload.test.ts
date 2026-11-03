@@ -102,7 +102,8 @@ describe("resolveSlackUploadPath", () => {
   });
 
   it("rejects paths outside the working directory and temp directory", async () => {
-    const root = await makeTempDir("slack-upload-outside-");
+    const root = await mkdtemp(path.join(os.homedir(), ".slack-upload-outside-"));
+    tempDirs.push(root);
     const cwd = path.join(root, "repo");
     const tmpdir = path.join(root, "tmp");
     const outside = path.join(root, "outside");
@@ -117,7 +118,8 @@ describe("resolveSlackUploadPath", () => {
   });
 
   it("rejects symlinks that escape the allowed roots", async () => {
-    const root = await makeTempDir("slack-upload-symlink-");
+    const root = await mkdtemp(path.join(os.homedir(), ".slack-upload-symlink-"));
+    tempDirs.push(root);
     const cwd = path.join(root, "repo");
     const tmpdir = path.join(root, "tmp");
     const outside = path.join(root, "outside");
@@ -130,6 +132,20 @@ describe("resolveSlackUploadPath", () => {
     await expect(resolveSlackUploadPath("secret-link.txt", cwd, tmpdir)).rejects.toThrow(
       "only allows local file paths inside the current working directory",
     );
+  });
+
+  it("allows conventional tmp when the per-user temp directory differs", async () => {
+    const root = await makeTempDir("slack-upload-personal-");
+    const cwd = path.join(root, "repo");
+    const tmpdir = path.join(root, "personal");
+    await mkdir(cwd);
+    await mkdir(tmpdir);
+    const conventional = await mkdtemp("/tmp/slack-upload-conventional-");
+    tempDirs.push(conventional);
+    const file = path.join(conventional, "evidence.txt");
+    await writeFile(file, "evidence");
+    const expected = await realpath(file);
+    await expect(resolveSlackUploadPath(file, cwd, tmpdir)).resolves.toBe(expected);
   });
 });
 
