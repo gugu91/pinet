@@ -2836,7 +2836,10 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
         }),
       ),
       metadata: Type.Optional(
-        Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+        Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()], {
+          description:
+            'Optional repository: GitHub "owner/name" for lane PR tracking. Without it, the worker’s assignments for that issue must identify a single repository.',
+        }),
       ),
       include_done: Type.Optional(
         Type.Boolean({ description: "Include done/cancelled/detached lanes in list output" }),

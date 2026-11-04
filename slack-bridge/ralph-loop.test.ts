@@ -17,6 +17,9 @@ import {
   type RalphLoopDeps,
 } from "./ralph-loop.js";
 import { DEFAULT_RALPH_LOOP_INTERVAL_MS, rewriteRalphLoopGhostAnomalies } from "./helpers.js";
+import { BrokerDB } from "./broker/schema.js";
+import * as taskAssignments from "./task-assignments.js";
+import * as gitMetadata from "./git-metadata.js";
 
 function createLoopDeps(overrides: Partial<RalphLoopDeps> = {}): RalphLoopDeps {
   return {
@@ -138,6 +141,177 @@ describe("RALPH snooze state", () => {
 });
 
 describe("runRalphLoopCycle snooze", () => {
+  it("keeps manual snooze for unchanged assignments and wakes for new work", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    vi.spyOn(gitMetadata, "probeGitBranch").mockResolvedValue(undefined);
+    const resolve = taskAssignments.resolveTaskAssignments;
+    const runner: taskAssignments.CommandRunner = async () => ({
+      stdout: JSON.stringify({ state: "OPEN" }),
+    });
+    vi.spyOn(taskAssignments, "resolveTaskAssignments").mockImplementation(
+      (assignments, cwd, _runner, lanes) => resolve(assignments, cwd, runner, lanes),
+    );
+    const state = createRalphLoopState();
+    const followUp = vi.fn();
+    const deps = createLoopDeps({
+      getBrokerDb: () => db,
+      getBrokerAgentId: () => "broker",
+      trySendFollowUp: followUp,
+    });
+    const ctx = {
+      isIdle: (): boolean => true,
+      ui: { notify: (_message: string, _level?: string): void => {} },
+    } as ExtensionContext;
+    try {
+      db.recordTaskAssignment("old-worker", 732, null, "a2a:old", null);
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(state.pendingTaskAssignmentReport).not.toBeNull();
+      followUp.mockClear();
+      setRalphLoopSnooze(state, { durationMs: 8 * 60 * 60_000 });
+      await runRalphLoopCycle(ctx, state, deps);
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(getRalphLoopSnoozeStatus(state).active).toBe(true);
+      expect(followUp).not.toHaveBeenCalled();
+      db.recordTaskAssignment("new-worker", 733, null, "a2a:new", null);
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(getRalphLoopSnoozeStatus(state).active).toBe(false);
+      expect(followUp).toHaveBeenCalled();
+    } finally {
+      db.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("wakes manual snooze when an existing assignment moves to another worker", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    vi.spyOn(gitMetadata, "probeGitBranch").mockResolvedValue(undefined);
+    const resolve = taskAssignments.resolveTaskAssignments;
+    const runner: taskAssignments.CommandRunner = async () => ({
+      stdout: JSON.stringify({ number: 732, state: "OPEN" }),
+    });
+    vi.spyOn(taskAssignments, "resolveTaskAssignments").mockImplementation(
+      (assignments, cwd, _runner, lanes) => resolve(assignments, cwd, runner, lanes),
+    );
+    const state = createRalphLoopState();
+    const followUp = vi.fn();
+    const deps = createLoopDeps({
+      getBrokerDb: () => db,
+      getBrokerAgentId: () => "broker",
+      trySendFollowUp: followUp,
+    });
+    const ctx = {
+      isIdle: (): boolean => true,
+      ui: { notify: (_message: string, _level?: string): void => {} },
+    } as ExtensionContext;
+    try {
+      db.registerAgent("worker-a", "A", "A", 123);
+      db.registerAgent("worker-b", "B", "B", 124);
+      db.recordTaskAssignment("worker-a", 732, null, "a2a:a", null);
+      await runRalphLoopCycle(ctx, state, deps);
+      setRalphLoopSnooze(state, { durationMs: 60_000 });
+      followUp.mockClear();
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(getRalphLoopSnoozeStatus(state).active).toBe(true);
+      expect(followUp).not.toHaveBeenCalled();
+      db.recordTaskAssignment("worker-b", 732, null, "a2a:b", null);
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(db.listTaskAssignments()[0].agentId).toBe("worker-b");
+      expect(getRalphLoopSnoozeStatus(state).active).toBe(false);
+      expect(followUp).toHaveBeenCalled();
+    } finally {
+      db.close();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.each(["participant", "agent"] as const)(
+    "reports the exited worker's lane PR via %s on a differently named branch",
+    async (link) => {
+      const db = new BrokerDB(":memory:");
+      db.initialize();
+      vi.spyOn(gitMetadata, "probeGitBranch").mockResolvedValue(undefined);
+      const resolve = taskAssignments.resolveTaskAssignments;
+      const runner: taskAssignments.CommandRunner = async (file, args) => {
+        if (file === "gh" && args[0] === "issue")
+          return { stdout: JSON.stringify({ number: 732, state: "OPEN" }) };
+        if (file === "gh" && args[1] === "list") return { stdout: "[]" };
+        if (file === "gh" && args[1] === "view" && args[2] === "9000")
+          return {
+            stdout: JSON.stringify({
+              number: 9000,
+              state: "OPEN",
+              mergedAt: null,
+              headRefName: "fix/descriptive-name",
+            }),
+          };
+        throw new Error(`Unexpected fake command: ${file} ${args.join(" ")}`);
+      };
+      vi.spyOn(taskAssignments, "resolveTaskAssignments").mockImplementation(
+        (assignments, cwd, _runner, lanes) => resolve(assignments, cwd, runner, lanes),
+      );
+      const followUp = vi.fn();
+      const deps = createLoopDeps({
+        getBrokerDb: () => db,
+        getBrokerAgentId: () => "broker",
+        trySendFollowUp: followUp,
+      });
+      const ctx = {
+        isIdle: (): boolean => true,
+        ui: { notify: (_message: string, _level?: string): void => {} },
+      } as ExtensionContext;
+      try {
+        db.registerAgent(
+          "worker",
+          "Worker",
+          "W",
+          123,
+          link === "agent" ? { laneId: "historical" } : {},
+        );
+        db.disconnectAgent("worker", 0);
+        db.recordTaskAssignment("worker", 732, "issue-732", "a2a:worker", null, {
+          repoOwner: "gugu91",
+          repoName: "pinet",
+        });
+        db.upsertPinetLane({
+          laneId: "historical",
+          issueNumber: 732,
+          prNumber: 9000,
+          state: "detached",
+        });
+        if (link === "participant")
+          db.setPinetLaneParticipant({
+            laneId: "historical",
+            agentId: "worker",
+            role: "implementer",
+            status: "exited",
+          });
+        db.upsertPinetLane({
+          laneId: "other-worker",
+          issueNumber: 732,
+          prNumber: 9999,
+          ownerAgentId: "other-worker",
+        });
+        db.upsertPinetLane({
+          laneId: "other-issue",
+          issueNumber: 733,
+          prNumber: 8888,
+          ownerAgentId: "worker",
+        });
+        await runRalphLoopCycle(ctx, createRalphLoopState(), deps);
+        expect(db.listTaskAssignments()[0]).toMatchObject({ status: "pr_open", prNumber: 9000 });
+        expect(followUp.mock.calls.map(([body]) => body).join("\n")).toContain("PR #9000");
+        expect(followUp.mock.calls.map(([body]) => body).join("\n")).not.toContain(
+          "no commits, no PR",
+        );
+      } finally {
+        db.close();
+        vi.restoreAllMocks();
+      }
+    },
+  );
+
   it("auto-snoozes after configured empty cycles and quiets later empty cycle logs", async () => {
     const state = createRalphLoopState();
     const logActivity = vi.fn();
@@ -196,10 +370,8 @@ describe("runRalphLoopCycle snooze", () => {
     ]);
   });
 
-  it("wakes a manual snooze when a live worker is active", async () => {
+  it("wakes a manual snooze when a new live worker becomes active", async () => {
     const state = createRalphLoopState();
-    setRalphLoopSnooze(state, { durationMs: 10 * 60_000, now: Date.now() });
-    state.snoozeEmptyCycleCount = 4;
     const logActivity = vi.fn();
     const now = new Date().toISOString();
     const db = {
@@ -245,10 +417,15 @@ describe("runRalphLoopCycle snooze", () => {
 
     const originalCwd = process.cwd();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ralph-snooze-test-"));
+    const agents = vi.spyOn(db, "getAllAgents").mockReturnValueOnce([]);
     try {
       process.chdir(tempDir);
       await runRalphLoopCycle(ctx, state, deps);
+      setRalphLoopSnooze(state, { durationMs: 10 * 60_000, now: Date.now() });
+      state.snoozeEmptyCycleCount = 4;
+      await runRalphLoopCycle(ctx, state, deps);
     } finally {
+      agents.mockRestore();
       process.chdir(originalCwd);
       await fs.rm(tempDir, { recursive: true, force: true });
     }

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
   AgentInfo,
+  PinetLaneInfo,
   TaskAssignmentInfo,
   TaskAssignmentKind,
   TaskAssignmentStatus,
@@ -535,11 +536,29 @@ export async function resolveTaskAssignments(
   assignments: TaskAssignmentInfo[],
   cwd = process.cwd(),
   runner: CommandRunner = execFileAsync as CommandRunner,
+  laneContext: {
+    lanes: readonly PinetLaneInfo[];
+    agents: ReadonlyArray<Pick<AgentInfo, "id" | "laneId">>;
+  } = { lanes: [], agents: [] },
 ): Promise<ResolvedTaskAssignment[]> {
   if (assignments.length === 0) {
     return [];
   }
 
+  const assignmentsWithRepository = assignments.map((assignment) => ({
+    assignment,
+    repository:
+      assignment.repoOwner && assignment.repoName
+        ? `${assignment.repoOwner}/${assignment.repoName}`.toLowerCase()
+        : assignment.repoRoot
+          ? `root:${assignment.repoRoot}`
+          : null,
+  }));
+  const lanesWithRepository = laneContext.lanes.flatMap((lane) => {
+    const repository = lane.metadata?.repository;
+    if (repository != null && typeof repository !== "string") return [];
+    return [{ lane, repository: repository?.trim().toLowerCase() ?? null }];
+  });
   const baseRefCache = new Map<string, Promise<string | null>>();
   const resolveBaseRefForCwd = (repoCwd: string): Promise<string | null> => {
     const cached = baseRefCache.get(repoCwd);
@@ -616,22 +635,48 @@ export async function resolveTaskAssignments(
   };
 
   return Promise.all(
-    assignments.map(async (assignment) => {
+    assignmentsWithRepository.map(async ({ assignment, repository: assignmentRepository }) => {
       const { branchAheadCount, pr } = await resolveBranchProgress(assignment);
+      const workerLaneId = laneContext.agents.find(
+        (agent) => agent.id === assignment.agentId,
+      )?.laneId;
+      const unambiguousRepository =
+        assignmentRepository != null &&
+        assignmentsWithRepository.every(
+          ({ assignment: other, repository }) =>
+            other.agentId !== assignment.agentId ||
+            other.issueNumber !== assignment.issueNumber ||
+            repository === assignmentRepository,
+        );
+      const lanePrs = new Set<number>();
+      for (const { lane, repository } of lanesWithRepository) {
+        if (
+          lane.prNumber != null &&
+          (repository == null
+            ? unambiguousRepository
+            : assignment.repoOwner != null &&
+              assignment.repoName != null &&
+              repository === assignmentRepository) &&
+          lane.issueNumber === assignment.issueNumber &&
+          (lane.laneId === workerLaneId ||
+            lane.ownerAgentId === assignment.agentId ||
+            lane.implementationLeadAgentId === assignment.agentId ||
+            lane.participants.some((participant) => participant.agentId === assignment.agentId))
+        ) {
+          lanePrs.add(lane.prNumber);
+        }
+      }
+      const linkedPrNumber = assignment.prNumber ?? (lanePrs.size === 1 ? [...lanePrs][0] : null);
       const canResolveStoredPr =
         assignment.repoRoot != null ||
         (assignment.repoOwner != null && assignment.repoName != null);
       const resolvedPr =
-        pr == null && assignment.prNumber != null && canResolveStoredPr
-          ? await resolvePullRequestByNumber(
-              assignment.prNumber,
-              assignment,
-              assignment.repoRoot ?? cwd,
-            )
+        pr == null && linkedPrNumber != null && canResolveStoredPr
+          ? await resolvePullRequestByNumber(linkedPrNumber, assignment, assignment.repoRoot ?? cwd)
           : pr;
       const issueState = normalizeIssueState(await resolveIssueByNumber(assignment));
       const { nextStatus, nextPrNumber } = resolveTaskStatus(
-        assignment,
+        { ...assignment, prNumber: linkedPrNumber },
         branchAheadCount,
         resolvedPr,
       );
