@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { discardQueuedInboxMessages } from "./broker-delivery.js";
 import { __resetHibernationActivationAuthorityForTest } from "./broker/hibernation-activation-authority.js";
 import { BrokerClient } from "./broker/client.js";
 import type { InboxMessage, PinetControlCommand, SlackBridgeSettings } from "./helpers.js";
@@ -105,14 +106,8 @@ describe("subtree broker inbox delivery", () => {
     const queued: InboxMessage[] = [];
     const { runtime } = createRuntime(() => false, undefined, {
       pushInboxMessages: (messages) => queued.push(...messages),
-      discardQueuedInboxMessages: (ids?: number[]) => {
-        for (let i = queued.length - 1; i >= 0; i--) {
-          if (
-            queued[i].brokerInboxOrigin === "subtree" &&
-            (!ids || ids.includes(queued[i].brokerInboxId!))
-          )
-            queued.splice(i, 1);
-        }
+      discardQueuedInboxMessages: (ids) => {
+        discardQueuedInboxMessages(queued, "subtree", ids);
       },
     });
     await runtime.start(ctx);
