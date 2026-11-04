@@ -539,6 +539,7 @@ export async function runRalphLoopCycle(
         .map((assignment) =>
           JSON.stringify([
             assignment.id,
+            assignment.agentId,
             assignment.status,
             assignment.prNumber,
             assignment.branch,
@@ -596,7 +597,6 @@ export async function runRalphLoopCycle(
       snoozeStartedThisCycle = true;
     }
     const snoozeStatus = getRalphLoopSnoozeStatus(state, now);
-    const quietCycle = snoozeStatus.active;
 
     const shouldWarn =
       ghostRewrite.newGhostIds.length > 0 ||
@@ -671,7 +671,7 @@ export async function runRalphLoopCycle(
         ],
         tone: "success",
       });
-    } else if (quietCycle) {
+    } else if (snoozeStatus.active) {
       if (snoozeStartedThisCycle) {
         deps.logActivity({
           kind: "ralph_event",

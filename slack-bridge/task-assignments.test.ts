@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentInfo, TaskAssignmentInfo } from "./broker/types.js";
+import { BrokerDB } from "./broker/schema.js";
 import {
   buildTaskAssignmentReport,
   extractTaskAssignmentsFromMessage,
@@ -312,6 +313,142 @@ describe("normalizeTrackedTaskAssignments", () => {
 });
 
 describe("resolveTaskAssignments", () => {
+  it("does not borrow a lane PR across repositories with the same issue number", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    try {
+      for (const [repoOwner, repoName] of [
+        ["example", "repo-a"],
+        ["example", "repo-b"],
+        ["other", "repo-a"],
+      ]) {
+        db.recordTaskAssignment("worker", 732, null, "a2a:worker", null, {
+          repoOwner,
+          repoName,
+        });
+      }
+      db.upsertPinetLane({
+        laneId: "repo-a-732",
+        ownerAgentId: "worker",
+        issueNumber: 732,
+        prNumber: 9000,
+        metadata: { repository: "Example/Repo-A" },
+      });
+      const runner: CommandRunner = async (file, args) => {
+        if (file === "gh" && args[0] === "issue")
+          return { stdout: JSON.stringify({ number: 732, state: "OPEN" }) };
+        if (file === "gh" && args[0] === "pr" && args[1] === "view")
+          return {
+            stdout: JSON.stringify({
+              number: 9000,
+              state: "OPEN",
+              mergedAt: null,
+              headRefName: args.includes("example/repo-a") ? "fix/732" : "unrelated-feature",
+            }),
+          };
+        throw new Error(`Unexpected fake command: ${file} ${args.join(" ")}`);
+      };
+      const result = await resolveTaskAssignments(db.listTaskAssignments(), "/tmp", runner, {
+        lanes: db.listPinetLanes({ includeDone: true }),
+        agents: [],
+      });
+      expect(result.find((item) => item.repoName === "repo-b")).toMatchObject({
+        nextStatus: "assigned",
+        nextPrNumber: null,
+      });
+      expect(result.find((item) => item.repoOwner === "other")).toMatchObject({
+        nextStatus: "assigned",
+        nextPrNumber: null,
+      });
+      expect(
+        result.find((item) => item.repoOwner === "example" && item.repoName === "repo-a"),
+      ).toMatchObject({ nextStatus: "pr_open", nextPrNumber: 9000 });
+
+      db.upsertPinetLane({ laneId: "repo-a-732", metadata: null });
+      const unqualified = await resolveTaskAssignments(db.listTaskAssignments(), "/tmp", runner, {
+        lanes: db.listPinetLanes({ includeDone: true }),
+        agents: [],
+      });
+      expect(unqualified.map((item) => [item.nextStatus, item.nextPrNumber])).toEqual([
+        ["assigned", null],
+        ["assigned", null],
+        ["assigned", null],
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["github", "root"] as const)(
+    "uses a lane PR without repository metadata for a single %s repository",
+    async (identity) => {
+      const db = new BrokerDB(":memory:");
+      db.initialize();
+      try {
+        const assignment = db.recordTaskAssignment(
+          "worker",
+          732,
+          null,
+          "a2a:worker",
+          null,
+          identity === "github"
+            ? { repoOwner: "example", repoName: "repo-a" }
+            : { repoRoot: "/repo-a" },
+        );
+        db.recordTaskAssignment("worker", 733, null, "a2a:worker", null, {
+          repoOwner: "example",
+          repoName: "repo-b",
+        });
+        db.recordTaskAssignment("other-worker", 732, null, "a2a:other", null, {
+          repoOwner: "example",
+          repoName: "repo-c",
+        });
+        db.upsertPinetLane({
+          laneId: "legacy",
+          ownerAgentId: "worker",
+          issueNumber: 732,
+          prNumber: 9000,
+        });
+        const runner: CommandRunner = async (file, args) => {
+          if (file === "git") return { stdout: "" };
+          if (file === "gh" && args[0] === "issue")
+            return { stdout: JSON.stringify({ number: Number(args[2]), state: "OPEN" }) };
+          if (file === "gh" && args[0] === "pr" && args[1] === "view" && args[2] === "9000")
+            return {
+              stdout: JSON.stringify({
+                number: 9000,
+                state: "OPEN",
+                mergedAt: null,
+                headRefName: "fix/732",
+              }),
+            };
+          throw new Error(`Unexpected fake command: ${file} ${args.join(" ")}`);
+        };
+        const result = await resolveTaskAssignments(db.listTaskAssignments(), "/tmp", runner, {
+          lanes: db.listPinetLanes({ includeDone: true }),
+          agents: [],
+        });
+        expect(
+          result
+            .filter((item) => item.nextStatus === "pr_open")
+            .map((item) => [item.id, item.nextPrNumber]),
+        ).toEqual([[assignment.id, 9000]]);
+
+        db.upsertPinetLane({ laneId: "legacy", metadata: { repository: "example/repo-b" } });
+        const mismatched = await resolveTaskAssignments(db.listTaskAssignments(), "/tmp", runner, {
+          lanes: db.listPinetLanes({ includeDone: true }),
+          agents: [],
+        });
+        expect(mismatched.find((item) => item.id === assignment.id)).toMatchObject({
+          nextStatus: "assigned",
+          nextPrNumber: null,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
   it("keeps assignments at no commits / no PR when nothing has happened", async () => {
     const runner: CommandRunner = vi.fn(async (file, args) => {
       if (

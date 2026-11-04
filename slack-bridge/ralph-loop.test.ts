@@ -183,6 +183,49 @@ describe("runRalphLoopCycle snooze", () => {
     }
   });
 
+  it("wakes manual snooze when an existing assignment moves to another worker", async () => {
+    const db = new BrokerDB(":memory:");
+    db.initialize();
+    vi.spyOn(gitMetadata, "probeGitBranch").mockResolvedValue(undefined);
+    const resolve = taskAssignments.resolveTaskAssignments;
+    const runner: taskAssignments.CommandRunner = async () => ({
+      stdout: JSON.stringify({ number: 732, state: "OPEN" }),
+    });
+    vi.spyOn(taskAssignments, "resolveTaskAssignments").mockImplementation(
+      (assignments, cwd, _runner, lanes) => resolve(assignments, cwd, runner, lanes),
+    );
+    const state = createRalphLoopState();
+    const followUp = vi.fn();
+    const deps = createLoopDeps({
+      getBrokerDb: () => db,
+      getBrokerAgentId: () => "broker",
+      trySendFollowUp: followUp,
+    });
+    const ctx = {
+      isIdle: (): boolean => true,
+      ui: { notify: (_message: string, _level?: string): void => {} },
+    } as ExtensionContext;
+    try {
+      db.registerAgent("worker-a", "A", "A", 123);
+      db.registerAgent("worker-b", "B", "B", 124);
+      db.recordTaskAssignment("worker-a", 732, null, "a2a:a", null);
+      await runRalphLoopCycle(ctx, state, deps);
+      setRalphLoopSnooze(state, { durationMs: 60_000 });
+      followUp.mockClear();
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(getRalphLoopSnoozeStatus(state).active).toBe(true);
+      expect(followUp).not.toHaveBeenCalled();
+      db.recordTaskAssignment("worker-b", 732, null, "a2a:b", null);
+      await runRalphLoopCycle(ctx, state, deps);
+      expect(db.listTaskAssignments()[0].agentId).toBe("worker-b");
+      expect(getRalphLoopSnoozeStatus(state).active).toBe(false);
+      expect(followUp).toHaveBeenCalled();
+    } finally {
+      db.close();
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each(["participant", "agent"] as const)(
     "reports the exited worker's lane PR via %s on a differently named branch",
     async (link) => {
