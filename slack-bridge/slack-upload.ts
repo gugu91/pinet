@@ -219,15 +219,18 @@ export async function resolveSlackUploadPath(
     ? requestedPath
     : path.resolve(cwd, requestedPath);
 
-  const [resolvedCandidate, resolvedCwd, resolvedTmpdir] = await Promise.all([
-    realpathImpl(candidate),
-    realpathImpl(cwd),
-    realpathImpl(tmpdir),
-  ]);
+  const [resolvedCandidate, resolvedCwd, resolvedTmpdir, resolvedConventionalTmp] =
+    await Promise.all([
+      realpathImpl(candidate),
+      realpathImpl(cwd),
+      realpathImpl(tmpdir),
+      realpathImpl("/tmp").catch(() => null),
+    ]);
 
   if (
     !isWithinRoot(resolvedCandidate, resolvedCwd) &&
-    !isWithinRoot(resolvedCandidate, resolvedTmpdir)
+    !isWithinRoot(resolvedCandidate, resolvedTmpdir) &&
+    !(resolvedConventionalTmp && isWithinRoot(resolvedCandidate, resolvedConventionalTmp))
   ) {
     throw new Error(
       "For safety, the slack dispatcher upload action only allows local file paths inside the current working directory or the system temp directory. For other files, read the content explicitly and upload it via the content parameter.",
