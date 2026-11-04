@@ -54,7 +54,7 @@ function createStorage(agents: AgentInfo[]): AgentMessageStorage & {
     threads,
     inserted,
     getAgents: () => agents,
-    getThread: (threadId) => (threads.has(threadId) ? { threadId } : null),
+    getThread: (threadId) => (threads.has(threadId) ? { threadId, source: "agent" } : null),
     createThread: (threadId) => {
       threads.add(threadId);
     },

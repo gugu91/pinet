@@ -473,6 +473,7 @@ function classifyPinetError(message: string): PinetDispatcherError {
   if (
     message.includes("thread_id must be") ||
     message.includes("thread_id must identify") ||
+    message.startsWith("thread_id requires") ||
     message.includes("to or thread_id is required") ||
     message.includes("to must match") ||
     message.includes("Invalid Pinet lane") ||
@@ -987,10 +988,7 @@ function runPinetSendAction(
     const to = typeof params.to === "string" ? params.to.trim() : "";
     const threadId = getMaybeString(params, "thread_id");
     const message = typeof params.message === "string" ? params.message : "";
-    const transferThreadId =
-      typeof params.transfer_thread_id === "string" && params.transfer_thread_id.trim().length > 0
-        ? params.transfer_thread_id.trim()
-        : undefined;
+    const transferThreadId = getMaybeString(params, "transfer_thread_id");
 
     if (!to && !threadId) {
       throw new Error("to or thread_id is required");

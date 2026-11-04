@@ -66,7 +66,7 @@ function buildAgentCapabilityTags(capabilities: AgentCapabilities): string[] {
 
 export interface AgentMessageStorage {
   getAgents(): AgentInfo[];
-  getThread(threadId: string): { threadId: string; source?: string } | null;
+  getThread(threadId: string): { threadId: string; source: string } | null;
   createThread(threadId: string, source: string, channel: string, ownerAgent: string | null): void;
   insertMessage(
     threadId: string,

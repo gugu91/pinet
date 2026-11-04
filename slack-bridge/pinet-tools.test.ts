@@ -1221,6 +1221,21 @@ describe("registerPinetTools", () => {
     }
   });
 
+  it("classifies a thread-targeted broadcast as an input error", async () => {
+    const tools = registerWithDeps(createDeps());
+    const result = (await tools.get("pinet")!.execute("bad-broadcast", {
+      action: "send",
+      args: { to: "#all", thread_id: "a2a:parent:child", message: "hello" },
+    })) as { details: { errors: Array<{ class: string; hint: string }> } };
+
+    expect(result.details.errors).toEqual([
+      expect.objectContaining({
+        class: "input",
+        hint: expect.stringContaining("Accepted fields:"),
+      }),
+    ]);
+  });
+
   it("sends to the other A2A party without to", async () => {
     const db = new BrokerDB(":memory:");
     db.initialize();

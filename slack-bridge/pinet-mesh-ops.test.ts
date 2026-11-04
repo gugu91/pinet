@@ -61,7 +61,7 @@ function createBrokerDeps(overrides: Partial<PinetMeshOpsDeps> = {}) {
     string,
     {
       threadId: string;
-      source?: string;
+      source: string;
       channel?: string;
       ownerAgent?: string | null;
       ownerBinding?: "explicit" | null;

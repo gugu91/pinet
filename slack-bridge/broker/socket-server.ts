@@ -1449,7 +1449,7 @@ export class BrokerSocketServer {
     }
 
     const params = req.params ?? {};
-    const targetAgent = typeof params.targetAgent === "string" ? params.targetAgent : null;
+    const targetAgent = typeof params.targetAgent === "string" ? params.targetAgent : "";
     const body = typeof params.body === "string" ? params.body : null;
 
     if (!body) {
@@ -1470,7 +1470,7 @@ export class BrokerSocketServer {
         {
           senderAgentId: state.agentId,
           senderAgentName: senderName,
-          target: targetAgent ?? "",
+          target: targetAgent,
           body,
           metadata,
         },

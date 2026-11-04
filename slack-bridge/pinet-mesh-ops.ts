@@ -57,7 +57,7 @@ export interface PinetMeshOpsRecordedAssignment {
 
 export interface PinetMeshOpsTransferableThread {
   threadId: string;
-  source?: string;
+  source: string;
   channel?: string;
 }
 
