@@ -1449,11 +1449,11 @@ export class BrokerSocketServer {
     }
 
     const params = req.params ?? {};
-    const targetAgent = typeof params.targetAgent === "string" ? params.targetAgent : null;
+    const targetAgent = typeof params.targetAgent === "string" ? params.targetAgent : "";
     const body = typeof params.body === "string" ? params.body : null;
 
-    if (!targetAgent || !body) {
-      return rpcError(req.id, RPC_INVALID_PARAMS, "targetAgent and body are required");
+    if (!body) {
+      return rpcError(req.id, RPC_INVALID_PARAMS, "body is required");
     }
 
     const metadata =

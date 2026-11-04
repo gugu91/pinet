@@ -11,6 +11,7 @@ interface AgentCapabilities {
 }
 
 export interface AgentMessageMetadata extends AgentMessageMetadataObject {
+  threadId?: string;
   senderAgent?: string;
   a2a?: boolean;
   broadcast?: boolean;
@@ -65,7 +66,7 @@ function buildAgentCapabilityTags(capabilities: AgentCapabilities): string[] {
 
 export interface AgentMessageStorage {
   getAgents(): AgentInfo[];
-  getThread(threadId: string): { threadId: string } | null;
+  getThread(threadId: string): { threadId: string; source: string } | null;
   createThread(threadId: string, source: string, channel: string, ownerAgent: string | null): void;
   insertMessage(
     threadId: string,
@@ -187,8 +188,8 @@ function deliverAgentMessage(
   body: string,
   metadata: AgentMessageMetadata,
   onDispatch?: AgentDispatchCallback,
+  threadId = ensurePairThread(storage, senderAgentId, target.id),
 ): { threadId: string; messageId: number } {
-  const threadId = ensurePairThread(storage, senderAgentId, target.id);
   const msg = storage.insertMessage(
     threadId,
     "agent",
@@ -319,15 +320,44 @@ export function resolveBroadcastTargets(
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+export function resolveAgentThreadRecipient(
+  agents: AgentInfo[],
+  senderAgentId: string,
+  threadId: string,
+): AgentInfo | null {
+  return (
+    agents.find(
+      (agent) =>
+        threadId === `a2a:${senderAgentId}:${agent.id}` ||
+        threadId === `a2a:${agent.id}:${senderAgentId}`,
+    ) ?? null
+  );
+}
+
 export function dispatchDirectAgentMessage(
   storage: AgentMessageStorage,
   input: DirectAgentDispatchInput,
   onDispatch?: AgentDispatchCallback,
 ): DirectAgentDispatchResult {
   const agents = storage.getAgents();
-  const target = resolveDirectAgentTarget(agents, input.target);
+  const requestedThreadId = asString(input.metadata?.threadId);
+  const threadTarget = requestedThreadId
+    ? resolveAgentThreadRecipient(agents, input.senderAgentId, requestedThreadId)
+    : null;
+  if (
+    requestedThreadId &&
+    (storage.getThread(requestedThreadId)?.source !== "agent" || !threadTarget)
+  ) {
+    throw new Error(
+      "thread_id must identify an existing A2A thread involving the sender and a connected recipient.",
+    );
+  }
+  const target = input.target ? resolveDirectAgentTarget(agents, input.target) : threadTarget;
   if (!target) {
     throw new Error(`Agent not found: ${input.target}`);
+  }
+  if (threadTarget && threadTarget.id !== target.id) {
+    throw new Error("to must match the other party identified by thread_id.");
   }
   const sender = agents.find((agent) => agent.id === input.senderAgentId) ?? null;
   const policyMetadata: AgentMessageMetadata = { ...(input.metadata ?? {}) };
@@ -350,6 +380,7 @@ export function dispatchDirectAgentMessage(
     input.body,
     metadata,
     onDispatch,
+    requestedThreadId,
   );
 
   return {

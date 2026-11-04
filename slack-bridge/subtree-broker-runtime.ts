@@ -9,7 +9,11 @@ import { sleep } from "@pinet/transport-core/async";
 import { summarizePinetStableId } from "./pinet-session-formatting.js";
 import type { AgentSessionSummary } from "./broker/types.js";
 import type { PinetReadOptions, PinetReadResult } from "@pinet/pinet-core/pinet-read-formatting";
-import { dispatchDirectAgentMessage, resolveDirectAgentTarget } from "./broker/agent-messaging.js";
+import {
+  dispatchDirectAgentMessage,
+  resolveDirectAgentTarget,
+  resolveAgentThreadRecipient,
+} from "./broker/agent-messaging.js";
 import { startBroker, type Broker } from "./broker/index.js";
 import { HEARTBEAT_INTERVAL_MS } from "./broker/client.js";
 import type { AgentInfo, BrokerMessage } from "./broker/types.js";
@@ -1033,7 +1037,12 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     metadata?: Record<string, unknown>,
   ): Promise<{ messageId: number; target: string; threadId: string } | null> {
     if (!activeBroker || !selfAgentId) return null;
-    const targetAgent = resolveDirectAgentTarget(activeBroker.db.getAgents(), target);
+    const agents = activeBroker.db.getAgents();
+    const targetAgent = target
+      ? resolveDirectAgentTarget(agents, target)
+      : typeof metadata?.threadId === "string"
+        ? resolveAgentThreadRecipient(agents, selfAgentId, metadata.threadId)
+        : null;
     if (!targetAgent || targetAgent.id === selfAgentId) return null;
 
     const normalized =
