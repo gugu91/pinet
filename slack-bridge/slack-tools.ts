@@ -2951,7 +2951,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       const ts = delivery.ts;
       const threadTs = params.thread_ts ?? delivery.threadTs;
       const actualTs = threadTs ?? ts;
-      if (!actualTs && !delivery.fileIds?.length) {
+      if (!actualTs && !delivery.fileIds) {
         throw new Error("Slack delivery did not return a message timestamp.");
       }
 

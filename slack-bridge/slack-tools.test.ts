@@ -1521,7 +1521,7 @@ describe("registerSlackTools", () => {
       const original = slack.getMockImplementation()!;
       slack.mockImplementation(async (method, token, body) => {
         if (method === "files.completeUploadExternal" && !withTimestamp) {
-          return { ok: true, files: [{ id: "F_UPLOAD" }] } as SlackResult;
+          return { ok: true, files: [{ id: "F_UPLOAD" }] };
         }
         return original(method, token, body);
       });
