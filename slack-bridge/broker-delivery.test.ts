@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createBrokerDeliveryState,
+  discardQueuedInboxMessages,
   getBrokerInboxIds,
   isBrokerInboxIdTracked,
   markBrokerInboxIdsHandled,
@@ -59,4 +60,25 @@ describe("broker delivery state", () => {
 
     expect(isBrokerInboxIdTracked(state, 301)).toBe(false);
   });
+
+  it.each(["broker", "subtree"] as const)(
+    "discards read pointers only in the %s database",
+    (origin) => {
+      const base = {
+        channel: "",
+        threadTs: "a2a:test",
+        userId: "worker",
+        text: "pointer",
+        timestamp: "now",
+      };
+      const broker = { ...base, brokerInboxId: 1 };
+      const subtree = { ...base, brokerInboxId: 1, brokerInboxOrigin: "subtree" as const };
+      const unread = { ...base, brokerInboxId: 2 };
+      const inbox = [broker, subtree, unread, base];
+      discardQueuedInboxMessages(inbox, origin, []);
+      expect(inbox).toHaveLength(4);
+      discardQueuedInboxMessages(inbox, origin, [1]);
+      expect(inbox).toEqual([origin === "broker" ? subtree : broker, unread, base]);
+    },
+  );
 });

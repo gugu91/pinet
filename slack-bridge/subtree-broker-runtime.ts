@@ -274,7 +274,7 @@ export interface SubtreeBrokerRuntimeDeps {
     fallback?: "broker" | "worker",
   ) => "broker" | "worker";
   pushInboxMessages: (messages: InboxMessage[]) => void;
-  discardQueuedInboxMessages: () => void;
+  discardQueuedInboxMessages: (inboxIds?: number[]) => void;
   updateBadge: () => void;
   maybeDrainInboxIfIdle: (ctx: ExtensionContext) => boolean;
   deliverSteeringMessage: (text: string, ctx: ExtensionContext) => boolean;
@@ -1017,6 +1017,11 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
     if (!activeBroker || !selfAgentId) return null;
     if (options.threadId && !activeBroker.db.getThread(options.threadId)) return null;
     const result = activeBroker.db.readInbox(selfAgentId, options);
+    if (result.markedReadIds.length > 0) {
+      markDelivered(result.markedReadIds);
+      deps.discardQueuedInboxMessages(result.markedReadIds);
+      deps.updateBadge();
+    }
     return {
       messages: result.messages.map((item) => ({
         inboxId: item.entry.id,

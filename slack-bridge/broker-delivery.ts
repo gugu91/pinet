@@ -33,6 +33,23 @@ export function markBrokerInboxIdsHandled(
   }
 }
 
+export function discardQueuedInboxMessages(
+  inbox: InboxMessage[],
+  origin: "broker" | "subtree",
+  inboxIds?: number[],
+): void {
+  const ids = inboxIds ? new Set(inboxIds) : null;
+  for (let index = inbox.length - 1; index >= 0; index--) {
+    const message = inbox[index];
+    if (
+      (message.brokerInboxOrigin ?? "broker") === origin &&
+      message.brokerInboxId != null &&
+      (!ids || ids.has(message.brokerInboxId))
+    )
+      inbox.splice(index, 1);
+  }
+}
+
 export function getBrokerInboxIds(messages: InboxMessage[]): number[] {
   return [
     ...new Set(

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { discardQueuedInboxMessages } from "./broker-delivery.js";
 import { __resetHibernationActivationAuthorityForTest } from "./broker/hibernation-activation-authority.js";
 import { BrokerClient } from "./broker/client.js";
 import type { InboxMessage, PinetControlCommand, SlackBridgeSettings } from "./helpers.js";
@@ -101,6 +102,38 @@ afterEach(async () => {
 });
 
 describe("subtree broker inbox delivery", () => {
+  it("clears only read wake-up pointers and never queues them again", async () => {
+    const queued: InboxMessage[] = [];
+    const { runtime } = createRuntime(() => false, undefined, {
+      pushInboxMessages: (messages) => queued.push(...messages),
+      discardQueuedInboxMessages: (ids) => {
+        discardQueuedInboxMessages(queued, "subtree", ids);
+      },
+    });
+    await runtime.start(ctx);
+    const db = runtime.getHibernationRuntimeControl()!.db;
+    const selfId = runtime.getStatus().selfAgentId!;
+    for (const thread of ["read-thread", "other-thread"]) {
+      db.createThread(thread, "agent", "", selfId);
+      db.insertMessage(thread, "agent", "inbound", "worker", thread, [selfId]);
+    }
+    runtime.drainInbox(ctx);
+    const centralPointer = { ...queued[0], brokerInboxOrigin: undefined };
+    queued.push(centralPointer);
+    runtime.readInbox({ threadId: "read-thread", markRead: false });
+    expect(queued).toHaveLength(3);
+    const read = runtime.readInbox({ threadId: "read-thread" });
+    expect(read?.messages).toHaveLength(1);
+    expect(queued).toEqual([expect.objectContaining({ threadTs: "other-thread" }), centralPointer]);
+    runtime.drainInbox(ctx);
+    expect(queued).toHaveLength(2);
+    runtime.readInbox();
+    runtime.drainInbox(ctx);
+    runtime.drainInbox(ctx);
+    expect(queued).toEqual([centralPointer]);
+    expect(db.getPendingInboxCount(selfId)).toBe(0);
+  });
+
   it("queues each regular inbox entry once and recovers it across restart", async () => {
     const queuedInbox: InboxMessage[] = [];
     const deliveryDeps = {
