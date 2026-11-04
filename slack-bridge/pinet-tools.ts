@@ -2014,7 +2014,7 @@ function runPinetLanesAction(
 
     if (op === "list") {
       const options: PinetLaneListOptions = {
-        ...(getMaybeString(params, "lane_id") ? { laneId: getMaybeString(params, "lane_id") } : {}),
+        laneId: getMaybeString(params, "lane_id"),
         ...(getMaybeString(params, "state")
           ? { state: getMaybeString(params, "state") as PinetLaneState }
           : {}),
