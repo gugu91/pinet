@@ -1123,6 +1123,10 @@ function runPinetReplyAction(
     const message = typeof params.message === "string" ? params.message : "";
     if (!threadId) throw new Error("thread_id is required");
     if (!message) throw new Error("message is required");
+    // An agent-to-agent thread has no transport; the reply goes to the other agent on it.
+    if (threadId.startsWith("a2a:")) {
+      return runPinetSendAction({ thread_id: threadId, message }, deps, toolName, output);
+    }
     if (!deps.replyToPinetThread) {
       throw new Error("pinet:reply is only available when the broker thread sender is active.");
     }
@@ -2493,7 +2497,7 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
   registerAction({
     name: "reply",
     description:
-      "Reply to an existing Pinet transport thread using the thread's stored source/channel. Use for ordinary anchored contextual threads such as Neovim code comments.",
+      "Reply to an existing Pinet thread. Transport threads (such as Neovim code comments) use their stored source/channel; an A2A thread reaches the other agent on it; a scheduled wake-up reply is kept in your own thread history and delivered to no one.",
     parameters: Type.Object({
       thread_id: Type.String({ description: "Existing Pinet transport thread id." }),
       message: Type.String({ description: "Reply body." }),
