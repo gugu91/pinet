@@ -2014,6 +2014,7 @@ function runPinetLanesAction(
 
     if (op === "list") {
       const options: PinetLaneListOptions = {
+        laneId: getMaybeString(params, "lane_id"),
         ...(getMaybeString(params, "state")
           ? { state: getMaybeString(params, "state") as PinetLaneState }
           : {}),
@@ -2743,7 +2744,12 @@ export function registerPinetTools(pi: ExtensionAPI, deps: RegisterPinetToolsDep
       thread_ts: Type.Optional(
         Type.String({ description: "Slack thread timestamp for confirmation-required mutations" }),
       ),
-      lane_id: Type.Optional(Type.String({ description: "Stable lane id, e.g. issue-688" })),
+      lane_id: Type.Optional(
+        Type.String({
+          description:
+            "Stable lane id, e.g. issue-688. Exact filter for list; state and include_done still apply.",
+        }),
+      ),
       name: Type.Optional(
         Type.Union([Type.String(), Type.Null()], { description: "Human-readable lane name" }),
       ),

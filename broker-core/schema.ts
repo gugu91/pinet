@@ -5539,6 +5539,11 @@ export class BrokerDB implements BrokerDBInterface {
     const db = this.getDb();
     const clauses: string[] = [];
     const values: string[] = [];
+    const laneId = normalizeOptionalText(options.laneId);
+    if (laneId) {
+      clauses.push("lane_id = ?");
+      values.push(laneId);
+    }
     if (options.state) {
       clauses.push("state = ?");
       values.push(requirePinetLaneState(options.state));
