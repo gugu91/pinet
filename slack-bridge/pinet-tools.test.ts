@@ -364,22 +364,6 @@ describe("registerPinetTools", () => {
     expect(result.content[0]?.text).toContain("Pinet thread reply sent to nvim:repo:thread");
   });
 
-  it("sends a reply on an A2A thread to the other agent on that thread", async () => {
-    const sendPinetAgentMessage = vi.fn(async () => ({ messageId: 5, target: "parent" }));
-    const replyToPinetThread = vi.fn();
-    const tools = registerWithDeps(createDeps({ sendPinetAgentMessage, replyToPinetThread }));
-
-    await tools.get("pinet")?.execute("tool-call-1", {
-      action: "reply",
-      args: { thread_id: "a2a:child:parent", message: "Done." },
-    });
-
-    expect(sendPinetAgentMessage).toHaveBeenCalledWith("", "Done.", {
-      threadId: "a2a:child:parent",
-    });
-    expect(replyToPinetThread).not.toHaveBeenCalled();
-  });
-
   it("routes reload and exit through the dispatcher remote-control actions", async () => {
     const sendPinetAgentMessage = vi.fn(async (target: string, body: string) => ({
       messageId: body === "/reload" ? 31 : 32,
@@ -1252,7 +1236,7 @@ describe("registerPinetTools", () => {
     ]);
   });
 
-  it("sends to the other A2A party without to", async () => {
+  it.each(["send", "reply"])("%s reaches the other A2A party without to", async (action) => {
     const db = new BrokerDB(":memory:");
     db.initialize();
     try {
@@ -1275,7 +1259,7 @@ describe("registerPinetTools", () => {
         }),
       );
       const result = (await tools.get("pinet")!.execute("thread-send", {
-        action: "send",
+        action,
         args: { thread_id: threadId, message: "follow up" },
       })) as { details: { status: string } };
       expect(result.details.status).toBe("succeeded");
