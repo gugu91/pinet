@@ -1236,7 +1236,7 @@ describe("registerPinetTools", () => {
     ]);
   });
 
-  it("sends to the other A2A party without to", async () => {
+  it.each(["send", "reply"])("%s reaches the other A2A party without to", async (action) => {
     const db = new BrokerDB(":memory:");
     db.initialize();
     try {
@@ -1259,7 +1259,7 @@ describe("registerPinetTools", () => {
         }),
       );
       const result = (await tools.get("pinet")!.execute("thread-send", {
-        action: "send",
+        action,
         args: { thread_id: threadId, message: "follow up" },
       })) as { details: { status: string } };
       expect(result.details.status).toBe("succeeded");

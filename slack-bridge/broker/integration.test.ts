@@ -119,6 +119,27 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(await client.listLanes({ laneId: "wanted", state: "active" })).toEqual([]);
   });
 
+  it("keeps a reply to a scheduled wake-up in the owner's thread without delivering it", async () => {
+    const owner = await client.register("woken-worker", "W");
+    db.registerAgent("other", "Other", "O", 2);
+    db.scheduleWakeup(owner.agentId, "check the build", "2026-01-01T00:00:00Z");
+    const { threadId } = db.deliverDueScheduledWakeups()[0].message;
+    expect(db.readInbox(owner.agentId).messages).toHaveLength(1);
+
+    await client.sendMessage({ threadId, body: "build is green" });
+
+    expect(db.getMessagesForThread(threadId).map(({ sender, body }) => [sender, body])).toEqual([
+      ["scheduler", "check the build"],
+      [owner.agentId, "build is green"],
+    ]);
+    expect(db.readInbox(owner.agentId).messages).toEqual([]);
+    expect(db.readInbox("other").messages).toEqual([]);
+    db.createThread("wakeup:other", "agent", "", "other");
+    await expect(
+      client.sendMessage({ threadId: "wakeup:other", body: "not mine" }),
+    ).rejects.toThrow("belongs to another agent");
+  });
+
   it("continues an A2A thread by inferred recipient without leaking to other parties", async () => {
     const sender = await client.register("replying-worker", "R");
     db.registerAgent("peer", "Peer", "P", 2);

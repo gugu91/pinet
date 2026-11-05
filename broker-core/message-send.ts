@@ -89,6 +89,21 @@ export async function sendBrokerMessage(
   }
 
   const existingThread = deps.db.getThread(threadId);
+  if (existingThread?.source === "agent" && threadId.startsWith("wakeup:")) {
+    // A scheduled wake-up has no sender to answer, so the reply stays in the owner's thread history.
+    if (existingThread.ownerAgent !== input.senderAgentId) {
+      throw new Error(`Wake-up thread ${threadId} belongs to another agent.`);
+    }
+    const message = deps.db.insertMessage(
+      threadId,
+      "agent",
+      "outbound",
+      input.senderAgentId,
+      body,
+      [],
+    );
+    return { thread: existingThread, message, adapter: "agent" };
+  }
   const source = (input.source ?? existingThread?.source ?? "").trim();
   const channel = (input.channel ?? existingThread?.channel ?? "").trim();
 
