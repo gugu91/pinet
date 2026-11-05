@@ -27,13 +27,15 @@ export function createAgentCompletionRuntime(
   }
 
   async function onAgentEnd(_event: unknown, ctx: ExtensionContext): Promise<void> {
-    for (const threadTs of thinking) {
-      const thread = deps.getThreads().get(threadTs);
-      if (thread) {
-        await deps.clearThreadStatus(thread.channelId, threadTs);
-      }
-    }
-    thinking.clear();
+    const threads = deps.getThreads();
+    const finished = [...thinking];
+    await Promise.all(
+      finished.flatMap((threadTs) => {
+        const thread = threads.get(threadTs);
+        return thread ? [deps.clearThreadStatus(thread.channelId, threadTs)] : [];
+      }),
+    );
+    for (const threadTs of finished) thinking.delete(threadTs);
     deps.clearFollowUpPending();
 
     try {

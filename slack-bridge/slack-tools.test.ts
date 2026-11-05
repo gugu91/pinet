@@ -432,6 +432,34 @@ describe("registerSlackTools", () => {
     expect(markSubtreeInboxIdsDelivered).toHaveBeenCalledWith([42]);
   });
 
+  it("resolves slack_inbox sender names concurrently, once per user", async () => {
+    const { inbox, tools, setResolveUser } = setup();
+    for (const [userId, text] of [
+      ["U1", "first"],
+      ["U2", "second"],
+      ["U1", "third"],
+    ]) {
+      inbox.push({ channel: "D123", threadTs: "123.456", userId, text, timestamp: "123.456" });
+    }
+    const lookups = new Map<string, (name: string) => void>();
+    setResolveUser(
+      (userId) =>
+        new Promise<string>((resolve) => {
+          lookups.set(userId, resolve);
+        }),
+    );
+
+    const reading = tools.get("slack_inbox")!.execute("tool-inbox-concurrent", {});
+    await vi.waitFor(() => expect([...lookups.keys()]).toEqual(["U1", "U2"]));
+    lookups.get("U2")!("Grace");
+    lookups.get("U1")!("Ada");
+
+    const text = (await reading).content?.[0]?.text ?? "";
+    expect(text).toContain("Ada (123.456): first");
+    expect(text).toContain("Grace (123.456): second");
+    expect(text).toContain("Ada (123.456): third");
+  });
+
   it("reads the latest bot token and default channel when slack_post_channel executes", async () => {
     const { slack, tools, setBotToken, setDefaultChannel } = setup();
     setBotToken("xoxb-reloaded");
@@ -554,7 +582,7 @@ describe("registerSlackTools", () => {
   });
 
   it("downloads Slack read message attachments to temp cache by default", async () => {
-    const { tools, setConversationsReplies, setResolveThreadChannel, setFilesInfoResponse } =
+    const { slack, tools, setConversationsReplies, setResolveThreadChannel, setFilesInfoResponse } =
       setup();
     setResolveThreadChannel(async () => "C-DB");
     const messageWithFile = {
@@ -574,10 +602,6 @@ describe("registerSlackTools", () => {
       ],
     };
     setConversationsReplies([
-      {
-        ok: true,
-        messages: [messageWithFile],
-      } as SlackResult,
       {
         ok: true,
         messages: [messageWithFile],
@@ -614,6 +638,10 @@ describe("registerSlackTools", () => {
       const text = response.content?.[0]?.text ?? "";
       expect(text).toContain("[file downloaded] F_READ brief.pdf (PDF) ->");
       expect(text).toContain("File attachments: 1 downloaded to the local temp cache.");
+      // The read already holds the thread messages; the download must not refetch them.
+      expect(
+        slack.mock.calls.filter(([method]) => method === "conversations.replies"),
+      ).toHaveLength(1);
       expect(text).not.toContain("files.slack.com/private");
       expect(response.details).toMatchObject({
         downloadedFilesCount: 1,

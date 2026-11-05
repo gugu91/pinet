@@ -27,13 +27,15 @@ export interface SlackFileDescriptor {
   residualRisks: string[];
 }
 
+type SlackFileObject = Record<string, unknown>;
+
 export interface SlackFileLookupContext {
   channelId?: string;
   threadTs?: string;
   messageTs?: string;
+  /** `conversations.replies` messages the caller already fetched for this channel/thread. */
+  threadMessages?: readonly SlackFileObject[];
 }
-
-type SlackFileObject = Record<string, unknown>;
 
 export interface SlackThreadRepliesRequest extends SlackFileObject {
   channel: string;
@@ -163,12 +165,16 @@ async function lookupSlackFileMetadata(
   deps: SlackFileDownloadDeps,
 ): Promise<SlackFileMetadata> {
   if (context.channelId && context.threadTs) {
-    const replies = await deps.slack("conversations.replies", deps.token, {
-      channel: context.channelId,
-      ts: context.threadTs,
-      limit: 200,
-    });
-    const fromThread = findFileInMessages(replies.messages, fileId, context.messageTs);
+    const messages =
+      context.threadMessages ??
+      (
+        await deps.slack("conversations.replies", deps.token, {
+          channel: context.channelId,
+          ts: context.threadTs,
+          limit: 200,
+        })
+      ).messages;
+    const fromThread = findFileInMessages(messages, fileId, context.messageTs);
     if (fromThread) return fromThread;
     throw new Error(
       context.messageTs

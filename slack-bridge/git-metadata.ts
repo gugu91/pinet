@@ -106,8 +106,10 @@ export async function probeGitDynamic(
   runner: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
   signal?: AbortSignal,
 ): Promise<GitDynamicState> {
-  const branchProbe = await readGitTrimmed(["branch", "--show-current"], cwd, runner, signal);
-  const dirtyProbe = await probeGitDirty(cwd, runner, signal);
+  const [branchProbe, dirtyProbe] = await Promise.all([
+    readGitTrimmed(["branch", "--show-current"], cwd, runner, signal),
+    probeGitDirty(cwd, runner, signal),
+  ]);
 
   return {
     ...(branchProbe.value ? { branch: branchProbe.value } : {}),
@@ -124,9 +126,10 @@ export async function probeGitContext(
   runner: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
   signal?: AbortSignal,
 ): Promise<GitContext> {
-  const repoRoot = (await readGitTrimmed(["rev-parse", "--show-toplevel"], cwd, runner, signal))
-    .value;
-  const dynamic = await probeGitDynamic(cwd, runner, signal);
+  const [{ value: repoRoot }, dynamic] = await Promise.all([
+    readGitTrimmed(["rev-parse", "--show-toplevel"], cwd, runner, signal),
+    probeGitDynamic(cwd, runner, signal),
+  ]);
   const resolvedRepoRoot = repoRoot ?? cwd;
 
   return {
