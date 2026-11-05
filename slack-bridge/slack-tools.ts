@@ -40,7 +40,7 @@ import {
 } from "./slack-export.js";
 import { normalizeReactionName } from "./reaction-triggers.js";
 import { resolveScheduledWakeupFireAt } from "./scheduled-wakeups.js";
-import { fetchSlackFileToCache, type SlackFileDescriptor } from "./slack-file-access.js";
+import { fetchSlackFileToCache } from "./slack-file-access.js";
 import { extractSlackMessageFileMetadata } from "./slack-message-context.js";
 import { performSlackUpload, performSlackUploads, prepareSlackUpload } from "./slack-upload.js";
 import { TtlCache } from "./ttl-cache.js";
@@ -2326,15 +2326,6 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       const messages = response.messages as Record<string, unknown>[];
       const full = params.full === true;
       const shouldDownloadFiles = params.download_files !== false;
-      const downloadFile = async (
-        fileId: string,
-        messageTs: string,
-      ): Promise<SlackFileDescriptor> =>
-        fetchSlackFileToCache(
-          fileId,
-          { channelId: channel, threadTs: params.thread_ts, messageTs, threadMessages: messages },
-          { slack, token: getBotToken() },
-        );
       const formattedMessages = await Promise.all(
         messages.map(async (message) => {
           const userId = message.user as string | undefined;
@@ -2371,7 +2362,16 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
                 } satisfies SlackReadFileAttachment;
               }
               try {
-                const descriptor = await downloadFile(fileId, ts);
+                const descriptor = await fetchSlackFileToCache(
+                  fileId,
+                  {
+                    channelId: channel,
+                    threadTs: params.thread_ts,
+                    messageTs: ts,
+                    threadMessages: messages,
+                  },
+                  { slack, token: getBotToken() },
+                );
                 return {
                   ...base,
                   filename: descriptor.filename,

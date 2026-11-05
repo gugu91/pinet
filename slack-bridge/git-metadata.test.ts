@@ -100,6 +100,32 @@ describe("probeGitContext", () => {
   });
 });
 
+describe("probeGitContext concurrency", () => {
+  it("runs repo-root discovery alongside the dynamic probes", async () => {
+    const pending = new Map<string, (stdout: string) => void>();
+    const runner: ExecFileAsyncLike = vi.fn(
+      (_file, args) =>
+        new Promise<{ stdout: string }>((resolve) => {
+          pending.set(args[0] ?? "", (stdout) => resolve({ stdout }));
+        }),
+    );
+
+    const probing = probeGitContext("/repo/pkg", runner);
+    await vi.waitFor(() =>
+      expect([...pending.keys()].sort()).toEqual(["branch", "rev-parse", "status"]),
+    );
+    pending.get("rev-parse")!("/repo\n");
+    pending.get("branch")!("main\n");
+    pending.get("status")!("");
+
+    await expect(probing).resolves.toMatchObject({
+      repo: "repo",
+      repoRoot: "/repo",
+      branch: "main",
+    });
+  });
+});
+
 describe("probeGitDynamic", () => {
   it("runs the branch and dirty probes concurrently", async () => {
     const pending = new Map<string, (stdout: string) => void>();

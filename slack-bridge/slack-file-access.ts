@@ -276,12 +276,10 @@ export async function fetchSlackFileToCache(
   const ttlMs = deps.ttlMs ?? DEFAULT_SLACK_FILE_CACHE_TTL_MS;
   const maxBytes = deps.maxBytes ?? DEFAULT_SLACK_FILE_MAX_DOWNLOAD_BYTES;
   const cacheRoot = deps.cacheDir ?? DEFAULT_CACHE_DIR;
-  const [, metadata] = await Promise.all([
-    mkdir(cacheRoot, { recursive: true, mode: 0o700 }).then(() =>
-      cleanupSlackFileCache(cacheRoot, now.getTime(), ttlMs),
-    ),
-    lookupSlackFileMetadata(trimmedFileId, context, deps),
-  ]);
+  await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+  await cleanupSlackFileCache(cacheRoot, now.getTime(), ttlMs);
+
+  const metadata = await lookupSlackFileMetadata(trimmedFileId, context, deps);
   if (metadata.size != null && metadata.size > maxBytes) {
     throw new Error(
       `Slack file ${trimmedFileId} is too large to download safely: ${metadata.size} bytes exceeds limit ${maxBytes}.`,
