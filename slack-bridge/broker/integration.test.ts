@@ -54,7 +54,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   afterEach(async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
     db.close();
     cleanup(dir);
@@ -214,7 +214,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
         ownerAgentId: reg1.agentId,
       });
     } finally {
-      client2.disconnect();
+      client2.close();
     }
   });
 
@@ -252,7 +252,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const inbox2 = await client2.pollInbox();
     expect(inbox2.length).toBe(0);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("inbox.read returns unread context and marks it read independently from delivery ack", async () => {
@@ -286,7 +286,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     await client2.ackMessages(stillUndelivered.map((item) => item.inboxId));
     expect(await client2.pollInbox()).toEqual([]);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("inbox.read still returns unread context after delivery ack", async () => {
@@ -316,7 +316,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(unreadAgain.messages).toEqual([]);
     expect(unreadAgain.unreadCountBefore).toBe(0);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("inbox.read denies cross-agent thread reads while preserving broker self-read visibility", async () => {
@@ -369,8 +369,8 @@ describe("broker integration — client ↔ server ↔ DB", () => {
         "status for broker only",
       ]);
     } finally {
-      workerA.disconnect();
-      workerB.disconnect();
+      workerA.close();
+      workerB.close();
     }
   });
 
@@ -426,7 +426,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(second.name).toBe("Shared Horizon 2");
     expect(second.emoji).toBe("🧭");
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("rejects duplicate explicitly requested agent names with a clear retry path", async () => {
@@ -472,7 +472,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(rpcConflictError.data as Record<string, unknown>).not.toHaveProperty("ownerAgentId");
     expect(rpcConflictError.data as Record<string, unknown>).not.toHaveProperty("ownerStableId");
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("agents.list returns connected agents with outbound counts without exposing raw stableIds", async () => {
@@ -499,7 +499,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(agents.find((agent) => agent.name === "agent-beta")?.outboundCount).toBe(0);
     expect(agents.find((agent) => agent.name === "agent-beta")?.pendingInboxCount).toBe(1);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("searches live and historical worker sessions by display name and thread", async () => {
@@ -549,7 +549,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       await client.searchAgentSessions({ runtimeLocator: "pinet-frozen-hazel-whale" }),
     ).toHaveLength(1);
 
-    worker.disconnect();
+    worker.close();
     await waitFor(() => Boolean(db.getAgentById(reg.agentId)?.disconnectedAt), 1000);
 
     const unregisteredInspector = new BrokerClient({ host: info.host, port: info.port });
@@ -557,7 +557,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     await expect(
       unregisteredInspector.searchAgentSessions({ agentName: "Frozen Hazel Whale" }),
     ).rejects.toThrow("Not registered");
-    unregisteredInspector.disconnect();
+    unregisteredInspector.close();
 
     const workerInspector = new BrokerClient({ host: info.host, port: info.port });
     await workerInspector.connect();
@@ -565,7 +565,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     await expect(
       workerInspector.searchAgentSessions({ agentName: "Frozen Hazel Whale" }),
     ).rejects.toThrow("agent.sessions.search requires a broker agent");
-    workerInspector.disconnect();
+    workerInspector.close();
 
     const inspector = new BrokerClient({ host: info.host, port: info.port });
     await inspector.connect();
@@ -579,7 +579,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const byThread = await inspector.searchAgentSessions({ threadId });
     expect(byThread.map((session) => session.agentId)).toContain(reg.agentId);
 
-    inspector.disconnect();
+    inspector.close();
   });
 
   it("invokes status change callbacks when a client explicitly marks itself free", async () => {
@@ -664,7 +664,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(inbox[0].message.body).toBe("please help");
     expect(db.getThread("t-backlog")?.ownerAgent).not.toBeNull();
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("rejects live stableId takeover and still allows resume after the holder disconnects", async () => {
@@ -683,7 +683,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.getAgents()).toHaveLength(1);
     expect(db.getThread("t-resume-live")?.ownerAgent).toBe(reg1.agentId);
 
-    client.disconnect();
+    client.close();
     await waitFor(() => db.getAgents().length === 0, 1000);
 
     const reg2 = await client2.register("different-name", "❌", undefined, stableId);
@@ -694,13 +694,13 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const threads = await client2.listThreads();
     expect(threads.map((thread) => thread.threadId)).toContain("t-resume-live");
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("reconnect with same stableId refreshes identity while preserving thread ownership", async () => {
     const reg1 = await client.register("resume-agent", "🔁", undefined, "host:session:/tmp/resume");
     await client.claimThread("t-resume");
-    client.disconnect();
+    client.close();
 
     await waitFor(() => db.getAgents().length === 0, 1000);
     expect(db.getThread("t-resume")?.ownerAgent).toBe(reg1.agentId);
@@ -724,13 +724,13 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const threads = await client2.listThreads();
     expect(threads.map((thread) => thread.threadId)).toContain("t-resume");
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("explicit unregister releases ownership so follow-up replies are not routed to the dead owner", async () => {
     const reg = await client.register("owner-agent", "🧵");
     await client.claimThread("t-unregister-followup");
-    await client.unregister();
+    await client.close({ unregister: true });
 
     expect(db.getAgents()).toHaveLength(0);
     expect(db.getThread("t-unregister-followup")?.ownerAgent).toBeNull();
@@ -776,7 +776,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("stale pruning disconnects silent agents and releases claims", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     server = new BrokerSocketServer(
@@ -830,7 +830,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const senderInbox = await client.pollInbox();
     expect(senderInbox.length).toBe(0);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("agent.message allows parent-child supervision but rejects unrelated supervised-child routing", async () => {
@@ -861,8 +861,8 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       }),
     ).rejects.toThrow("cannot message supervised agent");
 
-    childClient.disconnect();
-    unrelatedClient.disconnect();
+    childClient.close();
+    unrelatedClient.close();
   });
 
   it("agent.message resolves target by ID", async () => {
@@ -882,7 +882,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(inbox.length).toBe(1);
     expect(inbox[0].message.body).toBe("Hello by ID");
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("agent.message preserves control metadata for the target", async () => {
@@ -909,7 +909,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
       senderAgent: "sender-agent",
     });
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("agent.broadcast rejects connected clients, even with spoofed broker metadata", async () => {
@@ -932,7 +932,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(await client2.pollInbox()).toHaveLength(0);
     expect(await client.pollInbox()).toHaveLength(0);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("requeued a2a work stays bound to the intended recipient after unregister", async () => {
@@ -954,7 +954,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(messageId).toBeGreaterThan(0);
     await waitFor(() => db.getInbox(reg2.agentId).length === 1);
 
-    await client2.unregister();
+    await client2.close({ unregister: true });
 
     let result = runBrokerMaintenancePass(db, {
       staleAfterMs: 15_000,
@@ -966,7 +966,9 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.getPendingBacklog()[0].preferredAgentId).toBe(reg2.agentId);
     expect(await client.pollInbox()).toHaveLength(0);
 
-    const reg3 = await client2.register("receiver-agent", "📥", undefined, receiverStableId);
+    const client3 = new BrokerClient({ host: info.host, port: info.port });
+    await client3.connect();
+    const reg3 = await client3.register("receiver-agent", "📥", undefined, receiverStableId);
     expect(reg3.agentId).toBe(reg2.agentId);
 
     result = runBrokerMaintenancePass(db, {
@@ -975,11 +977,11 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     });
 
     expect(result.assignedBacklogCount).toBe(1);
-    const inbox = await client2.pollInbox();
+    const inbox = await client3.pollInbox();
     expect(inbox).toHaveLength(1);
     expect(inbox[0].message.body).toBe("Hold for receiver only");
     expect(inbox[0].message.threadId).toBe(`a2a:${sender.agentId}:${reg2.agentId}`);
-    await client2.ackMessages([inbox[0].inboxId]);
+    await client3.ackMessages([inbox[0].inboxId]);
 
     result = runBrokerMaintenancePass(db, {
       staleAfterMs: 15_000,
@@ -990,10 +992,10 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(result.pendingBacklogCount).toBe(0);
     expect(db.getPendingBacklog()).toHaveLength(0);
     expect(db.getBacklogCount("dropped")).toBe(0);
-    expect(await client2.pollInbox()).toHaveLength(0);
+    expect(await client3.pollInbox()).toHaveLength(0);
     expect(await client.pollInbox()).toHaveLength(0);
 
-    await client2.unregister();
+    await client3.close({ unregister: true });
     expect(db.purgeDisconnectedAgents(0)).toContain(reg2.agentId);
 
     result = runBrokerMaintenancePass(db, {
@@ -1007,7 +1009,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(db.getBacklogCount("dropped")).toBe(0);
     expect(await client.pollInbox()).toHaveLength(0);
 
-    client2.disconnect();
+    await client3.close();
   });
 
   it("agent.message returns error for unknown target", async () => {
@@ -1043,7 +1045,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     expect(received[0].meta.senderAgent).toBe("sender-worker");
     expect(received[0].meta.a2a).toBe(true);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("onAgentMessage callback not called for unrelated targets", async () => {
@@ -1066,7 +1068,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     await client.sendAgentMessage("worker-b", "Not for broker");
     expect(received).toHaveLength(0);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("markDeliveredByMessageId marks DB inbox rows as delivered", async () => {
@@ -1328,7 +1330,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
     const thread = db.getThread("t-contested");
     expect(thread!.ownerAgent).toBe(reg1.agentId);
 
-    client2.disconnect();
+    client2.close();
   });
 
   it("thread.claim with channel stores channel on new thread", async () => {
@@ -1457,7 +1459,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("adapter.capability effects auto-claim thread for calling agent", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
@@ -1503,7 +1505,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("adapter.capability effects claim the existing thread", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
@@ -1554,7 +1556,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("adapter.capability calls without claim effects do not claim threads", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     server = new BrokerSocketServer(db, { type: "tcp", host: "127.0.0.1", port: 0 });
@@ -1583,7 +1585,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("refuses slackProxy chat.postMessage to a thread owned by a different agent (#855)", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     const invokeCapability = vi.fn(async ({ params }: { params: Record<string, unknown> }) => {
@@ -1649,7 +1651,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("allows slackProxy chat.postMessage when caller is the current thread owner (#855)", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     const invokeCapability = vi.fn(async ({ params }: { params: Record<string, unknown> }) => {
@@ -1705,7 +1707,7 @@ describe("broker integration — client ↔ server ↔ DB", () => {
   });
 
   it("refuses adapter.capability from an unregistered caller (#855)", async () => {
-    client.disconnect();
+    client.close();
     await server.stop();
 
     const invokeCapability = vi.fn(async () => ({
@@ -2217,7 +2219,7 @@ describe("broker integration — mesh auth", () => {
     const reg = await client.register("trusted-agent", "🔐");
     expect(reg.agentId).toBeDefined();
 
-    client.disconnect();
+    client.close();
   });
 
   it("rejects clients that do not authenticate before calling broker methods", async () => {

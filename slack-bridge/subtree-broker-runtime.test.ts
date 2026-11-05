@@ -709,7 +709,7 @@ describe("subtree broker spawn lifecycle", () => {
       ]);
       expect(tmux.commands.flat()).not.toContain("w1:p23");
       expect(herdrCommands.flat()).not.toContain(tmuxResult.sessionName);
-      for (const child of childClients) child.disconnect();
+      for (const child of childClients) child.close();
     } finally {
       if (originalActivation === undefined) {
         delete process.env.PINET_HIBERNATION_RUNTIME_ACTIVATION;
@@ -1578,7 +1578,7 @@ describe("subtree broker spawn lifecycle", () => {
         tmuxSession: timeoutError.handle.tmuxSessionName,
       }),
     ).rejects.toThrow("spawn launch has already been cleaned up");
-    lateClient.disconnect();
+    lateClient.close();
 
     const replacement = await runtime.spawnWorker(ctx, {
       task: "Retry racing registration",

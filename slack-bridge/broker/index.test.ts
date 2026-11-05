@@ -12,7 +12,7 @@ describe("broker adapter lifecycle", () => {
   let dir: string | null = null;
 
   afterEach(async () => {
-    client?.disconnect();
+    await client?.close();
     await broker?.stop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -37,15 +37,14 @@ describe("broker adapter lifecycle", () => {
     broker.addAdapter(adapter);
 
     client = new BrokerClient({ path: socketPath });
-    await client.connect();
+    const statuses: string[] = [];
+    await client.connect({ onStatus: (status) => statuses.push(status.kind) });
     await client.register("worker", "🧪");
-    const workerDisconnected = vi.fn();
-    client.onDisconnect(workerDisconnected);
 
     await broker.removeAdapters([adapter]);
 
     expect(disconnect).toHaveBeenCalledOnce();
-    expect(workerDisconnected).not.toHaveBeenCalled();
+    expect(statuses).toEqual(["connecting", "ready"]);
     expect(client.isConnected()).toBe(true);
     expect(fs.existsSync(socketPath)).toBe(true);
     await expect(client.listAgents()).resolves.toEqual([

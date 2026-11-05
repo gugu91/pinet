@@ -15,10 +15,8 @@ export interface PinetAgentStatusDeps {
   getActiveBrokerDb: () => PinetAgentStatusBrokerDbPort | null;
   getActiveBrokerSelfId: () => string | null;
   hasFollowerClient: () => boolean;
-  syncFollowerDesiredStatus: (
-    status: PinetAgentStatusValue,
-    options: { force?: boolean },
-  ) => Promise<void>;
+  /** Sync the broker to `getDesiredAgentStatus()`. */
+  syncFollowerDesiredStatus: (options: { force?: boolean }) => Promise<void>;
   runBrokerMaintenance: (ctx: ExtensionContext) => void;
   getInboxLength: () => number;
   getCurrentRuntimeMode: () => SlackBridgeRuntimeMode;
@@ -53,7 +51,7 @@ export function createPinetAgentStatus(deps: PinetAgentStatusDeps): PinetAgentSt
     }
 
     if (deps.getBrokerRole() === "follower" && deps.hasFollowerClient()) {
-      await deps.syncFollowerDesiredStatus(desiredAgentStatus, options);
+      await deps.syncFollowerDesiredStatus(options);
     }
   }
 
