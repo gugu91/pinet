@@ -22,7 +22,7 @@
     "lint": "turbo run lint && pnpm lint:agent-standards",
     "lint:agent-standards": "node ./scripts/agent-standards-lint.mjs",
     "typecheck": "turbo run typecheck",
-    "build": "turbo run build",
+    "build": "node ./scripts/build-all.mjs",
     "build:packages": "node ./scripts/build-all.mjs",
     "build:test-deps": "node ./scripts/build-all.mjs --test-deps",
     "test": "turbo run test && vitest run .husky/*.test.ts tsconfig.test.ts && node --test scripts/*.test.mjs",
