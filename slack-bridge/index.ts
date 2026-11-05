@@ -17,7 +17,6 @@ import {
   resolveAgentStableId,
   resolveAllowAllWorkspaceUsers,
   trackBrokerInboundThread,
-  isAbortError,
 } from "./helpers.js";
 import { buildSecurityPrompt, type SecurityGuardrails } from "./guardrails.js";
 import { TtlCache, TtlSet } from "./ttl-cache.js";
@@ -69,6 +68,7 @@ import {
   resolveBrokerSocketPath,
   type BrokerClientRef,
 } from "./follower-runtime.js";
+import { createPinetRuntime } from "./pinet-runtime.js";
 import {
   createSinglePlayerRuntime,
   type SinglePlayerPendingAttentionEntry,
@@ -152,6 +152,12 @@ const runtimeModeAcrossReload = ((
   }
 )[RUNTIME_MODE_ACROSS_RELOAD] ??= {});
 
+/** What a started runtime mode holds while it runs. */
+type PinetRole =
+  | { mode: "single" }
+  | { mode: "broker" }
+  | { mode: "follower"; client: BrokerClientRef };
+
 export default function (pi: ExtensionAPI) {
   let settings = loadSettingsFromFile();
 
@@ -179,8 +185,8 @@ export default function (pi: ExtensionAPI) {
   // An empty token means "no local Slack app": a follower then calls Slack through the broker.
   const slack: SlackRequestCall = async (method, token, body) => {
     if (token) return slackRequestRuntime.slack(method, token, body);
-    if (brokerRole === "follower" && brokerClient)
-      return brokerClient.client.slackProxy(method, body ?? {});
+    const followerClient = getFollowerClient();
+    if (followerClient) return followerClient.slackProxy(method, body ?? {});
     throw new Error("Slack bot token is not configured.");
   };
 
@@ -256,7 +262,7 @@ export default function (pi: ExtensionAPI) {
     setBrokerStableId: (stableId) => {
       brokerStableId = stableId;
     },
-    getBrokerRole: () => brokerRole,
+    getBrokerRole: getBrokerRole,
     getActiveSkinTheme: () => activeSkinTheme,
     setActiveSkinTheme: (theme) => {
       activeSkinTheme = theme;
@@ -315,8 +321,8 @@ export default function (pi: ExtensionAPI) {
     userNames,
     getSecurityPrompt: () => securityPrompt,
     deliverTrackedSlackFollowUpMessage: (options) => deliverTrackedSlackFollowUpMessage(options),
-    getBrokerRole: () => brokerRole,
-    hasFollowerClient: () => brokerClient?.client != null,
+    getBrokerRole: getBrokerRole,
+    hasFollowerClient: () => getFollowerClient() !== null,
     flushFollowerDeliveredAcks: () => followerRuntime.flushDeliveredAcks(),
     markBrokerInboxIdsDelivered: (inboxIds) => {
       brokerRuntime.markDelivered(inboxIds);
@@ -389,7 +395,7 @@ export default function (pi: ExtensionAPI) {
     },
     getAgentStableId: () => agentStableId,
     getBrokerStableId: () => brokerStableId,
-    getBrokerRole: () => brokerRole,
+    getBrokerRole: getBrokerRole,
     getAgentOwnerToken: () => agentOwnerToken,
     setAgentOwnerToken: (ownerToken) => {
       agentOwnerToken = ownerToken;
@@ -484,7 +490,7 @@ export default function (pi: ExtensionAPI) {
     getAgentEmoji: () => agentEmoji,
     getActiveSkinTheme: () => activeSkinTheme,
     getAgentPersonality: () => agentPersonality,
-    getBrokerRole: () => brokerRole,
+    getBrokerRole: getBrokerRole,
     getBrokerPromptSetting: () => settings.brokerPrompt,
   });
 
@@ -506,11 +512,11 @@ export default function (pi: ExtensionAPI) {
     getSuggestedPrompts: () => settings.suggestedPrompts,
     getAgentName: () => agentName,
     getThreads: () => threads,
-    getBrokerRole: () => brokerRole,
+    getBrokerRole: getBrokerRole,
     resolveBrokerThreadChannel: (threadTs) =>
       brokerRuntime.getBroker()?.db.getThread(threadTs)?.channel ?? null,
     resolveFollowerThreadChannel: async (threadTs) =>
-      (await brokerClient?.client.resolveThread(threadTs)) ?? null,
+      (await getFollowerClient()?.resolveThread(threadTs)) ?? null,
   });
   const {
     addReaction,
@@ -529,9 +535,9 @@ export default function (pi: ExtensionAPI) {
     formatError: msg,
     getAgentName: () => agentName,
     getAgentEmoji: () => agentEmoji,
-    getBrokerRole: () => brokerRole,
-    getRuntimeMode: () => currentRuntimeMode,
-    isFollowerConnected: () => brokerClient != null,
+    getBrokerRole: getBrokerRole,
+    getRuntimeMode: getRuntimeMode,
+    isFollowerConnected: () => getFollowerClient() !== null,
     isSinglePlayerConnected: () => isSinglePlayerConnected(),
     getActiveThreads: () => threads.size,
     getPendingInboxCount: () => inbox.length,
@@ -551,21 +557,21 @@ export default function (pi: ExtensionAPI) {
     getBrokerControlPlaneHomeTabViewerIds,
   } = brokerRuntimeAccess;
   const pinetAgentStatus = createPinetAgentStatus({
-    getPinetEnabled: () => pinetEnabled,
-    getBrokerRole: () => brokerRole,
+    getPinetEnabled: isPinetEnabled,
+    getBrokerRole: getBrokerRole,
     getDesiredAgentStatus: () => desiredAgentStatus,
     setDesiredAgentStatus: (status) => {
       desiredAgentStatus = status;
     },
     getActiveBrokerDb,
     getActiveBrokerSelfId,
-    hasFollowerClient: () => brokerClient != null,
+    hasFollowerClient: () => getFollowerClient() !== null,
     syncFollowerDesiredStatus: (options) => followerRuntime.syncDesiredStatus(options),
     runBrokerMaintenance: (ctx) => {
       brokerRuntime.runMaintenance(ctx);
     },
     getInboxLength: () => inbox.length,
-    getCurrentRuntimeMode: () => currentRuntimeMode,
+    getCurrentRuntimeMode: getRuntimeMode,
     maybeDrainInboxIfIdle,
     getExtensionContext: () => sessionUiRuntime.getExtensionContext() ?? undefined,
   });
@@ -581,7 +587,7 @@ export default function (pi: ExtensionAPI) {
     formatError: msg,
   });
   const agentEventRuntime = createAgentEventRuntime({
-    getBrokerRole: () => brokerRole,
+    getBrokerRole: getBrokerRole,
     getGuardrails: () => guardrails,
     requireToolPolicy,
     formatAction: formatConfirmationAction,
@@ -638,7 +644,7 @@ export default function (pi: ExtensionAPI) {
     cwd: process.cwd(),
     getSettings: () => settings,
     getAgentStableId: () => agentStableId,
-    getCentralAgentId: () => brokerClient?.client.getRegisteredIdentity()?.agentId ?? null,
+    getCentralAgentId: () => getFollowerClient()?.getRegisteredIdentity()?.agentId ?? null,
     getAgentIdentity: () => ({ name: agentName, emoji: agentEmoji }),
     getAgentMetadata,
     getMeshRoleFromMetadata: (metadata, fallbackRole) =>
@@ -678,7 +684,10 @@ export default function (pi: ExtensionAPI) {
     getAppToken: () => appToken!,
     dedup: processedSlackSocketDeliveries,
     abortSlackRequests: slackRequestRuntime.abortAndWait,
-    isSingleRuntimeActive: () => currentRuntimeMode === "single",
+    isSingleRuntimeActive: () => {
+      const state = pinetRuntime.state();
+      return state.kind !== "off" && state.mode === "single";
+    },
     setExtStatus,
     formatError: msg,
     getAgentName: () => agentName,
@@ -711,12 +720,14 @@ export default function (pi: ExtensionAPI) {
     beginThreadStatus: (channelId, threadTs, status) =>
       slackThreadStatuses.begin(channelId, threadTs, status),
     claimOwnedThread: (threadTs, channelId, source = "slack") => {
-      if (brokerRole === "broker") {
+      if (getBrokerRole() === "broker") {
         brokerRuntime.claimThread(threadTs, channelId, source);
-      } else if (brokerRole === "follower" && brokerClient?.client) {
-        void brokerClient.client.claimThread(threadTs, channelId, source).catch(() => {
-          /* broker gone, best effort */
-        });
+      } else {
+        void getFollowerClient()
+          ?.claimThread(threadTs, channelId, source)
+          .catch(() => {
+            /* broker gone, best effort */
+          });
       }
     },
   });
@@ -729,17 +740,126 @@ export default function (pi: ExtensionAPI) {
   // ─── Agent-to-agent messaging tools ──────────────────
 
   // These are registered unconditionally but only work when pinet is active.
-  // The variables they reference (pinetEnabled, brokerRole, brokerRuntime,
-  // brokerClient) are declared in the Commands section just below.
 
-  // Forward-declared — assigned in the Commands section below.
-  let pinetEnabled = false;
-  let currentRuntimeMode: SlackBridgeRuntimeMode = "off";
-  let brokerRole: "broker" | "follower" | null = null;
-  let brokerClient: BrokerClientRef | null = null;
-  let pinetLifecycleTail: Promise<void> = Promise.resolve();
-  let pinetReloadPromise: Promise<void> | null = null;
-  let pendingStartup: { controller: AbortController; promise: Promise<void> } | null = null;
+  // The one owner of this process's runtime mode. Every start, stop, reload
+  // and mode change goes through it; the readers below derive from its state.
+  const pinetRuntime = createPinetRuntime<PinetRole, ExtensionContext>({
+    start: async (ctx, mode, { signal, publish }) => {
+      slackRequestRuntime.reset();
+      singlePlayerRuntime.resetShutdownState();
+      if (mode === "single") {
+        await singlePlayerRuntime.connect(ctx, signal);
+        signal.throwIfAborted();
+        botUserId = singlePlayerRuntime.getBotUserId() ?? botUserId;
+        await publish({ mode: "single" });
+      } else if (mode === "broker") {
+        await connectAsBroker(ctx, { publish }, signal);
+      } else {
+        await connectAsFollower(ctx, signal, publish);
+      }
+      void ensureSlackScopeDiagnostics(ctx);
+    },
+    stop: (ctx, options) => stopPinetRoles(ctx, options),
+    reload: async (ctx, running, { setRole }) => {
+      const currentRole = running.mode === "single" ? null : running.mode;
+      let reloadBrokerInPlace = false;
+      const validateRefreshedState = () => {
+        if (currentRole !== "follower" && !hasSlackTokens()) {
+          throw new Error("Slack tokens are not configured after reload.");
+        }
+        if (currentRole === "broker") {
+          reloadBrokerInPlace = brokerRuntime.canReloadInPlace();
+        }
+      };
+
+      if (currentRole === "broker") {
+        await reloadPinetRuntimeInPlaceSafely({
+          snapshotState: () => snapshotReloadableRuntime(),
+          restoreState: (snapshot) => {
+            restoreReloadableRuntime(snapshot);
+          },
+          refreshState: () => {
+            refreshSettings();
+          },
+          validateRefreshedState,
+          reloadRuntime: async () => {
+            if (reloadBrokerInPlace) {
+              const result = await brokerRuntime.reloadAdapters(ctx);
+              botUserId = result.botUserId;
+              await toolRegistrationRuntime.sync(pi, getRuntimeMode());
+              return;
+            }
+
+            await setRole(null);
+            await stopPinetRoles(ctx, { releaseIdentity: false });
+            slackRequestRuntime.reset();
+            singlePlayerRuntime.resetShutdownState();
+            setExtStatus(ctx, "reconnecting");
+            await connectAsBroker(ctx, { refreshSettings: false, publish: setRole });
+          },
+        });
+        return;
+      }
+
+      await reloadPinetRuntimeSafely({
+        getCurrentRole: () => currentRole,
+        snapshotState: () => snapshotReloadableRuntime(),
+        restoreState: (snapshot) => {
+          restoreReloadableRuntime(snapshot);
+        },
+        refreshState: () => {
+          refreshSettings();
+        },
+        validateRefreshedState,
+        stopRuntime: async () => {
+          await setRole(null);
+          await stopPinetRoles(ctx, { releaseIdentity: false });
+          // Reload intentionally keeps the extension alive in-process, so restore a
+          // fresh top-level Slack request tracker after aborting the previous
+          // generation. This preserves shutdown abort semantics without leaving
+          // top-level Slack tools permanently stuck in "shutdown in progress".
+          slackRequestRuntime.reset();
+          singlePlayerRuntime.resetShutdownState();
+          setExtStatus(ctx, "reconnecting");
+        },
+        startRuntime: async (role) => {
+          if (role === "broker") {
+            await connectAsBroker(ctx, { publish: setRole });
+            return;
+          }
+          await connectAsFollower(ctx, undefined, setRole);
+        },
+      });
+    },
+    onChange: async (ctx, state) => {
+      if (state.kind === "off") setExtStatus(ctx, "off");
+      if (state.kind === "starting") setExtStatus(ctx, "reconnecting");
+      await toolRegistrationRuntime.sync(pi, getRuntimeMode());
+    },
+  });
+  // Function declarations so the many dependency objects above can take them.
+  function runningRole(): PinetRole | null {
+    const state = pinetRuntime.state();
+    return state.kind === "running" ? state.role : null;
+  }
+  function getRuntimeMode(): SlackBridgeRuntimeMode {
+    return runningRole()?.mode ?? "off";
+  }
+  function getBrokerRole(): "broker" | "follower" | null {
+    const mode = runningRole()?.mode;
+    return mode === "broker" || mode === "follower" ? mode : null;
+  }
+  function getFollowerClient(): BrokerClientRef["client"] | null {
+    const role = runningRole();
+    return role?.mode === "follower" ? role.client.client : null;
+  }
+  function isPinetEnabled(): boolean {
+    return getBrokerRole() !== null;
+  }
+  function reloadPinetRuntime(ctx: ExtensionContext): Promise<void> {
+    return pinetRuntime.reload(ctx);
+  }
+  let lastFollowerUnregisterError: string | null = null;
   let followerRuntimeDiagnostic: FollowerRuntimeDiagnostic | null = null;
   const followerDeliveryState = createFollowerDeliveryState();
   let desiredAgentStatus: "working" | "idle" = "idle";
@@ -933,7 +1053,7 @@ export default function (pi: ExtensionAPI) {
         "Pinet broker shutdown requested by another local session (/pinet start replace). Stopping the broker runtime in this session.",
         "warning",
       );
-      await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: true }));
+      await pinetRuntime.setMode(ctx, "off", { releaseIdentity: true });
       slackRequestRuntime.reset();
       singlePlayerRuntime.resetShutdownState();
     },
@@ -1024,12 +1144,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   const pinetMeshOps = createPinetMeshOps({
-    getPinetEnabled: () => pinetEnabled,
-    getBrokerRole: () => brokerRole,
+    getPinetEnabled: isPinetEnabled,
+    getBrokerRole: getBrokerRole,
     getActiveBrokerDb,
     getActiveBrokerSelfId,
     getAgentName: () => agentName,
-    getFollowerClient: () => brokerClient?.client ?? null,
+    getFollowerClient,
     sendSubtreeAgentMessage: (target, body, metadata) =>
       subtreeBrokerRuntime.sendMessage(target, body, metadata),
     formatTrackedAgent,
@@ -1062,7 +1182,7 @@ export default function (pi: ExtensionAPI) {
       command,
       target,
       ...(reason !== undefined ? { reason } : {}),
-      brokerRole,
+      brokerRole: getBrokerRole(),
       hib: resolveHibernationSettings(settings),
       getRuntimeControl: () => subtreeBrokerRuntime.getHibernationRuntimeControl(),
       getFallbackDb: () => getActiveBrokerDb(),
@@ -1072,31 +1192,33 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function listPinetLanes(options: PinetLaneListOptions) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.listPinetLanes(options);
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.listLanes(options);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.listLanes(options);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function upsertPinetLane(input: PinetLaneUpsertInput) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.upsertPinetLane(input);
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.upsertLane(input);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.upsertLane(input);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function setPinetLaneParticipant(input: PinetLaneParticipantUpsertInput) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       const selfId = getActiveBrokerSelfId();
       if (!db) throw new Error("Broker database is unavailable.");
@@ -1105,83 +1227,90 @@ export default function (pi: ExtensionAPI) {
         agentId: input.agentId.trim().length > 0 ? input.agentId : (selfId ?? input.agentId),
       });
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.setLaneParticipant(input);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.setLaneParticipant(input);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function acquirePortLease(input: PortLeaseAcquireInput) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       const selfId = getActiveBrokerSelfId();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.acquirePortLease({ ...input, ownerAgentId: input.ownerAgentId ?? selfId ?? null });
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.acquirePortLease(input);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.acquirePortLease(input);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function renewPortLease(input: PortLeaseRenewInput) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       const selfId = getActiveBrokerSelfId();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.renewPortLease({ ...input, ownerAgentId: input.ownerAgentId ?? selfId ?? null });
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.renewPortLease(input);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.renewPortLease(input);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function releasePortLease(input: PortLeaseReleaseInput) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       const selfId = getActiveBrokerSelfId();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.releasePortLease({ ...input, ownerAgentId: input.ownerAgentId ?? selfId ?? null });
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.releasePortLease(input);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.releasePortLease(input);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function getPortLease(leaseId: string) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.getPortLease(leaseId);
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.getPortLease(leaseId);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.getPortLease(leaseId);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function listPortLeases(options: PortLeaseListOptions) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.listPortLeases(options);
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.listPortLeases(options);
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.listPortLeases(options);
     }
     throw new Error("Pinet is in an unexpected state.");
   }
 
   async function expirePortLeases() {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       if (!db) throw new Error("Broker database is unavailable.");
       return db.expirePortLeases();
     }
-    if (brokerRole === "follower" && brokerClient?.client) {
-      return await brokerClient.client.expirePortLeases();
+    const followerClient = getFollowerClient();
+    if (followerClient) {
+      return await followerClient.expirePortLeases();
     }
     throw new Error("Pinet is in an unexpected state.");
   }
@@ -1192,7 +1321,7 @@ export default function (pi: ExtensionAPI) {
     unreadOnly?: boolean;
     markRead?: boolean;
   }) {
-    if (brokerRole === "broker") {
+    if (getBrokerRole() === "broker") {
       const db = getActiveBrokerDb();
       const selfId = getActiveBrokerSelfId();
       if (!db || !selfId) {
@@ -1221,12 +1350,13 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    if (brokerRole === "follower" && brokerClient?.client) {
+    const followerClient = getFollowerClient();
+    if (followerClient) {
       const subtreeResult = subtreeBrokerRuntime.readInbox(options);
       if (subtreeResult && (subtreeResult.messages.length > 0 || Boolean(options.threadId))) {
         return consumePinetReadConfirmationReplies(subtreeResult, consumeConfirmationReply);
       }
-      const result = await brokerClient.client.readInbox(options);
+      const result = await followerClient.readInbox(options);
       if (result.markedReadIds.length > 0) {
         markFollowerInboxIdsDelivered(followerDeliveryState, result.markedReadIds);
         discardQueuedInboxMessages(inbox, "broker", result.markedReadIds);
@@ -1239,90 +1369,16 @@ export default function (pi: ExtensionAPI) {
     throw new Error("Pinet is in an unexpected state.");
   }
 
-  function runPinetLifecycle<T>(operation: () => Promise<T>): Promise<T> {
-    const run = pinetLifecycleTail.then(operation, operation);
-    pinetLifecycleTail = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
-  async function cancelPendingStartup(): Promise<void> {
-    const startup = pendingStartup;
-    if (!startup) return;
-    startup.controller.abort();
-    await startup.promise;
-  }
-
-  function runRuntimeModeTransition(
-    ctx: ExtensionContext,
-    mode: SlackBridgeRuntimeMode,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    return runPinetLifecycle(async () => {
-      signal?.throwIfAborted();
-      if (mode !== "off" && mode !== "follower" && !hasSlackTokens()) {
-        throw new Error(
+  /** Ask the runtime for `mode`, refusing Slack modes without tokens before touching what runs. */
+  function setRuntimeMode(ctx: ExtensionContext, mode: SlackBridgeRuntimeMode): Promise<void> {
+    if (mode !== "off" && mode !== "follower" && !hasSlackTokens()) {
+      return Promise.reject(
+        new Error(
           `Pinet ${mode} mode needs SLACK_BOT_TOKEN and SLACK_APP_TOKEN. Without them, join a running broker with /pinet follow.`,
-        );
-      }
-      if (currentRuntimeMode === mode) {
-        if (mode === "off") {
-          setExtStatus(ctx, "off");
-        }
-        await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
-        return;
-      }
-
-      if (currentRuntimeMode !== "off") {
-        if (pinetReloadPromise) {
-          await pinetReloadPromise.catch(() => undefined);
-        }
-        await stopPinetRuntime(ctx, { releaseIdentity: true });
-        signal?.throwIfAborted();
-      }
-
-      slackRequestRuntime.reset();
-      singlePlayerRuntime.resetShutdownState();
-
-      if (mode === "off") {
-        currentRuntimeMode = "off";
-        setExtStatus(ctx, "off");
-        return;
-      }
-
-      if (mode === "single") {
-        currentRuntimeMode = "single";
-        setExtStatus(ctx, "reconnecting");
-        await singlePlayerRuntime.connect(ctx, signal);
-        signal?.throwIfAborted();
-        botUserId = singlePlayerRuntime.getBotUserId() ?? botUserId;
-        await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
-        signal?.throwIfAborted();
-        void ensureSlackScopeDiagnostics(ctx);
-        return;
-      }
-
-      if (mode === "broker") {
-        await connectAsBroker(ctx, {}, signal);
-        signal?.throwIfAborted();
-        void ensureSlackScopeDiagnostics(ctx);
-        return;
-      }
-
-      await connectAsFollower(ctx, signal);
-      signal?.throwIfAborted();
-      void ensureSlackScopeDiagnostics(ctx);
-    });
-  }
-
-  async function transitionToRuntimeMode(
-    ctx: ExtensionContext,
-    mode: SlackBridgeRuntimeMode,
-  ): Promise<void> {
-    await cancelPendingStartup();
-    await runRuntimeModeTransition(ctx, mode);
+        ),
+      );
+    }
+    return pinetRuntime.setMode(ctx, mode);
   }
 
   /**
@@ -1342,112 +1398,20 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  async function stopPinetRuntime(
+  async function stopPinetRoles(
     ctx: ExtensionContext,
     options: { releaseIdentity: boolean },
   ): Promise<void> {
     flushPersist();
     await subtreeBrokerRuntime.stop({ releaseIdentity: options.releaseIdentity });
     await brokerRuntime.disconnect({ releaseIdentity: options.releaseIdentity });
-
-    await followerRuntime
+    const { unregisterError } = await followerRuntime
       .disconnect(ctx, { releaseIdentity: options.releaseIdentity })
-      .catch(() => {
-        /* best effort */
-      });
-    brokerClient = null;
+      .catch((error: Error) => ({ unregisterError: msg(error) }));
+    lastFollowerUnregisterError = unregisterError;
     followerRuntimeDiagnostic = null;
-
     await singlePlayerRuntime.disconnect();
-    brokerRole = null;
-    pinetEnabled = false;
     desiredAgentStatus = "idle";
-    currentRuntimeMode = "off";
-    setExtStatus(ctx, "off");
-    await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
-  }
-
-  async function reloadPinetRuntime(ctx: ExtensionContext): Promise<void> {
-    await cancelPendingStartup();
-    if (pinetReloadPromise) {
-      await pinetReloadPromise;
-      return;
-    }
-
-    const reloadWork = runPinetLifecycle(async () => {
-      let reloadBrokerInPlace = false;
-      const validateRefreshedState = () => {
-        if (brokerRole !== "follower" && !hasSlackTokens()) {
-          throw new Error("Slack tokens are not configured after reload.");
-        }
-        if (brokerRole === "broker") {
-          reloadBrokerInPlace = brokerRuntime.canReloadInPlace();
-        }
-      };
-
-      if (brokerRole === "broker") {
-        await reloadPinetRuntimeInPlaceSafely({
-          snapshotState: () => snapshotReloadableRuntime(),
-          restoreState: (snapshot) => {
-            restoreReloadableRuntime(snapshot);
-          },
-          refreshState: () => {
-            refreshSettings();
-          },
-          validateRefreshedState,
-          reloadRuntime: async () => {
-            if (reloadBrokerInPlace) {
-              const result = await brokerRuntime.reloadAdapters(ctx);
-              botUserId = result.botUserId;
-              await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
-              return;
-            }
-
-            await stopPinetRuntime(ctx, { releaseIdentity: false });
-            slackRequestRuntime.reset();
-            singlePlayerRuntime.resetShutdownState();
-            setExtStatus(ctx, "reconnecting");
-            await connectAsBroker(ctx, { refreshSettings: false });
-          },
-        });
-        return;
-      }
-
-      await reloadPinetRuntimeSafely({
-        getCurrentRole: () => brokerRole,
-        snapshotState: () => snapshotReloadableRuntime(),
-        restoreState: (snapshot) => {
-          restoreReloadableRuntime(snapshot);
-        },
-        refreshState: () => {
-          refreshSettings();
-        },
-        validateRefreshedState,
-        stopRuntime: async () => {
-          await stopPinetRuntime(ctx, { releaseIdentity: false });
-          // Reload intentionally keeps the extension alive in-process, so restore a
-          // fresh top-level Slack request tracker after aborting the previous
-          // generation. This preserves shutdown abort semantics without leaving
-          // top-level Slack tools permanently stuck in "shutdown in progress".
-          slackRequestRuntime.reset();
-          singlePlayerRuntime.resetShutdownState();
-          setExtStatus(ctx, "reconnecting");
-        },
-        startRuntime: async (role) => {
-          if (role === "broker") {
-            await connectAsBroker(ctx);
-            return;
-          }
-          await connectAsFollower(ctx);
-        },
-      });
-    }).finally(() => {
-      if (pinetReloadPromise === reloadWork) {
-        pinetReloadPromise = null;
-      }
-    });
-    pinetReloadPromise = reloadWork;
-    await reloadWork;
   }
 
   // ─── Tools ──────────────────────────────────────────
@@ -1476,15 +1440,15 @@ export default function (pi: ExtensionAPI) {
       getBotUserId: () => botUserId,
       registerConfirmationRequest,
       pinetDelivery: {
-        isEnabled: () => pinetEnabled,
-        isAvailable: () => pinetEnabled && brokerRole !== null,
+        isEnabled: isPinetEnabled,
+        isAvailable: isPinetEnabled,
         sendSlackMessage: async (input) => {
           const content = {
             text: input.text,
             markdown: input.text,
             ...(input.blocks && input.blocks.length > 0 ? { slackBlocks: input.blocks } : {}),
           };
-          if (brokerRole === "broker") {
+          if (getBrokerRole() === "broker") {
             const broker = getActiveBroker();
             const selfId = getActiveBrokerSelfId();
             if (!broker || !selfId) {
@@ -1517,11 +1481,9 @@ export default function (pi: ExtensionAPI) {
               source: result.thread.source,
             };
           }
-          if (brokerRole === "follower") {
-            if (!brokerClient?.client) {
-              throw new Error("Pinet is in an unexpected state.");
-            }
-            return brokerClient.client.sendMessage({
+          const followerClient = getFollowerClient();
+          if (followerClient) {
+            return followerClient.sendMessage({
               threadId: input.threadId,
               body: input.text,
               source: "slack",
@@ -1539,15 +1501,16 @@ export default function (pi: ExtensionAPI) {
       },
     },
     pinetTools: {
-      pinetEnabled: () => pinetEnabled,
-      brokerRole: () => brokerRole,
+      pinetEnabled: isPinetEnabled,
+      brokerRole: getBrokerRole,
       requireToolPolicy,
       sendPinetAgentMessage,
       sendPinetBroadcastMessage,
       replyToPinetThread: async (threadId, body) => {
-        if (brokerRole !== "broker") {
-          if (!brokerClient?.client) throw new Error("Pinet is in an unexpected state.");
-          const result = await brokerClient.client.sendMessage({ threadId, body });
+        if (getBrokerRole() !== "broker") {
+          const followerClient = getFollowerClient();
+          if (!followerClient) throw new Error("Pinet is in an unexpected state.");
+          const result = await followerClient.sendMessage({ threadId, body });
           return {
             messageId: result.messageId,
             threadId: result.threadId,
@@ -1593,14 +1556,14 @@ export default function (pi: ExtensionAPI) {
       listPortLeases,
       expirePortLeases,
       ralphSnoozeStatus: () =>
-        currentRuntimeMode === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
+        getRuntimeMode() === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
       snoozeRalphLoop: (input) => brokerRuntime.snoozeRalphLoop(input),
       clearRalphSnooze: () => brokerRuntime.clearRalphSnooze(),
       runHibernateCommand: ({ target, reason }) =>
         runHibernationCommand("hibernate", target, reason),
       runWakeCommand: ({ target, reason }) => runHibernationCommand("wake", target, reason),
       getAgentLifecycleProjection: (agentIds?: string[]): AgentLifecycleStatus[] => {
-        if (brokerRole !== "broker") return [];
+        if (getBrokerRole() !== "broker") return [];
         const db = getActiveBrokerDb();
         if (!db) return [];
         const hib = resolveHibernationSettings(settings);
@@ -1612,17 +1575,18 @@ export default function (pi: ExtensionAPI) {
       },
     },
     iMessageTools: {
-      pinetEnabled: () => pinetEnabled,
-      brokerRole: () => brokerRole,
+      pinetEnabled: isPinetEnabled,
+      brokerRole: getBrokerRole,
       requireToolPolicy,
       getActiveBroker,
       getActiveBrokerSelfId,
       sendFollowerIMessage: async (input) => {
-        if (!brokerClient?.client) {
+        const followerClient = getFollowerClient();
+        if (!followerClient) {
           throw new Error("Pinet is in an unexpected state.");
         }
 
-        const result = await brokerClient.client.sendMessage(input);
+        const result = await followerClient.sendMessage(input);
         return {
           adapter: result.adapter,
           messageId: result.messageId,
@@ -1645,7 +1609,7 @@ export default function (pi: ExtensionAPI) {
 
   async function connectAsBroker(
     ctx: ExtensionContext,
-    options: { refreshSettings?: boolean } = {},
+    options: { refreshSettings?: boolean; publish: (role: PinetRole) => Promise<void> },
     signal?: AbortSignal,
   ): Promise<void> {
     signal?.throwIfAborted();
@@ -1723,11 +1687,8 @@ export default function (pi: ExtensionAPI) {
     signal?.throwIfAborted();
     broker.server.setOutboundMessageAdapters?.(broker.adapters);
 
-    brokerRole = "broker";
-    pinetEnabled = true;
     desiredAgentStatus = "idle";
-    currentRuntimeMode = "broker";
-    await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
+    await options.publish({ mode: "broker" });
 
     if (recoveredBrokerMessages > 0 || releasedBrokerClaims > 0) {
       const recoveredTargetedDetail =
@@ -1778,7 +1739,7 @@ export default function (pi: ExtensionAPI) {
     },
     getSettings: () => settings,
     refreshSettings,
-    getPinetEnabled: () => pinetEnabled,
+    getPinetEnabled: isPinetEnabled,
     getAgentIdentity: () => ({ name: agentName, emoji: agentEmoji }),
     getAgentStableId: () => agentStableId,
     getAgentOwnerToken: () => agentOwnerToken,
@@ -1798,8 +1759,8 @@ export default function (pi: ExtensionAPI) {
     getAgentMetadata,
     applyRegistrationIdentity,
     onRegistrationIdentityApplied: async () => {
-      if (currentRuntimeMode === "follower") {
-        await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
+      if (getRuntimeMode() === "follower") {
+        await toolRegistrationRuntime.sync(pi, getRuntimeMode());
       }
     },
     persistState,
@@ -1817,9 +1778,11 @@ export default function (pi: ExtensionAPI) {
     },
     handleTerminalReconnectFailure: async (ctx, error) => {
       console.error(`[slack-bridge] follower reconnect failed: ${msg(error)}`);
-      await disconnectFollower(ctx, { preserveErrorState: true }).catch(() => {
-        /* best effort */
+      const diagnostic = followerRuntimeDiagnostic;
+      await pinetRuntime.setMode(ctx, "off").catch((stopError: Error) => {
+        console.error(`[slack-bridge] follower stop failed: ${msg(stopError)}`);
       });
+      followerRuntimeDiagnostic = diagnostic;
       setExtStatus(ctx, "error");
       ctx.ui.notify(
         `Pinet reconnect stopped: ${msg(error)} Update slack-bridge.agentName/agentEmoji or PI_NICKNAME, or clear the explicit identity request, then run /pinet follow to retry.`,
@@ -1832,18 +1795,18 @@ export default function (pi: ExtensionAPI) {
 
   const commandRegistrationRuntime = createCommandRegistrationRuntime({
     pinetCommands: {
-      pinetEnabled: () => pinetEnabled,
+      pinetEnabled: isPinetEnabled,
       pinetRegistrationBlocked: pinetRegistrationGate.isBlocked,
-      runtimeMode: () => currentRuntimeMode,
+      runtimeMode: getRuntimeMode,
       runtimeConnected: () =>
-        currentRuntimeMode === "broker"
+        getRuntimeMode() === "broker"
           ? brokerRuntime.isConnected()
-          : currentRuntimeMode === "follower"
-            ? (brokerClient?.client.isConnected() ?? false)
-            : currentRuntimeMode === "single"
+          : getRuntimeMode() === "follower"
+            ? (getFollowerClient()?.isConnected() ?? false)
+            : getRuntimeMode() === "single"
               ? singlePlayerRuntime.isConnected()
               : false,
-      brokerRole: () => brokerRole,
+      brokerRole: getBrokerRole,
       agentName: () => agentName,
       agentEmoji: () => agentEmoji,
       agentOwnerToken: () => agentOwnerToken,
@@ -1861,7 +1824,7 @@ export default function (pi: ExtensionAPI) {
       settings: () => settings,
       lastBrokerMaintenance: () => brokerRuntime.getLastMaintenance(),
       ralphSnoozeStatus: () =>
-        currentRuntimeMode === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
+        getRuntimeMode() === "broker" ? brokerRuntime.getRalphSnoozeStatus() : null,
       snoozeRalphLoop: (input) => brokerRuntime.snoozeRalphLoop(input),
       clearRalphSnooze: () => brokerRuntime.clearRalphSnooze(),
       getBrokerControlPlaneHomeTabViewerIds,
@@ -1878,8 +1841,8 @@ export default function (pi: ExtensionAPI) {
       getPinetRegistrationBlockReason: pinetRegistrationGate.getBlockReason,
       replaceGlobalBroker: async (): Promise<ReplaceBrokerOwnerResult> =>
         replaceBrokerOwner({ meshSecret: resolveLocalMeshSecretValue() }),
-      connectAsBroker: (ctx) => transitionToRuntimeMode(ctx, "broker"),
-      connectAsFollower: (ctx) => transitionToRuntimeMode(ctx, "follower"),
+      connectAsBroker: (ctx) => setRuntimeMode(ctx, "broker"),
+      connectAsFollower: (ctx) => setRuntimeMode(ctx, "follower"),
       reloadPinetRuntime,
       disconnectFollower,
       startSubtreeBroker: (ctx) => subtreeBrokerRuntime.start(ctx),
@@ -1889,7 +1852,7 @@ export default function (pi: ExtensionAPI) {
       signalAgentFree,
       applyLocalAgentIdentity: async (name, emoji, personality) => {
         applyLocalAgentIdentity(name, emoji, personality);
-        await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
+        await toolRegistrationRuntime.sync(pi, getRuntimeMode());
       },
       setExtStatus,
       setExtCtx: sessionUiRuntime.setExtCtx,
@@ -1898,39 +1861,27 @@ export default function (pi: ExtensionAPI) {
 
   commandRegistrationRuntime.register(pi);
 
-  async function connectAsFollower(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
+  async function connectAsFollower(
+    ctx: ExtensionContext,
+    signal: AbortSignal | undefined,
+    publish: (role: PinetRole) => Promise<void>,
+  ): Promise<void> {
     signal?.throwIfAborted();
     pinetRegistrationGate.assertCanRegister();
 
     const clientRef = await followerRuntime.connect(ctx, signal);
     signal?.throwIfAborted();
-    brokerClient = clientRef;
     followerRuntimeDiagnostic = null;
-    brokerRole = "follower";
-    pinetEnabled = true;
     desiredAgentStatus = "idle";
-    currentRuntimeMode = "follower";
-    await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
+    await publish({ mode: "follower", client: clientRef });
     setExtStatus(ctx, "ok");
   }
 
   async function disconnectFollower(
     ctx: ExtensionContext,
-    options: { preserveErrorState?: boolean } = {},
   ): Promise<{ unregisterError: string | null }> {
-    const result = await followerRuntime.disconnect(ctx);
-    brokerClient = null;
-    desiredAgentStatus = "idle";
-    brokerRole = null;
-    pinetEnabled = false;
-    currentRuntimeMode = "off";
-    await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
-    if (!options.preserveErrorState) {
-      followerRuntimeDiagnostic = null;
-      setExtStatus(ctx, "off");
-    }
-
-    return result;
+    await pinetRuntime.setMode(ctx, "off");
+    return { unregisterError: lastFollowerUnregisterError };
   }
 
   // ─── Lifecycle ──────────────────────────────────────
@@ -1938,7 +1889,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     const reloadedMode = event.reason === "reload" ? runtimeModeAcrossReload.mode : undefined;
     delete runtimeModeAcrossReload.mode;
-    await cancelPendingStartup();
     compactionGate.reset();
     singlePlayerRuntime.resetShutdownState();
     slackRequestRuntime.reset();
@@ -1960,16 +1910,14 @@ export default function (pi: ExtensionAPI) {
         pinetRegistrationGate.reset();
       } catch (error) {
         ctx.ui.notify(`Pinet join file rejected: ${msg(error)}`, "error");
-        await transitionToRuntimeMode(ctx, "off");
+        await pinetRuntime.setMode(ctx, "off");
         return;
       }
     }
 
     if (!startupJoinFile && pinetRegistrationBlocked) {
       console.log("[slack-bridge] detected local subagent context; skipping Pinet registration");
-      currentRuntimeMode = "off";
-      setExtStatus(ctx, "off");
-      await toolRegistrationRuntime.sync(pi, currentRuntimeMode);
+      await pinetRuntime.setMode(ctx, "off");
       return;
     }
 
@@ -1995,47 +1943,31 @@ export default function (pi: ExtensionAPI) {
         console.error(`[slack-bridge] ${failure}`);
         ctx.ui.notify(failure, "warning");
       }
-      await transitionToRuntimeMode(ctx, startupMode);
+      await pinetRuntime.setMode(ctx, "off");
       return;
     }
 
-    await toolRegistrationRuntime.sync(pi, "off");
-    setExtStatus(ctx, "reconnecting");
-    const controller = new AbortController();
-    const startupPromise = (async () => {
-      try {
-        await runRuntimeModeTransition(ctx, startupMode, controller.signal);
-        if (startupMode === "single") {
-          maybeWarnSlackGuardrailPosture(ctx);
-        }
+    // A later mode request supersedes this one; the runtime then resolves it unstarted.
+    const startup = pinetRuntime.setMode(ctx, startupMode).then(
+      () => {
+        if (getRuntimeMode() !== startupMode) return;
+        if (startupMode === "single") maybeWarnSlackGuardrailPosture(ctx);
         console.log(`[slack-bridge] runtime mode: ${startupMode}`);
-      } catch (error) {
-        const cancelled = controller.signal.aborted || isAbortError(error);
-        if (!cancelled) {
-          console.error(`[slack-bridge] runtime start (${startupMode}) failed: ${msg(error)}`);
-          if (joinPath || followRequested) {
-            ctx.ui.notify(
-              `Pinet could not join the broker: ${msg(error)}. Slack, Pinet and iMessage tools stay off.`,
-              "warning",
-            );
-          }
+      },
+      (error: Error) => {
+        console.error(`[slack-bridge] runtime start (${startupMode}) failed: ${msg(error)}`);
+        if (joinPath || followRequested) {
+          ctx.ui.notify(
+            `Pinet could not join the broker: ${msg(error)}. Slack, Pinet and iMessage tools stay off.`,
+            "warning",
+          );
         }
-        await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: !cancelled })).catch(
-          (cleanupError) => {
-            console.error(`[slack-bridge] runtime cleanup failed: ${msg(cleanupError)}`);
-          },
-        );
         slackRequestRuntime.reset();
         singlePlayerRuntime.resetShutdownState();
-      } finally {
-        if (pendingStartup?.controller === controller) pendingStartup = null;
-      }
-    })().catch((error) => {
-      console.error(`[slack-bridge] background runtime start failed: ${msg(error)}`);
-    });
-    pendingStartup = { controller, promise: startupPromise };
+      },
+    );
     // Explicit joins need their tools enabled before Pi builds the first prompt.
-    if (joinPath || followRequested) await startupPromise;
+    if (joinPath || followRequested) await startup;
   });
 
   // ─── Agent event wiring ──────────────────────────────
@@ -2043,18 +1975,19 @@ export default function (pi: ExtensionAPI) {
   agentEventRuntime.register(pi);
 
   pi.on("before_agent_start", async (_event, ctx) => {
-    if (!pinetEnabled || !brokerRole) return;
+    if (!isPinetEnabled()) return;
     const repository = resolveNvimRepositoryContext(ctx.cwd);
     if (!repository) return;
 
     try {
-      const brokerDb = brokerRole === "broker" ? getActiveBrokerDb() : null;
-      const selfId = brokerRole === "broker" ? getActiveBrokerSelfId() : null;
+      const brokerDb = getBrokerRole() === "broker" ? getActiveBrokerDb() : null;
+      const selfId = getBrokerRole() === "broker" ? getActiveBrokerSelfId() : null;
+      const followerClient = getFollowerClient();
       const threads =
         brokerDb && selfId
           ? brokerDb.getThreads(selfId)
-          : brokerRole === "follower" && brokerClient?.client
-            ? await brokerClient.client.listThreads()
+          : followerClient
+            ? await followerClient.listThreads()
             : [];
       const selected = selectOpenContextualThreads(threads, repository, 5);
       if (selected.length === 0) return;
@@ -2070,8 +2003,8 @@ export default function (pi: ExtensionAPI) {
           );
           continue;
         }
-        if (brokerClient?.client) {
-          const result = await brokerClient.client.readInbox({
+        if (followerClient) {
+          const result = await followerClient.readInbox({
             threadId: item.thread.threadId,
             unreadOnly: false,
             markRead: false,
@@ -2109,16 +2042,21 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (event, ctx) => {
     // /reload replaces Pinet's code, not its state: keep this agent's identity, threads and
-    // inbox, and restart the mode it was in, including off. A startup still in progress has
-    // no settled mode, so the reload starts from the defaults instead.
+    // inbox, and restart the mode it was in, including off. A mode change still in progress
+    // has no settled mode, so the reload starts from the defaults instead.
     const reloading = event.reason === "reload";
-    if (reloading && !pendingStartup) runtimeModeAcrossReload.mode = currentRuntimeMode;
+    if (reloading && pinetRuntime.requestedMode() === getRuntimeMode()) {
+      runtimeModeAcrossReload.mode = getRuntimeMode();
+    }
     compactionGate.reset();
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.cleanupForSessionShutdown();
-    await cancelPendingStartup();
-    await runPinetLifecycle(() => stopPinetRuntime(ctx, { releaseIdentity: !reloading }));
+    flushPersist();
+    await pinetRuntime.setMode(ctx, "off", { releaseIdentity: !reloading });
+    // Top-level Slack tools run in every mode, including off: refuse new calls and abort
+    // in-flight ones.
+    await singlePlayerRuntime.disconnect();
     pinetRegistrationGate.reset();
   });
 }
