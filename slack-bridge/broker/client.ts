@@ -1,8 +1,16 @@
 import * as net from "node:net";
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { SlackResult } from "../slack-api.js";
 import type { WorkerIdentity, WorkerKeyRecord } from "./worker-keys.js";
-import { computeBackoffDelay, withTimeout } from "@pinet/transport-core/async";
+import {
+  computeBackoffDelay,
+  createAbortError,
+  isAbortError,
+  createScope,
+  withTimeout,
+  type Scope,
+} from "@pinet/transport-core/async";
 import { readMeshSecret } from "./auth.js";
 import { DEFAULT_SOCKET_PATH as PINET_DEFAULT_SOCKET_PATH } from "./paths.js";
 import { assertLoopbackTcpHost } from "./raw-tcp-loopback.js";
@@ -173,20 +181,66 @@ interface WakeFence {
   reservationNonce: string;
 }
 
-interface RegistrationSnapshot {
+export interface RegistrationRequest {
+  /** Empty asks the broker to assign a name. */
   name: string;
   emoji: string;
   metadata?: Record<string, unknown>;
   stableId?: string;
-  brokerAssignedIdentity?: boolean;
+  /** Sent on the first registration only; a reconnect never replays it. */
   wakeFence?: WakeFence;
 }
 
-interface RegistrationResult {
+export interface RegistrationResult {
   agentId: string;
   name: string;
   emoji: string;
   metadata?: Record<string, unknown> | null;
+}
+
+export type BrokerConnectionStatus =
+  | { kind: "idle" }
+  | { kind: "connecting"; attempt: number }
+  | { kind: "ready"; reconnected: boolean }
+  | { kind: "backoff"; attempt: number; error: Error }
+  | { kind: "closed" }
+  | { kind: "failed"; error: Error };
+
+export interface BrokerConnectHandlers {
+  /** Reconnect with backoff after an established connection drops (default true). A failed first attempt never retries. */
+  reconnect?: boolean;
+  /**
+   * Builds the registration sent on every connection. Without it the client
+   * only authenticates. `signal` aborts when that connection or the client
+   * closes; a registration that finishes afterwards is discarded.
+   */
+  registration?: (context: {
+    workerStableId: string | null;
+    signal: AbortSignal;
+  }) => Promise<RegistrationRequest>;
+  /**
+   * Sets up each connection once registered; the connection is ready, and
+   * `connect()` resolves for the first one, only after it succeeds. A failure
+   * fails the attempt: the first rejects `connect()`, later ones reconnect.
+   * It is bound to that connection: its requests fail once the connection
+   * drops instead of moving to the next one, and `scope` (for timers and
+   * follow-up work) closes with the connection.
+   */
+  onReady?: (
+    identity: RegistrationResult | null,
+    info: { reconnected: boolean; scope: Scope },
+  ) => Promise<void>;
+  onStatus?: (status: BrokerConnectionStatus) => void;
+}
+
+interface Session {
+  readonly socket: net.Socket;
+  readonly scope: Scope;
+  readonly pending: Map<number, PendingRequest>;
+  buffer: string;
+  isClosed: boolean;
+  heartbeating: boolean;
+  readonly closed: Promise<void>;
 }
 
 export interface AgentBroadcastResult {
@@ -217,29 +271,23 @@ export type BrokerClientOptions = BrokerConnectOpts &
 export class BrokerClient {
   private readonly connectOpts: BrokerConnectOpts;
   private readonly auth: BrokerClientAuthOptions;
-  private assignedStableId: string | null = null;
   private readonly reconnectDelayMs: (attempt: number) => number;
-  private socket: net.Socket | null = null;
-  private connectingSocket: net.Socket | null = null;
-  private connected = false;
-  private shuttingDown = false;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private disconnectHandler: (() => void) | null = null;
-  private reconnectHandler: (() => void) | null = null;
-  private reconnectFailedHandler: ((error: Error) => void) | null = null;
-  private reconnectAttempt = 0;
-  private registrationSnapshot: RegistrationSnapshot | null = null;
+  private readonly root = createScope();
+  /** The connection that the current async work was started for, if any. */
+  private readonly boundSession = new AsyncLocalStorage<Session>();
+  private readonly statusWaiters = new Set<() => void>();
+  private handlers: BrokerConnectHandlers = {};
+  private registration: BrokerConnectHandlers["registration"];
+  private currentStatus: BrokerConnectionStatus = { kind: "idle" };
+  private session: Session | null = null;
+  private assignedStableId: string | null = null;
   private registeredIdentity: RegistrationResult | null = null;
   private heartbeatMetadataProvider:
     | (() => Promise<Record<string, unknown> | null | undefined>)
     | null = null;
   private heartbeatMetadataInFlight: Promise<Record<string, unknown> | null | undefined> | null =
     null;
-
   private nextId = 1;
-  private readonly pending = new Map<number, PendingRequest>();
-  private buffer = "";
 
   constructor(options: string | BrokerClientOptions = DEFAULT_SOCKET_PATH) {
     const opts = typeof options === "string" ? { path: options } : options;
@@ -262,53 +310,249 @@ export class BrokerClient {
 
   // ─── Connection ──────────────────────────────────────
 
-  async connect(): Promise<void> {
-    this.shuttingDown = false;
-    await this.connectSocket();
-    try {
-      await this.authenticateIfNeeded();
-    } catch (err) {
-      this.disconnect();
-      throw err;
-    }
+  /**
+   * Open the one connection this client owns. Resolves with the registered
+   * identity (null without `registration`) once the first connection is ready,
+   * and rejects if that first attempt fails.
+   */
+  connect(handlers: BrokerConnectHandlers = {}): Promise<RegistrationResult | null> {
+    assert.equal(this.currentStatus.kind, "idle", "BrokerClient.connect() may only be called once");
+    this.handlers = handlers;
+    this.registration = handlers.registration;
+    // Claimed synchronously so a second call fails before any socket opens.
+    this.setStatus({ kind: "connecting", attempt: 0 });
+    return new Promise((resolve, reject) => {
+      this.root.run(() => this.runConnection({ resolve, reject })).catch(reject);
+    });
   }
 
-  disconnect(): void {
-    this.shuttingDown = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.stopHeartbeat();
-    this.rejectAllPending(new Error("Client disconnected"));
-    const connectingSocket = this.connectingSocket;
-    this.connectingSocket = null;
+  /** Stop for good. With `unregister`, tell the broker first; a failed unregister still closes. */
+  async close(options: { unregister?: boolean } = {}): Promise<void> {
+    const session = this.session;
     try {
-      connectingSocket?.destroy();
-      this.socket?.destroy();
-    } catch {
-      /* ignore */
-    }
-    this.socket = null;
-    this.connected = false;
-  }
-
-  async disconnectGracefully(): Promise<void> {
-    this.shuttingDown = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.stopHeartbeat();
-    try {
-      await this.unregister();
+      if (options.unregister && session && this.registeredIdentity) {
+        await this.boundSession.run(session, () => this.request("unregister"));
+      }
     } finally {
-      this.disconnect();
+      await this.root.close();
     }
+  }
+
+  status(): BrokerConnectionStatus {
+    return this.currentStatus;
   }
 
   isConnected(): boolean {
-    return this.connected;
+    return this.currentStatus.kind === "ready" && this.session !== null;
+  }
+
+  private setStatus(status: BrokerConnectionStatus): void {
+    this.currentStatus = status;
+    this.handlers.onStatus?.(status);
+    for (const wake of [...this.statusWaiters]) wake();
+  }
+
+  private async runConnection(first: {
+    resolve: (identity: RegistrationResult | null) => void;
+    reject: (error: Error) => void;
+  }): Promise<void> {
+    let attempt = 0;
+    let wasReady = false;
+    let lastError: Error = createAbortError("Client closed while connecting");
+    try {
+      for (;;) {
+        const scope = this.root.child();
+        try {
+          const session = await this.openSession(scope);
+          const identity = await this.handshake(session, wasReady);
+          const onReady = this.handlers.onReady;
+          if (onReady) {
+            const reconnected = wasReady;
+            await this.boundSession.run(session, () =>
+              scope.run(() => onReady(identity, { reconnected, scope })),
+            );
+          }
+          scope.signal.throwIfAborted();
+          attempt = 0;
+          this.session = session;
+          this.setStatus({ kind: "ready", reconnected: wasReady });
+          if (!wasReady) first.resolve(identity);
+          wasReady = true;
+          await session.closed;
+          lastError = new Error("Socket closed");
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+        } finally {
+          this.session = null;
+          await scope.close();
+        }
+        if (this.root.signal.aborted || !wasReady) return;
+        if (
+          lastError instanceof BrokerRpcRequestError &&
+          (lastError.code === RPC_AGENT_NAME_CONFLICT ||
+            lastError.reason === "AGENT_NAME_CONFLICT" ||
+            lastError.reason === "WORKER_KEY_REJECTED")
+        ) {
+          this.setStatus({ kind: "failed", error: lastError });
+          return;
+        }
+        if (this.handlers.reconnect === false) return;
+        this.setStatus({ kind: "backoff", attempt, error: lastError });
+        await this.root.sleep(this.reconnectDelayMs(attempt));
+        attempt++;
+        this.setStatus({ kind: "connecting", attempt });
+      }
+    } catch (error) {
+      // close() aborting the backoff sleep is the normal way out.
+      if (!isAbortError(error)) {
+        console.error(
+          `[broker-client] connection loop failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } finally {
+      if (!wasReady) first.reject(lastError);
+      if (this.currentStatus.kind !== "failed") this.setStatus({ kind: "closed" });
+    }
+  }
+
+  private async openSession(scope: Scope): Promise<Session> {
+    const socket = net.createConnection(this.connectOpts);
+    const destroy = () => socket.destroy();
+    if (scope.signal.aborted) destroy();
+    scope.signal.addEventListener("abort", destroy, { once: true });
+    await new Promise<void>((resolve, reject) => {
+      const fail = (error: Error) => {
+        socket.off("connect", connected);
+        reject(error);
+      };
+      const closedEarly = () => fail(new Error("Socket closed before connection completed"));
+      const connected = () => {
+        socket.off("error", fail);
+        socket.off("close", closedEarly);
+        resolve();
+      };
+      socket.once("connect", connected);
+      socket.once("error", fail);
+      socket.once("close", closedEarly);
+    });
+
+    let markClosed!: () => void;
+    const session: Session = {
+      socket,
+      scope,
+      pending: new Map(),
+      buffer: "",
+      isClosed: false,
+      heartbeating: false,
+      closed: new Promise((resolve) => {
+        markClosed = resolve;
+      }),
+    };
+    socket.on("data", (chunk: Buffer) => this.onData(session, chunk.toString("utf-8")));
+    socket.on("error", () => {
+      // "close" follows and owns the cleanup.
+    });
+    socket.on("close", () => {
+      session.isClosed = true;
+      if (this.session === session) this.session = null;
+      for (const [id, entry] of session.pending) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error("Socket closed"));
+        session.pending.delete(id);
+      }
+      markClosed();
+      // Ends this connection's setup and work; the loop reports any cleanup error.
+      scope.close().catch(() => undefined);
+    });
+    return session;
+  }
+
+  /** Authenticate and register on `session`. */
+  private handshake(session: Session, reconnected: boolean): Promise<RegistrationResult | null> {
+    return this.boundSession.run(session, async () => {
+      await this.authenticateIfNeeded();
+      const buildRegistration = this.registration;
+      if (!buildRegistration) return null;
+      const { signal } = session.scope;
+      const registration = await new Promise<RegistrationRequest>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        if (signal.aborted) return abort();
+        signal.addEventListener("abort", abort, { once: true });
+        buildRegistration({ workerStableId: this.assignedStableId, signal })
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener("abort", abort));
+      });
+      return this.registerOn(
+        session,
+        reconnected ? { ...registration, wakeFence: undefined } : registration,
+      );
+    });
+  }
+
+  private async registerOn(
+    session: Session,
+    registration: RegistrationRequest,
+  ): Promise<RegistrationResult> {
+    const { wakeFence } = registration;
+    const identity = (await this.boundSession.run(session, () =>
+      this.request("register", {
+        name: registration.name,
+        emoji: registration.emoji,
+        pid: process.pid,
+        ...(registration.metadata ? { metadata: registration.metadata } : {}),
+        ...(registration.stableId ? { stableId: registration.stableId } : {}),
+        ...(wakeFence
+          ? {
+              wakeLeaseId: wakeFence.wakeLeaseId,
+              fenceToken: wakeFence.fenceToken,
+              runtimeGeneration: wakeFence.runtimeGeneration,
+              reservationNonce: wakeFence.reservationNonce,
+            }
+          : {}),
+      }),
+    )) as RegistrationResult;
+    this.registeredIdentity = identity;
+    if (!session.heartbeating) {
+      session.heartbeating = true;
+      this.boundSession.run(session, () =>
+        session.scope.setInterval(() => this.runHeartbeatTick(), HEARTBEAT_INTERVAL_MS),
+      );
+    }
+    return identity;
+  }
+
+  /**
+   * Register on the ready connection. Later reconnects register the same way:
+   * a blank name asks the broker again, otherwise the assigned name is reused.
+   */
+  async register(
+    name: string,
+    emoji: string,
+    metadata?: Record<string, unknown>,
+    stableId?: string,
+    wakeFence?: WakeFence,
+  ): Promise<RegistrationResult> {
+    const session = await this.sessionFor("register", Date.now() + REQUEST_TIMEOUT_MS);
+    const request: RegistrationRequest = {
+      name,
+      emoji,
+      ...(metadata ? { metadata } : {}),
+      ...(stableId ? { stableId } : {}),
+      ...(wakeFence ? { wakeFence } : {}),
+    };
+    const identity = await this.registerOn(session, request);
+    const replay: RegistrationRequest =
+      name.trim().length === 0
+        ? { ...request, wakeFence: undefined }
+        : {
+            ...request,
+            wakeFence: undefined,
+            name: identity.name,
+            emoji: identity.emoji,
+            ...(identity.metadata ? { metadata: identity.metadata } : {}),
+          };
+    this.registration = async () => replay;
+    return identity;
   }
 
   private async authenticateIfNeeded(): Promise<void> {
@@ -353,42 +597,6 @@ export class BrokerClient {
         );
       }
       throw err;
-    }
-  }
-
-  // ─── Registration ────────────────────────────────────
-
-  async register(
-    name: string,
-    emoji: string,
-    metadata?: Record<string, unknown>,
-    stableId?: string,
-    wakeFence?: WakeFence,
-  ): Promise<{
-    agentId: string;
-    name: string;
-    emoji: string;
-    metadata?: Record<string, unknown> | null;
-  }> {
-    this.registrationSnapshot = {
-      name,
-      emoji,
-      ...(metadata ? { metadata } : {}),
-      ...(stableId ? { stableId } : {}),
-      ...(name.trim().length === 0 ? { brokerAssignedIdentity: true } : {}),
-      ...(wakeFence ? { wakeFence } : {}),
-    };
-    return this.performRegister(this.registrationSnapshot);
-  }
-
-  async unregister(): Promise<void> {
-    if (!this.connected) return;
-    try {
-      await this.request("unregister");
-    } finally {
-      this.stopHeartbeat();
-      this.registrationSnapshot = null;
-      this.registeredIdentity = null;
     }
   }
 
@@ -733,40 +941,20 @@ export class BrokerClient {
     return { ...result, ok: result.ok, error };
   }
 
-  // ─── Events ──────────────────────────────────────────
-
-  onDisconnect(handler: () => void): void {
-    this.disconnectHandler = handler;
-  }
-
-  onReconnect(handler: () => void): void {
-    this.reconnectHandler = handler;
-  }
-
-  onReconnectFailed(handler: (error: Error) => void): void {
-    this.reconnectFailedHandler = handler;
-  }
-
-  getReconnectAttempt(): number {
-    return this.reconnectAttempt;
-  }
-
-  getRegisteredIdentity(): {
-    agentId: string;
-    name: string;
-    emoji: string;
-    metadata?: Record<string, unknown> | null;
-  } | null {
+  getRegisteredIdentity(): RegistrationResult | null {
     return this.registeredIdentity ? { ...this.registeredIdentity } : null;
   }
 
   // ─── JSON-RPC transport ──────────────────────────────
 
-  private request(method: string, params?: Record<string, unknown>): Promise<unknown> {
-    if (!this.connected || !this.socket) {
-      return Promise.reject(new Error("Not connected to broker"));
-    }
-
+  /**
+   * Send on the connection the caller's work is bound to, or else wait for the
+   * current connection to be ready. A connection that is reconnecting delays
+   * the request rather than failing it; the timeout covers the wait.
+   */
+  private async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    const session = await this.sessionFor(method, deadline);
     const id = this.nextId++;
     const msg: JsonRpcRequest = {
       jsonrpc: "2.0",
@@ -776,228 +964,78 @@ export class BrokerClient {
     };
 
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Request timed out: ${method}`));
-      }, REQUEST_TIMEOUT_MS);
-
-      this.pending.set(id, { method, resolve, reject, timer });
-
-      const line = JSON.stringify(msg) + "\n";
-      this.socket!.write(line, "utf-8", (err) => {
+      const timer = setTimeout(
+        () => {
+          session.pending.delete(id);
+          reject(new Error(`Request timed out: ${method}`));
+        },
+        Math.max(0, deadline - Date.now()),
+      );
+      session.pending.set(id, { method, resolve, reject, timer });
+      session.socket.write(JSON.stringify(msg) + "\n", "utf-8", (err) => {
         if (err) {
           clearTimeout(timer);
-          this.pending.delete(id);
+          session.pending.delete(id);
           reject(err);
         }
       });
     });
   }
 
-  private onData(chunk: string): void {
-    this.buffer += chunk;
-    const lines = this.buffer.split("\n");
+  private async sessionFor(method: string, deadline: number): Promise<Session> {
+    const bound = this.boundSession.getStore();
+    if (bound) {
+      if (bound.isClosed) throw new Error("Socket closed");
+      return bound;
+    }
+    for (;;) {
+      const kind = this.currentStatus.kind;
+      if (kind === "ready" && this.session) return this.session;
+      if (kind === "idle" || kind === "closed" || kind === "failed") {
+        throw new Error("Not connected to broker");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => {
+            this.statusWaiters.delete(wake);
+            reject(new Error(`Request timed out: ${method}`));
+          },
+          Math.max(0, deadline - Date.now()),
+        );
+        const wake = () => {
+          clearTimeout(timer);
+          this.statusWaiters.delete(wake);
+          resolve();
+        };
+        this.statusWaiters.add(wake);
+      });
+    }
+  }
+
+  private onData(session: Session, chunk: string): void {
+    session.buffer += chunk;
+    const lines = session.buffer.split("\n");
     // Keep the last incomplete line in the buffer
-    this.buffer = lines.pop() ?? "";
+    session.buffer = lines.pop() ?? "";
 
     for (const line of lines) {
       if (!line.trim()) continue;
+      let msg: JsonRpcResponse;
       try {
-        const msg = JSON.parse(line) as JsonRpcResponse;
-        this.handleResponse(msg);
+        msg = JSON.parse(line) as JsonRpcResponse;
       } catch {
-        /* malformed JSON — skip */
+        continue; // malformed JSON — skip
+      }
+      const entry = session.pending.get(msg.id);
+      if (!entry) continue;
+      clearTimeout(entry.timer);
+      session.pending.delete(msg.id);
+      if (msg.error) {
+        entry.reject(new BrokerRpcRequestError(entry.method, msg.error));
+      } else {
+        entry.resolve(msg.result);
       }
     }
-  }
-
-  private handleResponse(msg: JsonRpcResponse): void {
-    const entry = this.pending.get(msg.id);
-    if (!entry) return;
-
-    clearTimeout(entry.timer);
-    this.pending.delete(msg.id);
-
-    if (msg.error) {
-      entry.reject(new BrokerRpcRequestError(entry.method, msg.error));
-    } else {
-      entry.resolve(msg.result);
-    }
-  }
-
-  // ─── Reconnect ──────────────────────────────────────
-
-  private scheduleReconnect(): void {
-    if (this.shuttingDown || this.reconnectTimer) return;
-    const delay = this.reconnectDelayMs(this.reconnectAttempt);
-    this.reconnectAttempt++;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.reconnectOnce();
-    }, delay);
-    this.reconnectTimer.unref?.();
-  }
-
-  private connectSocket(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const sock = net.createConnection(this.connectOpts);
-      this.connectingSocket = sock;
-      let settled = false;
-
-      const rejectConnect = (error: Error) => {
-        if (settled) return;
-        settled = true;
-        if (this.connectingSocket === sock) {
-          this.connectingSocket = null;
-        }
-        reject(error);
-      };
-
-      sock.on("connect", () => {
-        if (this.shuttingDown) {
-          rejectConnect(new Error("Client disconnected while connecting"));
-          sock.destroy();
-          return;
-        }
-        settled = true;
-        if (this.connectingSocket === sock) {
-          this.connectingSocket = null;
-        }
-        this.socket = sock;
-        this.connected = true;
-        this.buffer = "";
-        resolve();
-      });
-
-      sock.on("data", (chunk: Buffer) => {
-        this.onData(chunk.toString("utf-8"));
-      });
-
-      sock.on("close", () => {
-        if (this.connectingSocket === sock) {
-          this.connectingSocket = null;
-        }
-        if (!settled) {
-          rejectConnect(new Error("Socket closed before connection completed"));
-        }
-        const wasConnected = this.connected;
-        this.connected = false;
-        this.socket = null;
-        this.stopHeartbeat();
-        this.rejectAllPending(new Error("Socket closed"));
-        if (wasConnected && !this.shuttingDown) {
-          this.disconnectHandler?.();
-          this.scheduleReconnect();
-        }
-      });
-
-      sock.on("error", (err: Error) => {
-        if (!settled) {
-          rejectConnect(err);
-        }
-        // If already connected, the close event handles cleanup
-      });
-    });
-  }
-
-  private async performRegister(snapshot: RegistrationSnapshot): Promise<{
-    agentId: string;
-    name: string;
-    emoji: string;
-    metadata?: Record<string, unknown> | null;
-  }> {
-    const result = (await this.request("register", {
-      name: snapshot.name,
-      emoji: snapshot.emoji,
-      pid: process.pid,
-      ...(snapshot.metadata ? { metadata: snapshot.metadata } : {}),
-      ...(snapshot.stableId ? { stableId: snapshot.stableId } : {}),
-      ...(snapshot.wakeFence
-        ? {
-            wakeLeaseId: snapshot.wakeFence.wakeLeaseId,
-            fenceToken: snapshot.wakeFence.fenceToken,
-            runtimeGeneration: snapshot.wakeFence.runtimeGeneration,
-            reservationNonce: snapshot.wakeFence.reservationNonce,
-          }
-        : {}),
-    })) as RegistrationResult;
-    // Retain a reconnect snapshot but drop the single-use wake fence so a
-    // reconnect never replays a consumed generation reservation.
-    this.registrationSnapshot = snapshot.brokerAssignedIdentity
-      ? {
-          ...snapshot,
-          wakeFence: undefined,
-          ...(result.metadata ? { metadata: result.metadata } : {}),
-        }
-      : {
-          ...snapshot,
-          wakeFence: undefined,
-          name: result.name,
-          emoji: result.emoji,
-          ...(result.metadata ? { metadata: result.metadata } : {}),
-        };
-    this.registeredIdentity = result;
-    this.startHeartbeat();
-    return result;
-  }
-
-  private async reconnectOnce(): Promise<void> {
-    try {
-      await this.connectSocket();
-    } catch {
-      this.scheduleReconnect();
-      return;
-    }
-
-    try {
-      await this.authenticateIfNeeded();
-      if (this.registrationSnapshot) {
-        await this.performRegister(this.registrationSnapshot);
-      }
-      this.reconnectAttempt = 0;
-      this.reconnectHandler?.();
-    } catch (err) {
-      // Re-registration failed after the socket connected. Clear the connection
-      // state immediately instead of waiting for the async "close" event so the
-      // client cannot stay in a broken "connected but not registered" state.
-      // Then either surface a terminal reconnect failure or schedule the next
-      // retry ourselves. (#139)
-      const reconnectError = err instanceof Error ? err : new Error(String(err));
-      const failedSocket = this.socket;
-      this.socket = null;
-      this.connected = false;
-      this.buffer = "";
-      this.stopHeartbeat();
-      this.rejectAllPending(new Error("Socket closed"));
-      this.registeredIdentity = null;
-      try {
-        failedSocket?.destroy();
-      } catch {
-        /* ignore */
-      }
-      if (
-        reconnectError instanceof BrokerRpcRequestError &&
-        (reconnectError.code === RPC_AGENT_NAME_CONFLICT ||
-          reconnectError.reason === "AGENT_NAME_CONFLICT" ||
-          reconnectError.reason === "WORKER_KEY_REJECTED")
-      ) {
-        this.reconnectAttempt = 0;
-        this.reconnectFailedHandler?.(reconnectError);
-        return;
-      }
-      this.scheduleReconnect();
-    }
-  }
-
-  private startHeartbeat(): void {
-    this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      if (!this.connected) return;
-      void this.runHeartbeatTick().catch(() => {
-        /* best effort */
-      });
-    }, HEARTBEAT_INTERVAL_MS);
-    this.heartbeatTimer.unref?.();
   }
 
   private async readHeartbeatMetadata(): Promise<Record<string, unknown> | null | undefined> {
@@ -1024,19 +1062,5 @@ export class BrokerClient {
 
   private async runHeartbeatTick(): Promise<void> {
     await this.heartbeat(await this.readHeartbeatMetadata());
-  }
-
-  private stopHeartbeat(): void {
-    if (!this.heartbeatTimer) return;
-    clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = null;
-  }
-
-  private rejectAllPending(err: Error): void {
-    for (const [id, entry] of this.pending) {
-      clearTimeout(entry.timer);
-      entry.reject(err);
-      this.pending.delete(id);
-    }
   }
 }

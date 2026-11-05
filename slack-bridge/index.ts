@@ -560,8 +560,7 @@ export default function (pi: ExtensionAPI) {
     getActiveBrokerDb,
     getActiveBrokerSelfId,
     hasFollowerClient: () => brokerClient != null,
-    syncFollowerDesiredStatus: (status, options) =>
-      followerRuntime.syncDesiredStatus(status, options),
+    syncFollowerDesiredStatus: (options) => followerRuntime.syncDesiredStatus(options),
     runBrokerMaintenance: (ctx) => {
       brokerRuntime.runMaintenance(ctx);
     },

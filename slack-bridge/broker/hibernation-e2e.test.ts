@@ -91,8 +91,8 @@ class E2eProcess implements HibernationProcessController {
     // otherwise the connection is dropped abruptly.
     const client = this.getLiveClient();
     if (client) {
-      if (this.graceful) await client.disconnectGracefully();
-      else client.disconnect();
+      if (this.graceful) await client.close({ unregister: true });
+      else client.close();
     }
     await new Promise((r) => setTimeout(r, 20));
     return { stopped: true, rssBytes: 0 };
@@ -106,7 +106,7 @@ class E2eProcess implements HibernationProcessController {
   // methods exist to honor the controller contract and stay faithful.)
   async stopLaunchedAttempt(): Promise<{ stopped: boolean }> {
     const client = this.getLiveClient();
-    if (client) client.disconnect();
+    if (client) client.close();
     return { stopped: true };
   }
   async isLaunchedAttemptAlive(): Promise<boolean> {
@@ -199,7 +199,7 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const c of ctx.clients) {
     try {
-      c.disconnect();
+      c.close();
     } catch {
       /* ignore */
     }
@@ -512,7 +512,7 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     const agentId = ctx.db.getAgentByStableId(STABLE_ID)!.id;
     // Drop the original live connection so re-registration is gated by lifecycle
     // fencing, not by the live stableId-conflict check.
-    original.disconnect();
+    original.close();
     await new Promise((r) => setTimeout(r, 50));
 
     const forceState = (pathStates: AgentLifecycleState[]) => {
@@ -534,7 +534,7 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
       await expect(
         stray.register(AGENT_NAME, "🦉", { ...AGENT_METADATA }, STABLE_ID),
       ).rejects.toThrow(/not permitted/i);
-      stray.disconnect();
+      stray.close();
       await new Promise((r) => setTimeout(r, 20));
     };
 
@@ -658,7 +658,7 @@ describe("hibernation E2E — real socket server + SQLite, fake process/tmux", (
     expect(ctx.db.getAllAgents().length).toBe(agentsBefore);
     expect(ctx.db.getAgentById(agentId)?.lifecycleState).toBe("hibernated");
     expect(ctx.db.getAgentById(agentId)?.runtimeGeneration).toBe(0);
-    stray.disconnect();
+    stray.close();
   });
 
   it("survives a broker restart while hibernated and wakes afterwards", async () => {

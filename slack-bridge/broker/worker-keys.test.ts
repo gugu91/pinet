@@ -48,7 +48,7 @@ describe("worker keys over the broker socket", () => {
   });
 
   afterEach(async () => {
-    for (const client of clients.splice(0)) client.disconnect();
+    for (const client of clients.splice(0)) client.close();
     slackCalls.length = 0;
     await server.stop();
     db.close();
@@ -122,8 +122,11 @@ describe("worker keys over the broker socket", () => {
     const first = await admin.issueWorkerKey({ hostId: "studio", workerId: "w1" });
     const worker = workerClient(first.key);
     const reconnectFailed = vi.fn();
-    worker.onReconnectFailed(reconnectFailed);
-    await worker.connect();
+    await worker.connect({
+      onStatus: (status) => {
+        if (status.kind === "failed") reconnectFailed(status.error);
+      },
+    });
     await worker.register("", "", {}, "studio:worker:w1");
     expect(await admin.listWorkerKeys()).toMatchObject([{ hostId: "studio", connected: true }]);
 

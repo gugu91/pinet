@@ -10,7 +10,7 @@ import {
   HEARTBEAT_METADATA_PROVIDER_TIMEOUT_MS,
   computeReconnectDelay,
 } from "./client.js";
-import type { BrokerClientOptions, BrokerConnectOpts } from "./client.js";
+import type { BrokerClientOptions, BrokerConnectionStatus, BrokerConnectOpts } from "./client.js";
 import { RPC_AGENT_NAME_CONFLICT, RPC_METHOD_NOT_FOUND } from "./types.js";
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -37,6 +37,9 @@ function createMockServer(port = 0): Promise<MockServer> {
 
     const server = net.createServer((conn) => {
       connections.push(conn);
+      conn.on("error", () => {
+        // A client that drops mid-write resets the connection; tests assert on the client side.
+      });
       let buffer = "";
       conn.on("data", (chunk: Buffer) => {
         buffer += chunk.toString("utf-8");
@@ -132,28 +135,23 @@ describe("BrokerClient — connect / disconnect", () => {
     const client = new BrokerClient(mock.connectOpts);
     await client.connect();
     expect(client.isConnected()).toBe(true);
-    client.disconnect();
+    client.close();
   });
 
-  it("disconnect clears connected state", async () => {
+  it("close clears connected state", async () => {
     const client = new BrokerClient(mock.connectOpts);
     await client.connect();
     expect(client.isConnected()).toBe(true);
-    client.disconnect();
+    await client.close();
     expect(client.isConnected()).toBe(false);
+    expect(client.status()).toEqual({ kind: "closed" });
   });
 
-  it("disconnect is safe to call without connect", () => {
-    const client = new BrokerClient(mock.connectOpts);
-    client.disconnect();
-    expect(client.isConnected()).toBe(false);
-  });
-
-  it("disconnect rejects a pending socket connection", async () => {
+  it("close rejects a pending socket connection", async () => {
     const client = new BrokerClient(mock.connectOpts);
 
     const connecting = client.connect();
-    client.disconnect();
+    client.close();
 
     await expect(connecting).rejects.toThrow("Socket closed before connection completed");
     expect(client.isConnected()).toBe(false);
@@ -162,6 +160,100 @@ describe("BrokerClient — connect / disconnect", () => {
   it("rejects connect when server is not running", async () => {
     const client = new BrokerClient({ host: "127.0.0.1", port: 1 });
     await expect(client.connect()).rejects.toThrow();
+  });
+});
+
+describe("BrokerClient — connection ownership", () => {
+  let mock: MockServer;
+
+  beforeEach(async () => {
+    mock = await createMockServer();
+  });
+
+  afterEach(async () => {
+    await mock.close();
+  });
+
+  it("refuses a second connect in the same tick and opens one socket", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    const connecting = client.connect();
+    expect(() => client.connect()).toThrow("may only be called once");
+    await connecting;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mock.connections).toHaveLength(1);
+    await client.close();
+  });
+
+  it("close interrupts a registration that never finishes", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    let registrationSignal: AbortSignal | null = null;
+    const connecting = client.connect({
+      registration: ({ signal }) => {
+        registrationSignal = signal;
+        return new Promise(() => undefined);
+      },
+    });
+    await waitFor(() => registrationSignal !== null);
+
+    const closed = client.close();
+    await expect(
+      Promise.race([
+        closed.then(() => "closed"),
+        new Promise((resolve) => setTimeout(() => resolve("hung"), 1_000)),
+      ]),
+    ).resolves.toBe("closed");
+    expect(registrationSignal!.aborted).toBe(true);
+    await expect(connecting).rejects.toThrow();
+    expect(client.status()).toEqual({ kind: "closed" });
+  });
+
+  it("aborts a pending registration when the broker drops the socket", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    let registrationSignal: AbortSignal | null = null;
+    const connecting = client.connect({
+      registration: ({ signal }) => {
+        registrationSignal = signal;
+        return new Promise(() => undefined);
+      },
+    });
+    await waitFor(() => registrationSignal !== null && mock.connections.length === 1);
+    mock.connections[0].destroy();
+
+    await expect(connecting).rejects.toThrow();
+    expect(registrationSignal!.aborted).toBe(true);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it("fails the first connection when onReady fails, and is never ready", async () => {
+    const client = new BrokerClient(mock.connectOpts);
+    const statuses: BrokerConnectionStatus["kind"][] = [];
+    await expect(
+      client.connect({
+        onStatus: (status) => statuses.push(status.kind),
+        onReady: async () => {
+          throw new Error("setup failed");
+        },
+      }),
+    ).rejects.toThrow("setup failed");
+    expect(statuses).not.toContain("ready");
+    expect(client.isConnected()).toBe(false);
+    await waitFor(() => mock.connections[0]?.destroyed || mock.connections[0]?.readableEnded);
+  });
+
+  it("reconnects when onReady fails on a later connection", async () => {
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
+    let calls = 0;
+    await client.connect({
+      onReady: async () => {
+        calls++;
+        if (calls === 2) throw new Error("setup failed once");
+      },
+    });
+    await waitFor(() => mock.connections.length === 1);
+    mock.connections[0].destroy();
+    await waitFor(() => calls === 3 && client.isConnected());
+    expect(mock.connections).toHaveLength(3);
+    await client.close();
   });
 });
 
@@ -194,7 +286,7 @@ describe("BrokerClient — mesh auth", () => {
     await connectPromise;
     expect(client.isConnected()).toBe(true);
 
-    client.disconnect();
+    client.close();
   });
 
   it("rejects a legacy worker login reply without an assigned identity", async () => {
@@ -294,7 +386,7 @@ describe("BrokerClient — register", () => {
     const result = await registerPromise;
     expect(result).toEqual({ agentId: "agent-001", name: "TestAgent", emoji: "🤖" });
 
-    client.disconnect();
+    client.close();
   });
 
   it("includes stableId when provided", async () => {
@@ -323,7 +415,7 @@ describe("BrokerClient — register", () => {
       emoji: "🧷",
     });
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -368,7 +460,7 @@ describe("BrokerClient — heartbeat / unregister", () => {
     mock.respondTo(mock.connections[0], heartbeatReq.id, { ok: true });
 
     setIntervalSpy.mockRestore();
-    client.disconnect();
+    client.close();
   });
 
   it("sends heartbeat metadata when the provider resolves", async () => {
@@ -404,7 +496,7 @@ describe("BrokerClient — heartbeat / unregister", () => {
     mock.respondTo(mock.connections[0], heartbeatReq.id, { ok: true });
 
     setIntervalSpy.mockRestore();
-    client.disconnect();
+    client.close();
   });
 
   it("falls back to a plain heartbeat while a metadata provider is hung", async () => {
@@ -448,41 +540,18 @@ describe("BrokerClient — heartbeat / unregister", () => {
     expect(heartbeatReq.params?.metadata).toBeUndefined();
     mock.respondTo(mock.connections[0], heartbeatReq.id, { ok: true });
 
-    heartbeatTick?.();
-    await waitFor(() => mock.received.length > 2);
+    // Ticks never overlap, so the next one runs once this heartbeat has settled.
+    await waitFor(() => {
+      heartbeatTick?.();
+      return mock.received.length > 2;
+    });
     expect(metadataProvider).toHaveBeenCalledTimes(1);
 
     setIntervalSpy.mockRestore();
-    client.disconnect();
+    client.close();
   });
 
-  it("sends unregister RPC", async () => {
-    const client = new BrokerClient(mock.connectOpts);
-    await client.connect();
-
-    const registerPromise = client.register("GracefulBot", "👋");
-    await waitFor(() => mock.received.length > 0);
-    const registerReq = JSON.parse(mock.received[0]) as { id: number };
-    mock.respondTo(mock.connections[0], registerReq.id, {
-      agentId: "grace-1",
-      name: "GracefulBot",
-      emoji: "👋",
-    });
-    await registerPromise;
-
-    const unregisterPromise = client.unregister();
-    await waitFor(() => mock.received.length > 1);
-
-    const unregisterReq = JSON.parse(mock.received[1]) as { id: number; method: string };
-    expect(unregisterReq.method).toBe("unregister");
-
-    mock.respondTo(mock.connections[0], unregisterReq.id, { ok: true });
-    await unregisterPromise;
-
-    client.disconnect();
-  });
-
-  it("disconnectGracefully unregisters, stops heartbeat, and closes the socket", async () => {
+  it("close with unregister unregisters, stops heartbeat, and closes the socket", async () => {
     const clearIntervalSpy = vi.spyOn(global, "clearInterval");
 
     const client = new BrokerClient(mock.connectOpts);
@@ -498,7 +567,7 @@ describe("BrokerClient — heartbeat / unregister", () => {
     });
     await registerPromise;
 
-    const disconnectPromise = client.disconnectGracefully();
+    const disconnectPromise = client.close({ unregister: true });
     await waitFor(() => mock.received.length > 1);
 
     const unregisterReq = JSON.parse(mock.received[1]) as { id: number; method: string };
@@ -514,7 +583,7 @@ describe("BrokerClient — heartbeat / unregister", () => {
     clearIntervalSpy.mockRestore();
   });
 
-  it("disconnectGracefully still disconnects locally when unregister fails", async () => {
+  it("close with unregister still closes locally when unregister fails", async () => {
     const client = new BrokerClient(mock.connectOpts);
     await client.connect();
 
@@ -528,7 +597,7 @@ describe("BrokerClient — heartbeat / unregister", () => {
     });
     await registerPromise;
 
-    const disconnectPromise = client.disconnectGracefully();
+    const disconnectPromise = client.close({ unregister: true });
     await waitFor(() => mock.received.length > 1);
 
     const unregisterReq = JSON.parse(mock.received[1]) as { id: number; method: string };
@@ -600,7 +669,7 @@ describe("BrokerClient — pollInbox", () => {
     expect(result[0].message.metadata?.userName).toBe("Alice");
     expect(result[1].message.body).toBe("Hi there");
 
-    client.disconnect();
+    client.close();
   });
 
   it("returns empty array when no messages", async () => {
@@ -616,7 +685,7 @@ describe("BrokerClient — pollInbox", () => {
     const result = await pollPromise;
     expect(result).toEqual([]);
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -690,7 +759,7 @@ describe("BrokerClient — readInbox", () => {
     expect(result.unreadCountAfter).toBe(1);
     expect(result.markedReadIds).toEqual([31]);
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -724,7 +793,7 @@ describe("BrokerClient — ackMessages", () => {
 
     await ackPromise;
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -759,7 +828,7 @@ describe("BrokerClient — send", () => {
 
     await sendPromise;
 
-    client.disconnect();
+    client.close();
   });
 
   it("includes metadata when provided", async () => {
@@ -779,7 +848,7 @@ describe("BrokerClient — send", () => {
 
     await sendPromise;
 
-    client.disconnect();
+    client.close();
   });
 
   it("omits metadata key when not provided", async () => {
@@ -799,7 +868,7 @@ describe("BrokerClient — send", () => {
 
     await sendPromise;
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -863,7 +932,7 @@ describe("BrokerClient — message.send", () => {
       source: "imessage",
     });
 
-    client.disconnect();
+    client.close();
   });
 
   it("includes normalized content and blocks in message.send payload when provided", async () => {
@@ -925,7 +994,7 @@ describe("BrokerClient — message.send", () => {
       source: "slack",
     });
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -965,7 +1034,7 @@ describe("BrokerClient — listThreads / listAgents", () => {
     const result = await threadsPromise;
     expect(result).toEqual(threads);
 
-    client.disconnect();
+    client.close();
   });
 
   it("lists agents via RPC", async () => {
@@ -994,7 +1063,7 @@ describe("BrokerClient — listThreads / listAgents", () => {
     const result = await agentsPromise;
     expect(result).toEqual(agents);
 
-    client.disconnect();
+    client.close();
   });
 
   it("includes includeDisconnected when requested", async () => {
@@ -1015,7 +1084,7 @@ describe("BrokerClient — listThreads / listAgents", () => {
     mock.respondTo(mock.connections[0], req.id, []);
     await expect(agentsPromise).resolves.toEqual([]);
 
-    client.disconnect();
+    client.close();
   });
 
   it("searches agent sessions via RPC", async () => {
@@ -1077,7 +1146,7 @@ describe("BrokerClient — listThreads / listAgents", () => {
       },
     ]);
 
-    client.disconnect();
+    client.close();
   });
 
   it("explains when the broker is too old for session search", async () => {
@@ -1099,7 +1168,7 @@ describe("BrokerClient — listThreads / listAgents", () => {
 
     await expect(sessionsPromise).rejects.toThrow("Broker does not support Pinet session search");
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -1133,7 +1202,7 @@ describe("BrokerClient — resolveThread", () => {
 
     await expect(resolvePromise).resolves.toBe("C123");
 
-    client.disconnect();
+    client.close();
   });
 
   it("returns null when the broker has no channel for the thread", async () => {
@@ -1149,7 +1218,7 @@ describe("BrokerClient — resolveThread", () => {
 
     await expect(resolvePromise).resolves.toBeNull();
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -1189,7 +1258,7 @@ describe("BrokerClient — sendAgentMessage", () => {
     const result = await msgPromise;
     expect(result).toBe(42);
 
-    client.disconnect();
+    client.close();
   });
 
   it("rejects when target agent not found", async () => {
@@ -1205,7 +1274,7 @@ describe("BrokerClient — sendAgentMessage", () => {
 
     await expect(msgPromise).rejects.toThrow("Agent not found: ghost");
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -1255,7 +1324,7 @@ describe("BrokerClient — sendAgentBroadcast", () => {
       ],
     });
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -1298,7 +1367,7 @@ describe("BrokerClient — scheduleWakeup", () => {
       fireAt: "2026-04-02T14:05:00.000Z",
     });
 
-    client.disconnect();
+    client.close();
   });
 });
 describe("BrokerClient — adapter capabilities", () => {
@@ -1340,7 +1409,7 @@ describe("BrokerClient — adapter capabilities", () => {
     const result = await capabilityPromise;
     expect(result).toEqual({ messages: [] });
 
-    client.disconnect();
+    client.close();
   });
 
   it("maps slackProxy compatibility calls onto adapter.capability", async () => {
@@ -1369,7 +1438,7 @@ describe("BrokerClient — adapter capabilities", () => {
     const result = await proxyPromise;
     expect(result).toEqual({ ok: true, messages: [] });
 
-    client.disconnect();
+    client.close();
   });
 
   it("falls back to legacy slack.proxy when an older broker lacks adapter.capability", async () => {
@@ -1406,7 +1475,7 @@ describe("BrokerClient — adapter capabilities", () => {
     const result = await proxyPromise;
     expect(result).toEqual({ ok: true, messages: [] });
 
-    client.disconnect();
+    client.close();
   });
 
   it.each([null, {}, { ok: "true" }, { ok: false, error: 42 }])(
@@ -1423,7 +1492,7 @@ describe("BrokerClient — adapter capabilities", () => {
         mock.respondTo(mock.connections[0], request.id, response);
         await result;
       } finally {
-        client.disconnect();
+        client.close();
       }
     },
   );
@@ -1453,7 +1522,7 @@ describe("BrokerClient — error handling", () => {
 
     await expect(registerPromise).rejects.toThrow("Invalid agent name");
 
-    client.disconnect();
+    client.close();
   });
 
   it("rejects when not connected", async () => {
@@ -1483,55 +1552,40 @@ describe("BrokerClient — request timeout", () => {
 
     const registerPromise = client.register("Bot", "🤖");
 
+    const rejected = expect(registerPromise).rejects.toThrow("Request timed out: register");
     // Advance past the timeout without responding
-    vi.advanceTimersByTime(REQUEST_TIMEOUT_MS + 100);
-
-    await expect(registerPromise).rejects.toThrow("Request timed out: register");
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 100);
+    await rejected;
 
     vi.useRealTimers();
-    client.disconnect();
+    client.close();
   });
 });
 
-describe("BrokerClient — reconnect on disconnect", () => {
-  it("calls onDisconnect handler when server drops", async () => {
+describe("BrokerClient — connection drops", () => {
+  it("leaves ready and rejects pending requests when the connection drops", async () => {
     const mock = await createMockServer();
-
-    const client = new BrokerClient(mock.connectOpts);
-    const disconnected = new Promise<void>((resolve) => {
-      client.onDisconnect(() => resolve());
-    });
-
-    await client.connect();
-    expect(client.isConnected()).toBe(true);
-
-    // Close the server and all connections to force client disconnect
-    await mock.close();
-
-    await disconnected;
-    expect(client.isConnected()).toBe(false);
-
-    client.disconnect(); // stop reconnect attempts
-  });
-
-  it("rejects pending requests when connection drops", async () => {
-    const mock = await createMockServer();
-
-    const client = new BrokerClient(mock.connectOpts);
-    await client.connect();
+    const statuses: BrokerConnectionStatus[] = [];
+    const client = new BrokerClient({ ...mock.connectOpts, reconnectDelayMs: () => 60_000 });
+    await client.connect({ onStatus: (status) => statuses.push(status) });
 
     const pollPromise = client.pollInbox();
-
-    // Wait for request to be sent
     await waitFor(() => mock.received.length > 0);
-
-    // Drop the connection without responding
     for (const conn of mock.connections) conn.destroy();
 
     await expect(pollPromise).rejects.toThrow("Socket closed");
+    await waitFor(() => statuses.at(-1)?.kind === "backoff");
+    expect(client.isConnected()).toBe(false);
 
-    client.disconnect();
+    await client.close();
     await mock.close();
+  });
+
+  it("does not retry when the first attempt fails", async () => {
+    const statuses: BrokerConnectionStatus[] = [];
+    const client = new BrokerClient({ host: "127.0.0.1", port: 1, reconnectDelayMs: () => 1 });
+    await expect(client.connect({ onStatus: (status) => statuses.push(status) })).rejects.toThrow();
+    expect(statuses.map((status) => status.kind)).toEqual(["connecting", "closed"]);
   });
 });
 
@@ -1593,7 +1647,7 @@ describe("BrokerClient — multiple concurrent requests", () => {
     expect(agents).toHaveLength(1);
     expect(agents[0].name).toBe("Bot");
 
-    client.disconnect();
+    client.close();
   });
 });
 
@@ -1625,360 +1679,256 @@ describe("BrokerClient — exponential backoff", () => {
     expect(maxWithJitter).toBeGreaterThanOrEqual(MAX_RECONNECT_DELAY_MS * 0.75);
   });
 
-  it("reconnectAttempt starts at 0 and increments after disconnect", async () => {
+  it("backs off with increasing attempts while the broker is down", async () => {
     const mock = await createMockServer();
+    const statuses: BrokerConnectionStatus[] = [];
     const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
-    await client.connect();
-    expect(client.getReconnectAttempt()).toBe(0);
-
-    // Close server entirely so reconnects fail
-    // scheduleReconnect increments the counter synchronously before the timer
+    await client.connect({ onStatus: (status) => statuses.push(status) });
     await mock.close();
 
-    await waitFor(() => client.getReconnectAttempt() > 0);
-    expect(client.getReconnectAttempt()).toBeGreaterThanOrEqual(1);
+    await waitFor(() => statuses.filter((status) => status.kind === "backoff").length >= 2);
+    const attempts = statuses.flatMap((status) =>
+      status.kind === "backoff" ? [status.attempt] : [],
+    );
+    expect(attempts.slice(0, 2)).toEqual([0, 1]);
 
-    client.disconnect();
+    await client.close();
   });
 });
 
-describe("BrokerClient — onReconnect callback", () => {
-  it("onReconnect does not fire from manual connect()", async () => {
-    const mock = await createMockServer();
-    const client = new BrokerClient(mock.connectOpts);
-    let reconnectFired = false;
+function nextRequest(
+  mock: MockServer,
+  index: number,
+): { id: number; method: string; params: Record<string, unknown> } {
+  return JSON.parse(mock.received[index]) as {
+    id: number;
+    method: string;
+    params: Record<string, unknown>;
+  };
+}
 
-    client.onReconnect(() => {
-      reconnectFired = true;
-    });
-
-    await client.connect();
-    expect(client.isConnected()).toBe(true);
-
-    // Manual disconnect + reconnect (not via scheduleReconnect)
-    client.disconnect();
-    expect(client.isConnected()).toBe(false);
-
-    await client.connect();
-    expect(client.isConnected()).toBe(true);
-
-    // onReconnect is only called from scheduleReconnect's internal .then()
-    expect(reconnectFired).toBe(false);
-
-    client.disconnect();
-    await mock.close();
-  });
-
-  it("scheduleReconnect fires onDisconnect then onReconnect after server restart", async () => {
-    const mock = await createMockServer();
-    const port = mock.port;
-    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
-    let disconnectFired = false;
-    let reconnectFired = false;
-
-    client.onDisconnect(() => {
-      disconnectFired = true;
-    });
-    client.onReconnect(() => {
-      reconnectFired = true;
-    });
-
-    await client.connect();
-    expect(client.isConnected()).toBe(true);
-
-    // Close the server completely (this reliably triggers client close event)
-    await mock.close();
-
-    // Wait for disconnect to be detected
-    await waitFor(() => disconnectFired);
-    expect(disconnectFired).toBe(true);
-    expect(client.isConnected()).toBe(false);
-
-    // Restart a new server on the same port so the auto-reconnect succeeds
-    await new Promise<void>((resolve, reject) => {
-      const server2 = net.createServer();
-      server2.on("error", reject);
-      server2.listen(port, "127.0.0.1", () => resolve());
-      // Store for cleanup
-      (client as unknown as { _testServer2: net.Server })._testServer2 = server2;
-    });
-
-    // Wait for auto-reconnect to succeed
-    await waitFor(() => reconnectFired, 10000);
-    expect(reconnectFired).toBe(true);
-    expect(client.isConnected()).toBe(true);
-    expect(client.getReconnectAttempt()).toBe(0); // reset after success
-
-    client.disconnect();
-    const server2 = (client as unknown as { _testServer2: net.Server })._testServer2;
-    await new Promise<void>((res) => server2.close(() => res()));
-  }, 20000);
-
-  it("retries a rejected registration and reports reconnection only after it succeeds", async () => {
-    const mock = await createMockServer();
-    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
-    const reconnected = vi.fn();
-    client.onReconnect(reconnected);
-    try {
-      await client.connect();
-      const registering = client.register("RetryBot", "🔁");
-      await waitFor(() => mock.received.length === 1);
-      const first = JSON.parse(mock.received[0]) as { id: number };
-      const identity = { agentId: "retry-agent", name: "RetryBot", emoji: "🔁" };
-      mock.respondTo(mock.connections[0], first.id, identity);
-      await registering;
-      mock.connections[0].destroy();
-
-      await waitFor(() => mock.received.length === 2);
-      const retry = JSON.parse(mock.received[1]) as { id: number };
-      mock.respondError(mock.connections[1], retry.id, -32000, "temporarily unavailable");
-      await waitFor(() => mock.received.length === 3);
-      expect(mock.connections[1].destroyed).toBe(true);
-      expect(reconnected).not.toHaveBeenCalled();
-      const next = JSON.parse(mock.received[2]) as { id: number };
-      mock.respondTo(mock.connections[2], next.id, identity);
-      await waitFor(() => reconnected.mock.calls.length === 1);
-      expect(client.isConnected()).toBe(true);
-      expect(client.getRegisteredIdentity()).toEqual(identity);
-    } finally {
-      client.disconnect();
-      await mock.close();
-    }
-  });
-
-  it("keeps retrying until it can reconnect and re-register with stable identity", async () => {
+describe("BrokerClient — reconnect", () => {
+  it("re-registers after the broker restarts and reports ready only after registration", async () => {
     let mock = await createMockServer();
     const port = mock.port;
+    const statuses: BrokerConnectionStatus[] = [];
     const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
-    let disconnectFired = false;
-    let reconnectFired = false;
-
-    client.onDisconnect(() => {
-      disconnectFired = true;
-    });
-    client.onReconnect(() => {
-      reconnectFired = true;
-    });
-
-    await client.connect();
-    const registerPromise = client.register(
+    await client.connect({ onStatus: (status) => statuses.push(status) });
+    const registering = client.register(
       "RetryBot",
       "🔁",
-      { cwd: "/repo", branch: "main" },
+      { cwd: "/repo" },
       "host:session:/tmp/retry",
     );
-
-    await waitFor(() => mock.received.length > 0);
-    const registerReq = JSON.parse(mock.received[0]) as {
-      id: number;
-      method: string;
-      params: { stableId?: string };
-    };
-    expect(registerReq.method).toBe("register");
-    mock.respondTo(mock.connections[0], registerReq.id, {
-      agentId: "retry-agent",
-      name: "RetryBot",
-      emoji: "🔁",
-    });
-    await registerPromise;
+    await waitFor(() => mock.received.length === 1);
+    const identity = { agentId: "retry-agent", name: "RetryBot", emoji: "🔁" };
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, identity);
+    await registering;
 
     await mock.close();
-    await waitFor(() => disconnectFired, 2000);
-    await waitFor(() => client.getReconnectAttempt() >= 2, 5000);
-
+    await waitFor(() => statuses.some((status) => status.kind === "backoff"));
     mock = await createMockServer(port);
     await waitFor(() => mock.received.length > 0, 5000);
 
-    const reRegisterReq = JSON.parse(mock.received[0]) as {
-      id: number;
-      method: string;
-      params: { name: string; emoji: string; stableId?: string };
-    };
-    expect(reRegisterReq.method).toBe("register");
-    expect(reRegisterReq.params.name).toBe("RetryBot");
-    expect(reRegisterReq.params.emoji).toBe("🔁");
-    expect(reRegisterReq.params.stableId).toBe("host:session:/tmp/retry");
-    expect(reconnectFired).toBe(false);
-
-    mock.respondTo(mock.connections[0], reRegisterReq.id, {
-      agentId: "retry-agent",
+    const reRegister = nextRequest(mock, 0);
+    expect(reRegister.method).toBe("register");
+    expect(reRegister.params).toMatchObject({
       name: "RetryBot",
       emoji: "🔁",
+      stableId: "host:session:/tmp/retry",
     });
+    expect(client.isConnected()).toBe(false);
+    mock.respondTo(mock.connections[0], reRegister.id, identity);
 
-    await waitFor(() => reconnectFired, 5000);
-    expect(reconnectFired).toBe(true);
-    expect(client.isConnected()).toBe(true);
-    expect(client.getReconnectAttempt()).toBe(0);
-    expect(client.getRegisteredIdentity()).toEqual({
-      agentId: "retry-agent",
-      name: "RetryBot",
-      emoji: "🔁",
-    });
+    await waitFor(() => client.isConnected());
+    expect(statuses.at(-1)).toEqual({ kind: "ready", reconnected: true });
+    expect(client.getRegisteredIdentity()).toEqual(identity);
 
-    client.disconnect();
+    await client.close();
     await mock.close();
   }, 20000);
 
-  it("re-requests broker-assigned identity after reconnect when the original name was blank", async () => {
+  it("holds requests made while reconnecting until registration completes", async () => {
     let mock = await createMockServer();
     const port = mock.port;
     const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
-    let disconnectFired = false;
-    let reconnectFired = false;
-
-    client.onDisconnect(() => {
-      disconnectFired = true;
-    });
-    client.onReconnect(() => {
-      reconnectFired = true;
-    });
-
     await client.connect();
-    const registerPromise = client.register(
-      "",
-      "",
-      { cwd: "/repo", branch: "main" },
-      "host:session:/tmp/broker-assigned",
+    const registering = client.register("WaitBot", "⏳");
+    await waitFor(() => mock.received.length === 1);
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, {
+      agentId: "wait-agent",
+      name: "WaitBot",
+      emoji: "⏳",
+    });
+    await registering;
+
+    await mock.close();
+    await waitFor(() => !client.isConnected());
+    const polling = client.pollInbox();
+
+    mock = await createMockServer(port);
+    await waitFor(() => mock.received.length === 1, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mock.received.map((line) => (JSON.parse(line) as { method: string }).method)).toEqual([
+      "register",
+    ]);
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, {
+      agentId: "wait-agent",
+      name: "WaitBot",
+      emoji: "⏳",
+    });
+
+    await waitFor(() => mock.received.length === 2);
+    const poll = nextRequest(mock, 1);
+    expect(poll.method).toBe("inbox.poll");
+    mock.respondTo(mock.connections[0], poll.id, []);
+    await expect(polling).resolves.toEqual([]);
+
+    await client.close();
+    await mock.close();
+  }, 20000);
+
+  it("keeps work started for a connection on that connection", async () => {
+    let mock = await createMockServer();
+    const port = mock.port;
+    const claims: Array<Promise<unknown>> = [];
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
+    const connecting = client.connect({
+      registration: async () => ({ name: "BoundBot", emoji: "🔗" }),
+      onReady: async (_identity, { reconnected }) => {
+        if (!reconnected)
+          claims.push(client.claimThread("t1", "C1").catch((error: Error) => error));
+      },
+    });
+    // connect() is waiting on the registration reply.
+    await waitFor(() => mock.received.length === 1);
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, {
+      agentId: "bound-agent",
+      name: "BoundBot",
+      emoji: "🔗",
+    });
+    await connecting;
+    await waitFor(() => mock.received.length === 2);
+    expect(nextRequest(mock, 1).method).toBe("thread.claim");
+
+    await mock.close();
+    const [claimResult] = await Promise.all(claims);
+    expect(claimResult).toBeInstanceOf(Error);
+    expect((claimResult as Error).message).toBe("Socket closed");
+
+    mock = await createMockServer(port);
+    await waitFor(() => mock.received.length === 1, 5000);
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, {
+      agentId: "bound-agent",
+      name: "BoundBot",
+      emoji: "🔗",
+    });
+    await waitFor(() => client.isConnected());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mock.received.map((line) => (JSON.parse(line) as { method: string }).method)).toEqual([
+      "register",
+    ]);
+
+    await client.close();
+    await mock.close();
+  }, 20000);
+
+  it("re-requests a broker-assigned identity after reconnect when the original name was blank", async () => {
+    let mock = await createMockServer();
+    const port = mock.port;
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
+    await client.connect();
+    const registering = client.register("", "", undefined, "host:session:/tmp/broker-assigned");
+    await waitFor(() => mock.received.length === 1);
+    const identity = { agentId: "broker-assigned-agent", name: "Broker Bird", emoji: "🦩" };
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, identity);
+    await registering;
+
+    await mock.close();
+    await waitFor(() => !client.isConnected());
+    mock = await createMockServer(port);
+    await waitFor(() => mock.received.length === 1, 5000);
+    expect(nextRequest(mock, 0).params).toMatchObject({
+      name: "",
+      emoji: "",
+      stableId: "host:session:/tmp/broker-assigned",
+    });
+
+    await client.close();
+    await mock.close();
+  }, 20000);
+
+  it("retries a rejected re-registration", async () => {
+    const mock = await createMockServer();
+    const statuses: BrokerConnectionStatus[] = [];
+    const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
+    await client.connect({ onStatus: (status) => statuses.push(status) });
+    const registering = client.register("RetryBot", "🔁");
+    await waitFor(() => mock.received.length === 1);
+    const identity = { agentId: "retry-agent", name: "RetryBot", emoji: "🔁" };
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, identity);
+    await registering;
+    mock.connections[0].destroy();
+
+    await waitFor(() => mock.received.length === 2);
+    mock.respondError(
+      mock.connections[1],
+      nextRequest(mock, 1).id,
+      -32000,
+      "temporarily unavailable",
     );
+    await waitFor(() => mock.received.length === 3);
+    expect(mock.connections[1].destroyed).toBe(true);
+    mock.respondTo(mock.connections[2], nextRequest(mock, 2).id, identity);
 
-    await waitFor(() => mock.received.length > 0);
-    const registerReq = JSON.parse(mock.received[0]) as {
-      id: number;
-      method: string;
-      params: { name: string; emoji: string; stableId?: string };
-    };
-    expect(registerReq.method).toBe("register");
-    expect(registerReq.params.name).toBe("");
-    expect(registerReq.params.emoji).toBe("");
-    mock.respondTo(mock.connections[0], registerReq.id, {
-      agentId: "broker-assigned-agent",
-      name: "Broker Bird",
-      emoji: "🦩",
-    });
-    await registerPromise;
+    await waitFor(() => client.isConnected());
+    expect(statuses.filter((status) => status.kind === "ready")).toEqual([
+      { kind: "ready", reconnected: false },
+      { kind: "ready", reconnected: true },
+    ]);
 
+    await client.close();
     await mock.close();
-    await waitFor(() => disconnectFired, 2000);
-    await waitFor(() => client.getReconnectAttempt() >= 2, 5000);
+  });
 
-    mock = await createMockServer(port);
-    await waitFor(() => mock.received.length > 0, 5000);
-
-    const reRegisterReq = JSON.parse(mock.received[0]) as {
-      id: number;
-      method: string;
-      params: { name: string; emoji: string; stableId?: string };
-    };
-    expect(reRegisterReq.method).toBe("register");
-    expect(reRegisterReq.params.name).toBe("");
-    expect(reRegisterReq.params.emoji).toBe("");
-    expect(reRegisterReq.params.stableId).toBe("host:session:/tmp/broker-assigned");
-    expect(reconnectFired).toBe(false);
-
-    mock.respondTo(mock.connections[0], reRegisterReq.id, {
-      agentId: "broker-assigned-agent",
-      name: "Broker Bird",
-      emoji: "🦩",
-    });
-
-    await waitFor(() => reconnectFired, 5000);
-    expect(reconnectFired).toBe(true);
-    expect(client.isConnected()).toBe(true);
-    expect(client.getReconnectAttempt()).toBe(0);
-    expect(client.getRegisteredIdentity()).toEqual({
-      agentId: "broker-assigned-agent",
-      name: "Broker Bird",
-      emoji: "🦩",
-    });
-
-    client.disconnect();
-    await mock.close();
-  }, 20000);
-
-  it("stops reconnecting and surfaces a terminal error when an explicit name collides on reconnect", async () => {
+  it("stops reconnecting when an explicit name collides on reconnect", async () => {
     let mock = await createMockServer();
     const port = mock.port;
+    const statuses: BrokerConnectionStatus[] = [];
     const client = new BrokerClient(createFastReconnectClientOptions(mock.connectOpts));
-    let disconnectFired = false;
-    let reconnectFired = false;
-    let reconnectFailed: Error | null = null;
-
-    client.onDisconnect(() => {
-      disconnectFired = true;
-    });
-    client.onReconnect(() => {
-      reconnectFired = true;
-    });
-    client.onReconnectFailed((err) => {
-      reconnectFailed = err;
-    });
-
-    await client.connect();
-    const registerPromise = client.register(
+    await client.connect({ onStatus: (status) => statuses.push(status) });
+    const registering = client.register(
       "Reserved Crane",
       "🦩",
-      { cwd: "/repo", branch: "main" },
-      "host:session:/tmp/reserved-crane",
+      undefined,
+      "host:session:/tmp/crane",
     );
-
-    await waitFor(() => mock.received.length > 0);
-    const registerReq = JSON.parse(mock.received[0]) as {
-      id: number;
-      method: string;
-      params: { name: string; emoji: string; stableId?: string };
-    };
-    expect(registerReq.method).toBe("register");
-    expect(registerReq.params.name).toBe("Reserved Crane");
-    expect(registerReq.params.emoji).toBe("🦩");
-    mock.respondTo(mock.connections[0], registerReq.id, {
+    await waitFor(() => mock.received.length === 1);
+    mock.respondTo(mock.connections[0], nextRequest(mock, 0).id, {
       agentId: "reserved-crane-agent",
       name: "Reserved Crane",
       emoji: "🦩",
     });
-    await registerPromise;
+    await registering;
 
     await mock.close();
-    await waitFor(() => disconnectFired, 2000);
-    await waitFor(() => client.getReconnectAttempt() >= 2, 5000);
-
     mock = await createMockServer(port);
-    await waitFor(() => mock.received.length > 0, 5000);
-
-    const reRegisterReq = JSON.parse(mock.received[0]) as {
-      id: number;
-      method: string;
-      params: { name: string; emoji: string; stableId?: string };
-    };
-    expect(reRegisterReq.method).toBe("register");
-    expect(reRegisterReq.params.name).toBe("Reserved Crane");
-    expect(reRegisterReq.params.emoji).toBe("🦩");
-    expect(reRegisterReq.params.stableId).toBe("host:session:/tmp/reserved-crane");
-
+    await waitFor(() => mock.received.length === 1, 5000);
     mock.respondError(
       mock.connections[0],
-      reRegisterReq.id,
+      nextRequest(mock, 0).id,
       RPC_AGENT_NAME_CONFLICT,
-      'Agent name "Reserved Crane" is already reserved. Retry with a different name or leave the name empty so the broker can assign one.',
-    );
-
-    await waitFor(() => reconnectFailed !== null, 5000);
-    if (!reconnectFailed) {
-      throw new Error("Expected reconnect failure to surface");
-    }
-    const surfacedReconnectFailure = reconnectFailed as Error;
-    expect(surfacedReconnectFailure.message).toContain(
       'Agent name "Reserved Crane" is already reserved.',
     );
-    expect(reconnectFired).toBe(false);
-    expect(client.isConnected()).toBe(false);
-    expect(client.getReconnectAttempt()).toBe(0);
-    expect(client.getRegisteredIdentity()).toBeNull();
 
+    await waitFor(() => statuses.at(-1)?.kind === "failed", 5000);
+    const failed = statuses.at(-1);
+    expect(failed?.kind === "failed" && failed.error.message).toContain("already reserved");
+    expect(client.isConnected()).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(mock.received).toHaveLength(1);
 
-    client.disconnect();
+    await client.close();
     await mock.close();
   }, 20000);
 });
@@ -2022,7 +1972,7 @@ describe("BrokerClient — newline-delimited framing", () => {
     const result = await pollPromise;
     expect(result).toEqual([]);
 
-    client.disconnect();
+    client.close();
   });
 
   it("handles multiple responses in a single chunk", async () => {
@@ -2046,6 +1996,6 @@ describe("BrokerClient — newline-delimited framing", () => {
     expect(inbox).toEqual([]);
     expect(agents).toEqual([]);
 
-    client.disconnect();
+    client.close();
   });
 });

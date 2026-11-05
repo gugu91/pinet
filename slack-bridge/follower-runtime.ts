@@ -40,7 +40,6 @@ export function resolveBrokerSocketPath(): string {
 
 export type BrokerClientRef = {
   client: BrokerClient;
-  pollInterval: ReturnType<typeof setInterval> | null;
 };
 
 type SharedFollowerThreadState = Pick<
@@ -99,10 +98,8 @@ export interface FollowerRuntime {
     ctx: ExtensionContext,
     options?: { releaseIdentity?: boolean },
   ) => Promise<{ unregisterError: string | null }>;
-  syncDesiredStatus: (
-    desiredStatus: "working" | "idle",
-    options?: { force?: boolean },
-  ) => Promise<void>;
+  /** Bring the broker's status for this agent to `getDesiredAgentStatus()`; the latest value wins. */
+  syncDesiredStatus: (options?: { force?: boolean }) => Promise<void>;
   flushDeliveredAcks: () => Promise<void>;
   getClientRef: () => BrokerClientRef | null;
 }
@@ -131,19 +128,16 @@ function mergeFollowerThreadUpdates(
 
 export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntime {
   let clientRef: BrokerClientRef | null = null;
-  let followerPollRunning = false;
-  let wasDisconnected = false;
   let followerAckPromise: Promise<void> | null = null;
   let syncedFollowerStatus: "working" | "idle" | null = null;
-  let followerStatusSyncPromise: Promise<void> | null = null;
-  let followerStatusSyncTarget: "working" | "idle" | null = null;
+  let statusSync: Promise<void> | null = null;
 
   async function flushDeliveredAcks(): Promise<void> {
     if (followerAckPromise) {
       await followerAckPromise;
       return;
     }
-    if (!clientRef?.client) {
+    if (!clientRef) {
       return;
     }
 
@@ -160,53 +154,26 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
     await promise;
   }
 
-  async function syncDesiredStatus(
-    desiredStatus: "working" | "idle",
-    options: { force?: boolean } = {},
-  ): Promise<void> {
-    if (!clientRef) {
-      return;
-    }
-    if (!options.force && syncedFollowerStatus === desiredStatus) {
-      return;
-    }
-    if (followerStatusSyncPromise && followerStatusSyncTarget === desiredStatus) {
-      await followerStatusSyncPromise;
-      return;
-    }
-
-    const targetStatus = desiredStatus;
-    const request = clientRef.client.updateStatus(targetStatus).then(() => {
-      syncedFollowerStatus = targetStatus;
-    });
-    followerStatusSyncTarget = targetStatus;
-    const inFlight = request.finally(() => {
-      if (followerStatusSyncPromise === inFlight) {
-        followerStatusSyncPromise = null;
-        followerStatusSyncTarget = null;
+  async function syncDesiredStatus(options: { force?: boolean } = {}): Promise<void> {
+    if (!clientRef) return;
+    if (options.force) syncedFollowerStatus = null;
+    const client = clientRef.client;
+    // Deferred, so a sync with nothing to send cannot clear `statusSync` before it is set.
+    statusSync ??= Promise.resolve().then(async () => {
+      try {
+        for (
+          let target = deps.getDesiredAgentStatus();
+          target !== syncedFollowerStatus;
+          target = deps.getDesiredAgentStatus()
+        ) {
+          await client.updateStatus(target);
+          syncedFollowerStatus = target;
+        }
+      } finally {
+        statusSync = null;
       }
     });
-    followerStatusSyncPromise = inFlight;
-    await inFlight;
-  }
-
-  function stopPolling(): void {
-    if (clientRef?.pollInterval) {
-      clearInterval(clientRef.pollInterval);
-      clientRef.pollInterval = null;
-    }
-    followerPollRunning = false;
-  }
-
-  function resetFollowerRuntimeState(): void {
-    clientRef = null;
-    followerPollRunning = false;
-    wasDisconnected = false;
-    followerAckPromise = null;
-    syncedFollowerStatus = null;
-    followerStatusSyncPromise = null;
-    followerStatusSyncTarget = null;
-    resetFollowerDeliveryState(deps.deliveryState);
+    await statusSync;
   }
 
   async function connect(ctx: ExtensionContext, signal?: AbortSignal): Promise<BrokerClientRef> {
@@ -223,308 +190,254 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
             ...(meshAuth.meshSecretPath ? { meshSecretPath: meshAuth.meshSecretPath } : {}),
           },
     );
+    client.setHeartbeatMetadataProvider(() => deps.getAgentMetadata("worker"));
     const abortConnect = () => {
-      client.disconnect();
+      void client.close();
     };
     signal?.addEventListener("abort", abortConnect, { once: true });
-
-    async function registerFollowerRuntime(): Promise<void> {
-      deps.refreshSettings();
-      const settings = deps.getSettings();
-      const { name, emoji } = deps.getAgentIdentity();
-      const workerIdentity = resolveRuntimeAgentIdentity(
-        { name, emoji },
-        settings,
-        process.env.PI_NICKNAME,
-        ctx.sessionManager.getSessionFile() ?? deps.getAgentStableId(),
-        "worker",
-      );
-      const hasExplicitIdentityRequest =
-        Boolean(settings.agentName?.trim() && settings.agentEmoji?.trim()) ||
-        Boolean(process.env.PI_NICKNAME?.trim());
-
-      // A worker key fixes the identity; otherwise it comes from this session.
-      const stableId = client.workerStableId ?? deps.getAgentStableId();
-      deps.setAgentOwnerToken(buildPinetOwnerToken(stableId));
-      const registration = await client.register(
-        hasExplicitIdentityRequest ? workerIdentity.name : "",
-        hasExplicitIdentityRequest ? workerIdentity.emoji : "",
-        await deps.getAgentMetadata("worker", signal),
-        stableId,
-      );
-      deps.applyRegistrationIdentity(registration);
-      await deps.onRegistrationIdentityApplied();
-      client.setHeartbeatMetadataProvider(() => deps.getAgentMetadata("worker"));
-    }
-
-    async function resumeThreadClaims(): Promise<void> {
-      for (const thread of getFollowerOwnedThreadReclaims(
-        deps.getThreads(),
-        deps.getAgentIdentity().name,
-        deps.getAgentAliases(),
-        deps.getAgentOwnerToken(),
-      )) {
-        try {
-          await client.claimThread(thread.threadTs, thread.channelId, thread.source);
-        } catch {
-          break;
-        }
-      }
-    }
-
-    function startPolling(): void {
-      if (!clientRef || clientRef.pollInterval) {
-        return;
-      }
-
-      clientRef.pollInterval = setInterval(async () => {
-        if (!deps.getPinetEnabled() || followerPollRunning || clientRef?.client !== client) {
-          return;
-        }
-
-        followerPollRunning = true;
-        try {
-          const entries = await client.pollInbox();
-          if (deps.getRuntimeDiagnostic()?.kind === "poll_failure") {
-            deps.setRuntimeDiagnostic(null);
-          }
-          const newEntries = entries.filter(
-            (entry) => !isFollowerInboxIdTracked(deps.deliveryState, entry.inboxId),
-          );
-          if (newEntries.length === 0) {
-            if (hasDeliveredFollowerInboxIds(deps.deliveryState)) {
-              void flushDeliveredAcks();
-            }
-            return;
-          }
-
-          const controlEntries: Array<{ inboxId: number; command: PinetControlCommand }> = [];
-          const remainingEntries: typeof newEntries = [];
-          for (const entry of newEntries) {
-            const command = extractPinetControlCommand({
-              threadId: entry.message.threadId,
-              body: entry.message.body,
-              metadata: entry.message.metadata,
-            });
-            if (command) {
-              controlEntries.push({ inboxId: entry.inboxId, command });
-              continue;
-            }
-
-            remainingEntries.push(entry);
-          }
-
-          if (controlEntries.length > 0) {
-            const immediateAckIds: number[] = [];
-            const commandsToStart: PinetControlCommand[] = [];
-            for (const entry of controlEntries) {
-              const queued = deps.requestRemoteControl(entry.command, ctx);
-              if (queued.ackDisposition === "immediate") {
-                immediateAckIds.push(entry.inboxId);
-              } else {
-                deps.deferControlAck(queued.scheduledCommand, entry.inboxId);
-              }
-              if (queued.shouldStartNow) {
-                commandsToStart.push(entry.command);
-              }
-            }
-            if (immediateAckIds.length > 0) {
-              await client.ackMessages(immediateAckIds);
-            }
-            for (const command of commandsToStart) {
-              deps.runRemoteControl(command, ctx);
-            }
-            return;
-          }
-
-          const steeringEntries: PinetSteeringInboxEntry[] = [];
-          const queuedEntries: typeof remainingEntries = [];
-          for (const entry of remainingEntries) {
-            const steering = extractPinetSteeringInboxEntry(entry);
-            if (steering) {
-              steeringEntries.push(steering);
-              continue;
-            }
-            queuedEntries.push(entry);
-          }
-
-          if (steeringEntries.length > 0) {
-            const deliveredSteeringIds: number[] = [];
-            for (const entry of steeringEntries) {
-              if (deps.deliverSteeringMessage(formatPinetSteeringMessage(entry), ctx)) {
-                deliveredSteeringIds.push(entry.inboxId);
-              }
-            }
-            if (deliveredSteeringIds.length > 0) {
-              markFollowerInboxIdsDelivered(deps.deliveryState, deliveredSteeringIds);
-              void flushDeliveredAcks();
-            }
-          }
-
-          const { nudges, agentMessages, regular } = partitionFollowerInboxEntries(queuedEntries);
-
-          if (nudges.length > 0) {
-            const nudgeText = nudges
-              .map((nudge) => nudge.message.body ?? "")
-              .filter(Boolean)
-              .join("\n");
-            if (nudgeText && deps.deliverFollowUpMessage(nudgeText)) {
-              markFollowerInboxIdsDelivered(deps.deliveryState, getInboxIds(nudges));
-              void flushDeliveredAcks();
-            }
-          }
-
-          if (agentMessages.length > 0) {
-            const transferredThreads = syncTransferredSlackThreadContexts(
-              agentMessages,
-              deps.getThreads(),
-              deps.getAgentOwnerToken(),
-            );
-            if (transferredThreads.threadUpdates.length > 0) {
-              mergeFollowerThreadUpdates(deps.getThreads(), transferredThreads.threadUpdates);
-              if (transferredThreads.changed) {
-                deps.persistState();
-              }
-            }
-
-            const pinetPrompt = formatPinetInboxMessages(agentMessages);
-            if (deps.deliverFollowUpMessage(pinetPrompt)) {
-              markFollowerInboxIdsDelivered(deps.deliveryState, getInboxIds(agentMessages));
-              void flushDeliveredAcks();
-            }
-          }
-
-          if (regular.length > 0) {
-            const synced = syncFollowerInboxEntries(
-              regular,
-              deps.getThreads(),
-              deps.getAgentOwnerToken(),
-              deps.getLastDmChannel(),
-            );
-            mergeFollowerThreadUpdates(deps.getThreads(), synced.threadUpdates);
-            deps.setLastDmChannel(synced.lastDmChannel);
-            deps.pushInboxMessages(synced.inboxMessages);
-            queueFollowerInboxIds(deps.deliveryState, getInboxIds(regular));
-            if (synced.changed) {
-              deps.persistState();
-            }
-            deps.updateBadge();
-            deps.maybeDrainInboxIfIdle(ctx);
-          }
-        } catch (error) {
-          deps.setRuntimeDiagnostic(
-            buildFollowerRuntimeDiagnostic("poll_failure", {
-              detail: deps.formatError(error),
-              connected: client.isConnected(),
-            }),
-          );
-        } finally {
-          void syncDesiredStatus(deps.getDesiredAgentStatus()).catch(() => {
-            /* best effort */
-          });
-          followerPollRunning = false;
-        }
-      }, 2000);
-    }
+    let wasReady = false;
+    let wasDisconnected = false;
+    // The broker registers a new connection as idle.
+    syncedFollowerStatus = "idle";
+    followerAckPromise = null;
+    resetFollowerDeliveryState(deps.deliveryState);
 
     try {
-      await client.connect();
-      signal?.throwIfAborted();
-      await registerFollowerRuntime();
-      signal?.throwIfAborted();
-      deps.setRuntimeDiagnostic(null);
-
-      syncedFollowerStatus = "idle";
-      clientRef = {
-        client,
-        pollInterval: null,
-      };
-      followerAckPromise = null;
-      wasDisconnected = false;
-      followerPollRunning = false;
-      resetFollowerDeliveryState(deps.deliveryState);
-
-      client.onDisconnect(() => {
-        if (clientRef?.client !== client) {
-          return;
-        }
-        stopPolling();
-        deps.setRuntimeDiagnostic(buildFollowerRuntimeDiagnostic("broker_disconnect"));
-        deps.setExtStatus(ctx, "reconnecting");
-        const uiUpdate = getFollowerReconnectUiUpdate("disconnect", wasDisconnected);
-        wasDisconnected = uiUpdate.nextWasDisconnected;
-        if (uiUpdate.notify) {
-          ctx.ui.notify(uiUpdate.notify.message, uiUpdate.notify.level);
-        }
-      });
-
-      client.onReconnect(() => {
-        void (async () => {
-          if (clientRef?.client !== client) {
-            return;
+      await client.connect({
+        registration: async ({ workerStableId, signal: connectionSignal }) => {
+          deps.refreshSettings();
+          const settings = deps.getSettings();
+          const { name, emoji } = deps.getAgentIdentity();
+          const workerIdentity = resolveRuntimeAgentIdentity(
+            { name, emoji },
+            settings,
+            process.env.PI_NICKNAME,
+            ctx.sessionManager.getSessionFile() ?? deps.getAgentStableId(),
+            "worker",
+          );
+          const hasExplicitIdentityRequest =
+            Boolean(settings.agentName?.trim() && settings.agentEmoji?.trim()) ||
+            Boolean(process.env.PI_NICKNAME?.trim());
+          // A worker key fixes the identity; otherwise it comes from this session.
+          const stableId = workerStableId ?? deps.getAgentStableId();
+          deps.setAgentOwnerToken(buildPinetOwnerToken(stableId));
+          return {
+            name: hasExplicitIdentityRequest ? workerIdentity.name : "",
+            emoji: hasExplicitIdentityRequest ? workerIdentity.emoji : "",
+            metadata: await deps.getAgentMetadata("worker", connectionSignal),
+            stableId,
+          };
+        },
+        onReady: async (identity, { reconnected, scope }) => {
+          if (identity) {
+            deps.applyRegistrationIdentity(identity);
+            await deps.onRegistrationIdentityApplied();
           }
-          try {
-            await registerFollowerRuntime();
-            deps.setRuntimeDiagnostic(null);
-          } catch (error) {
-            console.error(
-              `[slack-bridge] follower reconnect registration refresh failed: ${deps.formatError(error)}`,
-            );
-            deps.setRuntimeDiagnostic(
-              buildFollowerRuntimeDiagnostic("registration_refresh_failure", {
-                detail: deps.formatError(error),
-              }),
-            );
-            const registration = client.getRegisteredIdentity();
-            if (registration) {
-              deps.applyRegistrationIdentity(registration);
+          deps.setRuntimeDiagnostic(null);
+          for (const thread of getFollowerOwnedThreadReclaims(
+            deps.getThreads(),
+            deps.getAgentIdentity().name,
+            deps.getAgentAliases(),
+            deps.getAgentOwnerToken(),
+          )) {
+            try {
+              await client.claimThread(thread.threadTs, thread.channelId, thread.source);
+            } catch {
+              break;
             }
           }
-          await resumeThreadClaims();
-          syncedFollowerStatus = "idle";
-          void syncDesiredStatus(deps.getDesiredAgentStatus()).catch(() => {
+          scope.setInterval(async () => {
+            if (!deps.getPinetEnabled()) return;
+            try {
+              const entries = await client.pollInbox();
+              if (deps.getRuntimeDiagnostic()?.kind === "poll_failure") {
+                deps.setRuntimeDiagnostic(null);
+              }
+              const newEntries = entries.filter(
+                (entry) => !isFollowerInboxIdTracked(deps.deliveryState, entry.inboxId),
+              );
+              if (newEntries.length === 0) {
+                if (hasDeliveredFollowerInboxIds(deps.deliveryState)) {
+                  void flushDeliveredAcks();
+                }
+                return;
+              }
+
+              const controlEntries: Array<{ inboxId: number; command: PinetControlCommand }> = [];
+              const remainingEntries: typeof newEntries = [];
+              for (const entry of newEntries) {
+                const command = extractPinetControlCommand({
+                  threadId: entry.message.threadId,
+                  body: entry.message.body,
+                  metadata: entry.message.metadata,
+                });
+                if (command) {
+                  controlEntries.push({ inboxId: entry.inboxId, command });
+                  continue;
+                }
+
+                remainingEntries.push(entry);
+              }
+
+              if (controlEntries.length > 0) {
+                const immediateAckIds: number[] = [];
+                const commandsToStart: PinetControlCommand[] = [];
+                for (const entry of controlEntries) {
+                  const queued = deps.requestRemoteControl(entry.command, ctx);
+                  if (queued.ackDisposition === "immediate") {
+                    immediateAckIds.push(entry.inboxId);
+                  } else {
+                    deps.deferControlAck(queued.scheduledCommand, entry.inboxId);
+                  }
+                  if (queued.shouldStartNow) {
+                    commandsToStart.push(entry.command);
+                  }
+                }
+                if (immediateAckIds.length > 0) {
+                  await client.ackMessages(immediateAckIds);
+                }
+                for (const command of commandsToStart) {
+                  deps.runRemoteControl(command, ctx);
+                }
+                return;
+              }
+
+              const steeringEntries: PinetSteeringInboxEntry[] = [];
+              const queuedEntries: typeof remainingEntries = [];
+              for (const entry of remainingEntries) {
+                const steering = extractPinetSteeringInboxEntry(entry);
+                if (steering) {
+                  steeringEntries.push(steering);
+                  continue;
+                }
+                queuedEntries.push(entry);
+              }
+
+              if (steeringEntries.length > 0) {
+                const deliveredSteeringIds: number[] = [];
+                for (const entry of steeringEntries) {
+                  if (deps.deliverSteeringMessage(formatPinetSteeringMessage(entry), ctx)) {
+                    deliveredSteeringIds.push(entry.inboxId);
+                  }
+                }
+                if (deliveredSteeringIds.length > 0) {
+                  markFollowerInboxIdsDelivered(deps.deliveryState, deliveredSteeringIds);
+                  void flushDeliveredAcks();
+                }
+              }
+
+              const { nudges, agentMessages, regular } =
+                partitionFollowerInboxEntries(queuedEntries);
+
+              if (nudges.length > 0) {
+                const nudgeText = nudges
+                  .map((nudge) => nudge.message.body ?? "")
+                  .filter(Boolean)
+                  .join("\n");
+                if (nudgeText && deps.deliverFollowUpMessage(nudgeText)) {
+                  markFollowerInboxIdsDelivered(deps.deliveryState, getInboxIds(nudges));
+                  void flushDeliveredAcks();
+                }
+              }
+
+              if (agentMessages.length > 0) {
+                const transferredThreads = syncTransferredSlackThreadContexts(
+                  agentMessages,
+                  deps.getThreads(),
+                  deps.getAgentOwnerToken(),
+                );
+                if (transferredThreads.threadUpdates.length > 0) {
+                  mergeFollowerThreadUpdates(deps.getThreads(), transferredThreads.threadUpdates);
+                  if (transferredThreads.changed) {
+                    deps.persistState();
+                  }
+                }
+
+                const pinetPrompt = formatPinetInboxMessages(agentMessages);
+                if (deps.deliverFollowUpMessage(pinetPrompt)) {
+                  markFollowerInboxIdsDelivered(deps.deliveryState, getInboxIds(agentMessages));
+                  void flushDeliveredAcks();
+                }
+              }
+
+              if (regular.length > 0) {
+                const synced = syncFollowerInboxEntries(
+                  regular,
+                  deps.getThreads(),
+                  deps.getAgentOwnerToken(),
+                  deps.getLastDmChannel(),
+                );
+                mergeFollowerThreadUpdates(deps.getThreads(), synced.threadUpdates);
+                deps.setLastDmChannel(synced.lastDmChannel);
+                deps.pushInboxMessages(synced.inboxMessages);
+                queueFollowerInboxIds(deps.deliveryState, getInboxIds(regular));
+                if (synced.changed) {
+                  deps.persistState();
+                }
+                deps.updateBadge();
+                deps.maybeDrainInboxIfIdle(ctx);
+              }
+            } catch (error) {
+              deps.setRuntimeDiagnostic(
+                buildFollowerRuntimeDiagnostic("poll_failure", {
+                  detail: deps.formatError(error),
+                  connected: client.isConnected(),
+                }),
+              );
+            } finally {
+              void syncDesiredStatus().catch(() => {
+                /* best effort */
+              });
+            }
+          }, 2000);
+          if (!reconnected) return;
+          syncedFollowerStatus = null;
+          void syncDesiredStatus().catch(() => {
             /* best effort */
           });
-          startPolling();
           if (hasDeliveredFollowerInboxIds(deps.deliveryState)) {
             void flushDeliveredAcks();
           }
           deps.setExtStatus(ctx, "ok");
           const uiUpdate = getFollowerReconnectUiUpdate("reconnect", wasDisconnected);
           wasDisconnected = uiUpdate.nextWasDisconnected;
-          if (uiUpdate.notify) {
-            ctx.ui.notify(uiUpdate.notify.message, uiUpdate.notify.level);
+          if (uiUpdate.notify) ctx.ui.notify(uiUpdate.notify.message, uiUpdate.notify.level);
+        },
+        onStatus: (status) => {
+          if (status.kind === "ready") {
+            wasReady = true;
+            return;
           }
-        })();
+          if (status.kind === "failed") {
+            deps.setRuntimeDiagnostic(
+              buildFollowerRuntimeDiagnostic("reconnect_stopped", {
+                detail: deps.formatError(status.error),
+              }),
+            );
+            void deps.handleTerminalReconnectFailure(ctx, status.error);
+            return;
+          }
+          if (status.kind !== "connecting" || !wasReady) return;
+          wasReady = false;
+          deps.setRuntimeDiagnostic(buildFollowerRuntimeDiagnostic("broker_disconnect"));
+          deps.setExtStatus(ctx, "reconnecting");
+          const uiUpdate = getFollowerReconnectUiUpdate("disconnect", wasDisconnected);
+          wasDisconnected = uiUpdate.nextWasDisconnected;
+          if (uiUpdate.notify) ctx.ui.notify(uiUpdate.notify.message, uiUpdate.notify.level);
+        },
       });
-
-      client.onReconnectFailed((error) => {
-        if (clientRef?.client !== client) {
-          return;
-        }
-        const reconnectError = error instanceof Error ? error : new Error(String(error));
-        deps.setRuntimeDiagnostic(
-          buildFollowerRuntimeDiagnostic("reconnect_stopped", {
-            detail: deps.formatError(reconnectError),
-          }),
-        );
-        void deps.handleTerminalReconnectFailure(ctx, reconnectError);
-      });
-
-      await resumeThreadClaims();
       signal?.throwIfAborted();
-      startPolling();
-      return clientRef;
     } catch (error) {
-      await client.unregister().catch(() => {
+      await client.close({ unregister: true }).catch(() => {
         /* best effort */
       });
-      client.disconnect();
-      resetFollowerRuntimeState();
       throw error;
     } finally {
       signal?.removeEventListener("abort", abortConnect);
     }
+
+    clientRef = { client };
+    return clientRef;
   }
 
   async function disconnect(
@@ -532,30 +445,24 @@ export function createFollowerRuntime(deps: FollowerRuntimeDeps): FollowerRuntim
     options: { releaseIdentity?: boolean } = {},
   ): Promise<{ unregisterError: string | null }> {
     const current = clientRef;
-    stopPolling();
-
     await flushDeliveredAcks().catch(() => {
       /* best effort */
     });
 
     let unregisterError: string | null = null;
     if (current) {
-      if (options.releaseIdentity === false) {
-        try {
-          current.client.disconnect();
-        } catch {
-          /* best effort */
-        }
-      } else {
-        try {
-          await current.client.disconnectGracefully();
-        } catch (error) {
-          unregisterError = deps.formatError(error);
-        }
+      try {
+        await current.client.close({ unregister: options.releaseIdentity !== false });
+      } catch (error) {
+        unregisterError = deps.formatError(error);
       }
     }
 
-    resetFollowerRuntimeState();
+    clientRef = null;
+    followerAckPromise = null;
+    syncedFollowerStatus = null;
+    statusSync = null;
+    resetFollowerDeliveryState(deps.deliveryState);
     return { unregisterError };
   }
 

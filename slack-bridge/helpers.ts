@@ -2660,7 +2660,6 @@ export async function resolveFollowerThreadChannel(
 export type FollowerRuntimeDiagnosticKind =
   | "broker_disconnect"
   | "poll_failure"
-  | "registration_refresh_failure"
   | "reconnect_stopped";
 
 export type FollowerRuntimeDiagnosticState = "reconnecting" | "degraded" | "error";
@@ -2701,17 +2700,6 @@ export function buildFollowerRuntimeDiagnostic(
       nextStep: connected
         ? "Watch the next poll cycle. If failures continue, inspect the broker and run /pinet follow."
         : "Wait for automatic reconnect. If it does not recover, run /pinet follow.",
-      ...(detail ? { detail } : {}),
-    };
-  }
-
-  if (kind === "registration_refresh_failure") {
-    return {
-      kind,
-      state: "degraded",
-      reason: "registration refresh failed after reconnect",
-      nextStep:
-        "Follower kept the last registered identity. If status or ownership looks stale, run /pinet follow.",
       ...(detail ? { detail } : {}),
     };
   }

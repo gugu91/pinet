@@ -214,7 +214,7 @@ describe("broker-runtime", () => {
       await trusted.sendAgentMessage("broker-self", "/exit");
       expect(deps.requestRemoteControl).toHaveBeenCalledWith("exit", ctx);
     } finally {
-      for (const client of clients) client.disconnect();
+      for (const client of clients) client.close();
       await runtime.disconnect();
       startBroker.mockRestore();
       fs.rmSync(root, { recursive: true, force: true });

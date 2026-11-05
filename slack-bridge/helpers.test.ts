@@ -3969,24 +3969,6 @@ describe("buildFollowerRuntimeDiagnostic", () => {
     );
   });
 
-  it("builds registration refresh failure diagnostics", () => {
-    const diagnostic = buildFollowerRuntimeDiagnostic("registration_refresh_failure", {
-      detail: "refresh failed once",
-    });
-
-    expect(diagnostic).toEqual({
-      kind: "registration_refresh_failure",
-      state: "degraded",
-      reason: "registration refresh failed after reconnect",
-      detail: "refresh failed once",
-      nextStep:
-        "Follower kept the last registered identity. If status or ownership looks stale, run /pinet follow.",
-    });
-    expect(formatFollowerRuntimeDiagnosticHealth(diagnostic)).toBe(
-      "degraded — registration refresh failed after reconnect (refresh failed once)",
-    );
-  });
-
   it("builds reconnect stopped diagnostics and healthy fallbacks", () => {
     const diagnostic = buildFollowerRuntimeDiagnostic("reconnect_stopped", {
       detail: 'Agent name "Reserved Crane" is already reserved.',
