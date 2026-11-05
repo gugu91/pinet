@@ -101,6 +101,28 @@ describe("probeGitContext", () => {
 });
 
 describe("probeGitDynamic", () => {
+  it("runs the branch and dirty probes concurrently", async () => {
+    const pending = new Map<string, (stdout: string) => void>();
+    const runner: ExecFileAsyncLike = vi.fn(
+      (_file, args) =>
+        new Promise<{ stdout: string }>((resolve) => {
+          pending.set(args[0] ?? "", (stdout) => resolve({ stdout }));
+        }),
+    );
+
+    const probing = probeGitDynamic("/repo", runner);
+    await vi.waitFor(() => expect([...pending.keys()].sort()).toEqual(["branch", "status"]));
+    pending.get("status")!(" M file.ts\n");
+    pending.get("branch")!("main\n");
+
+    await expect(probing).resolves.toEqual({
+      branch: "main",
+      dirty: true,
+      dirtyFileCount: 1,
+      probeFailed: false,
+    });
+  });
+
   it("returns live branch and clean dirty state when git succeeds", async () => {
     const runner: ExecFileAsyncLike = vi.fn(async (_file, args) => {
       if (args[0] === "branch") {

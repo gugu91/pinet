@@ -82,6 +82,41 @@ describe("createAgentCompletionRuntime", () => {
     expect(clearThreadStatus).toHaveBeenCalledTimes(2);
   });
 
+  it("clears tracked thread statuses concurrently before freeing the agent", async () => {
+    const pendingClears: Array<() => void> = [];
+    const clearThreadStatus = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          pendingClears.push(resolve);
+        }),
+    );
+    const signalAgentFree = vi.fn(async () => ({ queuedInboxCount: 0, drainedQueuedInbox: false }));
+    const { deps, threads } = createDeps({ clearThreadStatus, signalAgentFree });
+    const runtime = createAgentCompletionRuntime(deps);
+    const { ctx } = createContext();
+
+    threads.set("100.1", { channelId: "D100" });
+    threads.set("200.2", { channelId: "D200" });
+    runtime.trackThinkingThread("100.1");
+    runtime.trackThinkingThread("200.2");
+
+    const ending = runtime.onAgentEnd({}, ctx);
+    await vi.waitFor(() => expect(clearThreadStatus).toHaveBeenCalledTimes(2));
+    expect(signalAgentFree).not.toHaveBeenCalled();
+
+    // A thread that starts thinking while completion clears stays tracked for the next turn.
+    threads.set("300.3", { channelId: "D300" });
+    runtime.trackThinkingThread("300.3");
+    for (const resolve of pendingClears) resolve();
+    await ending;
+    expect(signalAgentFree).toHaveBeenCalledWith(ctx);
+
+    clearThreadStatus.mockImplementation(async () => {});
+    await runtime.onAgentEnd({}, ctx);
+    expect(clearThreadStatus).toHaveBeenLastCalledWith("D300", "300.3");
+    expect(clearThreadStatus).toHaveBeenCalledTimes(3);
+  });
+
   it("warns when auto-free fails after clearing tracked cleanup state", async () => {
     const error = new Error("status sync failed once");
     const signalAgentFree = vi.fn(async () => {

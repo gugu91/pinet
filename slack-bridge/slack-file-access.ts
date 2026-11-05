@@ -27,13 +27,15 @@ export interface SlackFileDescriptor {
   residualRisks: string[];
 }
 
+type SlackFileObject = Record<string, unknown>;
+
 export interface SlackFileLookupContext {
   channelId?: string;
   threadTs?: string;
   messageTs?: string;
+  /** `conversations.replies` messages the caller already fetched for this channel/thread. */
+  threadMessages?: readonly SlackFileObject[];
 }
-
-type SlackFileObject = Record<string, unknown>;
 
 export interface SlackThreadRepliesRequest extends SlackFileObject {
   channel: string;
@@ -163,12 +165,16 @@ async function lookupSlackFileMetadata(
   deps: SlackFileDownloadDeps,
 ): Promise<SlackFileMetadata> {
   if (context.channelId && context.threadTs) {
-    const replies = await deps.slack("conversations.replies", deps.token, {
-      channel: context.channelId,
-      ts: context.threadTs,
-      limit: 200,
-    });
-    const fromThread = findFileInMessages(replies.messages, fileId, context.messageTs);
+    const messages =
+      context.threadMessages ??
+      (
+        await deps.slack("conversations.replies", deps.token, {
+          channel: context.channelId,
+          ts: context.threadTs,
+          limit: 200,
+        })
+      ).messages;
+    const fromThread = findFileInMessages(messages, fileId, context.messageTs);
     if (fromThread) return fromThread;
     throw new Error(
       context.messageTs
@@ -270,10 +276,12 @@ export async function fetchSlackFileToCache(
   const ttlMs = deps.ttlMs ?? DEFAULT_SLACK_FILE_CACHE_TTL_MS;
   const maxBytes = deps.maxBytes ?? DEFAULT_SLACK_FILE_MAX_DOWNLOAD_BYTES;
   const cacheRoot = deps.cacheDir ?? DEFAULT_CACHE_DIR;
-  await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
-  await cleanupSlackFileCache(cacheRoot, now.getTime(), ttlMs);
-
-  const metadata = await lookupSlackFileMetadata(trimmedFileId, context, deps);
+  const [, metadata] = await Promise.all([
+    mkdir(cacheRoot, { recursive: true, mode: 0o700 }).then(() =>
+      cleanupSlackFileCache(cacheRoot, now.getTime(), ttlMs),
+    ),
+    lookupSlackFileMetadata(trimmedFileId, context, deps),
+  ]);
   if (metadata.size != null && metadata.size > maxBytes) {
     throw new Error(
       `Slack file ${trimmedFileId} is too large to download safely: ${metadata.size} bytes exceeds limit ${maxBytes}.`,

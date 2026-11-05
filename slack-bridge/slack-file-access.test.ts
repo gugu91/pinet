@@ -109,6 +109,46 @@ describe("fetchSlackFileToCache", () => {
     });
   });
 
+  it("verifies caller-supplied thread messages without refetching them", async () => {
+    const cacheDir = await makeTempDir();
+    const slack = vi.fn(async (): Promise<SlackResult> => ({ ok: true }));
+    const fetchImpl = vi.fn(async () => okResponse(Buffer.from("png")));
+    const threadMessages = [
+      {
+        ts: "1.2",
+        files: [
+          slackFile({
+            id: "FIMG",
+            name: "a.png",
+            mimetype: "image/png",
+            filetype: "png",
+            prettyType: "PNG",
+            size: 3,
+            url: "https://files.slack.com/private/a",
+          }),
+        ],
+      },
+    ];
+    const deps = { slack, token: "xoxb-test", fetchImpl, cacheDir };
+
+    const descriptor = await fetchSlackFileToCache(
+      "FIMG",
+      { channelId: "C1", threadTs: "1.1", messageTs: "1.2", threadMessages },
+      deps,
+    );
+    expect(descriptor.filename).toBe("a.png");
+
+    await expect(
+      fetchSlackFileToCache(
+        "FIMG",
+        { channelId: "C1", threadTs: "1.1", messageTs: "1.3", threadMessages },
+        deps,
+      ),
+    ).rejects.toThrow("was not found on message 1.3");
+    expect(slack).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("downloads a PDF/document through files.info", async () => {
     const cacheDir = await makeTempDir();
     const bytes = Buffer.from("%PDF-1.7");

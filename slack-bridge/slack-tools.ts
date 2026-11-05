@@ -1751,9 +1751,15 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       const pending = inbox.splice(0, inbox.length);
       updateBadge();
 
-      const lines: string[] = [];
-      for (const message of pending) {
-        const name = await resolveUser(message.userId);
+      const userNames = new Map(
+        await Promise.all(
+          [...new Set(pending.map((message) => message.userId))].map(
+            async (userId) => [userId, await resolveUser(userId)] as const,
+          ),
+        ),
+      );
+      const lines = pending.map((message) => {
+        const name = userNames.get(message.userId);
         const prefix = message.isChannelMention
           ? `[thread ${message.threadTs}] (channel mention in <#${message.channel}>) ${name}`
           : `[thread ${message.threadTs}] ${name}`;
@@ -1778,8 +1784,8 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
               : message.metadata?.kind
                 ? ` | metadata.kind=${String(message.metadata.kind)}`
                 : "";
-        lines.push(`${prefix} (${message.timestamp}): ${message.text}${metadataSuffix}`);
-      }
+        return `${prefix} (${message.timestamp}): ${message.text}${metadataSuffix}`;
+      });
 
       const subtreeInboxIds = getSubtreeInboxIds(pending);
       if (subtreeInboxIds.length > 0) {
@@ -2326,7 +2332,7 @@ export function registerSlackTools(pi: ExtensionAPI, deps: RegisterSlackToolsDep
       ): Promise<SlackFileDescriptor> =>
         fetchSlackFileToCache(
           fileId,
-          { channelId: channel, threadTs: params.thread_ts, messageTs },
+          { channelId: channel, threadTs: params.thread_ts, messageTs, threadMessages: messages },
           { slack, token: getBotToken() },
         );
       const formattedMessages = await Promise.all(
