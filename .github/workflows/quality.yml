@@ -91,7 +91,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build packages
-        run: pnpm build:packages
+        run: pnpm build
 
       - name: Verify package build assets
         run: |

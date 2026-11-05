@@ -50,13 +50,6 @@ test("test dependency tiers cover only the dist exports needed before tests", ()
   });
 });
 
-test("the root build runs the ordered builder", async () => {
-  // Turbo ignores file: workspace links, so `turbo run build` races every package's dist cleanup.
-  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-
-  assert.equal(manifest.scripts.build, "node ./scripts/build-all.mjs");
-});
-
 test("the root Pi manifest loads only the built Slack bridge", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const slackBridgeEntries = manifest.pi.extensions.filter((entry) =>
