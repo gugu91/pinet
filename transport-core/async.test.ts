@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   computeBackoffDelay,
   createAbortError,
+  createScope,
   createTimeoutError,
   isAbortError,
   isTimeoutError,
@@ -145,4 +146,190 @@ test("computeBackoffDelay matches the historical reconnect-delay formula", () =>
       );
     }
   }
+});
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+test("Scope.close aborts, waits for running work, then runs cleanups in reverse", async () => {
+  const scope = createScope();
+  const events: string[] = [];
+  const release = deferred();
+  scope.defer(() => {
+    events.push("cleanup 1");
+  });
+  scope.defer(() => {
+    events.push("cleanup 2");
+  });
+  const work = scope.run(async (signal) => {
+    await release.promise;
+    events.push(`work done, aborted=${signal.aborted}`);
+  });
+
+  const closing = scope.close();
+  await sleep(5);
+  assert.deepEqual(events, []);
+  release.resolve();
+  await closing;
+  await work;
+  assert.deepEqual(events, ["work done, aborted=true", "cleanup 2", "cleanup 1"]);
+});
+
+test("Scope refuses work once closed", async () => {
+  const scope = createScope();
+  await scope.close();
+  await assert.rejects(
+    scope.run(async () => undefined),
+    (error) => isAbortError(error),
+  );
+  let ran = false;
+  scope.defer(() => {
+    ran = true;
+  });
+  await sleep(0);
+  assert.equal(ran, true);
+  await assert.rejects(scope.sleep(1000), (error) => isAbortError(error));
+});
+
+test("Scope.sleep rejects when the scope closes", async () => {
+  const scope = createScope();
+  const sleeping = scope.sleep(10_000);
+  await scope.close();
+  await assert.rejects(sleeping, (error) => isAbortError(error));
+});
+
+test("Scope.setInterval skips overlapping ticks and close waits for the running tick", async () => {
+  const scope = createScope();
+  const release = deferred();
+  let started = 0;
+  let finished = 0;
+  scope.setInterval(async () => {
+    started++;
+    await release.promise;
+    finished++;
+  }, 2);
+
+  await sleep(30);
+  assert.equal(started, 1);
+  const closing = scope.close();
+  release.resolve();
+  await closing;
+  assert.equal(finished, 1);
+  await sleep(20);
+  assert.equal(started, 1);
+});
+
+test("Scope children close before the parent's cleanups", async () => {
+  const parent = createScope();
+  const child = parent.child();
+  const events: string[] = [];
+  parent.defer(() => {
+    events.push("parent");
+  });
+  child.defer(() => {
+    events.push("child");
+  });
+  await parent.close();
+  assert.equal(child.signal.aborted, true);
+  assert.deepEqual(events, ["child", "parent"]);
+});
+
+test("Scope runs every cleanup even when one throws", async () => {
+  const scope = createScope();
+  const child = scope.child();
+  let ran = 0;
+  scope.defer(() => {
+    ran++;
+  });
+  scope.defer(() => {
+    throw new Error("boom");
+  });
+  child.defer(() => {
+    throw new Error("child boom");
+  });
+  await assert.rejects(scope.close(), (error) => error instanceof AggregateError);
+  assert.equal(ran, 1);
+});
+
+/** Fails the test instead of hanging when `promise` never settles. */
+async function within<T>(promise: Promise<T>, ms = 1_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+test("Scope.close called from its own task starts closing and runs cleanups once that task ends", async () => {
+  const scope = createScope();
+  const events: string[] = [];
+  scope.defer(() => {
+    events.push("cleanup");
+  });
+  await within(
+    scope.run(async (signal) => {
+      await scope.close();
+      events.push(`task ends, aborted=${signal.aborted}`);
+    }),
+  );
+  await within(scope.close());
+  assert.deepEqual(events, ["task ends, aborted=true", "cleanup"]);
+});
+
+test("Scope.close called from a child scope's task, or work it spawned, does not hang", async () => {
+  const scope = createScope();
+  const child = scope.child();
+  await within(
+    child.run(async () => {
+      // Not awaited by the task itself, as a status callback might fire it.
+      await Promise.resolve().then(() => scope.close());
+    }),
+  );
+  await within(scope.close());
+});
+
+test("a task that closes its scope after an outside close began does not hang either", async () => {
+  const scope = createScope();
+  void scope.run(async (signal) => {
+    if (!signal.aborted) {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+    await scope.close();
+  });
+  await within(scope.close());
+});
+
+test("abort listeners see the scope as closed: no second shutdown, no new work", async () => {
+  const scope = createScope();
+  let cleanups = 0;
+  scope.defer(() => {
+    cleanups++;
+  });
+  let lateWork: Promise<void> | null = null;
+  scope.signal.addEventListener("abort", () => {
+    void scope.close();
+    lateWork = scope.run(async () => undefined);
+  });
+  await scope.close();
+  assert.equal(cleanups, 1);
+  await assert.rejects(lateWork!, (error: Error) => isAbortError(error));
+});
+
+test("Scope.close from outside still waits for every task", async () => {
+  const scope = createScope();
+  let finished = false;
+  void scope.run(async (signal) => {
+    if (!signal.aborted) {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    finished = true;
+  });
+  await scope.close();
+  assert.equal(finished, true);
 });

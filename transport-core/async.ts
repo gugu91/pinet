@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 // Shared async primitives for pi transports and bridges.
 //
 // These are the zero-dependency building blocks that were previously
@@ -120,4 +122,152 @@ export function computeBackoffDelay(attempt: number, options: BackoffOptions): n
   const capped = Math.min(base, options.maxMs);
   const jittered = capped * (1 - jitterRatio + random * 2 * jitterRatio);
   return Math.round(jittered);
+}
+
+/**
+ * Owns async work, timers and cleanups. `close()` aborts `signal`, closes
+ * child scopes, waits for every task started with `run` (including interval
+ * ticks), then runs cleanups in reverse order. A closed scope refuses new
+ * work, so a late callback cannot start something nothing will stop.
+ */
+export interface Scope {
+  readonly signal: AbortSignal;
+  /**
+   * Register a cleanup. Runs immediately if the scope is already closed.
+   * Cleanups run after tasks finish, so work a task waits on must end on
+   * `signal`, not here.
+   */
+  defer(cleanup: () => void | Promise<void>): void;
+  /**
+   * Track `work` so `close()` waits for it. Rejects with an AbortError once
+   * closed.
+   */
+  run<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  /** Repeat `tick` every `ms`, skipping a tick while the previous one is still running. */
+  setInterval(tick: () => void | Promise<void>, ms: number): void;
+  /** Like `sleep`, aborted when the scope closes. */
+  sleep(ms: number): Promise<void>;
+  /** A scope closed with (and before) this one. */
+  child(): Scope;
+  /**
+   * Abort, close children, wait for tasks, then run cleanups in reverse.
+   * Called from this scope's own work (or a child's), it only starts closing
+   * and resolves at once: that work must end before cleanups can run.
+   */
+  close(): Promise<void>;
+}
+
+/** The scopes, with their ancestors, whose tasks the current code runs inside. */
+const enclosingScopes = new AsyncLocalStorage<ReadonlySet<Scope>>();
+
+export function createScope(): Scope {
+  return openScope([]);
+}
+
+function openScope(ancestors: readonly Scope[]): Scope {
+  const controller = new AbortController();
+  const tasks = new Set<Promise<void>>();
+  const children = new Set<Scope>();
+  const cleanups: Array<() => void | Promise<void>> = [];
+  let closing: Promise<void> | null = null;
+
+  const scope: Scope = {
+    signal: controller.signal,
+    defer(cleanup) {
+      if (closing) {
+        void Promise.resolve().then(cleanup);
+        return;
+      }
+      cleanups.push(cleanup);
+    },
+    run(work) {
+      if (closing) return Promise.reject(createAbortError("Scope closed"));
+      const inside = new Set(enclosingScopes.getStore());
+      for (const owner of [...ancestors, scope]) inside.add(owner);
+      const result = Promise.resolve().then(() =>
+        enclosingScopes.run(inside, () => work(controller.signal)),
+      );
+      const settled = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      tasks.add(settled);
+      void settled.then(() => tasks.delete(settled));
+      return result;
+    },
+    setInterval(tick, ms) {
+      let running = false;
+      const timer = setInterval(() => {
+        if (running || closing) return;
+        running = true;
+        scope
+          .run(async () => {
+            await tick();
+          })
+          .catch((error) => {
+            if (isAbortError(error)) return;
+            console.error(
+              `[scope] interval tick failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          })
+          .finally(() => {
+            running = false;
+          });
+      }, ms);
+      timer.unref();
+      scope.defer(() => clearInterval(timer));
+    },
+    sleep(ms) {
+      return sleep(ms, { signal: controller.signal });
+    },
+    child() {
+      const child = openScope([...ancestors, scope]);
+      if (closing) {
+        void child.close();
+        return child;
+      }
+      children.add(child);
+      child.defer(() => {
+        children.delete(child);
+      });
+      return child;
+    },
+    close() {
+      if (!closing) {
+        // Set before aborting, so abort listeners see the scope as closing.
+        let finish!: { resolve: () => void; reject: (error: Error) => void };
+        closing = new Promise<void>((resolve, reject) => {
+          finish = { resolve, reject };
+        });
+        controller.abort(createAbortError("Scope closed"));
+        void (async () => {
+          const errors: Error[] = [];
+          for (const result of await Promise.allSettled([...children].map((c) => c.close()))) {
+            if (result.status === "rejected") errors.push(result.reason);
+          }
+          // No task can start once closing, so this set only shrinks.
+          await Promise.all(tasks);
+          for (const cleanup of cleanups.reverse()) {
+            try {
+              await cleanup();
+            } catch (error) {
+              errors.push(error instanceof Error ? error : new Error(String(error)));
+            }
+          }
+          if (errors.length === 1) throw errors[0];
+          if (errors.length > 1) throw new AggregateError(errors, "Scope cleanup failed");
+        })().then(finish.resolve, finish.reject);
+      }
+      if (!enclosingScopes.getStore()?.has(scope)) return closing;
+      // Called from this scope's own work, which shutdown waits for: waiting
+      // here would never end, so only start it.
+      closing.catch((error) => {
+        console.error(
+          `[scope] cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+      return Promise.resolve();
+    },
+  };
+  return scope;
 }
