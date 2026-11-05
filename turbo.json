@@ -27,17 +27,6 @@
       "outputs": [],
       "passThroughEnv": ["TMPDIR"]
     },
-    "build": {
-      "dependsOn": ["^build"],
-      "inputs": [
-        "**/*.ts",
-        "!**/*.test.ts",
-        "tsconfig.json",
-        "../tsconfig.json",
-        "../types/**/*.d.ts"
-      ],
-      "outputs": ["dist/**"]
-    },
     "lint": {
       "inputs": ["**/*.ts", "../.oxlintrc.json"],
       "outputs": []
