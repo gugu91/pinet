@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultLockPath,
@@ -329,8 +330,6 @@ describe("LeaderLock simultaneous acquisition", () => {
 
   function writeContenderScript(): string {
     const lockPath = path.join(dir, "lock");
-    const gatePath = path.join(dir, "gate");
-    const donePath = path.join(dir, "done");
     // Node 22.18+/24 strip types natively, so children can import the .ts
     // module directly with plain `node`. A winner must stay alive (holding
     // the lock) until every contender has decided — otherwise a slower
@@ -348,17 +347,14 @@ describe("LeaderLock simultaneous acquisition", () => {
         `const prefix = "@pinet/transport-core/";`,
         `registerHooks({ resolve: (specifier, context, next) => next(specifier.startsWith(prefix) ? ${JSON.stringify(transportCoreUrl)} + specifier.slice(prefix.length) + ".ts" : specifier, context) });`,
         `const { LeaderLock } = await import(${JSON.stringify(leaderModuleUrl)});`,
-        `const resultPath = process.argv[2];`,
-        // If the test worker is killed, nobody opens the gate or writes done:
-        // exit once reparented instead of spinning forever.
-        `const parentPid = process.ppid;`,
-        `const spin = (file) => { while (!fs.existsSync(file)) { if (process.ppid !== parentPid) process.exit(1); } };`,
-        `fs.writeFileSync(resultPath + ".ready", "ready");`,
-        `spin(${JSON.stringify(gatePath)});`,
-        `const lock = new LeaderLock(${JSON.stringify(lockPath)});`,
-        `const acquired = lock.tryAcquire();`,
-        `fs.writeFileSync(resultPath, JSON.stringify({ acquired }));`,
-        `if (acquired) spin(${JSON.stringify(donePath)});`,
+        // Block on stdin instead of spinning: no CPU while waiting, and the
+        // read returns end-of-file if the test worker dies.
+        `const byte = Buffer.alloc(1);`,
+        `fs.writeSync(1, "ready\\n");`,
+        `if (fs.readSync(0, byte) === 0) process.exit(1);`,
+        `const acquired = new LeaderLock(${JSON.stringify(lockPath)}).tryAcquire();`,
+        `fs.writeSync(1, JSON.stringify({ acquired }) + "\\n");`,
+        `if (acquired) fs.readSync(0, byte);`,
         `process.exit(0);`,
       ].join("\n"),
       "utf-8",
@@ -366,20 +362,24 @@ describe("LeaderLock simultaneous acquisition", () => {
     return childScript;
   }
 
-  async function raceContenders(options: { children: number; staleLock: boolean }): Promise<{
-    winners: number;
-    losers: number;
-  }> {
+  async function nextLine(lines: AsyncIterator<string>): Promise<string> {
+    const line = await lines.next();
+    if (line.done) throw new Error("contender exited early");
+    return line.value;
+  }
+
+  async function raceContenders(options: {
+    children: number;
+    staleLock: boolean;
+  }): Promise<number> {
     if (options.staleLock) {
       fs.writeFileSync(path.join(dir, "lock"), "2147483647", "utf-8");
     }
     const childScript = writeContenderScript();
-
-    const resultPaths = Array.from({ length: options.children }, (_, i) =>
-      path.join(dir, `result-${i}.json`),
-    );
-    const children = resultPaths.map((resultPath) =>
-      spawn(process.execPath, ["--no-warnings", childScript, resultPath], { stdio: "ignore" }),
+    const children = Array.from({ length: options.children }, () =>
+      spawn(process.execPath, ["--no-warnings", childScript], {
+        stdio: ["pipe", "pipe", "ignore"],
+      }),
     );
     // Attach exit promises immediately — losers exit long before the round
     // ends, and a listener attached after the event has fired never resolves.
@@ -390,69 +390,52 @@ describe("LeaderLock simultaneous acquisition", () => {
           child.on("exit", () => resolve());
         }),
     );
+    const lines = children.map((child) =>
+      createInterface({ input: child.stdout })[Symbol.asyncIterator](),
+    );
     try {
-      // Readiness barrier: wait until every child has reached the spin gate,
-      // then open it so all contenders attempt acquisition together. A fixed
-      // sleep would let slow children start after the gate opened, quietly
-      // weakening the race into a sequential acquisition test.
-      const readyDeadline = Date.now() + 15_000;
-      while (resultPaths.some((p) => !fs.existsSync(`${p}.ready`))) {
-        if (Date.now() > readyDeadline)
-          throw new Error("contenders did not all reach the gate in time");
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      fs.writeFileSync(path.join(dir, "gate"), "go", "utf-8");
-
-      // Wait until every contender has recorded its outcome, then let
-      // winners exit.
-      const deadline = Date.now() + 20_000;
-      while (resultPaths.some((p) => !fs.existsSync(p))) {
-        if (Date.now() > deadline) throw new Error("contenders did not all report in time");
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      fs.writeFileSync(path.join(dir, "done"), "done", "utf-8");
+      // Readiness barrier: release contenders only once every one is blocked
+      // at the gate, so they all attempt acquisition together. A fixed sleep
+      // would let slow children start late, weakening the race into a
+      // sequential acquisition test.
+      await Promise.all(lines.map(nextLine));
+      for (const child of children) child.stdin.write("g");
+      const outcomes = (await Promise.all(lines.map(nextLine))).map(
+        (line) => JSON.parse(line) as { acquired: boolean },
+      );
+      // Closing stdin lets the winner release the lock and exit.
+      for (const child of children) child.stdin.end();
       await Promise.all(exits);
+      return outcomes.filter((o) => o.acquired).length;
     } finally {
-      // Never leak spinning children on a failed round.
       for (const child of children) {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }
       await Promise.allSettled(exits);
     }
-
-    const outcomes = resultPaths.map(
-      (p) => JSON.parse(fs.readFileSync(p, "utf-8")) as { acquired: boolean },
-    );
-    const winners = outcomes.filter((o) => o.acquired).length;
-    const losers = outcomes.filter((o) => !o.acquired).length;
-    expect(winners + losers).toBe(options.children);
-    return { winners, losers };
   }
 
   it("elects exactly one leader among simultaneous contenders", async () => {
-    const { winners } = await raceContenders({ children: 8, staleLock: false });
-    expect(winners).toBe(1);
+    expect(await raceContenders({ children: 8, staleLock: false })).toBe(1);
   }, 30_000);
 
   it("elects exactly one leader when contenders race over a stale lock", async () => {
-    const { winners } = await raceContenders({ children: 8, staleLock: true });
-    expect(winners).toBe(1);
+    expect(await raceContenders({ children: 8, staleLock: true })).toBe(1);
   }, 30_000);
 
   it("contenders exit when the test worker dies before opening the gate", async () => {
-    const resultPath = path.join(dir, "result.json");
-    // Stand in for the test worker: spawn a contender, then get SIGKILLed.
+    // Stand in for the test worker: spawn a contender that shares this
+    // stdout, report its PID, then get SIGKILLed.
     const worker = spawn(
       process.execPath,
       [
         "-e",
-        `const c = require("node:child_process").spawn(process.execPath, ["--no-warnings", ${JSON.stringify(writeContenderScript())}, ${JSON.stringify(resultPath)}], { stdio: "ignore" }); console.log(c.pid);`,
+        `const c = require("node:child_process").spawn(process.execPath, ["--no-warnings", ${JSON.stringify(writeContenderScript())}], { stdio: ["pipe", "inherit", "ignore"] }); console.log(c.pid);`,
       ],
       { stdio: ["ignore", "pipe", "ignore"] },
     );
-    const contenderPid = await new Promise<number>((resolve) =>
-      worker.stdout.once("data", (data: Buffer) => resolve(Number(data.toString()))),
-    );
+    const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
+    const contenderPid = Number(await nextLine(lines));
     const alive = () => {
       try {
         process.kill(contenderPid, 0);
@@ -462,9 +445,7 @@ describe("LeaderLock simultaneous acquisition", () => {
       }
     };
     try {
-      while (!fs.existsSync(`${resultPath}.ready`)) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+      expect(await nextLine(lines)).toBe("ready");
       worker.kill("SIGKILL");
       const deadline = Date.now() + 5_000;
       while (alive() && Date.now() < deadline) {
