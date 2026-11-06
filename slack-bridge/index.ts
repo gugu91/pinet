@@ -141,6 +141,7 @@ import {
   createUncheckedSlackScopeDiagnostics,
   detectSlackScopeDiagnostics,
 } from "./slack-scope-diagnostics.js";
+import { reportDiagnostic, setDiagnosticSink } from "@pinet/transport-core/diagnostics";
 
 // Settings and helpers imported from ./helpers.js
 
@@ -302,7 +303,6 @@ export default function (pi: ExtensionAPI) {
   });
   const isIdleAndNotCompacting = () =>
     !compactionGate.isActive() && (sessionUiRuntime.getExtensionContext()?.isIdle?.() ?? true);
-  let reportAgentStatus: (status: "working" | "idle") => Promise<void> = async () => {};
   let deliverTrackedSlackFollowUpMessage: (options: {
     prompt: string;
     messages: Pick<InboxMessage, "threadTs">[];
@@ -317,7 +317,6 @@ export default function (pi: ExtensionAPI) {
       inbox.unshift(...messages);
     },
     updateBadge,
-    reportStatus: (status) => reportAgentStatus(status),
     userNames,
     getSecurityPrompt: () => securityPrompt,
     deliverTrackedSlackFollowUpMessage: (options) => deliverTrackedSlackFollowUpMessage(options),
@@ -345,7 +344,7 @@ export default function (pi: ExtensionAPI) {
         }
       });
     } catch (error) {
-      console.error(`[slack-bridge] Pinet steering delivery failed: ${msg(error)}`);
+      reportDiagnostic("error", `[slack-bridge] Pinet steering delivery failed: ${msg(error)}`);
       return false;
     }
   }
@@ -455,7 +454,7 @@ export default function (pi: ExtensionAPI) {
 
     lastSlackScopeDriftWarning = warning;
     if (ctx?.hasUI) ctx.ui.notify(warning, "warning");
-    else console.warn(`[slack-bridge] ${warning}`);
+    else reportDiagnostic("warning", `[slack-bridge] ${warning}`);
   }
 
   async function ensureSlackScopeDiagnostics(ctx?: ExtensionContext): Promise<void> {
@@ -500,7 +499,6 @@ export default function (pi: ExtensionAPI) {
     slack,
     getBotToken: () => botToken ?? "",
     formatError: msg,
-    logger: console,
   });
   const slackRuntimeAccess = createSlackRuntimeAccess({
     slack,
@@ -576,7 +574,13 @@ export default function (pi: ExtensionAPI) {
     getExtensionContext: () => sessionUiRuntime.getExtensionContext() ?? undefined,
   });
   const { reportStatus, signalAgentFree } = pinetAgentStatus;
-  reportAgentStatus = reportStatus;
+  // Every run starts here, whatever started it: Slack, Pinet, steering or local input.
+  // agent_end's auto-free marks it idle again.
+  pi.on("agent_start", () => {
+    void reportStatus("working").catch(() => {
+      /* best effort: follower polling retries the sync */
+    });
+  });
   const agentCompletionRuntime = createAgentCompletionRuntime({
     getThreads: () => threads,
     clearThreadStatus,
@@ -927,7 +931,8 @@ export default function (pi: ExtensionAPI) {
       try {
         if (isStaleSlackMessage(message)) {
           const ageMs = getSlackMessageAgeMs(message);
-          console.info(
+          reportDiagnostic(
+            "info",
             `[slack-bridge] skipped stale Slack inbound message older than 15m: channel=${message.channel} thread=${message.threadId} ts=${message.timestamp} age_ms=${ageMs ?? "unknown"}`,
           );
           return;
@@ -1003,7 +1008,7 @@ export default function (pi: ExtensionAPI) {
           maybeDrainInboxIfIdle(ctx);
         }
       } catch (err) {
-        console.error(`[slack-bridge] broker inbound routing failed: ${msg(err)}`);
+        reportDiagnostic("error", `[slack-bridge] broker inbound routing failed: ${msg(err)}`);
       }
     },
     pushInboxMessages: (messages) => {
@@ -1687,8 +1692,8 @@ export default function (pi: ExtensionAPI) {
     signal?.throwIfAborted();
     broker.server.setOutboundMessageAdapters?.(broker.adapters);
 
-    desiredAgentStatus = "idle";
     await options.publish({ mode: "broker" });
+    void reportStatus(ctx.isIdle?.() === false ? "working" : "idle").catch(() => {});
 
     if (recoveredBrokerMessages > 0 || releasedBrokerClaims > 0) {
       const recoveredTargetedDetail =
@@ -1777,10 +1782,10 @@ export default function (pi: ExtensionAPI) {
       followerRuntimeDiagnostic = diagnostic;
     },
     handleTerminalReconnectFailure: async (ctx, error) => {
-      console.error(`[slack-bridge] follower reconnect failed: ${msg(error)}`);
+      reportDiagnostic("error", `[slack-bridge] follower reconnect failed: ${msg(error)}`);
       const diagnostic = followerRuntimeDiagnostic;
       await pinetRuntime.setMode(ctx, "off").catch((stopError: Error) => {
-        console.error(`[slack-bridge] follower stop failed: ${msg(stopError)}`);
+        reportDiagnostic("error", `[slack-bridge] follower stop failed: ${msg(stopError)}`);
       });
       followerRuntimeDiagnostic = diagnostic;
       setExtStatus(ctx, "error");
@@ -1872,8 +1877,9 @@ export default function (pi: ExtensionAPI) {
     const clientRef = await followerRuntime.connect(ctx, signal);
     signal?.throwIfAborted();
     followerRuntimeDiagnostic = null;
-    desiredAgentStatus = "idle";
     await publish({ mode: "follower", client: clientRef });
+    // A run may already be under way: its agent_start fired before Pinet was connected.
+    void reportStatus(ctx.isIdle?.() === false ? "working" : "idle").catch(() => {});
     setExtStatus(ctx, "ok");
   }
 
@@ -1895,6 +1901,12 @@ export default function (pi: ExtensionAPI) {
     resetRemoteControlState();
     resetPendingRemoteControlAcks();
     sessionUiRuntime.prepareForSessionStart(ctx);
+    if (ctx.mode === "tui") {
+      // The TUI owns the terminal: a console write would draw over it.
+      setDiagnosticSink((level, message) => {
+        if (level !== "info") ctx.ui.notify(message, level);
+      });
+    }
     // Restore persisted thread state (always restore, even before /pinet)
     restorePersistedRuntimeState(ctx);
     const pinetRegistrationBlocked = pinetRegistrationGate.evaluateSessionStart(ctx);
@@ -1916,7 +1928,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (!startupJoinFile && pinetRegistrationBlocked) {
-      console.log("[slack-bridge] detected local subagent context; skipping Pinet registration");
+      reportDiagnostic(
+        "info",
+        "[slack-bridge] detected local subagent context; skipping Pinet registration",
+      );
       await pinetRuntime.setMode(ctx, "off");
       return;
     }
@@ -1940,7 +1955,7 @@ export default function (pi: ExtensionAPI) {
     if (startupMode === "off") {
       if (followRequested && !startupJoinFile && !reloadedMode) {
         const failure = `--pinet-follow found no broker socket at ${brokerSocketPath}. Slack, Pinet and iMessage tools stay off. Start the broker or set PINET_SOCKET_PATH, then restart this process.`;
-        console.error(`[slack-bridge] ${failure}`);
+        reportDiagnostic("error", `[slack-bridge] ${failure}`);
         ctx.ui.notify(failure, "warning");
       }
       await pinetRuntime.setMode(ctx, "off");
@@ -1952,10 +1967,13 @@ export default function (pi: ExtensionAPI) {
       () => {
         if (getRuntimeMode() !== startupMode) return;
         if (startupMode === "single") maybeWarnSlackGuardrailPosture(ctx);
-        console.log(`[slack-bridge] runtime mode: ${startupMode}`);
+        reportDiagnostic("info", `[slack-bridge] runtime mode: ${startupMode}`);
       },
       (error: Error) => {
-        console.error(`[slack-bridge] runtime start (${startupMode}) failed: ${msg(error)}`);
+        reportDiagnostic(
+          "error",
+          `[slack-bridge] runtime start (${startupMode}) failed: ${msg(error)}`,
+        );
         if (joinPath || followRequested) {
           ctx.ui.notify(
             `Pinet could not join the broker: ${msg(error)}. Slack, Pinet and iMessage tools stay off.`,
@@ -2027,7 +2045,7 @@ export default function (pi: ExtensionAPI) {
         },
       };
     } catch (error) {
-      console.error(`[slack-bridge] contextual thread hydration failed: ${msg(error)}`);
+      reportDiagnostic("error", `[slack-bridge] contextual thread hydration failed: ${msg(error)}`);
       return;
     }
   });
@@ -2053,11 +2071,15 @@ export default function (pi: ExtensionAPI) {
     resetPendingRemoteControlAcks();
     sessionUiRuntime.cleanupForSessionShutdown();
     flushPersist();
-    await pinetRuntime.setMode(ctx, "off", { releaseIdentity: !reloading });
-    // Top-level Slack tools run in every mode, including off: refuse new calls and abort
-    // in-flight ones.
-    await singlePlayerRuntime.disconnect();
-    pinetRegistrationGate.reset();
+    try {
+      await pinetRuntime.setMode(ctx, "off", { releaseIdentity: !reloading });
+      // Top-level Slack tools run in every mode, including off: refuse new calls and abort
+      // in-flight ones.
+      await singlePlayerRuntime.disconnect();
+      pinetRegistrationGate.reset();
+    } finally {
+      setDiagnosticSink(null);
+    }
   });
 }
 

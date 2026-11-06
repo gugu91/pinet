@@ -58,6 +58,7 @@ import {
   connectPinetRuntimeAdapters,
   type PinetRuntimeAdapterFactory,
 } from "./pinet-runtime-composition.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export interface BrokerRuntimeConnectResult {
   botUserId: string | null;
@@ -250,11 +251,12 @@ export function createBrokerRuntime(deps: BrokerRuntimeDeps): BrokerRuntime {
 
     activityLogger = deps.createActivityLogger((error) => {
       const formatted = deps.formatError(error);
-      console.error(`[slack-bridge] activity log failed: ${formatted}`);
-      const now = Date.now();
-      if (!activityLogContext?.hasUI || now - lastActivityLogFailureAt < 60_000) {
+      if (!activityLogContext?.hasUI) {
+        reportDiagnostic("error", `[slack-bridge] activity log failed: ${formatted}`);
         return;
       }
+      const now = Date.now();
+      if (now - lastActivityLogFailureAt < 60_000) return;
       lastActivityLogFailureAt = now;
       activityLogContext.ui.notify(`Pinet activity log failed: ${formatted}`, "warning");
     });

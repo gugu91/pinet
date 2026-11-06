@@ -63,6 +63,7 @@ import type {
   AgentLifecycleEvent,
   AgentLifecycleEventInput,
 } from "./types.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 interface SqliteJournalModeResult {
   journal_mode?: string | null;
 }
@@ -2147,16 +2148,19 @@ export class BrokerDB implements BrokerDBInterface {
     try {
       this.openAndMigrate();
     } catch (error) {
-      console.error(
-        `[BrokerDB] Failed to open or migrate ${this.dbPath}; recreating from scratch`,
-        error,
+      reportDiagnostic(
+        "error",
+        `[BrokerDB] Failed to open or migrate ${this.dbPath}; recreating from scratch: ${error instanceof Error ? error.message : String(error)}`,
       );
       this.resetDatabaseFiles();
 
       try {
         this.openAndMigrate();
       } catch (recreateError) {
-        console.error(`[BrokerDB] Failed to recreate ${this.dbPath} from scratch`, recreateError);
+        reportDiagnostic(
+          "error",
+          `[BrokerDB] Failed to recreate ${this.dbPath} from scratch: ${recreateError instanceof Error ? recreateError.message : String(recreateError)}`,
+        );
         this.close();
         throw recreateError;
       }
@@ -2177,7 +2181,8 @@ export class BrokerDB implements BrokerDBInterface {
     const db = this.getDb();
     const missingColumns = this.getMissingRequiredAgentLifecycleColumns(db);
     if (missingColumns.length > 0) {
-      console.error(
+      reportDiagnostic(
+        "error",
         `[BrokerDB] Skipping startup reconciliation; agents table is missing columns: ${missingColumns.join(", ")}`,
       );
       return;
@@ -6243,7 +6248,8 @@ export class BrokerDB implements BrokerDBInterface {
     }
 
     if (staleInboxRows.length > 0 || staleBacklogIds.length > 0) {
-      console.info(
+      reportDiagnostic(
+        "info",
         `[broker-core] skipped stale Slack delivery rows older than 15m: inbox=${staleInboxRows.length} backlog=${staleBacklogIds.length}`,
       );
     }
@@ -6753,7 +6759,8 @@ export class BrokerDB implements BrokerDBInterface {
     }
 
     if (staleCount > 0) {
-      console.info(
+      reportDiagnostic(
+        "info",
         `[broker-core] skipped stale Slack requeue rows older than 15m: inbox=${staleCount}`,
       );
     }
@@ -6862,7 +6869,7 @@ export class BrokerDB implements BrokerDBInterface {
       | SqliteJournalModeResult
       | undefined;
     if (!isSqliteWalEnabled(journalMode)) {
-      console.warn(buildSqliteWalFallbackWarning("BrokerDB", journalMode));
+      reportDiagnostic("warning", buildSqliteWalFallbackWarning("BrokerDB", journalMode));
     }
     db.exec("PRAGMA busy_timeout=5000");
     return db;

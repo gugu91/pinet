@@ -61,6 +61,7 @@ export {
   parseSocketFrame,
   RECONNECT_DELAY_MS,
 } from "../../slack-access.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export interface SlackAdapterConfig {
   botToken: string;
@@ -158,7 +159,6 @@ export class SlackAdapter implements MessageAdapter {
       slack: this.callSlack.bind(this),
       getBotToken: () => this.config.botToken,
       formatError: errorMsg,
-      logger: console,
     });
     this.allowlist = buildAllowlist(
       {
@@ -437,9 +437,15 @@ export class SlackAdapter implements MessageAdapter {
         if (response.ok) {
           return;
         }
-        console.error(`[slack-adapter] Slash command response_url failed: HTTP ${response.status}`);
+        reportDiagnostic(
+          "error",
+          `[slack-adapter] Slash command response_url failed: HTTP ${response.status}`,
+        );
       } catch (error) {
-        console.error(`[slack-adapter] Slash command response_url failed: ${errorMsg(error)}`);
+        reportDiagnostic(
+          "error",
+          `[slack-adapter] Slash command response_url failed: ${errorMsg(error)}`,
+        );
       }
     }
 
@@ -467,7 +473,7 @@ export class SlackAdapter implements MessageAdapter {
         await this.sendSlashCommandResponse(event, responseText);
       }
     } catch (error) {
-      console.error(`[slack-adapter] Slash command failed: ${errorMsg(error)}`);
+      reportDiagnostic("error", `[slack-adapter] Slash command failed: ${errorMsg(error)}`);
       await this.sendSlashCommandResponse(event, `Slack command failed: ${errorMsg(error)}`, {
         useResponseUrl: false,
       });
@@ -487,7 +493,7 @@ export class SlackAdapter implements MessageAdapter {
     try {
       await this.config.onAppHomeOpened?.(parsed);
     } catch (error) {
-      console.error(`[slack-adapter] Home tab callback failed: ${errorMsg(error)}`);
+      reportDiagnostic("error", `[slack-adapter] Home tab callback failed: ${errorMsg(error)}`);
     }
   }
 
@@ -623,7 +629,7 @@ export class SlackAdapter implements MessageAdapter {
 
       await this.addReaction(item.channel, item.ts, "white_check_mark");
     } catch (error) {
-      console.error(`[slack-adapter] reaction trigger failed: ${errorMsg(error)}`);
+      reportDiagnostic("error", `[slack-adapter] reaction trigger failed: ${errorMsg(error)}`);
       await this.addReaction(item.channel, item.ts, "x");
     }
   }
@@ -653,7 +659,10 @@ export class SlackAdapter implements MessageAdapter {
     } catch (error) {
       // Authorization failures must fail closed without posting visible
       // error reactions into threads Pinet does not own.
-      console.error(`[slack-adapter] reaction thread authorization failed: ${errorMsg(error)}`);
+      reportDiagnostic(
+        "error",
+        `[slack-adapter] reaction thread authorization failed: ${errorMsg(error)}`,
+      );
       return false;
     }
   }
@@ -713,7 +722,10 @@ export class SlackAdapter implements MessageAdapter {
       try {
         return isOwned(threadTs, channelId);
       } catch (error) {
-        console.error(`[slack-adapter] Pinet-owned thread check failed: ${errorMsg(error)}`);
+        reportDiagnostic(
+          "error",
+          `[slack-adapter] Pinet-owned thread check failed: ${errorMsg(error)}`,
+        );
         return false;
       }
     }
@@ -746,7 +758,8 @@ export class SlackAdapter implements MessageAdapter {
       }
       return participants;
     } catch (error) {
-      console.error(
+      reportDiagnostic(
+        "error",
         `[slack-adapter] failed to inspect Slack thread participants: ${errorMsg(error)}`,
       );
       return null;

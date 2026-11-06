@@ -40,6 +40,7 @@ import {
 } from "./broker/hibernation-activation.js";
 import { freezeHibernationActivationAuthority } from "./broker/hibernation-activation-authority.js";
 import type { BrokerDB } from "./broker/schema.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_SPAWN_REGISTRATION_TIMEOUT_MS = 45_000;
@@ -1180,7 +1181,8 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
         launchSource === "subtree-broker-herdr"
       ) {
         if (tmuxSession) {
-          console.warn(
+          reportDiagnostic(
+            "warning",
             `[slack-bridge] Ignoring inherited tmuxSession metadata for Herdr child ${agent.id}; no durable Herdr runtime spec is available for cleanup.`,
           );
         }

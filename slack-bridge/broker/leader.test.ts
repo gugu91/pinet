@@ -344,11 +344,16 @@ describe("LeaderLock simultaneous acquisition", () => {
     // contender would correctly reclaim the already-dead winner's lock and
     // the round would measure dead-owner recovery, not mutual exclusion.
     const leaderModuleUrl = new URL("../../broker-core/leader.ts", import.meta.url).href;
+    // Like the Vitest aliases: resolve workspace subpath imports to source, not unbuilt dist.
+    const transportCoreUrl = new URL("../../transport-core/", import.meta.url).href;
     const childScript = path.join(dir, "contender.mjs");
     fs.writeFileSync(
       childScript,
       [
         `import * as fs from "node:fs";`,
+        `import { registerHooks } from "node:module";`,
+        `const prefix = "@pinet/transport-core/";`,
+        `registerHooks({ resolve: (specifier, context, next) => next(specifier.startsWith(prefix) ? ${JSON.stringify(transportCoreUrl)} + specifier.slice(prefix.length) + ".ts" : specifier, context) });`,
         `const { LeaderLock } = await import(${JSON.stringify(leaderModuleUrl)});`,
         `const resultPath = process.argv[2];`,
         `fs.writeFileSync(resultPath + ".ready", "ready");`,

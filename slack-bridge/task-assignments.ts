@@ -7,8 +7,9 @@ import type {
   TaskAssignmentKind,
   TaskAssignmentStatus,
 } from "./broker/types.js";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
-const execFileAsync = promisify(execFile);
+const execFileByName = promisify(execFile);
 
 export type CommandResult = { stdout?: string | Buffer };
 export type CommandRunner = (
@@ -535,7 +536,8 @@ function resolveTaskStatus(
 export async function resolveTaskAssignments(
   assignments: TaskAssignmentInfo[],
   cwd = process.cwd(),
-  runner: CommandRunner = execFileAsync as CommandRunner,
+  runner: CommandRunner = (file, args, options) =>
+    execFileByName(resolveCommand(file, options.cwd), args, options),
   laneContext: {
     lanes: readonly PinetLaneInfo[];
     agents: ReadonlyArray<Pick<AgentInfo, "id" | "laneId">>;

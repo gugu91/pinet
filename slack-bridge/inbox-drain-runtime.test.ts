@@ -18,7 +18,6 @@ function createDeps(overrides: Partial<InboxDrainRuntimeDeps> = {}) {
   const inbox: InboxMessage[] = [];
   const sendUserMessage = vi.fn();
   const updateBadge = vi.fn();
-  const reportStatus = vi.fn(async () => {});
   const userNames = new Map<string, string>([["U123", "Ada"]]);
   const deliverTrackedSlackFollowUpMessage = vi.fn(() => true);
   const flushFollowerDeliveredAcks = vi.fn(async () => {});
@@ -38,7 +37,6 @@ function createDeps(overrides: Partial<InboxDrainRuntimeDeps> = {}) {
       inbox.push(...messages);
     },
     updateBadge,
-    reportStatus,
     userNames,
     getSecurityPrompt: () => securityPrompt,
     deliverTrackedSlackFollowUpMessage,
@@ -58,7 +56,6 @@ function createDeps(overrides: Partial<InboxDrainRuntimeDeps> = {}) {
     inbox,
     sendUserMessage,
     updateBadge,
-    reportStatus,
     userNames,
     deliverTrackedSlackFollowUpMessage,
     flushFollowerDeliveredAcks,
@@ -113,7 +110,6 @@ describe("createInboxDrainRuntime", () => {
       runtime,
       inbox,
       updateBadge,
-      reportStatus,
       userNames,
       deliverTrackedSlackFollowUpMessage,
       flushFollowerDeliveredAcks,
@@ -130,7 +126,6 @@ describe("createInboxDrainRuntime", () => {
     runtime.drainInbox();
 
     expect(updateBadge).toHaveBeenCalledTimes(1);
-    expect(reportStatus).toHaveBeenCalledWith("working");
     expect(deliverTrackedSlackFollowUpMessage).toHaveBeenCalledWith({
       prompt: `SECURITY FIRST\n\n${formatInboxMessages([message], userNames)}`,
       messages: [message],
@@ -179,14 +174,8 @@ describe("createInboxDrainRuntime", () => {
   });
 
   it("does not drain inbox work while the agent is active", () => {
-    const {
-      runtime,
-      inbox,
-      updateBadge,
-      reportStatus,
-      deliverTrackedSlackFollowUpMessage,
-      setIdle,
-    } = createDeps();
+    const { runtime, inbox, updateBadge, deliverTrackedSlackFollowUpMessage, setIdle } =
+      createDeps();
     const message = createMessage({ brokerInboxId: 87 });
     inbox.push(message);
     setIdle(false);
@@ -194,13 +183,12 @@ describe("createInboxDrainRuntime", () => {
     runtime.drainInbox();
 
     expect(updateBadge).not.toHaveBeenCalled();
-    expect(reportStatus).not.toHaveBeenCalled();
     expect(deliverTrackedSlackFollowUpMessage).not.toHaveBeenCalled();
     expect(inbox).toEqual([message]);
   });
 
   it("requeues pending inbox work when the follow-up delivery is not accepted", () => {
-    const { runtime, inbox, updateBadge, reportStatus, markSubtreeInboxIdsDelivered } = createDeps({
+    const { runtime, inbox, updateBadge, markSubtreeInboxIdsDelivered } = createDeps({
       deliverTrackedSlackFollowUpMessage: vi.fn(() => false),
     });
     const message = createMessage({
@@ -211,7 +199,6 @@ describe("createInboxDrainRuntime", () => {
 
     runtime.drainInbox();
 
-    expect(reportStatus).toHaveBeenCalledWith("working");
     expect(updateBadge).toHaveBeenCalledTimes(2);
     expect(markSubtreeInboxIdsDelivered).not.toHaveBeenCalled();
     expect(inbox).toEqual([message]);

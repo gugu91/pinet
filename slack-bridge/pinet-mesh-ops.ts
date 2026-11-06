@@ -21,6 +21,7 @@ import type {
 import { summarizePinetStableId } from "./pinet-session-formatting.js";
 import type { ActivityLogEntry } from "./activity-log.js";
 import { extractTaskAssignmentsFromMessage } from "./task-assignments.js";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
 const execFileAsync = promisify(execFile);
 
@@ -220,8 +221,8 @@ async function resolveCurrentGitHubRepo(): Promise<{
 }> {
   try {
     const [rootResult, remoteResult] = await Promise.all([
-      execFileAsync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf-8" }),
-      execFileAsync("git", ["remote", "get-url", "origin"], { encoding: "utf-8" }),
+      execFileAsync(resolveCommand("git"), ["rev-parse", "--show-toplevel"], { encoding: "utf-8" }),
+      execFileAsync(resolveCommand("git"), ["remote", "get-url", "origin"], { encoding: "utf-8" }),
     ]);
     const remoteRepo = parseGitHubRemoteRepo(String(remoteResult.stdout).trim());
     return {

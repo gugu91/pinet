@@ -60,6 +60,7 @@ export type {
   PinetReadResult,
   PinetUnreadThreadSummary,
 } from "@pinet/pinet-core/pinet-read-formatting";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export interface ThreadInfo {
   threadId: string;
@@ -405,7 +406,8 @@ export class BrokerClient {
     } catch (error) {
       // close() aborting the backoff sleep is the normal way out.
       if (!isAbortError(error)) {
-        console.error(
+        reportDiagnostic(
+          "error",
           `[broker-client] connection loop failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       }

@@ -30,6 +30,8 @@ test("process identity ignores the caller's locale and timezone", async () => {
       else process.env[key] = value;
   }
 });
+// Real tmux and node processes: ~0.5s alone, ~4-5s under full-suite load.
+// agent-default (not a user rule): 2026-11-06, as in plugin.test.ts.
 test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-tmux-test-"));
   const tmux = new Tmux(join(dir, "socket"));
@@ -166,4 +168,4 @@ test("isolated tmux: ownership, scopes, hidden panes, liveness, cleanup", async 
     await tmux.run(["kill-server"]).catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 20_000);

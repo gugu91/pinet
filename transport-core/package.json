@@ -17,6 +17,8 @@
   "exports": {
     ".": "./dist/index.js",
     "./async": "./dist/async.js",
+    "./commands": "./dist/commands.js",
+    "./diagnostics": "./dist/diagnostics.js",
     "./package.json": "./package.json"
   },
   "files": [

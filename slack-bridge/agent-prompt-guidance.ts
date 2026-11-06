@@ -11,6 +11,7 @@ import {
   type BrokerPromptLoadResult,
 } from "./broker-prompt-loader.js";
 import { buildReactionPromptGuidelines } from "./reaction-triggers.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export interface AgentPromptGuidanceDeps {
   getIdentityGuidelines: () => string[];
@@ -21,8 +22,6 @@ export interface AgentPromptGuidanceDeps {
   getBrokerRole: () => "broker" | "follower" | null;
   getBrokerPromptSetting?: () => string | undefined;
   loadBrokerPrompt?: () => Promise<BrokerPromptLoadResult>;
-  reportBrokerPromptWarning?: (warning: string) => void;
-  reportBrokerPromptDiagnostic?: (diagnostic: string) => void;
 }
 
 export interface AgentPromptGuidance {
@@ -55,11 +54,9 @@ export function createAgentPromptGuidance(deps: AgentPromptGuidanceDeps): AgentP
           }))
       )();
       for (const warning of brokerPrompt.warnings) {
-        (deps.reportBrokerPromptWarning ?? console.warn)(`[slack-bridge] ${warning.message}`);
+        reportDiagnostic("warning", `[slack-bridge] ${warning.message}`);
       }
-      (deps.reportBrokerPromptDiagnostic ?? console.info)(
-        `[slack-bridge] ${brokerPrompt.diagnostic}`,
-      );
+      reportDiagnostic("info", `[slack-bridge] ${brokerPrompt.diagnostic}`);
       guidelines.push(
         renderBrokerPromptContent(brokerPrompt.content, {
           agentEmoji: deps.getAgentEmoji(),

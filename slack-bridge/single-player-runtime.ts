@@ -19,6 +19,7 @@ import {
   type SlackCall,
 } from "./slack-access.js";
 import { isAbortError } from "./helpers.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export interface SinglePlayerThreadState {
   channelId: string;
@@ -361,7 +362,7 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
 
       deps.maybeDrainInboxIfIdle(ctx);
     } catch (err) {
-      console.error(`[slack-bridge] reaction trigger failed: ${deps.formatError(err)}`);
+      reportDiagnostic("error", `[slack-bridge] reaction trigger failed: ${deps.formatError(err)}`);
       await deps.addReaction(item.channel, item.ts, "x");
     }
   }

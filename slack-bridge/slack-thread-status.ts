@@ -1,3 +1,4 @@
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 import type { SlackCall } from "./slack-access.js";
 
 export const SLACK_THREAD_STATUS_HEARTBEAT_MS = 90_000;
@@ -51,7 +52,6 @@ export interface SlackThreadStatusManagerDeps {
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
   heartbeatMs?: number;
-  logger?: Pick<Console, "error">;
   maxActiveThreads?: number;
   maxConsecutiveFailures?: number;
 }
@@ -207,7 +207,8 @@ export class SlackThreadStatusManager {
       entry.consecutiveFailures = 0;
     } catch (error) {
       entry.consecutiveFailures += 1;
-      (this.deps.logger ?? console).error(
+      reportDiagnostic(
+        "error",
         `[slack-bridge] Slack thread status update failed: ${this.deps.formatError(error)}`,
       );
       if (status && entry.consecutiveFailures >= (this.deps.maxConsecutiveFailures ?? 3)) {
