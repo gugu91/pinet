@@ -22,6 +22,7 @@ const distExportDependencies = {
   "broker-core": ["transport-core"],
   "imessage-bridge": ["transport-core"],
   "pinet-core": ["broker-core", "transport-core"],
+  tmux: ["transport-core"],
   "slack-bridge": ["broker-core", "imessage-bridge", "pinet-core", "transport-core"],
 };
 

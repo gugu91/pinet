@@ -3,6 +3,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
 export function defaultLockPath(): string {
   return path.join(os.homedir(), ".pi", "pinet-broker.lock");
@@ -101,7 +102,7 @@ export function getProcessStartTime(pid: number): string | null {
   }
 
   try {
-    const output = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    const output = execFileSync(resolveCommand("ps"), ["-p", String(pid), "-o", "lstart="], {
       encoding: "utf-8",
       env: { ...process.env, LC_ALL: "C", LANG: "C" },
       timeout: 2000,

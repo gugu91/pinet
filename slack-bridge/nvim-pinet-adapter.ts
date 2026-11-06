@@ -23,6 +23,7 @@ import type {
   ThreadInfo,
   DocumentInfo,
 } from "./broker/types.js";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
 export interface NvimAdapterDbPort {
   getThread(threadId: string): ThreadInfo | null;
@@ -124,7 +125,7 @@ interface NvimEditorState {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, {
+  return execFileSync(resolveCommand("git"), args, {
     cwd,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],

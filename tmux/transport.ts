@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { resolveCommand } from "@pinet/transport-core/commands";
 import { encode, parseRecord, type PaneRecord, type PaneStatus } from "./helpers.ts";
 import { summarize } from "./query.ts";
 const exec = promisify(execFile);
@@ -34,7 +35,7 @@ function psEnvironment(): NodeJS.ProcessEnv {
   return { ...process.env, LC_ALL: "C", TZ: "UTC" };
 }
 export async function processIdentity(pid: number): Promise<string> {
-  const { stdout } = await exec("ps", ["-p", String(pid), "-o", "lstart="], {
+  const { stdout } = await exec(resolveCommand("ps"), ["-p", String(pid), "-o", "lstart="], {
     timeout: 2000,
     env: psEnvironment(),
   });
@@ -53,13 +54,13 @@ export class Tmux {
     this.prefix = socket ? ["-S", socket] : [];
   }
   async run(args: string[]): Promise<string> {
-    const { stdout } = await exec("tmux", [...this.prefix, ...args], {
+    const { stdout } = await exec(resolveCommand("tmux"), [...this.prefix, ...args], {
       timeout: 2000,
       maxBuffer: 1024 * 1024,
     });
     if (this.escapedDollars === undefined && stdout.includes("$")) {
       const probe = await exec(
-        "tmux",
+        resolveCommand("tmux"),
         [...this.prefix, "display-message", "-p", "#{l:$PI_TMUX_PROBE}"],
         { timeout: 2000 },
       );
@@ -272,7 +273,7 @@ export class Tmux {
     }
     if (!candidates.length) return [];
     // Batch liveness check; matching start time also rejects a recycled PID. Do not mutate stale records here.
-    const { stdout } = await exec("ps", ["-axo", "pid=,lstart="], {
+    const { stdout } = await exec(resolveCommand("ps"), ["-axo", "pid=,lstart="], {
       timeout: 2000,
       env: psEnvironment(),
       maxBuffer: 4 * 1024 * 1024,

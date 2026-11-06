@@ -8,6 +8,7 @@ import {
   type SlackBridgeSettings,
 } from "./helpers.js";
 import type { SinglePlayerThreadInfo } from "./single-player-runtime.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export interface PersistedState {
   threads?: [string, SinglePlayerThreadInfo][];
@@ -83,7 +84,7 @@ export function createPersistedRuntimeState(
         agentAliases: [...deps.agentAliases],
       } satisfies PersistedState);
     } catch (error) {
-      console.error(`[slack-bridge] persistState failed: ${deps.formatError(error)}`);
+      reportDiagnostic("error", `[slack-bridge] persistState failed: ${deps.formatError(error)}`);
     }
   }
 
@@ -174,7 +175,7 @@ export function createPersistedRuntimeState(
 
       persistStateNow();
     } catch (error) {
-      console.error(`[slack-bridge] restore failed: ${deps.formatError(error)}`);
+      reportDiagnostic("error", `[slack-bridge] restore failed: ${deps.formatError(error)}`);
     }
   }
 

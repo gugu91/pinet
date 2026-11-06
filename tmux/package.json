@@ -45,7 +45,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config ../vitest.config.ts *.test.ts && node --test index.test.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@pinet/transport-core": "file:../transport-core"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   }

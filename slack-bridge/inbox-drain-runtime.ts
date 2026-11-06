@@ -10,7 +10,6 @@ export interface InboxDrainRuntimeDeps {
   takeInboxMessages: (maxMessages?: number) => InboxMessage[];
   restoreInboxMessages: (messages: InboxMessage[]) => void;
   updateBadge: () => void;
-  reportStatus: (status: "working" | "idle") => Promise<void>;
   userNames: { get: (key: string) => string | undefined };
   getSecurityPrompt: () => string;
   deliverTrackedSlackFollowUpMessage: (options: {
@@ -68,9 +67,6 @@ export function createInboxDrainRuntime(deps: InboxDrainRuntimeDeps): InboxDrain
     const brokerInboxIds = getBrokerInboxIds(pending);
     const subtreeInboxIds = getSubtreeInboxIds(pending);
     deps.updateBadge();
-    void deps.reportStatus("working").catch(() => {
-      /* best effort */
-    });
 
     let prompt = formatInboxMessages(pending, deps.userNames);
     const securityPrompt = deps.getSecurityPrompt();

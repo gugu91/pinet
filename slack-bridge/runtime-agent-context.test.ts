@@ -227,19 +227,19 @@ describe("createRuntimeAgentContext", () => {
     runtimeAgentContext.maybeWarnSlackUserAccess(deps.getExtensionContext() ?? undefined);
     runtimeAgentContext.maybeWarnSlackUserAccess(deps.getExtensionContext() ?? undefined);
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("default-deny");
+    expect(notify.mock.calls[0]?.[0]).toContain("default-deny");
 
     state.allowedUsers = new Set(["U_OK"]);
     runtimeAgentContext.maybeWarnSlackUserAccess(deps.getExtensionContext() ?? undefined);
     expect(runtimeAgentContext.isUserAllowed("U_OK")).toBe(true);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledTimes(1);
 
     state.allowedUsers = new Set();
     runtimeAgentContext.maybeWarnSlackUserAccess(deps.getExtensionContext() ?? undefined);
-    expect(warnSpy).toHaveBeenCalledTimes(2);
     expect(notify).toHaveBeenCalledTimes(2);
+    // The notification is the warning; a console copy would draw over the TUI.
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it("warns once when admitted users have effectively empty guardrails and resets when posture changes", () => {
@@ -257,27 +257,26 @@ describe("createRuntimeAgentContext", () => {
     runtimeAgentContext.maybeWarnSlackGuardrailPosture(deps.getExtensionContext() ?? undefined);
     runtimeAgentContext.maybeWarnSlackGuardrailPosture(deps.getExtensionContext() ?? undefined);
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]?.[0]).toContain("guardrails are effectively empty");
+    expect(notify.mock.calls[0]?.[0]).toContain("guardrails are effectively empty");
 
     state.guardrails = { blockedTools: ["bash"] };
     runtimeAgentContext.maybeWarnSlackGuardrailPosture(deps.getExtensionContext() ?? undefined);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledTimes(1);
 
     state.guardrails = {};
     runtimeAgentContext.maybeWarnSlackGuardrailPosture(deps.getExtensionContext() ?? undefined);
-    expect(warnSpy).toHaveBeenCalledTimes(2);
     expect(notify).toHaveBeenCalledTimes(2);
 
     state.allowedUsers = new Set();
     runtimeAgentContext.maybeWarnSlackGuardrailPosture(deps.getExtensionContext() ?? undefined);
-    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenCalledTimes(2);
 
     state.allowedUsers = new Set(["U_OK"]);
     runtimeAgentContext.maybeWarnSlackGuardrailPosture(deps.getExtensionContext() ?? undefined);
-    expect(warnSpy).toHaveBeenCalledTimes(3);
     expect(notify).toHaveBeenCalledTimes(3);
+    // The notification is the warning; a console copy would draw over the TUI.
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it("applies local agent identity updates, normalizes owned threads, and skips redundant writes", () => {

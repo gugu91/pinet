@@ -3,6 +3,7 @@ import {
   createAgentPromptGuidance,
   type AgentPromptGuidanceDeps,
 } from "./agent-prompt-guidance.js";
+import { setDiagnosticSink, type DiagnosticLevel } from "@pinet/transport-core/diagnostics";
 
 function createDeps(overrides: Partial<AgentPromptGuidanceDeps> = {}): AgentPromptGuidanceDeps {
   return {
@@ -19,8 +20,6 @@ function createDeps(overrides: Partial<AgentPromptGuidanceDeps> = {}): AgentProm
       warnings: [],
       diagnostic: "broker prompt: packaged default loaded",
     }),
-    reportBrokerPromptDiagnostic: () => undefined,
-    reportBrokerPromptWarning: () => undefined,
     ...overrides,
   };
 }
@@ -108,36 +107,39 @@ describe("createAgentPromptGuidance", () => {
   });
 
   it("reports broker prompt loader diagnostics without exposing prompt content", async () => {
-    const reportBrokerPromptWarning = vi.fn();
-    const reportBrokerPromptDiagnostic = vi.fn();
-    const result = await renderGuidance(
-      createDeps({
-        getBrokerRole: () => "broker",
-        reportBrokerPromptWarning,
-        reportBrokerPromptDiagnostic,
-        loadBrokerPrompt: async () => ({
-          source: "user",
-          content: "PRIVATE PROMPT BODY",
-          diagnostic: "broker prompt: user-local override loaded",
-          warnings: [
-            {
-              source: "workspace",
-              reason: "too_large",
-              message: "broker prompt: workspace override rejected (over 65536 bytes); continuing",
-            },
-          ],
+    const diagnostics: Array<[DiagnosticLevel, string]> = [];
+    setDiagnosticSink((level, message) => diagnostics.push([level, message]));
+    let result: string;
+    try {
+      result = await renderGuidance(
+        createDeps({
+          getBrokerRole: () => "broker",
+          loadBrokerPrompt: async () => ({
+            source: "user",
+            content: "PRIVATE PROMPT BODY",
+            diagnostic: "broker prompt: user-local override loaded",
+            warnings: [
+              {
+                source: "workspace",
+                reason: "too_large",
+                message:
+                  "broker prompt: workspace override rejected (over 65536 bytes); continuing",
+              },
+            ],
+          }),
         }),
-      }),
-    );
+      );
+    } finally {
+      setDiagnosticSink(null);
+    }
 
-    expect(reportBrokerPromptWarning).toHaveBeenCalledWith(
-      "[slack-bridge] broker prompt: workspace override rejected (over 65536 bytes); continuing",
-    );
-    expect(reportBrokerPromptDiagnostic).toHaveBeenCalledWith(
-      "[slack-bridge] broker prompt: user-local override loaded",
-    );
-    expect(String(reportBrokerPromptWarning.mock.calls)).not.toContain("PRIVATE PROMPT BODY");
-    expect(String(reportBrokerPromptDiagnostic.mock.calls)).not.toContain("PRIVATE PROMPT BODY");
+    expect(diagnostics).toEqual([
+      [
+        "warning",
+        "[slack-bridge] broker prompt: workspace override rejected (over 65536 bytes); continuing",
+      ],
+      ["info", "[slack-bridge] broker prompt: user-local override loaded"],
+    ]);
     expect(result).toContain("PRIVATE PROMPT BODY");
   });
 });

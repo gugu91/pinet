@@ -26,6 +26,7 @@ import {
 } from "./guardrails.js";
 import { resolveReactionCommands } from "./reaction-triggers.js";
 import type { SinglePlayerThreadInfo } from "./single-player-runtime.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 export type RuntimeAgentRole = "broker" | "worker";
 export type ReactionCommandMap = Map<string, { action: string; prompt: string }>;
@@ -151,8 +152,8 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
       return;
     }
     lastSlackUserAccessWarning = warning;
-    console.warn(`[slack-bridge] ${warning}`);
-    ctx?.ui.notify(warning, "warning");
+    if (ctx?.hasUI) ctx.ui.notify(warning, "warning");
+    else reportDiagnostic("warning", `[slack-bridge] ${warning}`);
   }
 
   function maybeWarnSlackGuardrailPosture(ctx?: ExtensionContext): void {
@@ -174,8 +175,8 @@ export function createRuntimeAgentContext(deps: RuntimeAgentContextDeps): Runtim
     }
 
     lastSlackGuardrailPostureWarning = warning;
-    console.warn(`[slack-bridge] ${warning}`);
-    ctx?.ui.notify(warning, "warning");
+    if (ctx?.hasUI) ctx.ui.notify(warning, "warning");
+    else reportDiagnostic("warning", `[slack-bridge] ${warning}`);
   }
 
   function getStableIdForRole(role: RuntimeAgentRole): string {

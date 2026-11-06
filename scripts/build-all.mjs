@@ -19,9 +19,8 @@ export const buildTiers = [
     "openai-execution-shaping",
     "model-aware-compaction",
     "agent-goal",
-    "tmux",
   ],
-  ["broker-core", "imessage-bridge"],
+  ["broker-core", "imessage-bridge", "tmux"],
   ["pinet-core"],
   ["slack-bridge"],
 ];

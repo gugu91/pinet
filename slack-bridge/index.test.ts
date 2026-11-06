@@ -16,6 +16,7 @@ import { BrokerDB } from "./broker/schema.js";
 import { SlackAdapter } from "./broker/adapters/slack.js";
 import * as imessageModule from "@pinet/imessage-bridge";
 import slackBridgeExtension from "./index.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
 
 type ToolDefinition = {
   name: string;
@@ -1410,6 +1411,33 @@ describe("slack-bridge top-level shutdown", () => {
 
     return { events, pi, ctx };
   }
+
+  it("routes Pinet diagnostics to notifications while the TUI owns the terminal", async () => {
+    const { events, pi, ctx } = createLifecycleHarness("leaf", "/tmp/diagnostics-session.json");
+    Object.assign(ctx, { mode: "tui" });
+    const writes = [
+      vi.spyOn(console, "error").mockImplementation(() => {}),
+      vi.spyOn(console, "warn").mockImplementation(() => {}),
+      vi.spyOn(console, "info").mockImplementation(() => {}),
+    ];
+    slackBridge(pi);
+    await events.get("session_start")?.({}, ctx);
+    try {
+      reportDiagnostic("warning", "[test] broker unreachable");
+      reportDiagnostic("info", "[test] runtime mode: off");
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith("[test] broker unreachable", "warning");
+      expect(ctx.ui.notify).not.toHaveBeenCalledWith("[test] runtime mode: off", expect.anything());
+      for (const write of writes) {
+        expect(write.mock.calls.flat().join("\n")).not.toContain("[test]");
+      }
+    } finally {
+      await events.get("session_shutdown")?.({}, ctx);
+    }
+
+    reportDiagnostic("warning", "[test] after shutdown");
+    expect(writes[1]).toHaveBeenCalledWith("[test] after shutdown");
+  });
 
   it("keeps explicit off mode free of Slack Socket Mode ingress on session start", async () => {
     const settingsPath = `${process.env.HOME}/.pi/agent/settings.json`;
@@ -3542,7 +3570,10 @@ describe("slack-bridge Pinet reconnect", () => {
     const tools = new Map<string, ToolDefinition>();
     const commands = new Map<string, CommandDefinition>();
     const events = new Map<string, EventHandler>();
-    const sendUserMessage = vi.fn();
+    const sendUserMessage = vi.fn((_text: string) => {
+      // Like Pi: a delivered message starts a run.
+      void events.get("agent_start")?.({ type: "agent_start" }, ctx);
+    });
 
     const pi = {
       appendEntry: vi.fn(),
@@ -3682,12 +3713,125 @@ describe("slack-bridge Pinet reconnect", () => {
     }
   });
 
+  it("reports a follower working when an agent message starts its run", async () => {
+    vi.useFakeTimers();
+
+    const tools = new Map<string, ToolDefinition>();
+    const commands = new Map<string, CommandDefinition>();
+    const events = new Map<string, EventHandler>();
+    const sendUserMessage = vi.fn((_text: string) => {
+      // Like Pi: a delivered message starts a run.
+      void events.get("agent_start")?.({ type: "agent_start" }, ctx);
+    });
+
+    const pi = {
+      appendEntry: vi.fn(),
+      registerTool: vi.fn((definition: ToolDefinition) => {
+        tools.set(definition.name, definition);
+      }),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
+      registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
+        commands.set(name, definition);
+      }),
+      on: vi.fn((eventName: string, handler: EventHandler) => {
+        events.set(eventName, handler);
+      }),
+      sendUserMessage,
+    } as never as ExtensionAPI;
+
+    const setStatus = vi.fn();
+    const notify = vi.fn();
+    const ctx = {
+      cwd: process.cwd(),
+      hasUI: true,
+      isIdle: () => true,
+      ui: {
+        theme: {
+          fg: (_color: string, text: string) => text,
+        },
+        notify,
+        setStatus,
+      },
+      sessionManager: {
+        getEntries: () => [],
+        getHeader: () => null,
+        getLeafId: () => "leaf",
+        getSessionFile: () => "/tmp/slack-bridge-session.json",
+      },
+    } as never as ExtensionContext;
+
+    const updateStatus = vi
+      .spyOn(BrokerClient.prototype, "updateStatus")
+      .mockResolvedValue(undefined);
+    mockBrokerConnection();
+    vi.spyOn(BrokerClient.prototype, "register").mockResolvedValue({
+      agentId: "worker-1",
+      name: "Agent",
+      emoji: "🦙",
+      metadata: { role: "worker", capabilities: { role: "worker" } },
+    });
+    vi.spyOn(BrokerClient.prototype, "claimThread").mockResolvedValue({ claimed: true });
+    vi.spyOn(BrokerClient.prototype, "pollInbox")
+      .mockResolvedValueOnce([
+        {
+          inboxId: 21,
+          message: {
+            id: 21,
+            threadId: "a2a:broker:worker-1",
+            source: "agent",
+            direction: "inbound",
+            sender: "broker",
+            body: "please take this task",
+            createdAt: "100.1",
+            metadata: { a2a: true },
+          },
+        },
+      ])
+      .mockResolvedValue([]);
+    vi.spyOn(BrokerClient.prototype, "ackMessages").mockResolvedValue(undefined);
+
+    slackBridge(pi);
+
+    const sessionStart = events.get("session_start");
+    const sessionShutdown = events.get("session_shutdown");
+    const follow = commands.get("pinet");
+    const pinet = tools.get("pinet");
+
+    expect(sessionStart).toBeDefined();
+    expect(sessionShutdown).toBeDefined();
+    expect(follow).toBeDefined();
+    expect(pinet).toBeDefined();
+
+    try {
+      await sessionStart?.({}, ctx);
+      await follow?.handler("follow", ctx);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => {
+        expect(sendUserMessage).toHaveBeenCalledWith(
+          expect.stringContaining("a2a:broker:worker-1"),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
+      });
+
+      await sessionShutdown?.({}, ctx);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries follower idle status sync after agent_end auto-free fails once", async () => {
     vi.useFakeTimers();
 
     const commands = new Map<string, CommandDefinition>();
     const events = new Map<string, EventHandler>();
-    const sendUserMessage = vi.fn();
+    const sendUserMessage = vi.fn((_text: string) => {
+      // Like Pi: a delivered message starts a run.
+      void events.get("agent_start")?.({ type: "agent_start" }, ctx);
+    });
 
     const pi = {
       appendEntry: vi.fn(),

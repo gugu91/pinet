@@ -1,8 +1,11 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
-const execFileAsync = promisify(execFile);
+const execFileByName = promisify(execFile);
+const execFileAsync: ExecFileAsyncLike = (file, args, options) =>
+  execFileByName(resolveCommand(file), args, options);
 
 type ExecFileResult = { stdout?: string | Buffer };
 const GIT_PROBE_TIMEOUT_MS = 2_000;
@@ -73,7 +76,7 @@ async function readGitTrimmed(
 
 export async function probeGitBranch(
   cwd = process.cwd(),
-  runner: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+  runner: ExecFileAsyncLike = execFileAsync,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
   return (await readGitTrimmed(["branch", "--show-current"], cwd, runner, signal)).value;
@@ -103,7 +106,7 @@ async function probeGitDirty(
 
 export async function probeGitDynamic(
   cwd = process.cwd(),
-  runner: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+  runner: ExecFileAsyncLike = execFileAsync,
   signal?: AbortSignal,
 ): Promise<GitDynamicState> {
   const [branchProbe, dirtyProbe] = await Promise.all([
@@ -123,7 +126,7 @@ export async function probeGitDynamic(
 
 export async function probeGitContext(
   cwd = process.cwd(),
-  runner: ExecFileAsyncLike = execFileAsync as ExecFileAsyncLike,
+  runner: ExecFileAsyncLike = execFileAsync,
   signal?: AbortSignal,
 ): Promise<GitContext> {
   const [{ value: repoRoot }, dynamic] = await Promise.all([

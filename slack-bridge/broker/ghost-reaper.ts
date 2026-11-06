@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import type { AgentInfo } from "./types.js";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
 export type GhostReaperSignal = "SIGTERM" | "SIGKILL";
 
@@ -93,7 +94,7 @@ export function inspectProcess(pid: number): ProcessSnapshot | null {
   if (!Number.isInteger(pid) || pid <= 1) return null;
   try {
     const output = execFileSync(
-      "ps",
+      resolveCommand("ps"),
       ["-p", String(pid), "-o", "pid=", "-o", "lstart=", "-o", "command="],
       {
         encoding: "utf8",

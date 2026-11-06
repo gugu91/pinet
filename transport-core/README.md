@@ -13,6 +13,13 @@ Tiny transport-neutral contracts package for the `extensions` repo.
   (capped + jittered exponential backoff), and `AbortError`/`TimeoutError`
   helpers. Retry _drivers_ stay bespoke at call sites; this module only owns
   the primitives they compose.
+- `resolveCommand` via the `@pinet/transport-core/commands` subpath: the
+  absolute path of a command on PATH, looked up once, because Node on macOS
+  pays for every PATH entry it tries when spawning by name.
+- one diagnostics sink via the `@pinet/transport-core/diagnostics` subpath:
+  `reportDiagnostic` writes to the console unless a host that owns the
+  terminal, such as Pi's interactive TUI, installs its own with
+  `setDiagnosticSink`.
 
 ## What stays out of scope
 

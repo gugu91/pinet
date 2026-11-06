@@ -68,6 +68,7 @@ import {
   parseRssBytesFromPs,
   resumePathFromSessionRef,
 } from "./hibernation-runtime-helpers.js";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
 type TmuxAgentRuntimeSpec = Extract<AgentRuntimeSpec, { runtimeKind: "tmux" }>;
 
@@ -89,7 +90,7 @@ export function createExecFileRunner(): CommandRunner {
     run(file, args) {
       return new Promise<CommandResult>((resolve) => {
         execFile(
-          file,
+          resolveCommand(file),
           args,
           { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
           (error: ExecFileException | null, stdout, stderr) => {

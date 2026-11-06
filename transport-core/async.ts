@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { reportDiagnostic } from "./diagnostics.ts";
 
 // Shared async primitives for pi transports and bridges.
 //
@@ -206,7 +207,8 @@ function openScope(ancestors: readonly Scope[]): Scope {
           })
           .catch((error) => {
             if (isAbortError(error)) return;
-            console.error(
+            reportDiagnostic(
+              "error",
               `[scope] interval tick failed: ${error instanceof Error ? error.message : String(error)}`,
             );
           })
@@ -262,7 +264,8 @@ function openScope(ancestors: readonly Scope[]): Scope {
       // Called from this scope's own work, which shutdown waits for: waiting
       // here would never end, so only start it.
       closing.catch((error) => {
-        console.error(
+        reportDiagnostic(
+          "error",
           `[scope] cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       });

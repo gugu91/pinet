@@ -40,6 +40,8 @@ import {
 } from "./broker/hibernation-activation.js";
 import { freezeHibernationActivationAuthority } from "./broker/hibernation-activation-authority.js";
 import type { BrokerDB } from "./broker/schema.js";
+import { reportDiagnostic } from "@pinet/transport-core/diagnostics";
+import { resolveCommand } from "@pinet/transport-core/commands";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_SPAWN_REGISTRATION_TIMEOUT_MS = 45_000;
@@ -856,17 +858,17 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
   const runTmuxCommand =
     deps.runTmuxCommand ??
     (async (args: string[]): Promise<void> => {
-      await execFileAsync("tmux", args);
+      await execFileAsync(resolveCommand("tmux"), args);
     });
   const runHerdrCommand =
     deps.runHerdrCommand ??
     (async (args: string[], options: HerdrCommandOptions): Promise<string> => {
       if (!options.detached) {
-        const { stdout } = await execFileAsync("herdr", args, { env: options.env });
+        const { stdout } = await execFileAsync(resolveCommand("herdr"), args, { env: options.env });
         return stdout;
       }
       await new Promise<void>((resolve, reject) => {
-        const child = spawn("herdr", args, {
+        const child = spawn(resolveCommand("herdr"), args, {
           detached: true,
           env: options.env,
           stdio: "ignore",
@@ -1180,7 +1182,8 @@ export function createSubtreeBrokerRuntime(deps: SubtreeBrokerRuntimeDeps): Subt
         launchSource === "subtree-broker-herdr"
       ) {
         if (tmuxSession) {
-          console.warn(
+          reportDiagnostic(
+            "warning",
             `[slack-bridge] Ignoring inherited tmuxSession metadata for Herdr child ${agent.id}; no durable Herdr runtime spec is available for cleanup.`,
           );
         }
