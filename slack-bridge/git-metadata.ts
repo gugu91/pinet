@@ -5,7 +5,7 @@ import { resolveCommand } from "@pinet/transport-core/commands";
 
 const execFileByName = promisify(execFile);
 const execFileAsync: ExecFileAsyncLike = (file, args, options) =>
-  execFileByName(resolveCommand(file), args, options);
+  execFileByName(resolveCommand(file, options.cwd), args, options);
 
 type ExecFileResult = { stdout?: string | Buffer };
 const GIT_PROBE_TIMEOUT_MS = 2_000;

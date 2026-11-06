@@ -1,9 +1,42 @@
 import { execFile } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
 import { promisify } from "node:util";
-import { resolveCommand } from "@pinet/transport-core/commands";
 import { encode, parseRecord, type PaneRecord, type PaneStatus } from "./helpers.ts";
 import { summarize } from "./query.ts";
 const exec = promisify(execFile);
+const resolvedCommands = new Map<string, string>();
+
+/**
+ * Returns the path Node would spawn for a bare command name; see transport-core's
+ * resolveCommand. A copy, because the tmux plugin runs this file from a checkout without
+ * installed dependencies. Node on macOS tries one posix_spawn per PATH entry before the match
+ * (nodejs/node#62554), and status refreshes spawn tmux and ps constantly.
+ */
+function resolveCommand(command: string, cwd = process.cwd()): string {
+  if (process.platform === "win32" || command.includes("/")) return command;
+  const path = process.env.PATH ?? "";
+  const key = `${cwd}\0${path}\0${command}`;
+  let resolved = resolvedCommands.get(key);
+  if (resolved === undefined) {
+    resolved =
+      path
+        .split(delimiter)
+        // Like the child's exec: relative and empty entries are relative to its cwd.
+        .map((directory) => resolve(cwd, directory, command))
+        .find((candidate) => {
+          try {
+            accessSync(candidate, constants.X_OK);
+            return statSync(candidate).isFile();
+          } catch {
+            return false;
+          }
+        }) ?? command;
+    resolvedCommands.set(key, resolved);
+  }
+  return resolved;
+}
+
 export const OPTION = "@pi_rollup";
 export const OWNER = "@pi_rollup_owner";
 export const NAME = "@pi_rollup_name";

@@ -537,7 +537,7 @@ export async function resolveTaskAssignments(
   assignments: TaskAssignmentInfo[],
   cwd = process.cwd(),
   runner: CommandRunner = (file, args, options) =>
-    execFileByName(resolveCommand(file), args, options),
+    execFileByName(resolveCommand(file, options.cwd), args, options),
   laneContext: {
     lanes: readonly PinetLaneInfo[];
     agents: ReadonlyArray<Pick<AgentInfo, "id" | "laneId">>;

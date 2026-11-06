@@ -54,15 +54,19 @@ test("resolveCommand follows PATH changes", { skip: process.platform === "win32"
   });
 });
 
-test("resolveCommand leaves explicit paths and relative PATH entries to Node", async () => {
-  await withPath(async (dir, name, setPath) => {
-    await executable(join(dir, "abs", name));
-    // Node resolves "." and empty entries against the child's cwd, not this process's.
-    setPath(".", join(dir, "abs"));
-    assert.equal(resolveCommand(name), name);
-    setPath("", join(dir, "abs"));
-    assert.equal(resolveCommand(name), name);
-    setPath(join(dir, "abs"));
-    assert.equal(resolveCommand(`./${name}`), `./${name}`);
-  });
-});
+test(
+  "resolveCommand resolves relative PATH entries against the child's cwd",
+  { skip: process.platform === "win32" },
+  async () => {
+    await withPath(async (dir, name, setPath) => {
+      const local = await executable(join(dir, "child", "bin", name));
+      const fallback = await executable(join(dir, "abs", name));
+      setPath("bin", join(dir, "abs"));
+      assert.equal(resolveCommand(name, join(dir, "child")), local);
+      assert.equal(resolveCommand(name, dir), fallback);
+      setPath("", join(dir, "abs"));
+      assert.equal(resolveCommand(name, join(dir, "child", "bin")), local);
+      assert.equal(resolveCommand(`./${name}`), `./${name}`);
+    });
+  },
+);

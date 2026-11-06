@@ -125,7 +125,7 @@ interface NvimEditorState {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync(resolveCommand("git"), args, {
+  return execFileSync(resolveCommand("git", cwd), args, {
     cwd,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],
