@@ -1,21 +1,31 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 
 const resolvedCommands = new Map<string, string>();
 
 /**
- * Returns the absolute path of a command on PATH, looked up once per process. Node on
- * macOS tries one posix_spawn per PATH entry before the match (nodejs/node#62554):
- * spawning `git` by name costs ~40ms instead of ~3ms on a long PATH, and far more
- * under load. Falls back to the bare name, so a missing command still fails as before.
+ * Returns the absolute path Node would spawn for a bare command name. Node on macOS tries one
+ * posix_spawn per PATH entry before the match (nodejs/node#62554): spawning `git` by name costs
+ * ~40ms instead of ~3ms on a long PATH, and far more under load. Lookups are cached per PATH.
+ * Windows, explicit paths and relative PATH entries (resolved against the child's cwd) are left
+ * to Node, as is a command that is not found, so it still fails as before.
  */
 export function resolveCommand(command: string): string {
-  let resolved = resolvedCommands.get(command);
+  const path = process.env.PATH ?? "";
+  const directories = path.split(delimiter);
+  if (
+    process.platform === "win32" ||
+    command.includes("/") ||
+    !directories.every((directory) => isAbsolute(directory))
+  ) {
+    return command;
+  }
+  const key = `${path}\0${command}`;
+  let resolved = resolvedCommands.get(key);
   if (resolved === undefined) {
     resolved =
-      (process.env.PATH ?? "")
-        .split(delimiter)
-        .map((dir) => join(dir, command))
+      directories
+        .map((directory) => join(directory, command))
         .find((candidate) => {
           try {
             accessSync(candidate, constants.X_OK);
@@ -24,7 +34,7 @@ export function resolveCommand(command: string): string {
             return false;
           }
         }) ?? command;
-    resolvedCommands.set(command, resolved);
+    resolvedCommands.set(key, resolved);
   }
   return resolved;
 }

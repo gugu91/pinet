@@ -6,24 +6,63 @@ import { delimiter, join } from "node:path";
 import test from "node:test";
 import { resolveCommand } from "./commands.ts";
 
-test("resolveCommand uses the first executable file on PATH and falls back to the name", async () => {
+async function withPath(
+  run: (dir: string, name: string, setPath: (...entries: string[]) => void) => Promise<void>,
+): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "transport-core-path-"));
   const original = process.env.PATH;
-  const name = `transport-core-${randomUUID()}`;
   try {
-    await mkdir(join(dir, "directory", name), { recursive: true });
-    await mkdir(join(dir, "plain"));
-    await writeFile(join(dir, "plain", name), "");
-    await mkdir(join(dir, "executable"));
-    await writeFile(join(dir, "executable", name), "", { mode: 0o755 });
-    process.env.PATH = ["directory", "plain", "executable"]
-      .map((entry) => join(dir, entry))
-      .join(delimiter);
-    assert.equal(resolveCommand(name), join(dir, "executable", name));
-    const missing = `transport-core-missing-${randomUUID()}`;
-    assert.equal(resolveCommand(missing), missing);
+    await run(dir, `transport-core-${randomUUID()}`, (...entries) => {
+      process.env.PATH = entries.join(delimiter);
+    });
   } finally {
     process.env.PATH = original;
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function executable(path: string): Promise<string> {
+  await mkdir(join(path, ".."), { recursive: true });
+  await writeFile(path, "", { mode: 0o755 });
+  return path;
+}
+
+test(
+  "resolveCommand uses the first executable file on PATH and falls back to the name",
+  { skip: process.platform === "win32" },
+  async () => {
+    await withPath(async (dir, name, setPath) => {
+      await mkdir(join(dir, "directory", name), { recursive: true });
+      await mkdir(join(dir, "plain"));
+      await writeFile(join(dir, "plain", name), "");
+      const expected = await executable(join(dir, "executable", name));
+      setPath(join(dir, "directory"), join(dir, "plain"), join(dir, "executable"));
+      assert.equal(resolveCommand(name), expected);
+      assert.equal(resolveCommand(`${name}-missing`), `${name}-missing`);
+    });
+  },
+);
+
+test("resolveCommand follows PATH changes", { skip: process.platform === "win32" }, async () => {
+  await withPath(async (dir, name, setPath) => {
+    const first = await executable(join(dir, "a", name));
+    const second = await executable(join(dir, "b", name));
+    setPath(join(dir, "a"));
+    assert.equal(resolveCommand(name), first);
+    setPath(join(dir, "b"));
+    assert.equal(resolveCommand(name), second);
+  });
+});
+
+test("resolveCommand leaves explicit paths and relative PATH entries to Node", async () => {
+  await withPath(async (dir, name, setPath) => {
+    await executable(join(dir, "abs", name));
+    // Node resolves "." and empty entries against the child's cwd, not this process's.
+    setPath(".", join(dir, "abs"));
+    assert.equal(resolveCommand(name), name);
+    setPath("", join(dir, "abs"));
+    assert.equal(resolveCommand(name), name);
+    setPath(join(dir, "abs"));
+    assert.equal(resolveCommand(`./${name}`), `./${name}`);
+  });
 });

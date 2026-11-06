@@ -3716,7 +3716,6 @@ describe("slack-bridge Pinet reconnect", () => {
   it("reports a follower working when an agent message starts its run", async () => {
     vi.useFakeTimers();
 
-    const tools = new Map<string, ToolDefinition>();
     const commands = new Map<string, CommandDefinition>();
     const events = new Map<string, EventHandler>();
     const sendUserMessage = vi.fn((_text: string) => {
@@ -3726,9 +3725,7 @@ describe("slack-bridge Pinet reconnect", () => {
 
     const pi = {
       appendEntry: vi.fn(),
-      registerTool: vi.fn((definition: ToolDefinition) => {
-        tools.set(definition.name, definition);
-      }),
+      registerTool: vi.fn(),
       registerFlag: vi.fn(),
       getFlag: vi.fn(),
       registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
@@ -3796,12 +3793,10 @@ describe("slack-bridge Pinet reconnect", () => {
     const sessionStart = events.get("session_start");
     const sessionShutdown = events.get("session_shutdown");
     const follow = commands.get("pinet");
-    const pinet = tools.get("pinet");
 
     expect(sessionStart).toBeDefined();
     expect(sessionShutdown).toBeDefined();
     expect(follow).toBeDefined();
-    expect(pinet).toBeDefined();
 
     try {
       await sessionStart?.({}, ctx);
@@ -3818,6 +3813,73 @@ describe("slack-bridge Pinet reconnect", () => {
       });
 
       await sessionShutdown?.({}, ctx);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a run already under way when a follower connects", async () => {
+    vi.useFakeTimers();
+
+    const commands = new Map<string, CommandDefinition>();
+    const events = new Map<string, EventHandler>();
+    const pi = {
+      appendEntry: vi.fn(),
+      registerTool: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(),
+      registerCommand: vi.fn((name: string, definition: CommandDefinition) => {
+        commands.set(name, definition);
+      }),
+      on: vi.fn((eventName: string, handler: EventHandler) => {
+        events.set(eventName, handler);
+      }),
+      sendUserMessage: vi.fn(),
+    } as never as ExtensionAPI;
+
+    const ctx = {
+      cwd: process.cwd(),
+      hasUI: true,
+      isIdle: () => false,
+      ui: {
+        theme: {
+          fg: (_color: string, text: string) => text,
+        },
+        notify: vi.fn(),
+        setStatus: vi.fn(),
+      },
+      sessionManager: {
+        getEntries: () => [],
+        getHeader: () => null,
+        getLeafId: () => "leaf",
+        getSessionFile: () => "/tmp/slack-bridge-session.json",
+      },
+    } as never as ExtensionContext;
+
+    const updateStatus = vi
+      .spyOn(BrokerClient.prototype, "updateStatus")
+      .mockResolvedValue(undefined);
+    mockBrokerConnection();
+    vi.spyOn(BrokerClient.prototype, "register").mockResolvedValue({
+      agentId: "worker-1",
+      name: "Agent",
+      emoji: "🦙",
+      metadata: { role: "worker", capabilities: { role: "worker" } },
+    });
+    vi.spyOn(BrokerClient.prototype, "pollInbox").mockResolvedValue([]);
+
+    slackBridge(pi);
+
+    try {
+      await events.get("session_start")?.({}, ctx);
+      // The run starts while Pinet is off, then the agent follows mid-run.
+      await events.get("agent_start")?.({ type: "agent_start" }, ctx);
+      await commands.get("pinet")?.handler("follow", ctx);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(updateStatus.mock.calls.map(([status]) => status)).toEqual(["working"]);
+
+      await events.get("session_shutdown")?.({}, ctx);
     } finally {
       vi.useRealTimers();
     }

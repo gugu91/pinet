@@ -1,3 +1,4 @@
+import { setDiagnosticSink } from "@pinet/transport-core/diagnostics";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SLACK_THREAD_STATUS,
@@ -89,18 +90,23 @@ describe("SlackThreadStatusManager", () => {
   });
 
   it("logs status failures instead of throwing", async () => {
-    const logger = { error: vi.fn() };
+    const sink = vi.fn();
+    setDiagnosticSink(sink);
     const manager = new SlackThreadStatusManager({
       slack: vi.fn(async () => {
         throw new Error("rate_limited");
       }),
       getBotToken: () => "xoxb-test",
       formatError: (error) => (error instanceof Error ? error.message : String(error)),
-      logger,
     });
 
-    await expect(manager.begin("C123", "123.456")).resolves.toBeUndefined();
-    expect(logger.error).toHaveBeenCalledWith(
+    try {
+      await expect(manager.begin("C123", "123.456")).resolves.toBeUndefined();
+    } finally {
+      setDiagnosticSink(null);
+    }
+    expect(sink).toHaveBeenCalledWith(
+      "error",
       "[slack-bridge] Slack thread status update failed: rate_limited",
     );
   });

@@ -499,7 +499,6 @@ export default function (pi: ExtensionAPI) {
     slack,
     getBotToken: () => botToken ?? "",
     formatError: msg,
-    logger: console,
   });
   const slackRuntimeAccess = createSlackRuntimeAccess({
     slack,
@@ -1693,8 +1692,8 @@ export default function (pi: ExtensionAPI) {
     signal?.throwIfAborted();
     broker.server.setOutboundMessageAdapters?.(broker.adapters);
 
-    desiredAgentStatus = "idle";
     await options.publish({ mode: "broker" });
+    void reportStatus(ctx.isIdle?.() === false ? "working" : "idle").catch(() => {});
 
     if (recoveredBrokerMessages > 0 || releasedBrokerClaims > 0) {
       const recoveredTargetedDetail =
@@ -1878,8 +1877,9 @@ export default function (pi: ExtensionAPI) {
     const clientRef = await followerRuntime.connect(ctx, signal);
     signal?.throwIfAborted();
     followerRuntimeDiagnostic = null;
-    desiredAgentStatus = "idle";
     await publish({ mode: "follower", client: clientRef });
+    // A run may already be under way: its agent_start fired before Pinet was connected.
+    void reportStatus(ctx.isIdle?.() === false ? "working" : "idle").catch(() => {});
     setExtStatus(ctx, "ok");
   }
 
@@ -2071,12 +2071,15 @@ export default function (pi: ExtensionAPI) {
     resetPendingRemoteControlAcks();
     sessionUiRuntime.cleanupForSessionShutdown();
     flushPersist();
-    await pinetRuntime.setMode(ctx, "off", { releaseIdentity: !reloading });
-    // Top-level Slack tools run in every mode, including off: refuse new calls and abort
-    // in-flight ones.
-    await singlePlayerRuntime.disconnect();
-    pinetRegistrationGate.reset();
-    setDiagnosticSink(null);
+    try {
+      await pinetRuntime.setMode(ctx, "off", { releaseIdentity: !reloading });
+      // Top-level Slack tools run in every mode, including off: refuse new calls and abort
+      // in-flight ones.
+      await singlePlayerRuntime.disconnect();
+      pinetRegistrationGate.reset();
+    } finally {
+      setDiagnosticSink(null);
+    }
   });
 }
 

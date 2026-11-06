@@ -159,7 +159,6 @@ export class SlackAdapter implements MessageAdapter {
       slack: this.callSlack.bind(this),
       getBotToken: () => this.config.botToken,
       formatError: errorMsg,
-      logger: console,
     });
     this.allowlist = buildAllowlist(
       {
