@@ -327,17 +327,10 @@ describe("LeaderLock simultaneous acquisition", () => {
     cleanup(dir);
   });
 
-  async function raceContenders(options: { children: number; staleLock: boolean }): Promise<{
-    winners: number;
-    losers: number;
-  }> {
+  function writeContenderScript(): string {
     const lockPath = path.join(dir, "lock");
     const gatePath = path.join(dir, "gate");
     const donePath = path.join(dir, "done");
-    if (options.staleLock) {
-      fs.writeFileSync(lockPath, "2147483647", "utf-8");
-    }
-
     // Node 22.18+/24 strip types natively, so children can import the .ts
     // module directly with plain `node`. A winner must stay alive (holding
     // the lock) until every contender has decided — otherwise a slower
@@ -356,16 +349,31 @@ describe("LeaderLock simultaneous acquisition", () => {
         `registerHooks({ resolve: (specifier, context, next) => next(specifier.startsWith(prefix) ? ${JSON.stringify(transportCoreUrl)} + specifier.slice(prefix.length) + ".ts" : specifier, context) });`,
         `const { LeaderLock } = await import(${JSON.stringify(leaderModuleUrl)});`,
         `const resultPath = process.argv[2];`,
+        // If the test worker is killed, nobody opens the gate or writes done:
+        // exit once reparented instead of spinning forever.
+        `const parentPid = process.ppid;`,
+        `const spin = (file) => { while (!fs.existsSync(file)) { if (process.ppid !== parentPid) process.exit(1); } };`,
         `fs.writeFileSync(resultPath + ".ready", "ready");`,
-        `while (!fs.existsSync(${JSON.stringify(gatePath)})) { /* spin until the gate opens */ }`,
+        `spin(${JSON.stringify(gatePath)});`,
         `const lock = new LeaderLock(${JSON.stringify(lockPath)});`,
         `const acquired = lock.tryAcquire();`,
         `fs.writeFileSync(resultPath, JSON.stringify({ acquired }));`,
-        `while (acquired && !fs.existsSync(${JSON.stringify(donePath)})) { /* hold the lock */ }`,
+        `if (acquired) spin(${JSON.stringify(donePath)});`,
         `process.exit(0);`,
       ].join("\n"),
       "utf-8",
     );
+    return childScript;
+  }
+
+  async function raceContenders(options: { children: number; staleLock: boolean }): Promise<{
+    winners: number;
+    losers: number;
+  }> {
+    if (options.staleLock) {
+      fs.writeFileSync(path.join(dir, "lock"), "2147483647", "utf-8");
+    }
+    const childScript = writeContenderScript();
 
     const resultPaths = Array.from({ length: options.children }, (_, i) =>
       path.join(dir, `result-${i}.json`),
@@ -393,7 +401,7 @@ describe("LeaderLock simultaneous acquisition", () => {
           throw new Error("contenders did not all reach the gate in time");
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      fs.writeFileSync(gatePath, "go", "utf-8");
+      fs.writeFileSync(path.join(dir, "gate"), "go", "utf-8");
 
       // Wait until every contender has recorded its outcome, then let
       // winners exit.
@@ -402,7 +410,7 @@ describe("LeaderLock simultaneous acquisition", () => {
         if (Date.now() > deadline) throw new Error("contenders did not all report in time");
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      fs.writeFileSync(donePath, "done", "utf-8");
+      fs.writeFileSync(path.join(dir, "done"), "done", "utf-8");
       await Promise.all(exits);
     } finally {
       // Never leak spinning children on a failed round.
@@ -429,6 +437,43 @@ describe("LeaderLock simultaneous acquisition", () => {
   it("elects exactly one leader when contenders race over a stale lock", async () => {
     const { winners } = await raceContenders({ children: 8, staleLock: true });
     expect(winners).toBe(1);
+  }, 30_000);
+
+  it("contenders exit when the test worker dies before opening the gate", async () => {
+    const resultPath = path.join(dir, "result.json");
+    // Stand in for the test worker: spawn a contender, then get SIGKILLed.
+    const worker = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const c = require("node:child_process").spawn(process.execPath, ["--no-warnings", ${JSON.stringify(writeContenderScript())}, ${JSON.stringify(resultPath)}], { stdio: "ignore" }); console.log(c.pid);`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const contenderPid = await new Promise<number>((resolve) =>
+      worker.stdout.once("data", (data: Buffer) => resolve(Number(data.toString()))),
+    );
+    const alive = () => {
+      try {
+        process.kill(contenderPid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      while (!fs.existsSync(`${resultPath}.ready`)) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      worker.kill("SIGKILL");
+      const deadline = Date.now() + 5_000;
+      while (alive() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(alive()).toBe(false);
+    } finally {
+      if (alive()) process.kill(contenderPid, "SIGKILL");
+    }
   }, 30_000);
 });
 
