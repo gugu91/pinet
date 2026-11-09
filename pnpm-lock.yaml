@@ -118,9 +118,6 @@ importers:
       "@pinet/transport-core":
         specifier: file:../transport-core
         version: link:../transport-core
-      "@sinclair/typebox":
-        specifier: ^0.34.49
-        version: 0.34.49
     devDependencies:
       "@earendil-works/pi-coding-agent":
         specifier: ^0.74.0
@@ -128,6 +125,9 @@ importers:
       "@earendil-works/pi-tui":
         specifier: ^0.74.0
         version: 0.74.0
+      "@sinclair/typebox":
+        specifier: ^0.34.49
+        version: 0.34.49
 
   tmux:
     dependencies:
