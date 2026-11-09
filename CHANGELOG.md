@@ -9,6 +9,43 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.27] - 2026-11-09
+
+Pinet v0.2.27 fixes Pi's host-provided TypeBox dependency warning and includes the worker, connection-lifecycle and reply-routing changes merged since v0.2.26.
+
+### Version verification
+
+- `pi-extensions` — `0.2.27` (private repo package)
+- `@pinet/transport-core` — `0.2.27`
+- `@pinet/broker-core` — `0.2.27`
+- `@pinet/pinet-core` — `0.2.27`
+- `@pinet/imessage-bridge` — `0.2.27`
+- `@pinet/slack-bridge` — `0.2.27`
+- `@pinet/model-aware-compaction` — `0.2.27`
+- `@pinet/agent-goal` — `0.2.27`
+- `@pinet/tmux` — `0.2.27`
+
+### Added
+
+- Workers can join a broker without Slack tokens, use per-worker keys and forward Slack calls through the broker. Follower startup is process-scoped (#1093, #1094, #1099, #983).
+- `transport-core` adds `Scope` to own asynchronous work, timers and cleanup. Broker clients each own one connection loop, and Pinet mode changes share one runtime owner (#1120, #1121, #1122).
+
+### Fixed
+
+- Slack bridge declares `@sinclair/typebox` as a host-provided peer dependency instead of a runtime dependency. Local builds keep a development dependency (#1126).
+- Replies work in agent-started DM threads, A2A threads and scheduled wake-ups. Action fields explain their inputs, A2A recipients can be inferred, lane filtering uses exact IDs, and reading mail clears queued wake-ups (#1100, #1110, #1111, #1112, #1115).
+- `/reload` loads new Pinet code while preserving the running mode. RALPH uses lane PRs and preserves manual snoozes (#1101, #1113).
+- Uploads accept conventional temporary paths and report accepted files even without a message timestamp (#1108, #1109).
+- Hot paths avoid sequential awaits. Each run is marked working, diagnostics stay off the interactive TUI, and spawned commands are resolved once (#1117, #1124).
+- The tmux status formatter uses one process per tick rather than a Node process per placeholder per window (#1096).
+- Builds run in dependency order, exclude output from source typechecks and skip declarations for Pi Git installs. Deletion-only pushes skip pre-push checks (#1098, #1106, #1107, #1116).
+- `pinet-core`, `imessage-bridge`, `model-aware-compaction` and `agent-goal` ship at the aligned version without additional package-local functional changes.
+
+### Upgrade notes
+
+- Update installed packages and restart Pi to load the new code. This release does not update running sessions automatically.
+- All eight public packages are released together. No version is published by preparing or merging the release PR.
+
 ## [0.2.26] - 2026-10-13
 
 Pinet v0.2.26 introduces `@pinet/tmux`, an optional Pi pane-state publisher for tmux, and teaches agent goals to keep completed results, recheck blocked goals and recover after network outages. This entry describes the release candidate, not a completed publication.
