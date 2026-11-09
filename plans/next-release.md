@@ -1,80 +1,24 @@
 # Next release preparation
 
-Tracking: #1090. Maintainer requested preparing **v0.2.26** across all eight public `@pinet/*` packages and the private root package, including the first release of `@pinet/tmux`, with a one-time local bootstrap publish of that package. **No tagging or CI publishing is authorized by this preparation.**
+## v0.2.27
 
-## Candidate contents
+The maintainer requested merging the TypeBox peer-dependency fix (#1126) and releasing it on 2026-11-09. The repository releases all eight public `@pinet/*` packages together, plus the aligned private root package.
 
-Baseline: published npm `0.2.25` for the seven existing packages. `@pinet/tmux` has never been published.
+Baseline: npm reports `@pinet/slack-bridge` and `@pinet/tmux` at `0.2.26`. The v0.2.26 preparation merge is `9d6c0bb`; the release also includes the subsequent changes on `main`, summarized in [CHANGELOG.md](../CHANGELOG.md#0227---2026-11-09).
 
-Inspected `main` commit: `7b6adaa`. Changes since the v0.2.25 preparation merge (`a35c7e9`):
+## Release procedure
 
-- #1081: new `@pinet/tmux` pane-state publisher and companion TPM plugin; `model-aware-compaction` emits `pinet:compaction-start`.
-- #1087: agent-goal retains Done and rechecks blocked goals.
-- #1089: agent-goal recovers active goals after network outages.
+Follow [npm-publish.md](npm-publish.md), the authoritative runbook.
 
-See [v0.2.26 release notes](../CHANGELOG.md#0226---2026-10-13). transport-core, broker-core, pinet-core, imessage-bridge and slack-bridge ship unchanged functionally at the aligned version.
+1. Merge #1126 after independent review and green quality checks.
+2. Prepare and merge the v0.2.27 release PR after review and green quality checks. Align the private root and all eight public package versions; retain local dependency specifiers in source.
+3. Run the GitHub npm readiness workflow (`dry_run=true`) on the intended `main` commit. A green dry-run validates artifacts, not publication.
+4. Tag that current `main` tip as `v0.2.27`. The tag workflow checks versions and that the tag still equals `origin/main`, then waits for the protected `npm-publish` environment approval.
+5. Approve the protected publish job with the maintainer's release authorization. Use Trusted Publishing/OIDC; do not publish locally or add token fallbacks.
+6. Verify all eight packages on npm at `0.2.27`, including the Slack bridge manifest's TypeBox peer dependency. A late failure is a partial release: record what published and follow the full-set patch-version recovery procedure rather than blindly retrying.
 
-## One-time `@pinet/tmux` bootstrap
+No bootstrap is needed: `@pinet/tmux@0.2.26` already exists on npm. The GitHub environment currently requires maintainer review and permits `main` and `v*.*.*` tags. npm Trusted Publisher configuration is checked by the live publish, not proven by a dry-run.
 
-npm Trusted Publishing is configured per package and needs the package to exist. The full-set bootstrap script (`pnpm bootstrap:npm`) cannot create it now: it refuses because the seven existing packages are already published. The protected workflow fails closed on any already-published version, so the bootstrap must not use the release version.
+## Upgrade
 
-Plan: create the package at the never-published `0.2.25` from the **pre-bump commit `7b6adaa`** (the last `main` commit before the v0.2.26 bump), then release `0.2.26` for all eight through the normal workflow. Do not bootstrap from current `main`: it is at `0.2.26`, and publishing that version locally would make the workflow fail closed.
-
-1. Maintainer `npm login` as a `pinet` org owner/admin (`npm whoami` must succeed).
-2. Confirm `npm view @pinet/tmux` returns 404, then publish from a separate detached worktree at `7b6adaa`:
-
-   ```bash
-   cd ~/src/gugu910/extensions
-   git fetch origin && git worktree add --detach .worktrees/bootstrap-tmux-0.2.25 7b6adaa
-   cd .worktrees/bootstrap-tmux-0.2.25
-   grep '"version"' tmux/package.json              # must show 0.2.25
-   pnpm install --frozen-lockfile
-   pnpm bootstrap:npm                              # dry-run: full-set build, metadata, types, npm publish --dry-run
-   cd tmux && npm publish --access public          # prepack rebuilds dist/
-   npm view @pinet/tmux@0.2.25 version             # verify
-   cd ~/src/gugu910/extensions && git worktree remove .worktrees/bootstrap-tmux-0.2.25
-   ```
-
-   `@pinet/tmux` has no `@pinet/*` dependencies, so no workspace specifier rewrite is needed.
-
-3. **Later, just before the approved v0.2.26 publish**, configure its Trusted Publisher at <https://www.npmjs.com/package/@pinet/tmux/access>: repository `gugu91/pinet`, workflow `npm-publish.yml`, environment `npm-publish`, and under **Allowed actions** enable **`npm publish`**. Trusted publishers created after Sep 03, 2026 default to `npm stage publish` only, while the workflow runs `npm publish --provenance`; `@pinet/tmux` publishes last, so a stage-only configuration would leave the other seven packages published and the release partial.
-
-   A new trusted publisher expires unless it completes a successful publish **within 2 days**, and an expired configuration cannot be edited. So configure it only once the release PR is merged and the readiness dry-run is green, then run the approved publish promptly. If it expires, delete it and create a new one. Dry-runs do not exercise trust.
-
-This local publish has no provenance; v0.2.26 and later publish through CI with provenance.
-
-## Compatibility and upgrade
-
-- No configuration or database migration is required.
-- After publication, update installed packages and **restart** Pi; `/reload` keeps already-loaded package modules. Preparing or merging this PR does not update running sessions or installations.
-- agent-goal custom runtime storage/continuation adapters must honor the commit/dispatch `AbortSignal`; see the changelog.
-
-## Readiness evidence
-
-On the preparation worktree based on `7b6adaa`:
-
-- `pnpm install --frozen-lockfile` and full `pnpm prepush` (lint, typecheck, tests) passed.
-- `pnpm publish:npm` passed builds, metadata, public declaration checks and npm dry-runs for all eight packages at v0.2.26. Original dependency specifiers were restored; no lockfile change was needed.
-- The bootstrap command dry-run (`npm publish --access public --dry-run` in `tmux/` on `main` at `7b6adaa`) produced `@pinet/tmux@0.2.25` (17 files).
-- A read-only npm check found v0.2.26 unpublished for all eight packages and `@pinet/tmux` absent from npm. This is a point-in-time result; the protected workflow checks again.
-
-A local dry-run validates artifacts only and publishes nothing.
-
-## Release gates
-
-Follow [the npm publish runbook](npm-publish.md), which is authoritative for workflow inputs, Trusted Publishing, and partial-release recovery.
-
-- [x] Maintainer requested preparing v0.2.26 across the full eight-package set.
-- [x] Inventory refreshed against `main` at `7b6adaa`; v0.2.25 is on npm for the seven existing packages.
-- [x] Package and private root versions aligned to v0.2.26; changelog added.
-- [x] Frozen-lockfile install, full lint/typecheck/tests and eight-package `pnpm publish:npm` dry-run.
-- [ ] Independent review and green release-PR CI.
-- [ ] Maintainer bootstraps `@pinet/tmux@0.2.25` locally from pre-bump commit `7b6adaa` (above), before the v0.2.26 publish. #1091 merged before this step, so current `main` cannot be used.
-- [ ] Confirm the seven existing packages' Trusted Publishers allow `npm publish` (configurations created before May 20, 2026 do automatically).
-- [ ] Merge only when requested; refresh the inventory if more changes land on `main` first.
-- [ ] After merge, run the GitHub npm readiness workflow with `dry_run=true` on the exact intended `main` commit.
-- [ ] Configure the `@pinet/tmux` Trusted Publisher with `npm publish` allowed, then publish within 2 days (above).
-- [ ] Obtain separate explicit maintainer approval to tag or publish. A tag-triggered release must point at the current `main` tip; a manual real publish requires `release_approval=publish all`. Both require the protected `npm-publish` environment approval and configured Trusted Publishers for all eight packages.
-- [ ] After publication, verify all eight packages at v0.2.26 on npm and smoke-test installed artifacts, including `@pinet/tmux` in a fresh Pi session inside tmux.
-
-A green dry-run proves packaging readiness, not publication. If a real publish partially succeeds, prepare a new approved patch version for the full set rather than retrying already-published versions.
+Update installed Pi packages and restart Pi to load the release. Preparing, merging or publishing does not update existing installations or running sessions automatically.
