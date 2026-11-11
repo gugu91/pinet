@@ -327,9 +327,21 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
     inFlight = true;
     triggeredModelKey = decision.modelKey;
     const details = `model=${decision.modelKey} tokens=${usage?.tokens ?? "unknown"} limit=${decision.limit}`;
+    const hasUI = ctx.hasUI;
+    const report = (diagnostic: string, notification: string, level: "info" | "error") => {
+      if (hasUI) {
+        try {
+          ctx.ui.notify(notification, level);
+          return;
+        } catch {
+          // A detached compact callback can outlive its runtime. Reporting must
+          // fall back to stderr, not replace the original compaction outcome.
+        }
+      }
+      console.error(`${LOG_PREFIX} ${diagnostic}`);
+    };
     if (config.debug) {
-      if (!ctx.hasUI) console.error(`${LOG_PREFIX} triggered ${details}`);
-      if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction started (${details})`, "info");
+      report(`triggered ${details}`, `Model-aware compaction started (${details})`, "info");
     }
 
     ctx.compact({
@@ -337,8 +349,7 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
       onComplete: () => {
         inFlight = false;
         if (config.debug) {
-          if (!ctx.hasUI) console.error(`${LOG_PREFIX} completed ${details}`);
-          if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction completed (${details})`, "info");
+          report(`completed ${details}`, `Model-aware compaction completed (${details})`, "info");
         }
       },
       onError: (error) => {
@@ -346,8 +357,11 @@ export default function modelAwareCompaction(pi: ExtensionAPI) {
         if (error.message === "Already compacted") return;
 
         triggeredModelKey = null;
-        if (!ctx.hasUI) console.error(`${LOG_PREFIX} failed ${details}: ${error.message}`);
-        if (ctx.hasUI) ctx.ui.notify(`Model-aware compaction failed: ${error.message}`, "error");
+        report(
+          `failed ${details}: ${error.message}`,
+          `Model-aware compaction failed: ${error.message}`,
+          "error",
+        );
       },
     });
   });

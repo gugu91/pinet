@@ -275,6 +275,87 @@ describe("extension wiring", () => {
     },
   );
 
+  it.each([false, true])(
+    "preserves detached compaction outcomes after context invalidation (hasUI=%s)",
+    (hasUI) => {
+      const { emit } = harness();
+      const compact = vi.fn();
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+      fs.mkdirSync(path.join(temp, ".pi"));
+      fs.writeFileSync(
+        path.join(temp, ".pi", "settings.json"),
+        JSON.stringify({ "model-aware-compaction": { enabled: true, debug: true } }),
+      );
+      const ctx = { ...context(120_000, compact), cwd: temp, hasUI };
+      const notify = ctx.ui.notify;
+      try {
+        emit("agent_settled", ctx);
+        const options = compact.mock.calls[0]?.[0] as {
+          onComplete: () => void;
+          onError: (error: Error) => void;
+        };
+        // Pi's runner guards every ctx getter once the runtime is disposed.
+        // Direct SDK disposal need not emit session_shutdown first.
+        const staleAccess = vi.fn(() => {
+          throw new Error("This extension ctx is stale after session replacement or reload");
+        });
+        Object.defineProperties(ctx, {
+          hasUI: { get: staleAccess },
+          ui: { get: staleAccess },
+        });
+        stderr.mockClear();
+        vi.mocked(notify).mockClear();
+
+        expect(() => options.onError(new Error("original provider failure"))).not.toThrow();
+        expect(stderr).toHaveBeenCalledExactlyOnceWith(
+          "[model-aware-compaction] failed model=openai/gpt-5-mini tokens=120000 limit=100000: original provider failure",
+        );
+        stderr.mockClear();
+        expect(() => options.onComplete()).not.toThrow();
+        expect(stderr).toHaveBeenCalledExactlyOnceWith(
+          "[model-aware-compaction] completed model=openai/gpt-5-mini tokens=120000 limit=100000",
+        );
+        expect(notify).not.toHaveBeenCalled();
+        // Headless reporting needs no live context at all.
+        expect(staleAccess).toHaveBeenCalledTimes(hasUI ? 2 : 0);
+      } finally {
+        stderr.mockRestore();
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("preserves the provider error when an active UI notification fails", () => {
+    const { emit } = harness();
+    const compact = vi.fn();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "model-aware-compaction-"));
+    fs.mkdirSync(path.join(temp, ".pi"));
+    fs.writeFileSync(
+      path.join(temp, ".pi", "settings.json"),
+      JSON.stringify({ "model-aware-compaction": { enabled: true, debug: false } }),
+    );
+    try {
+      const ctx = { ...context(120_000, compact), cwd: temp, hasUI: true };
+      emit("agent_settled", ctx);
+      vi.mocked(ctx.ui.notify).mockImplementation(() => {
+        throw new Error("UI transport closed");
+      });
+      const options = compact.mock.calls[0]?.[0] as { onError: (error: Error) => void };
+      expect(() => options.onError(new Error("original provider failure"))).not.toThrow();
+      expect(stderr).toHaveBeenCalledExactlyOnceWith(
+        "[model-aware-compaction] failed model=openai/gpt-5-mini tokens=120000 limit=100000: original provider failure",
+      );
+      // Failure still releases the proactive trigger for a later retry.
+      emit("agent_settled", ctx);
+      expect(compact).toHaveBeenCalledTimes(2);
+    } finally {
+      stderr.mockRestore();
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { hasUI: true, problem: "chain" },
     { hasUI: false, problem: "chain" },
