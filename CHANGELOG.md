@@ -9,6 +9,32 @@ themselves create a new release entry, tag, or package version. Add a versioned
 entry only when a maintainer approves a real release with intentional package
 version bumps and publish scope.
 
+## [0.2.28] - 2026-11-11
+
+Pinet v0.2.28 preserves model-aware compaction outcomes when callbacks outlive their runtime (#1129).
+
+### Version verification
+
+- `pi-extensions` — `0.2.28` (private repo package)
+- `@pinet/transport-core` — `0.2.28`
+- `@pinet/broker-core` — `0.2.28`
+- `@pinet/pinet-core` — `0.2.28`
+- `@pinet/imessage-bridge` — `0.2.28`
+- `@pinet/slack-bridge` — `0.2.28`
+- `@pinet/model-aware-compaction` — `0.2.28`
+- `@pinet/agent-goal` — `0.2.28`
+- `@pinet/tmux` — `0.2.28`
+
+### Fixed
+
+- Model-aware compaction captures UI availability before starting compaction and falls back to stderr if a disposed runtime rejects a notification. Completion and error reporting no longer replace the original compaction outcome (#1129).
+- The other seven public packages ship at the aligned version without additional package-local functional changes since v0.2.27.
+
+### Upgrade notes
+
+- No configuration or database migration is required. Update installed packages and restart Pi to load the new code; running sessions are not updated automatically.
+- All eight public packages are released together. Preparing or merging this release PR does not publish them.
+
 ## [0.2.27] - 2026-11-09
 
 Pinet v0.2.27 fixes Pi's host-provided TypeBox dependency warning and includes the worker, connection-lifecycle and reply-routing changes merged since v0.2.26.
