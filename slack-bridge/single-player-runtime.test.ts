@@ -26,7 +26,8 @@ vi.mock("./slack-access.js", async () => {
     }
 
     getBotUserId(): string | null {
-      return socketState.botUserId;
+      // Mirrors SlackSocketModeClient: the id is only known when auth.test runs on connect.
+      return this.config.resolveBotUserIdOnConnect ? socketState.botUserId : null;
     }
 
     isConnected(): boolean {
@@ -240,6 +241,42 @@ describe("single-player-runtime", () => {
     expect(state.unclaimedThreads.has("chat:alice")).toBe(false);
     expect(spies.persistState).toHaveBeenCalledTimes(1);
     expect(spies.claimOwnedThread).not.toHaveBeenCalled();
+  });
+
+  it("queues top-level channel mentions so single mode answers @pinet in channels", async () => {
+    const state: TestState = {
+      threads: new Map(),
+      pendingEyes: new Map(),
+      unclaimedThreads: new Set(),
+      inbox: [],
+      lastDmChannel: null,
+    };
+    // Mirrors index.ts: the extension-level bot id is only filled from the runtime
+    // after connect, so single mode depends on the socket resolving auth.test.
+    let botUserId: string | null = null;
+    const { deps, spies } = createDeps(state, { getBotUserId: () => botUserId });
+    const runtime = createSinglePlayerRuntime(deps);
+
+    await runtime.connect(createContext());
+    botUserId = runtime.getBotUserId() ?? botUserId;
+
+    const socketConfig = socketState.config as SlackSocketModeClientConfig | null;
+    await socketConfig?.onMessage?.({
+      type: "message",
+      channel: "C123",
+      user: "U_SENDER",
+      text: "<@U_BOT> please review this",
+      ts: "200.1",
+    });
+
+    expect(spies.pushInboxMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        threadTs: "200.1",
+        text: "please review this",
+        isChannelMention: true,
+      }),
+    );
   });
 
   it("handles direct Slack messages inside the runtime and queues inbox work", async () => {
