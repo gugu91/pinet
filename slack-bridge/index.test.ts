@@ -1527,6 +1527,12 @@ describe("slack-bridge top-level shutdown", () => {
         notifySocketRequested();
         return socketResponse;
       }
+      if (url.endsWith("/auth.test")) {
+        return new Response(JSON.stringify({ ok: true, user_id: "U_BOT" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error(`Unexpected fetch call: ${url}`);
     });
     vi.stubGlobal("fetch", fetchSpy as never as typeof fetch);
@@ -2043,6 +2049,12 @@ describe("slack-bridge top-level shutdown", () => {
             },
           );
         }
+        if (url === "https://slack.com/api/auth.test") {
+          return new Response(JSON.stringify({ ok: true, user_id: "U_BOT" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
         throw new Error(`unexpected fetch url: ${url}`);
       });
       vi.stubGlobal("fetch", fetchSpy as unknown as typeof fetch);
@@ -2292,6 +2304,12 @@ describe("slack-bridge top-level shutdown", () => {
           headers: { "content-type": "application/json" },
         });
       }
+      if (url === "https://slack.com/api/auth.test") {
+        return new Response(JSON.stringify({ ok: true, user_id: "U_BOT" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       throw new Error(`Unexpected fetch call: ${url}`);
     });
     vi.stubGlobal("fetch", fetchSpy as unknown as typeof fetch);
@@ -2439,6 +2457,12 @@ describe("slack-bridge top-level shutdown", () => {
       }
       if (url === "https://slack.com/api/chat.postMessage") {
         return new Response(JSON.stringify({ ok: true, message: { ts: "300.1" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://slack.com/api/auth.test") {
+        return new Response(JSON.stringify({ ok: true, user_id: "U_BOT" }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });

@@ -527,7 +527,9 @@ export function createSinglePlayerRuntime(deps: SinglePlayerRuntimeDeps): Single
         slack: deps.slack,
         botToken: deps.getBotToken(),
         appToken: deps.getAppToken(),
-        resolveBotUserIdOnConnect: false,
+        // Without the bot user id, classifyMessage() cannot match <@bot> mentions and
+        // drops every top-level channel mention (only known threads pass).
+        resolveBotUserIdOnConnect: true,
         dedup: deps.dedup,
         abortAndWait: deps.abortSlackRequests,
         onOpen: () => deps.setExtStatus(ctx, "ok"),
